@@ -11,6 +11,8 @@ import {
 import type { PtySpawnOptions } from '../shared/ipc-types'
 import { listDirectory, readFile, writeFile, watchDirectory, unwatchAll } from './file-watcher'
 import { listWorktrees, createWorktree, removeWorktree } from './worktree'
+import { getCommitLog, getCommitDiff } from './git-operations'
+import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 
 let bareRepoPath: string | null = process.env['SIMPLEEDIT_REPO'] ?? null
 
@@ -130,6 +132,29 @@ function registerWorktreeHandlers(): void {
   })
 }
 
+function registerClaudeStreamHandlers(win: BrowserWindow): void {
+  ipcMain.handle(
+    'claude:attach',
+    (_event, terminalId: string, worktreePath: string) => {
+      attachToTerminal(terminalId, worktreePath, win.webContents)
+    }
+  )
+
+  ipcMain.handle('claude:detach', (_event, terminalId: string) => {
+    detachFromTerminal(terminalId)
+  })
+}
+
+function registerGitHandlers(): void {
+  ipcMain.handle('git:log', (_event, worktreePath: string, count?: number) => {
+    return getCommitLog(worktreePath, count)
+  })
+
+  ipcMain.handle('git:diff', (_event, worktreePath: string, commitHash: string) => {
+    return getCommitDiff(worktreePath, commitHash)
+  })
+}
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.simpleedit')
 
@@ -142,6 +167,8 @@ app.whenReady().then(() => {
   registerFsHandlers()
   registerEditorHandlers()
   registerWorktreeHandlers()
+  registerGitHandlers()
+  registerClaudeStreamHandlers(win)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -153,6 +180,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   killAllTerminals()
+  detachAllStreams()
   unwatchAll()
   if (process.platform !== 'darwin') {
     app.quit()

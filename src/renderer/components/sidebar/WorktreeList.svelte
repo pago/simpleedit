@@ -7,6 +7,7 @@
     setActiveWorktree,
     refreshWorktrees
   } from '../../stores/worktrees.svelte'
+  import { getClaudeStatus } from '../../stores/claude-status.svelte'
 
   let creating = $state(false)
   let newName = $state('')
@@ -91,7 +92,15 @@
           class="h-2 w-2 shrink-0 rounded-full {isActive ? 'bg-green-400' : 'bg-zinc-600'}"
         ></span>
         <span class="flex-1 truncate">{worktree.branch}</span>
-        <span class="text-[10px] text-zinc-500">idle</span>
+        <span
+          class="text-[10px] {getClaudeStatus(worktree.path) === 'running'
+            ? 'text-yellow-400'
+            : getClaudeStatus(worktree.path) === 'error'
+              ? 'text-red-400'
+              : getClaudeStatus(worktree.path) === 'waiting'
+                ? 'text-blue-400'
+                : 'text-zinc-500'}"
+        >{getClaudeStatus(worktree.path)}</span>
 
         {#if !worktree.isMain}
           {#if removing === worktree.path}

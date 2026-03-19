@@ -1,6 +1,7 @@
 import * as pty from 'node-pty'
 import type { WebContents } from 'electron'
 import type { PtySpawnOptions } from '../shared/ipc-types'
+import { emitPtyData } from './claude-stream'
 
 type IPty = pty.IPty
 
@@ -35,6 +36,7 @@ export function spawnTerminal(
   terminals.set(id, term)
 
   term.onData((data: string) => {
+    emitPtyData(id, data)
     if (!webContents.isDestroyed()) {
       webContents.send('pty:data', { id, data })
     }

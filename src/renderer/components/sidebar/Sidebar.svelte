@@ -1,5 +1,9 @@
 <script lang="ts">
   import WorktreeList from './WorktreeList.svelte'
+  import GitLog from './GitLog.svelte'
+  import { getActiveWorktree } from '../../stores/worktrees.svelte'
+
+  let activeWorktreePath = $derived(getActiveWorktree()?.path ?? null)
 </script>
 
 <div class="flex h-full flex-col">
@@ -11,7 +15,7 @@
     <WorktreeList />
   </section>
 
-  <section class="border-t border-zinc-700 px-3 py-2">
-    <p class="text-xs text-zinc-500">Git log will appear here</p>
+  <section class="flex-1 overflow-y-auto border-t border-zinc-700 px-3 py-2">
+    <GitLog worktreePath={activeWorktreePath} />
   </section>
 </div>

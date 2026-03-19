@@ -82,6 +82,11 @@ export interface GitInvokeMap {
 // ── Claude stream ─────────────────────────────────────────
 export type ClaudeStatus = 'idle' | 'running' | 'waiting' | 'error'
 
+export interface ClaudeInvokeMap {
+  'claude:attach': { args: [terminalId: string, worktreePath: string]; result: void }
+  'claude:detach': { args: [terminalId: string]; result: void }
+}
+
 export interface ClaudeEventMap {
   'claude:status': { worktreePath: string; status: ClaudeStatus }
   'claude:file-touch': { worktreePath: string; filePath: string }
@@ -92,7 +97,8 @@ export type InvokeMap = WorktreeInvokeMap &
   PtyInvokeMap &
   FsInvokeMap &
   EditorInvokeMap &
-  GitInvokeMap
+  GitInvokeMap &
+  ClaudeInvokeMap
 
 export type EventMap = WorktreeEventMap &
   PtyEventMap &
