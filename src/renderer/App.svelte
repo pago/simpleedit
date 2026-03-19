@@ -1,6 +1,6 @@
 <script lang="ts">
   import Sidebar from './components/sidebar/Sidebar.svelte'
-  import MainPanel from './components/layout/MainPanel.svelte'
+  import PaneManager from './components/layout/PaneManager.svelte'
 
   let sidebarWidth = $state(260)
   let isResizing = $state(false)
@@ -50,7 +50,7 @@
     ></div>
 
     <main class="flex-1 overflow-hidden bg-zinc-950">
-      <MainPanel />
+      <PaneManager />
     </main>
   </div>
 </div>

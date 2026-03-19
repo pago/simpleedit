@@ -1,12 +1,12 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
-  import { markModified } from '../../stores/activeFile.svelte'
 
   interface Props {
     filePath: string | null
+    onModified?: (path: string, modified: boolean) => void
   }
 
-  let { filePath }: Props = $props()
+  let { filePath, onModified }: Props = $props()
 
   let container: HTMLDivElement | undefined = $state()
   let editor: monaco.editor.IStandaloneCodeEditor | undefined
@@ -59,7 +59,7 @@
         model.setValue(content)
       }
       currentFilePath = path
-      markModified(path, false)
+      onModified?.(path, false)
     } catch (err: unknown) {
       console.error('Failed to load file:', err)
     }
@@ -70,7 +70,7 @@
     const content = editor.getValue()
     try {
       await window.api.invoke('editor:save', currentFilePath, content)
-      markModified(currentFilePath, false)
+      onModified?.(currentFilePath, false)
     } catch (err: unknown) {
       console.error('Failed to save file:', err)
     }
@@ -92,15 +92,13 @@
       tabSize: 2
     })
 
-    // Save keybinding
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       saveFile()
     })
 
-    // Track modifications
     editor.onDidChangeModelContent(() => {
       if (currentFilePath) {
-        markModified(currentFilePath, true)
+        onModified?.(currentFilePath, true)
       }
     })
 
