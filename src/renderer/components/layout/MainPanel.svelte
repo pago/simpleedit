@@ -1,6 +1,16 @@
 <script lang="ts">
-  // Placeholder — will be built out by Tracks B, C, D
-  // Terminal (bottom), file tree (left of editor), editor (center)
+  import FileTree from '../filetree/FileTree.svelte'
+  import TerminalTabs from '../terminal/TerminalTabs.svelte'
+  import EditorTabs from '../editor/EditorTabs.svelte'
+  import CodeEditor from '../editor/CodeEditor.svelte'
+  import { activeFile, openFile } from '../../stores/activeFile.svelte'
+
+  // TODO: replace with actual worktree path from app state
+  const rootPath = '/Users/patrick.gotthardt/Projects/open-source/simpleedit/app'
+
+  function onFileSelect(path: string): void {
+    openFile(path)
+  }
 
   let splitPosition = $state(60) // percentage for editor vs terminal
   let isResizing = $state(false)
@@ -34,10 +44,19 @@
   <!-- Top: file tree + editor area -->
   <div class="flex min-h-0" style:height="{splitPosition}%">
     <div class="w-52 flex-none overflow-y-auto border-r border-zinc-800 p-2">
-      <p class="text-xs text-zinc-500">File tree placeholder</p>
+      <FileTree {rootPath} onselect={onFileSelect} />
     </div>
-    <div class="flex-1 flex items-center justify-center">
-      <p class="text-sm text-zinc-600">Open a file to start editing</p>
+    <div class="flex flex-1 flex-col overflow-hidden">
+      <EditorTabs />
+      {#if activeFile.value}
+        <div class="flex-1 min-h-0">
+          <CodeEditor filePath={activeFile.value} />
+        </div>
+      {:else}
+        <div class="flex flex-1 items-center justify-center">
+          <p class="text-sm text-zinc-600">Open a file to start editing</p>
+        </div>
+      {/if}
     </div>
   </div>
 
@@ -51,7 +70,7 @@
   ></div>
 
   <!-- Bottom: terminal area -->
-  <div class="min-h-0 flex-1 bg-black p-2">
-    <p class="text-xs text-zinc-500">Terminal placeholder</p>
+  <div class="min-h-0 flex-1 bg-black">
+    <TerminalTabs worktreePath={rootPath} />
   </div>
 </div>
