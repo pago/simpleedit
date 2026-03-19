@@ -36,10 +36,13 @@ export function watchDirectory(worktreePath: string, webContents: WebContents): 
   }
 
   const watcher = watch(worktreePath, {
-    ignored: IGNORED.map((p) => `**/${p}/**`),
+    ignored: [
+      /(^|[/\\])\./,  // dotfiles/dirs
+      ...IGNORED.map((p) => `**/${p}/**`)
+    ],
     ignoreInitial: true,
     persistent: true,
-    depth: 20
+    depth: 3
   })
 
   const emit = (filePath: string, event: 'add' | 'change' | 'unlink'): void => {

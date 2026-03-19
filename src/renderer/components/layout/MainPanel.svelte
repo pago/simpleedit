@@ -4,9 +4,9 @@
   import EditorTabs from '../editor/EditorTabs.svelte'
   import CodeEditor from '../editor/CodeEditor.svelte'
   import { activeFile, openFile } from '../../stores/activeFile.svelte'
+  import { worktreeStore } from '../../stores/worktrees.svelte'
 
-  // TODO: replace with actual worktree path from app state
-  const rootPath = '/Users/patrick.gotthardt/Projects/open-source/simpleedit/app'
+  let rootPath = $derived(worktreeStore.active?.path ?? null)
 
   function onFileSelect(path: string): void {
     openFile(path)
@@ -41,36 +41,46 @@
   class="flex h-full flex-col"
   class:select-none={isResizing}
 >
-  <!-- Top: file tree + editor area -->
-  <div class="flex min-h-0" style:height="{splitPosition}%">
-    <div class="w-52 flex-none overflow-y-auto border-r border-zinc-800 p-2">
-      <FileTree {rootPath} onselect={onFileSelect} />
+  {#if rootPath}
+    <!-- Top: file tree + editor area -->
+    <div class="flex min-h-0" style:height="{splitPosition}%">
+      <div class="w-52 flex-none overflow-y-auto border-r border-zinc-800 p-2">
+        {#key rootPath}
+          <FileTree {rootPath} onselect={onFileSelect} />
+        {/key}
+      </div>
+      <div class="flex flex-1 flex-col overflow-hidden">
+        <EditorTabs />
+        {#if activeFile.value}
+          <div class="flex-1 min-h-0">
+            <CodeEditor filePath={activeFile.value} />
+          </div>
+        {:else}
+          <div class="flex flex-1 items-center justify-center">
+            <p class="text-sm text-zinc-600">Open a file to start editing</p>
+          </div>
+        {/if}
+      </div>
     </div>
-    <div class="flex flex-1 flex-col overflow-hidden">
-      <EditorTabs />
-      {#if activeFile.value}
-        <div class="flex-1 min-h-0">
-          <CodeEditor filePath={activeFile.value} />
-        </div>
-      {:else}
-        <div class="flex flex-1 items-center justify-center">
-          <p class="text-sm text-zinc-600">Open a file to start editing</p>
-        </div>
-      {/if}
+
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div
+      class="h-1 flex-none cursor-row-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
+      role="separator"
+      aria-orientation="horizontal"
+      tabindex="0"
+      onmousedown={onMouseDown}
+    ></div>
+
+    <!-- Bottom: terminal area -->
+    <div class="min-h-0 flex-1 bg-black">
+      {#key rootPath}
+        <TerminalTabs worktreePath={rootPath} />
+      {/key}
     </div>
-  </div>
-
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-  <div
-    class="h-1 flex-none cursor-row-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
-    role="separator"
-    aria-orientation="horizontal"
-    tabindex="0"
-    onmousedown={onMouseDown}
-  ></div>
-
-  <!-- Bottom: terminal area -->
-  <div class="min-h-0 flex-1 bg-black">
-    <TerminalTabs worktreePath={rootPath} />
-  </div>
+  {:else}
+    <div class="flex h-full items-center justify-center">
+      <p class="text-sm text-zinc-600">Select a worktree from the sidebar to get started</p>
+    </div>
+  {/if}
 </div>

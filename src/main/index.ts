@@ -16,6 +16,8 @@ import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } f
 
 let bareRepoPath: string | null = process.env['SIMPLEEDIT_REPO'] ?? null
 
+console.log('[SimpleEdit] SIMPLEEDIT_REPO =', bareRepoPath)
+
 async function resolveBareRepoPath(): Promise<string> {
   if (bareRepoPath) return bareRepoPath
 
@@ -41,7 +43,7 @@ function createWindow(): BrowserWindow {
     title: 'SimpleEdit',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, '../preload/index.mjs'),
       sandbox: false
     }
   })
@@ -117,8 +119,16 @@ function registerEditorHandlers(): void {
 
 function registerWorktreeHandlers(): void {
   ipcMain.handle('worktree:list', async () => {
-    const repoPath = await resolveBareRepoPath()
-    return listWorktrees(repoPath)
+    try {
+      const repoPath = await resolveBareRepoPath()
+      console.log('[SimpleEdit] Listing worktrees from:', repoPath)
+      const list = await listWorktrees(repoPath)
+      console.log('[SimpleEdit] Found worktrees:', list.length, list.map(w => w.branch))
+      return list
+    } catch (err) {
+      console.error('[SimpleEdit] worktree:list failed:', err)
+      return []
+    }
   })
 
   ipcMain.handle('worktree:create', async (_event, name: string, baseBranch?: string) => {

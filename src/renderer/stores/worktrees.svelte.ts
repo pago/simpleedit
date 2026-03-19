@@ -1,31 +1,44 @@
 import type { WorktreeInfo } from '../../shared/ipc-types'
 
-let worktreeList = $state<WorktreeInfo[]>([])
-let activeWorktree = $state<WorktreeInfo | null>(null)
+let _worktreeList = $state<WorktreeInfo[]>([])
+let _activeWorktree = $state<WorktreeInfo | null>(null)
 
+/** Reactive accessor — use in $derived or template to track changes */
+export const worktreeStore = {
+  get list(): WorktreeInfo[] {
+    return _worktreeList
+  },
+  get active(): WorktreeInfo | null {
+    return _activeWorktree
+  }
+}
+
+// Keep old function API for components that already use it
 export function getWorktreeList(): WorktreeInfo[] {
-  return worktreeList
+  return _worktreeList
 }
 
 export function getActiveWorktree(): WorktreeInfo | null {
-  return activeWorktree
+  return _activeWorktree
 }
 
 export function setActiveWorktree(worktree: WorktreeInfo | null): void {
-  activeWorktree = worktree
+  _activeWorktree = worktree
 }
 
 export async function refreshWorktrees(): Promise<void> {
+  console.log('[SimpleEdit] refreshWorktrees called')
   const list = await window.api.invoke('worktree:list')
-  worktreeList = list
+  console.log('[SimpleEdit] Got worktrees:', list)
+  _worktreeList = list
 
   // If the active worktree was removed, clear it
-  if (activeWorktree && !list.some((w) => w.path === activeWorktree!.path)) {
-    activeWorktree = null
+  if (_activeWorktree && !list.some((w) => w.path === _activeWorktree!.path)) {
+    _activeWorktree = null
   }
 
   // Auto-select first worktree if none is active
-  if (!activeWorktree && list.length > 0) {
-    activeWorktree = list[0]
+  if (!_activeWorktree && list.length > 0) {
+    _activeWorktree = list[0]
   }
 }

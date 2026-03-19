@@ -7,10 +7,6 @@
 </script>
 
 <div class="flex h-full flex-col">
-  <header class="border-b border-zinc-700 px-3 py-2">
-    <h1 class="text-sm font-semibold tracking-wide text-zinc-300">SimpleEdit</h1>
-  </header>
-
   <section class="flex-1 overflow-y-auto px-3 py-2">
     <WorktreeList />
   </section>

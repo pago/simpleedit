@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.drag-region button,
+.drag-region input,
+.drag-region [role="separator"] {
+  -webkit-app-region: no-drag;
+}
