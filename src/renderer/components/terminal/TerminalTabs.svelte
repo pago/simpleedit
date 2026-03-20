@@ -10,6 +10,7 @@
   interface TabInfo {
     id: string
     label: string
+    isClaude: boolean
   }
 
   let tabs: TabInfo[] = $state([])
@@ -20,13 +21,27 @@
     const id = `term-${Date.now()}-${nextIndex}`
     const label = `Terminal ${nextIndex}`
     nextIndex++
-    tabs.push({ id, label })
+    tabs.push({ id, label, isClaude: false })
     activeTabId = id
 
     window.api.invoke('pty:spawn', { id, worktreePath })
   }
 
+  function createClaudeTab(): void {
+    const id = `claude-${Date.now()}-${nextIndex}`
+    const label = `Claude ${nextIndex}`
+    nextIndex++
+    tabs.push({ id, label, isClaude: true })
+    activeTabId = id
+
+    window.api.invoke('claude:spawn', { id, worktreePath })
+  }
+
   function closeTab(id: string): void {
+    const tab = tabs.find((t) => t.id === id)
+    if (tab?.isClaude) {
+      window.api.invoke('claude:detach', id)
+    }
     window.api.invoke('pty:kill', id)
     const idx = tabs.findIndex((t) => t.id === id)
     if (idx === -1) return
@@ -60,10 +75,13 @@
     {#each tabs as tab (tab.id)}
       <button
         class="group flex items-center gap-1 px-3 py-1 text-xs transition-colors {tab.id === activeTabId
-          ? 'bg-zinc-900 text-zinc-200'
-          : 'text-zinc-500 hover:text-zinc-300'}"
+          ? tab.isClaude ? 'bg-zinc-900 text-orange-300' : 'bg-zinc-900 text-zinc-200'
+          : tab.isClaude ? 'text-orange-400/60 hover:text-orange-300' : 'text-zinc-500 hover:text-zinc-300'}"
         onclick={() => selectTab(tab.id)}
       >
+        {#if tab.isClaude}
+          <span class="text-[10px]">&#x2726;</span>
+        {/if}
         <span>{tab.label}</span>
         <span
           class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-zinc-600 hover:bg-zinc-700 hover:text-zinc-300"
@@ -80,13 +98,22 @@
       </button>
     {/each}
 
-    <button
-      class="ml-1 flex h-5 w-5 items-center justify-center rounded text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-      onclick={createTab}
-      title="New terminal"
-    >
-      +
-    </button>
+    <div class="ml-1 flex items-center gap-0.5">
+      <button
+        class="flex h-5 w-5 items-center justify-center rounded text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+        onclick={createTab}
+        title="New terminal"
+      >
+        +
+      </button>
+      <button
+        class="flex h-5 items-center gap-1 rounded px-1.5 text-[10px] text-orange-400/60 hover:bg-zinc-800 hover:text-orange-300"
+        onclick={createClaudeTab}
+        title="Run Claude Code"
+      >
+        <span>&#x2726;</span> Claude
+      </button>
+    </div>
   </div>
 
   <!-- Active terminal -->

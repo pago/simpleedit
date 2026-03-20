@@ -50,6 +50,43 @@ export function spawnTerminal(
   })
 }
 
+export function spawnClaudeTerminal(
+  options: PtySpawnOptions,
+  webContents: WebContents
+): void {
+  const { id, worktreePath } = options
+
+  if (terminals.has(id)) {
+    return
+  }
+
+  const shell = defaultShell()
+  // Spawn a shell that immediately runs claude with stream-json output
+  const term = pty.spawn(shell, ['-c', 'claude --output-format stream-json'], {
+    name: 'xterm-256color',
+    cols: 80,
+    rows: 24,
+    cwd: worktreePath,
+    env: process.env as Record<string, string>
+  })
+
+  terminals.set(id, term)
+
+  term.onData((data: string) => {
+    emitPtyData(id, data)
+    if (!webContents.isDestroyed()) {
+      webContents.send('pty:data', { id, data })
+    }
+  })
+
+  term.onExit(({ exitCode }: { exitCode: number }) => {
+    terminals.delete(id)
+    if (!webContents.isDestroyed()) {
+      webContents.send('pty:exit', { id, exitCode })
+    }
+  })
+}
+
 export function writeToTerminal(id: string, data: string): void {
   const term = terminals.get(id)
   if (term) {

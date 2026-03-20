@@ -83,6 +83,7 @@ export interface GitInvokeMap {
 export type ClaudeStatus = 'idle' | 'running' | 'waiting' | 'error'
 
 export interface ClaudeInvokeMap {
+  'claude:spawn': { args: [options: PtySpawnOptions]; result: void }
   'claude:attach': { args: [terminalId: string, worktreePath: string]; result: void }
   'claude:detach': { args: [terminalId: string]; result: void }
 }

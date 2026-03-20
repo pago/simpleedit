@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   spawnTerminal,
+  spawnClaudeTerminal,
   writeToTerminal,
   resizeTerminal,
   killTerminal,
@@ -143,6 +144,11 @@ function registerWorktreeHandlers(): void {
 }
 
 function registerClaudeStreamHandlers(win: BrowserWindow): void {
+  ipcMain.handle('claude:spawn', (_event, options: PtySpawnOptions) => {
+    spawnClaudeTerminal(options, win.webContents)
+    attachToTerminal(options.id, options.worktreePath, win.webContents)
+  })
+
   ipcMain.handle(
     'claude:attach',
     (_event, terminalId: string, worktreePath: string) => {
