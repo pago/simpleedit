@@ -103,13 +103,29 @@ export interface ClaudeEventMap {
   'claude:file-touch': { worktreePath: string; filePath: string }
 }
 
+// ── App-level ─────────────────────────────────────────────
+export interface RecentRepo {
+  path: string
+  name: string
+  lastOpened: string // ISO date
+}
+
+export interface AppInvokeMap {
+  'app:get-repo': { args: []; result: string | null }
+  'app:set-repo': { args: [repoPath: string]; result: void }
+  'app:pick-repo': { args: []; result: string | null }
+  'app:recent-repos': { args: []; result: RecentRepo[] }
+  'app:open-window': { args: [repoPath?: string]; result: void }
+}
+
 // ── Aggregate maps for type-safe IPC helpers ──────────────
 export type InvokeMap = WorktreeInvokeMap &
   PtyInvokeMap &
   FsInvokeMap &
   EditorInvokeMap &
   GitInvokeMap &
-  ClaudeInvokeMap
+  ClaudeInvokeMap &
+  AppInvokeMap
 
 export type EventMap = WorktreeEventMap &
   PtyEventMap &

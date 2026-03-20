@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
-import { join } from 'path'
+import { join, basename } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   spawnTerminal,
@@ -17,39 +17,51 @@ import {
   getStagingFiles, getStagingDiff, getFileAtHead
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
+import { getRecentRepos, addRecentRepo } from './recent-repos'
 
-let bareRepoPath: string | null = process.env['SIMPLEEDIT_REPO'] ?? null
+// ── Per-window repo tracking ──────────────────────────────
+const windowRepoMap = new Map<number, string>()
 
-console.log('[SimpleEdit] SIMPLEEDIT_REPO =', bareRepoPath)
-
-async function resolveBareRepoPath(): Promise<string> {
-  if (bareRepoPath) return bareRepoPath
-
-  const result = await dialog.showOpenDialog({
-    title: 'Select bare git repository',
-    properties: ['openDirectory']
-  })
-
-  if (result.canceled || result.filePaths.length === 0) {
-    throw new Error('No repository selected')
-  }
-
-  bareRepoPath = result.filePaths[0]
-  return bareRepoPath
+function getRepoForSender(webContentsId: number): string | null {
+  return windowRepoMap.get(webContentsId) ?? null
 }
 
-function createWindow(): BrowserWindow {
+function getRepoForSenderOrThrow(webContentsId: number): string {
+  const repo = windowRepoMap.get(webContentsId)
+  if (!repo) throw new Error('No repository set for this window')
+  return repo
+}
+
+function getWindowForContents(webContentsId: number): BrowserWindow | null {
+  return BrowserWindow.getAllWindows().find(
+    (w) => w.webContents.id === webContentsId
+  ) ?? null
+}
+
+// ── Window creation ───────────────────────────────────────
+function createWindow(repoPath?: string): BrowserWindow {
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
-    title: 'SimpleEdit',
+    title: repoPath
+      ? `SimpleEdit — ${basename(repoPath).replace('.git', '')}`
+      : 'SimpleEdit',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       sandbox: false
     }
+  })
+
+  if (repoPath) {
+    windowRepoMap.set(win.webContents.id, repoPath)
+    addRecentRepo(repoPath)
+  }
+
+  win.on('closed', () => {
+    windowRepoMap.delete(win.webContents.id)
   })
 
   win.on('ready-to-show', () => {
@@ -70,9 +82,44 @@ function createWindow(): BrowserWindow {
   return win
 }
 
-function registerPtyHandlers(win: BrowserWindow): void {
-  ipcMain.handle('pty:spawn', (_event, options: PtySpawnOptions) => {
-    spawnTerminal(options, win.webContents)
+// ── IPC registration (global, routes per sender) ──────────
+
+function registerAllHandlers(): void {
+  // ── App ─────────────────────────────────────────────────
+  ipcMain.handle('app:get-repo', (event) => {
+    return getRepoForSender(event.sender.id)
+  })
+
+  ipcMain.handle('app:set-repo', (event, repoPath: string) => {
+    windowRepoMap.set(event.sender.id, repoPath)
+    addRecentRepo(repoPath)
+    const win = getWindowForContents(event.sender.id)
+    if (win) {
+      win.setTitle(`SimpleEdit — ${basename(repoPath).replace('.git', '')}`)
+    }
+  })
+
+  ipcMain.handle('app:pick-repo', async (event) => {
+    const win = getWindowForContents(event.sender.id)
+    const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
+      title: 'Select bare git repository',
+      properties: ['openDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  ipcMain.handle('app:recent-repos', () => {
+    return getRecentRepos()
+  })
+
+  ipcMain.handle('app:open-window', (_event, repoPath?: string) => {
+    createWindow(repoPath)
+  })
+
+  // ── PTY ─────────────────────────────────────────────────
+  ipcMain.handle('pty:spawn', (event, options: PtySpawnOptions) => {
+    spawnTerminal(options, event.sender)
   })
 
   ipcMain.handle('pty:write', (_event, id: string, data: string) => {
@@ -86,9 +133,8 @@ function registerPtyHandlers(win: BrowserWindow): void {
   ipcMain.handle('pty:kill', (_event, id: string) => {
     killTerminal(id)
   })
-}
 
-function registerFsHandlers(): void {
+  // ── File system ─────────────────────────────────────────
   ipcMain.handle('fs:list', (_event, dirPath: string) => {
     return listDirectory(dirPath)
   })
@@ -102,16 +148,14 @@ function registerFsHandlers(): void {
   })
 
   ipcMain.handle('fs:watch', (event, worktreePath: string) => {
-    const webContents = event.sender
-    watchDirectory(worktreePath, webContents)
+    watchDirectory(worktreePath, event.sender)
   })
 
   ipcMain.handle('fs:unwatch', () => {
     unwatchAll()
   })
-}
 
-function registerEditorHandlers(): void {
+  // ── Editor ──────────────────────────────────────────────
   ipcMain.handle('editor:open', (_event, filePath: string) => {
     return readFile(filePath)
   })
@@ -119,52 +163,43 @@ function registerEditorHandlers(): void {
   ipcMain.handle('editor:save', (_event, filePath: string, content: string) => {
     return writeFile(filePath, content)
   })
-}
 
-function registerWorktreeHandlers(): void {
-  ipcMain.handle('worktree:list', async () => {
+  // ── Worktrees ───────────────────────────────────────────
+  ipcMain.handle('worktree:list', async (event) => {
     try {
-      const repoPath = await resolveBareRepoPath()
-      console.log('[SimpleEdit] Listing worktrees from:', repoPath)
-      const list = await listWorktrees(repoPath)
-      console.log('[SimpleEdit] Found worktrees:', list.length, list.map(w => w.branch))
-      return list
+      const repoPath = getRepoForSenderOrThrow(event.sender.id)
+      return await listWorktrees(repoPath)
     } catch (err) {
       console.error('[SimpleEdit] worktree:list failed:', err)
       return []
     }
   })
 
-  ipcMain.handle('worktree:create', async (_event, name: string, baseBranch?: string) => {
-    const repoPath = await resolveBareRepoPath()
+  ipcMain.handle('worktree:create', async (event, name: string, baseBranch?: string) => {
+    const repoPath = getRepoForSenderOrThrow(event.sender.id)
     return createWorktree(repoPath, name, baseBranch)
   })
 
-  ipcMain.handle('worktree:remove', async (_event, worktreePath: string) => {
-    const repoPath = await resolveBareRepoPath()
+  ipcMain.handle('worktree:remove', async (event, worktreePath: string) => {
+    const repoPath = getRepoForSenderOrThrow(event.sender.id)
     return removeWorktree(repoPath, worktreePath)
   })
-}
 
-function registerClaudeStreamHandlers(win: BrowserWindow): void {
-  ipcMain.handle('claude:spawn', (_event, options: PtySpawnOptions) => {
-    spawnClaudeTerminal(options, win.webContents)
-    attachToTerminal(options.id, options.worktreePath, win.webContents)
+  // ── Claude stream ───────────────────────────────────────
+  ipcMain.handle('claude:spawn', (event, options: PtySpawnOptions) => {
+    spawnClaudeTerminal(options, event.sender)
+    attachToTerminal(options.id, options.worktreePath, event.sender)
   })
 
-  ipcMain.handle(
-    'claude:attach',
-    (_event, terminalId: string, worktreePath: string) => {
-      attachToTerminal(terminalId, worktreePath, win.webContents)
-    }
-  )
+  ipcMain.handle('claude:attach', (event, terminalId: string, worktreePath: string) => {
+    attachToTerminal(terminalId, worktreePath, event.sender)
+  })
 
   ipcMain.handle('claude:detach', (_event, terminalId: string) => {
     detachFromTerminal(terminalId)
   })
-}
 
-function registerGitHandlers(): void {
+  // ── Git ─────────────────────────────────────────────────
   ipcMain.handle('git:log', (_event, worktreePath: string, count?: number) => {
     return getCommitLog(worktreePath, count)
   })
@@ -194,6 +229,8 @@ function registerGitHandlers(): void {
   })
 }
 
+// ── App lifecycle ─────────────────────────────────────────
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.simpleedit')
 
@@ -201,18 +238,15 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  const win = createWindow()
-  registerPtyHandlers(win)
-  registerFsHandlers()
-  registerEditorHandlers()
-  registerWorktreeHandlers()
-  registerGitHandlers()
-  registerClaudeStreamHandlers(win)
+  registerAllHandlers()
+
+  // Open with env var, or show welcome screen
+  const envRepo = process.env['SIMPLEEDIT_REPO'] ?? null
+  createWindow(envRepo ?? undefined)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      const newWin = createWindow()
-      registerPtyHandlers(newWin)
+      createWindow()
     }
   })
 })
