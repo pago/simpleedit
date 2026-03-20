@@ -44,21 +44,23 @@
     openFiles = openFiles.map((f) => (f.path === path ? { ...f, modified } : f))
   }
 
-  let splitPosition = $state(60)
-  let isResizing = $state(false)
+  let verticalSplit = $state(60) // editor+filetree vs terminal
+  let fileTreeWidth = $state(220) // file tree width in px
+  let isResizingVertical = $state(false)
+  let isResizingFileTree = $state(false)
 
-  function onResizeStart() {
-    isResizing = true
+  function onVerticalResizeStart() {
+    isResizingVertical = true
     const container = document.getElementById(`pane-${paneId}`)!
 
     function onMouseMove(e: MouseEvent) {
       const rect = container.getBoundingClientRect()
       const pct = ((e.clientY - rect.top) / rect.height) * 100
-      splitPosition = Math.max(20, Math.min(80, pct))
+      verticalSplit = Math.max(20, Math.min(80, pct))
     }
 
     function onMouseUp() {
-      isResizing = false
+      isResizingVertical = false
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
@@ -66,6 +68,29 @@
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
   }
+
+  function onFileTreeResizeStart() {
+    isResizingFileTree = true
+    const container = document.getElementById(`pane-${paneId}`)!
+
+    function onMouseMove(e: MouseEvent) {
+      const rect = container.getBoundingClientRect()
+      // File tree is on the right, so width = container right edge - mouse X
+      const width = rect.right - e.clientX
+      fileTreeWidth = Math.max(120, Math.min(500, width))
+    }
+
+    function onMouseUp() {
+      isResizingFileTree = false
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
+
+  let isResizing = $derived(isResizingVertical || isResizingFileTree)
 </script>
 
 <div
@@ -73,13 +98,9 @@
   class="flex h-full flex-col"
   class:select-none={isResizing}
 >
-  <!-- Top: file tree + editor area -->
-  <div class="flex min-h-0" style:height="{splitPosition}%">
-    <div class="w-48 flex-none overflow-y-auto border-r border-zinc-800 p-2">
-      {#key worktreePath}
-        <FileTree rootPath={worktreePath} onselect={openFile} />
-      {/key}
-    </div>
+  <!-- Top: editor + file tree -->
+  <div class="flex min-h-0" style:height="{verticalSplit}%">
+    <!-- Editor area (left, takes remaining space) -->
     <div class="flex flex-1 flex-col overflow-hidden">
       <EditorTabs
         {openFiles}
@@ -97,15 +118,36 @@
         </div>
       {/if}
     </div>
+
+    <!-- File tree resize handle -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div
+      class="w-1 flex-none cursor-col-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
+      role="separator"
+      aria-orientation="vertical"
+      tabindex="0"
+      onmousedown={onFileTreeResizeStart}
+    ></div>
+
+    <!-- File tree (right side, resizable) -->
+    <div
+      class="flex-none overflow-y-auto border-l border-zinc-800 p-2"
+      style:width="{fileTreeWidth}px"
+    >
+      {#key worktreePath}
+        <FileTree rootPath={worktreePath} onselect={openFile} />
+      {/key}
+    </div>
   </div>
 
+  <!-- Vertical resize handle -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
     class="h-1 flex-none cursor-row-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
     role="separator"
     aria-orientation="horizontal"
     tabindex="0"
-    onmousedown={onResizeStart}
+    onmousedown={onVerticalResizeStart}
   ></div>
 
   <!-- Bottom: terminal area -->

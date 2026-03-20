@@ -44,11 +44,6 @@
   {#if rootPath}
     <!-- Top: file tree + editor area -->
     <div class="flex min-h-0" style:height="{splitPosition}%">
-      <div class="w-52 flex-none overflow-y-auto border-r border-zinc-800 p-2">
-        {#key rootPath}
-          <FileTree {rootPath} onselect={onFileSelect} />
-        {/key}
-      </div>
       <div class="flex flex-1 flex-col overflow-hidden">
         <EditorTabs />
         {#if activeFile.value}
@@ -60,6 +55,11 @@
             <p class="text-sm text-zinc-600">Open a file to start editing</p>
           </div>
         {/if}
+      </div>
+      <div class="w-52 flex-none overflow-y-auto border-r border-zinc-800 p-2">
+        {#key rootPath}
+          <FileTree {rootPath} onselect={onFileSelect} />
+        {/key}
       </div>
     </div>
 

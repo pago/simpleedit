@@ -188,10 +188,16 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('before-quit', () => {
+  try { detachAllStreams() } catch { /* ignore */ }
+  try { killAllTerminals() } catch { /* ignore */ }
+  try { unwatchAll() } catch { /* ignore */ }
+})
+
 app.on('window-all-closed', () => {
-  killAllTerminals()
-  detachAllStreams()
-  unwatchAll()
+  try { detachAllStreams() } catch { /* ignore */ }
+  try { killAllTerminals() } catch { /* ignore */ }
+  try { unwatchAll() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }

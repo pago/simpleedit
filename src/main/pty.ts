@@ -67,14 +67,14 @@ export function resizeTerminal(id: string, cols: number, rows: number): void {
 export function killTerminal(id: string): void {
   const term = terminals.get(id)
   if (term) {
-    term.kill()
+    try { term.kill() } catch { /* process may already be dead */ }
     terminals.delete(id)
   }
 }
 
 export function killAllTerminals(): void {
   for (const [id, term] of terminals) {
-    term.kill()
+    try { term.kill() } catch { /* process may already be dead */ }
     terminals.delete(id)
   }
 }
