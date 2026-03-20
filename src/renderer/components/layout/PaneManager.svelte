@@ -1,13 +1,13 @@
 <script lang="ts">
   import WorktreePane from './WorktreePane.svelte'
-  import { worktreeStore } from '../../stores/worktrees.svelte'
+  import { worktreeList, activeWorktree } from '../../stores/worktrees.svelte'
   import type { WorktreeInfo } from '../../../shared/ipc-types'
 
   let splitRatio = $state(50)
   let isResizing = $state(false)
   let secondPaneWorktree = $state<WorktreeInfo | null>(null)
 
-  let primaryPath = $derived(worktreeStore.active?.path ?? null)
+  let primaryPath = $derived(activeWorktree()?.path ?? null)
   let secondaryPath = $derived(secondPaneWorktree?.path ?? null)
   let hasTwoPanes = $derived(secondaryPath !== null)
 
@@ -29,7 +29,7 @@
 
   // Available worktrees for the second pane (exclude the active one)
   let availableForSecondPane = $derived(
-    worktreeStore.list.filter((w) => w.path !== primaryPath)
+    worktreeList().filter((w) => w.path !== primaryPath)
   )
 
   function openSecondPane(): void {
@@ -79,7 +79,7 @@
         <!-- Pane header -->
         <div class="flex h-7 flex-none items-center justify-between border-b border-zinc-800 bg-zinc-900 px-2">
           <span class="truncate text-[11px] font-medium text-zinc-400">
-            {worktreeStore.active?.branch ?? 'primary'}
+            {activeWorktree()?.branch ?? 'primary'}
           </span>
           <div class="flex items-center gap-1">
             {#if !hasTwoPanes && availableForSecondPane.length > 0}
@@ -127,7 +127,7 @@
               value={secondaryPath}
               onchange={(e) => {
                 const path = (e.target as HTMLSelectElement).value
-                const wt = worktreeStore.list.find((w) => w.path === path)
+                const wt = worktreeList().find((w) => w.path === path)
                 if (wt) secondPaneWorktree = wt
               }}
             >

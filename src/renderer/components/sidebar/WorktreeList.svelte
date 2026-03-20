@@ -2,7 +2,8 @@
   import { onMount } from 'svelte'
   import type { WorktreeInfo } from '../../../shared/ipc-types'
   import {
-    worktreeStore,
+    worktreeList,
+    activeWorktree,
     setActiveWorktree,
     refreshWorktrees
   } from '../../stores/worktrees.svelte'
@@ -75,8 +76,8 @@
   {/if}
 
   <div class="flex flex-col" role="listbox" aria-label="Worktrees">
-    {#each worktreeStore.list as worktree (worktree.path)}
-      {@const isActive = worktreeStore.active?.path === worktree.path}
+    {#each worktreeList() as worktree (worktree.path)}
+      {@const isActive = activeWorktree()?.path === worktree.path}
       <div
         class="group flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm {isActive
           ? 'bg-zinc-700 text-zinc-100'
@@ -137,7 +138,7 @@
     {/each}
   </div>
 
-  {#if worktreeStore.list.length === 0}
+  {#if worktreeList().length === 0}
     <p class="px-2 text-xs text-zinc-500">No worktrees found</p>
   {/if}
 </div>

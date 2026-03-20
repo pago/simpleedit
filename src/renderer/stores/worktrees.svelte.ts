@@ -3,22 +3,16 @@ import type { WorktreeInfo } from '../../shared/ipc-types'
 let _worktreeList = $state<WorktreeInfo[]>([])
 let _activeWorktree = $state<WorktreeInfo | null>(null)
 
-/** Reactive accessor — use in $derived or template to track changes */
-export const worktreeStore = {
-  get list(): WorktreeInfo[] {
-    return _worktreeList
-  },
-  get active(): WorktreeInfo | null {
-    return _activeWorktree
-  }
-}
-
-// Keep old function API for components that already use it
-export function getWorktreeList(): WorktreeInfo[] {
+/**
+ * Reactive accessors. In Svelte 5 .svelte.ts modules, exported functions
+ * that read $state will be reactive when called in component templates
+ * or $derived/$effect blocks.
+ */
+export function worktreeList(): WorktreeInfo[] {
   return _worktreeList
 }
 
-export function getActiveWorktree(): WorktreeInfo | null {
+export function activeWorktree(): WorktreeInfo | null {
   return _activeWorktree
 }
 
@@ -27,9 +21,7 @@ export function setActiveWorktree(worktree: WorktreeInfo | null): void {
 }
 
 export async function refreshWorktrees(): Promise<void> {
-  console.log('[SimpleEdit] refreshWorktrees called')
   const list = await window.api.invoke('worktree:list')
-  console.log('[SimpleEdit] Got worktrees:', list)
   _worktreeList = list
 
   // If the active worktree was removed, clear it
