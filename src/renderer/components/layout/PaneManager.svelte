@@ -11,6 +11,22 @@
   let secondaryPath = $derived(secondPaneWorktree?.path ?? null)
   let hasTwoPanes = $derived(secondaryPath !== null)
 
+  // Track all worktree paths that have been opened so we can keep their panes alive
+  let visitedPrimaryPaths = $state<Set<string>>(new Set())
+  let visitedSecondaryPaths = $state<Set<string>>(new Set())
+
+  $effect(() => {
+    if (primaryPath) {
+      visitedPrimaryPaths = new Set(visitedPrimaryPaths).add(primaryPath)
+    }
+  })
+
+  $effect(() => {
+    if (secondaryPath) {
+      visitedSecondaryPaths = new Set(visitedSecondaryPaths).add(secondaryPath)
+    }
+  })
+
   // Available worktrees for the second pane (exclude the active one)
   let availableForSecondPane = $derived(
     worktreeStore.list.filter((w) => w.path !== primaryPath)
@@ -24,9 +40,10 @@
 
   function closeSecondPane(): void {
     secondPaneWorktree = null
+    visitedSecondaryPaths = new Set()
   }
 
-  function onSplitResizeStart(e: MouseEvent): void {
+  function onSplitResizeStart(): void {
     isResizing = true
     const container = document.getElementById('pane-manager')!
 
@@ -53,7 +70,7 @@
   class:select-none={isResizing}
 >
   {#if primaryPath}
-    <!-- Primary pane -->
+    <!-- Primary pane — keep all visited panes alive, show/hide -->
     <div
       class="min-w-0 overflow-hidden"
       style:width={hasTwoPanes ? `${splitRatio}%` : '100%'}
@@ -76,10 +93,15 @@
             {/if}
           </div>
         </div>
-        <div class="min-h-0 flex-1">
-          {#key primaryPath}
-            <WorktreePane worktreePath={primaryPath} paneId="primary" />
-          {/key}
+        <div class="relative min-h-0 flex-1">
+          {#each [...visitedPrimaryPaths] as path (path)}
+            <div
+              class="absolute inset-0"
+              class:hidden={path !== primaryPath}
+            >
+              <WorktreePane worktreePath={path} paneId="primary-{path}" />
+            </div>
+          {/each}
         </div>
       </div>
     </div>
@@ -121,10 +143,15 @@
               Close
             </button>
           </div>
-          <div class="min-h-0 flex-1">
-            {#key secondaryPath}
-              <WorktreePane worktreePath={secondaryPath} paneId="secondary" />
-            {/key}
+          <div class="relative min-h-0 flex-1">
+            {#each [...visitedSecondaryPaths] as path (path)}
+              <div
+                class="absolute inset-0"
+                class:hidden={path !== secondaryPath}
+              >
+                <WorktreePane worktreePath={path} paneId="secondary-{path}" />
+              </div>
+            {/each}
           </div>
         </div>
       </div>

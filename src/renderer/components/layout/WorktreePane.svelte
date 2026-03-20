@@ -161,9 +161,7 @@
       class="flex-none overflow-y-auto border-l border-zinc-800 p-2"
       style:width="{fileTreeWidth}px"
     >
-      {#key worktreePath}
-        <FileTree rootPath={worktreePath} onselect={openFile} />
-      {/key}
+      <FileTree rootPath={worktreePath} onselect={openFile} />
     </div>
   </div>
 
@@ -179,11 +177,9 @@
 
   <!-- Bottom: terminal area -->
   <div class="min-h-0 flex-1 bg-black">
-    {#key worktreePath}
-      <TerminalTabs
-        {worktreePath}
-        bind:this={terminalTabsRef}
-      />
-    {/key}
+    <TerminalTabs
+      {worktreePath}
+      bind:this={terminalTabsRef}
+    />
   </div>
 </div>

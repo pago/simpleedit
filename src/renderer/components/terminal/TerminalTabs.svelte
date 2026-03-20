@@ -135,13 +135,17 @@
     </div>
   </div>
 
-  <!-- Active terminal -->
-  <div class="min-h-0 flex-1">
-    {#if activeTabId}
-      {#key activeTabId}
-        <Terminal terminalId={activeTabId} />
-      {/key}
-    {:else}
+  <!-- All terminals rendered, only active one visible -->
+  <div class="relative min-h-0 flex-1">
+    {#each tabs as tab (tab.id)}
+      <div
+        class="absolute inset-0"
+        class:hidden={tab.id !== activeTabId}
+      >
+        <Terminal terminalId={tab.id} />
+      </div>
+    {/each}
+    {#if tabs.length === 0}
       <div class="flex h-full items-center justify-center">
         <p class="text-xs text-zinc-500">No terminal open</p>
       </div>
