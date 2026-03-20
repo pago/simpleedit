@@ -48,7 +48,6 @@
     error = null
     try {
       commits = await window.api.invoke('git:log', path)
-      // Check for uncommitted changes
       const stagingFiles = await window.api.invoke('git:staging-files', path)
       hasStagingChanges = stagingFiles.length > 0
     } catch (err: unknown) {

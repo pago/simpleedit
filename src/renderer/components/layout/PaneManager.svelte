@@ -1,5 +1,6 @@
 <script lang="ts">
   import WorktreePane from './WorktreePane.svelte'
+  import { untrack } from 'svelte'
   import { worktreeList, activeWorktree } from '../../stores/worktrees.svelte'
   import type { WorktreeInfo } from '../../../shared/ipc-types'
 
@@ -11,19 +12,30 @@
   let secondaryPath = $derived(secondPaneWorktree?.path ?? null)
   let hasTwoPanes = $derived(secondaryPath !== null)
 
-  // Track all worktree paths that have been opened so we can keep their panes alive
-  let visitedPrimaryPaths = $state<Set<string>>(new Set())
-  let visitedSecondaryPaths = $state<Set<string>>(new Set())
+  // Track all worktree paths that have been opened so we can keep their panes alive.
+  // Use a plain array with $state — the $effect only reads primaryPath, not the array itself.
+  let visitedPrimaryPaths = $state<string[]>([])
+  let visitedSecondaryPaths = $state<string[]>([])
 
   $effect(() => {
-    if (primaryPath) {
-      visitedPrimaryPaths = new Set(visitedPrimaryPaths).add(primaryPath)
+    const path = primaryPath
+    if (path) {
+      untrack(() => {
+        if (!visitedPrimaryPaths.includes(path)) {
+          visitedPrimaryPaths = [...visitedPrimaryPaths, path]
+        }
+      })
     }
   })
 
   $effect(() => {
-    if (secondaryPath) {
-      visitedSecondaryPaths = new Set(visitedSecondaryPaths).add(secondaryPath)
+    const path = secondaryPath
+    if (path) {
+      untrack(() => {
+        if (!visitedSecondaryPaths.includes(path)) {
+          visitedSecondaryPaths = [...visitedSecondaryPaths, path]
+        }
+      })
     }
   })
 
@@ -40,7 +52,7 @@
 
   function closeSecondPane(): void {
     secondPaneWorktree = null
-    visitedSecondaryPaths = new Set()
+    visitedSecondaryPaths = []
   }
 
   function onSplitResizeStart(): void {
@@ -94,7 +106,7 @@
           </div>
         </div>
         <div class="relative min-h-0 flex-1">
-          {#each [...visitedPrimaryPaths] as path (path)}
+          {#each visitedPrimaryPaths as path (path)}
             <div
               class="absolute inset-0"
               class:hidden={path !== primaryPath}
@@ -144,7 +156,7 @@
             </button>
           </div>
           <div class="relative min-h-0 flex-1">
-            {#each [...visitedSecondaryPaths] as path (path)}
+            {#each visitedSecondaryPaths as path (path)}
               <div
                 class="absolute inset-0"
                 class:hidden={path !== secondaryPath}
