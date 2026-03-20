@@ -6,9 +6,7 @@ export async function getCommitLog(
   count: number = 50
 ): Promise<GitCommitInfo[]> {
   const git = simpleGit(worktreePath)
-  // Explicitly resolve the worktree's HEAD to avoid bare-repo default branch confusion
-  const head = await git.revparse(['HEAD'])
-  const log = await git.log({ maxCount: count, from: head.trim() })
+  const log = await git.log({ maxCount: count })
 
   return log.all.map((entry) => ({
     hash: entry.hash,

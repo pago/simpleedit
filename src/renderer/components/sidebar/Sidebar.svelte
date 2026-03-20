@@ -1,9 +1,9 @@
 <script lang="ts">
   import WorktreeList from './WorktreeList.svelte'
   import GitLog from './GitLog.svelte'
-  import { getActiveWorktree } from '../../stores/worktrees.svelte'
+  import { worktreeStore } from '../../stores/worktrees.svelte'
 
-  let activeWorktreePath = $derived(getActiveWorktree()?.path ?? null)
+  let activeWorktreePath = $derived(worktreeStore.active?.path ?? null)
 </script>
 
 <div class="flex h-full flex-col">
