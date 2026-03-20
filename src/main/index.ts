@@ -12,7 +12,10 @@ import {
 import type { PtySpawnOptions } from '../shared/ipc-types'
 import { listDirectory, readFile, writeFile, watchDirectory, unwatchAll } from './file-watcher'
 import { listWorktrees, createWorktree, removeWorktree } from './worktree'
-import { getCommitLog, getCommitDiff } from './git-operations'
+import {
+  getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
+  getStagingFiles, getStagingDiff, getFileAtHead
+} from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 
 let bareRepoPath: string | null = process.env['SIMPLEEDIT_REPO'] ?? null
@@ -168,6 +171,26 @@ function registerGitHandlers(): void {
 
   ipcMain.handle('git:diff', (_event, worktreePath: string, commitHash: string) => {
     return getCommitDiff(worktreePath, commitHash)
+  })
+
+  ipcMain.handle('git:commit-files', (_event, worktreePath: string, commitHash: string) => {
+    return getCommitFiles(worktreePath, commitHash)
+  })
+
+  ipcMain.handle('git:file-at-commit', (_event, worktreePath: string, commitHash: string, filePath: string) => {
+    return getFileAtCommit(worktreePath, commitHash, filePath)
+  })
+
+  ipcMain.handle('git:staging-files', (_event, worktreePath: string) => {
+    return getStagingFiles(worktreePath)
+  })
+
+  ipcMain.handle('git:staging-diff', (_event, worktreePath: string) => {
+    return getStagingDiff(worktreePath)
+  })
+
+  ipcMain.handle('git:file-at-head', (_event, worktreePath: string, filePath: string) => {
+    return getFileAtHead(worktreePath, filePath)
   })
 }
 

@@ -3,7 +3,9 @@
   import TerminalTabs from '../terminal/TerminalTabs.svelte'
   import EditorTabs from '../editor/EditorTabs.svelte'
   import CodeEditor from '../editor/CodeEditor.svelte'
+  import DiffReview from '../editor/DiffReview.svelte'
   import type { OpenFile } from '../../stores/activeFile.svelte'
+  import { diffReviewStore, closeReview } from '../../stores/diffReview.svelte'
 
   interface Props {
     worktreePath: string
@@ -16,7 +18,14 @@
   let openFiles = $state<OpenFile[]>([])
   let activeFilePath = $state<string | null>(null)
 
+  // Diff review state from store
+  let reviewingCommit = $derived(diffReviewStore.get(worktreePath) ?? null)
+
+  // Reference to TerminalTabs for sending Claude messages
+  let terminalTabsRef = $state<{ sendToClaude: (msg: string) => void } | null>(null)
+
   function openFile(path: string): void {
+    closeReview(worktreePath)
     if (!openFiles.some((f) => f.path === path)) {
       openFiles = [...openFiles, { path, modified: false }]
     }
@@ -35,6 +44,7 @@
   }
 
   function setActiveFile(path: string): void {
+    closeReview(worktreePath)
     if (openFiles.some((f) => f.path === path)) {
       activeFilePath = path
     }
@@ -44,8 +54,16 @@
     openFiles = openFiles.map((f) => (f.path === path ? { ...f, modified } : f))
   }
 
-  let verticalSplit = $state(60) // editor+filetree vs terminal
-  let fileTreeWidth = $state(220) // file tree width in px
+  function closeDiffReview(): void {
+    closeReview(worktreePath)
+  }
+
+  function sendToClaude(message: string): void {
+    terminalTabsRef?.sendToClaude(message)
+  }
+
+  let verticalSplit = $state(60)
+  let fileTreeWidth = $state(220)
   let isResizingVertical = $state(false)
   let isResizingFileTree = $state(false)
 
@@ -75,7 +93,6 @@
 
     function onMouseMove(e: MouseEvent) {
       const rect = container.getBoundingClientRect()
-      // File tree is on the right, so width = container right edge - mouse X
       const width = rect.right - e.clientX
       fileTreeWidth = Math.max(120, Math.min(500, width))
     }
@@ -98,24 +115,34 @@
   class="flex h-full flex-col"
   class:select-none={isResizing}
 >
-  <!-- Top: editor + file tree -->
+  <!-- Top: editor/diff + file tree -->
   <div class="flex min-h-0" style:height="{verticalSplit}%">
-    <!-- Editor area (left, takes remaining space) -->
+    <!-- Editor / Diff review area (left, takes remaining space) -->
     <div class="flex flex-1 flex-col overflow-hidden">
-      <EditorTabs
-        {openFiles}
-        {activeFilePath}
-        onclose={closeFile}
-        onselect={setActiveFile}
-      />
-      {#if activeFilePath}
-        <div class="flex-1 min-h-0">
-          <CodeEditor filePath={activeFilePath} onModified={markModified} />
-        </div>
+      {#if reviewingCommit}
+        <DiffReview
+          commitHash={reviewingCommit.hash}
+          commitMessage={reviewingCommit.message}
+          {worktreePath}
+          onclose={closeDiffReview}
+          onsendtoclaude={sendToClaude}
+        />
       {:else}
-        <div class="flex flex-1 items-center justify-center">
-          <p class="text-sm text-zinc-600">Open a file to start editing</p>
-        </div>
+        <EditorTabs
+          {openFiles}
+          {activeFilePath}
+          onclose={closeFile}
+          onselect={setActiveFile}
+        />
+        {#if activeFilePath}
+          <div class="flex-1 min-h-0">
+            <CodeEditor filePath={activeFilePath} onModified={markModified} />
+          </div>
+        {:else}
+          <div class="flex flex-1 items-center justify-center">
+            <p class="text-sm text-zinc-600">Open a file to start editing</p>
+          </div>
+        {/if}
       {/if}
     </div>
 
@@ -153,7 +180,10 @@
   <!-- Bottom: terminal area -->
   <div class="min-h-0 flex-1 bg-black">
     {#key worktreePath}
-      <TerminalTabs {worktreePath} />
+      <TerminalTabs
+        {worktreePath}
+        bind:this={terminalTabsRef}
+      />
     {/key}
   </div>
 </div>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { GitCommitInfo } from '../../../shared/ipc-types'
-  import { showDiff, diffView } from '../../stores/diffViewer.svelte'
+  import { diffReviewStore, startReview } from '../../stores/diffReview.svelte'
 
   interface Props {
     worktreePath: string | null
@@ -8,9 +8,14 @@
 
   let { worktreePath }: Props = $props()
 
+  let selectedCommitHash = $derived(
+    worktreePath ? (diffReviewStore.get(worktreePath)?.hash ?? undefined) : undefined
+  )
+
   let commits = $state<GitCommitInfo[]>([])
   let loading = $state(false)
   let error = $state<string | null>(null)
+  let hasStagingChanges = $state(false)
 
   function relativeDate(dateStr: string): string {
     const date = new Date(dateStr)
@@ -43,26 +48,24 @@
     error = null
     try {
       commits = await window.api.invoke('git:log', path)
+      // Check for uncommitted changes
+      const stagingFiles = await window.api.invoke('git:staging-files', path)
+      hasStagingChanges = stagingFiles.length > 0
     } catch (err: unknown) {
       error = err instanceof Error ? err.message : 'Failed to load git log'
       commits = []
+      hasStagingChanges = false
     } finally {
       loading = false
     }
   }
 
-  async function selectCommit(commit: GitCommitInfo): Promise<void> {
-    if (!worktreePath) return
-    try {
-      const diff = await window.api.invoke('git:diff', worktreePath, commit.hash)
-      showDiff({
-        commitHash: commit.hash,
-        commitMessage: commit.message,
-        diffContent: diff
-      })
-    } catch (err: unknown) {
-      console.error('Failed to load diff:', err)
-    }
+  function selectStaging(): void {
+    if (worktreePath) startReview(worktreePath, { hash: null, message: 'Uncommitted changes' })
+  }
+
+  function selectCommit(commit: GitCommitInfo): void {
+    if (worktreePath) startReview(worktreePath, { hash: commit.hash, message: commit.message })
   }
 
   $effect(() => {
@@ -70,6 +73,7 @@
       fetchLog(worktreePath)
     } else {
       commits = []
+      hasStagingChanges = false
     }
   })
 </script>
@@ -94,19 +98,32 @@
     <p class="px-2 text-xs text-zinc-500">Loading...</p>
   {:else if error}
     <p class="px-2 text-xs text-red-400">{error}</p>
-  {:else if commits.length === 0}
-    <p class="px-2 text-xs text-zinc-500">No commits</p>
   {:else}
     <div class="flex flex-col gap-0.5 overflow-y-auto" role="listbox" aria-label="Commits">
-      {#each commits as commit (commit.hash)}
-        {@const isSelected = diffView.value?.commitHash === commit.hash}
+      <!-- Staging entry -->
+      {#if hasStagingChanges}
         <button
           class="flex flex-col gap-0.5 rounded px-2 py-1.5 text-left transition-colors
-            {isSelected
+            {selectedCommitHash === null && selectedCommitHash !== undefined
             ? 'bg-zinc-700 text-zinc-100'
             : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
           role="option"
-          aria-selected={isSelected}
+          aria-selected={selectedCommitHash === null}
+          onclick={selectStaging}
+        >
+          <span class="truncate text-xs font-medium text-amber-400">Uncommitted changes</span>
+          <span class="text-[10px] text-zinc-500">Working tree</span>
+        </button>
+      {/if}
+
+      {#each commits as commit (commit.hash)}
+        <button
+          class="flex flex-col gap-0.5 rounded px-2 py-1.5 text-left transition-colors
+            {selectedCommitHash === commit.hash
+            ? 'bg-zinc-700 text-zinc-100'
+            : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
+          role="option"
+          aria-selected={selectedCommitHash === commit.hash}
           onclick={() => selectCommit(commit)}
         >
           <span class="truncate text-xs font-medium">{firstLine(commit.message)}</span>
@@ -119,6 +136,10 @@
           </span>
         </button>
       {/each}
+
+      {#if commits.length === 0 && !hasStagingChanges}
+        <p class="px-2 text-xs text-zinc-500">No commits</p>
+      {/if}
     </div>
   {/if}
 </div>

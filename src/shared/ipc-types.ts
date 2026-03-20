@@ -74,9 +74,19 @@ export interface GitCommitInfo {
   date: string
 }
 
+export interface DiffFileEntry {
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+}
+
 export interface GitInvokeMap {
   'git:log': { args: [worktreePath: string, count?: number]; result: GitCommitInfo[] }
   'git:diff': { args: [worktreePath: string, commitHash: string]; result: string }
+  'git:commit-files': { args: [worktreePath: string, commitHash: string]; result: DiffFileEntry[] }
+  'git:file-at-commit': { args: [worktreePath: string, commitHash: string, filePath: string]; result: string }
+  'git:staging-files': { args: [worktreePath: string]; result: DiffFileEntry[] }
+  'git:staging-diff': { args: [worktreePath: string]; result: string }
+  'git:file-at-head': { args: [worktreePath: string, filePath: string]; result: string }
 }
 
 // ── Claude stream ─────────────────────────────────────────

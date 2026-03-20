@@ -61,6 +61,25 @@
     activeTabId = id
   }
 
+  /**
+   * Send a message to the first Claude terminal (if any).
+   * If no Claude terminal exists, creates one first.
+   */
+  export function sendToClaude(message: string): void {
+    let claudeTab = tabs.find((t) => t.isClaude)
+    if (!claudeTab) {
+      createClaudeTab()
+      claudeTab = tabs.find((t) => t.isClaude)
+    }
+    if (claudeTab) {
+      activeTabId = claudeTab.id
+      // Small delay to ensure the terminal is ready if just created
+      setTimeout(() => {
+        window.api.invoke('pty:write', claudeTab!.id, message + '\n')
+      }, claudeTab ? 100 : 1000)
+    }
+  }
+
   // Create an initial terminal tab on mount
   $effect(() => {
     if (tabs.length === 0) {
