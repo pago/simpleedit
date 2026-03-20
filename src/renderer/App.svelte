@@ -51,7 +51,7 @@
     <!-- Title bar / drag region -->
     <div class="drag-region flex h-9 flex-none items-center border-b border-zinc-700 bg-zinc-900">
       <div class="flex items-center gap-2 pl-[78px]" style:width="{sidebarWidth}px">
-        <h1 class="text-xs font-semibold tracking-wide text-zinc-400">{repoName}</h1>
+        <h1 class="text-xs font-semibold tracking-wide text-zinc-400">SimpleEdit [{repoName}]</h1>
       </div>
     </div>
 
