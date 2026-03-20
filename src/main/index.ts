@@ -55,13 +55,15 @@ function createWindow(repoPath?: string): BrowserWindow {
     }
   })
 
+  const webContentsId = win.webContents.id
+
   if (repoPath) {
-    windowRepoMap.set(win.webContents.id, repoPath)
+    windowRepoMap.set(webContentsId, repoPath)
     addRecentRepo(repoPath)
   }
 
   win.on('closed', () => {
-    windowRepoMap.delete(win.webContents.id)
+    windowRepoMap.delete(webContentsId)
   })
 
   win.on('ready-to-show', () => {

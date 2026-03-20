@@ -6,9 +6,10 @@
 
   interface Props {
     terminalId: string
+    active?: boolean
   }
 
-  let { terminalId }: Props = $props()
+  let { terminalId, active = true }: Props = $props()
 
   let containerEl: HTMLDivElement | undefined = $state()
 
@@ -17,6 +18,10 @@
   let cleanupDataListener: (() => void) | undefined
   let cleanupExitListener: (() => void) | undefined
   let resizeObserver: ResizeObserver | undefined
+
+  // Scroll position preservation across tab switches
+  let savedViewportY: number | undefined
+  let wasAtBottom = true
 
   function setup(el: HTMLDivElement, id: string): void {
     cleanup()
@@ -42,6 +47,16 @@
     // Small delay to ensure the element is laid out before fitting
     requestAnimationFrame(() => {
       fitAddon?.fit()
+    })
+
+    // Intercept Shift+Enter to send CSI u sequence (kitty keyboard protocol)
+    // so Claude Code treats it as a newline instead of submit
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey) {
+        window.api.invoke('pty:write', id, '\x1b[13;2u')
+        return false
+      }
+      return true
     })
 
     // Send keystrokes to the PTY
@@ -94,6 +109,30 @@
     }
     return () => {
       cleanup()
+    }
+  })
+
+  // Save/restore scroll position on tab visibility changes
+  $effect(() => {
+    if (!term) return
+
+    if (active) {
+      // Becoming visible: refit then restore scroll position
+      requestAnimationFrame(() => {
+        fitAddon?.fit()
+        if (term) {
+          if (wasAtBottom) {
+            term.scrollToBottom()
+          } else if (savedViewportY !== undefined) {
+            term.scrollToLine(savedViewportY)
+          }
+        }
+      })
+    } else {
+      // Becoming hidden: save scroll state
+      const buf = term.buffer.active
+      wasAtBottom = buf.viewportY >= buf.baseY
+      savedViewportY = buf.viewportY
     }
   })
 </script>

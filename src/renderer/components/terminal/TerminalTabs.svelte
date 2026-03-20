@@ -31,7 +31,7 @@
     const id = `claude-${Date.now()}-${nextIndex}`
     const label = `Claude ${nextIndex}`
     nextIndex++
-    tabs.push({ id, label, isClaude: true })
+    tabs.unshift({ id, label, isClaude: true })
     activeTabId = id
 
     window.api.invoke('claude:spawn', { id, worktreePath })
@@ -91,6 +91,14 @@
 <div class="flex h-full flex-col">
   <!-- Tab bar -->
   <div class="flex items-center border-b border-zinc-800 bg-zinc-950 px-1">
+    <button
+      class="flex h-5 items-center gap-1 rounded px-1.5 text-[10px] text-orange-400/60 hover:bg-zinc-800 hover:text-orange-300"
+      onclick={createClaudeTab}
+      title="Run Claude Code"
+    >
+      <span>&#x2726;</span> Claude
+    </button>
+
     {#each tabs as tab (tab.id)}
       <button
         class="group flex items-center gap-1 px-3 py-1 text-xs transition-colors {tab.id === activeTabId
@@ -117,22 +125,13 @@
       </button>
     {/each}
 
-    <div class="ml-1 flex items-center gap-0.5">
-      <button
-        class="flex h-5 w-5 items-center justify-center rounded text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-        onclick={createTab}
-        title="New terminal"
-      >
-        +
-      </button>
-      <button
-        class="flex h-5 items-center gap-1 rounded px-1.5 text-[10px] text-orange-400/60 hover:bg-zinc-800 hover:text-orange-300"
-        onclick={createClaudeTab}
-        title="Run Claude Code"
-      >
-        <span>&#x2726;</span> Claude
-      </button>
-    </div>
+    <button
+      class="ml-1 flex h-5 w-5 items-center justify-center rounded text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+      onclick={createTab}
+      title="New terminal"
+    >
+      +
+    </button>
   </div>
 
   <!-- All terminals rendered, only active one visible -->
@@ -142,7 +141,7 @@
         class="absolute inset-0"
         class:hidden={tab.id !== activeTabId}
       >
-        <Terminal terminalId={tab.id} />
+        <Terminal terminalId={tab.id} active={tab.id === activeTabId} />
       </div>
     {/each}
     {#if tabs.length === 0}

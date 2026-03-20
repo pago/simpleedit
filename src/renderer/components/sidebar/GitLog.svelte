@@ -75,6 +75,23 @@
       hasStagingChanges = false
     }
   })
+
+  // Auto-refresh git log on file changes (debounced)
+  $effect(() => {
+    const path = worktreePath
+    if (!path) return
+
+    let timer: ReturnType<typeof setTimeout>
+    const unsubscribe = window.api.on('fs:changed', () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => fetchLog(path), 500)
+    })
+
+    return () => {
+      clearTimeout(timer)
+      unsubscribe()
+    }
+  })
 </script>
 
 <div class="flex flex-col gap-1">
