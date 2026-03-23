@@ -14,7 +14,8 @@ import { listDirectory, readFile, writeFile, watchDirectory, unwatchAll } from '
 import { listWorktrees, createWorktree, removeWorktree, cloneBareRepo } from './worktree'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
-  getStagingFiles, getStagingDiff, getFileAtHead
+  getStagingFiles, getStagingDiff, getFileAtHead,
+  watchGitRefs, unwatchGitRefs, unwatchAllGitRefs
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
@@ -243,6 +244,14 @@ function registerAllHandlers(): void {
   ipcMain.handle('git:file-at-head', (_event, worktreePath: string, filePath: string) => {
     return getFileAtHead(worktreePath, filePath)
   })
+
+  ipcMain.handle('git:watch', (event, worktreePath: string) => {
+    return watchGitRefs(worktreePath, event.sender)
+  })
+
+  ipcMain.handle('git:unwatch', (_event, worktreePath: string) => {
+    unwatchGitRefs(worktreePath)
+  })
 }
 
 // ── App lifecycle ─────────────────────────────────────────
@@ -295,12 +304,14 @@ app.on('before-quit', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAll() } catch { /* ignore */ }
+  try { unwatchAllGitRefs() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAll() } catch { /* ignore */ }
+  try { unwatchAllGitRefs() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }

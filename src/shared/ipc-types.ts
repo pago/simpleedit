@@ -87,6 +87,12 @@ export interface GitInvokeMap {
   'git:staging-files': { args: [worktreePath: string]; result: DiffFileEntry[] }
   'git:staging-diff': { args: [worktreePath: string]; result: string }
   'git:file-at-head': { args: [worktreePath: string, filePath: string]; result: string }
+  'git:watch': { args: [worktreePath: string]; result: void }
+  'git:unwatch': { args: [worktreePath: string]; result: void }
+}
+
+export interface GitEventMap {
+  'git:refs-changed': { worktreePath: string }
 }
 
 // ── Claude stream ─────────────────────────────────────────
@@ -132,4 +138,5 @@ export type InvokeMap = WorktreeInvokeMap &
 export type EventMap = WorktreeEventMap &
   PtyEventMap &
   FsEventMap &
-  ClaudeEventMap
+  ClaudeEventMap &
+  GitEventMap

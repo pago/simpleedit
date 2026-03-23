@@ -1,5 +1,74 @@
 import simpleGit from 'simple-git'
+import { watch, type FSWatcher } from 'chokidar'
+import type { WebContents } from 'electron'
 import type { GitCommitInfo, DiffFileEntry } from '../shared/ipc-types'
+
+// ── Git directory watching ──────────────────────────────────
+
+const gitWatchers = new Map<string, FSWatcher>()
+
+/**
+ * Watch the git directory (refs, index) for a worktree so we can detect
+ * commits, branch changes, and staging changes.
+ *
+ * For bare-repo worktrees the actual git dir lives outside the worktree
+ * (e.g. `<bare>/worktrees/<name>/`), so we resolve it via `rev-parse`.
+ */
+export async function watchGitRefs(
+  worktreePath: string,
+  webContents: WebContents
+): Promise<void> {
+  // Don't double-watch
+  if (gitWatchers.has(worktreePath)) return
+
+  const git = simpleGit(worktreePath)
+
+  // Resolve paths — git-dir is the worktree-specific dir,
+  // git-common-dir is the shared bare repo dir with refs/
+  const [gitDir, commonDir] = await Promise.all([
+    git.revparse(['--git-dir']),
+    git.revparse(['--git-common-dir'])
+  ])
+
+  const watchPaths = [
+    `${commonDir}/refs/heads`,  // branch tip changes (commits)
+    `${gitDir}/index`           // staging changes
+  ]
+
+  const watcher = watch(watchPaths, {
+    ignoreInitial: true,
+    persistent: true,
+    // Git writes refs atomically (write tmp + rename), so watch for adds too
+    awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 50 }
+  })
+
+  const emit = (): void => {
+    if (!webContents.isDestroyed()) {
+      webContents.send('git:refs-changed', { worktreePath })
+    }
+  }
+
+  watcher.on('add', emit)
+  watcher.on('change', emit)
+  watcher.on('unlink', emit)
+
+  gitWatchers.set(worktreePath, watcher)
+}
+
+export function unwatchGitRefs(worktreePath: string): void {
+  const watcher = gitWatchers.get(worktreePath)
+  if (watcher) {
+    watcher.close()
+    gitWatchers.delete(worktreePath)
+  }
+}
+
+export function unwatchAllGitRefs(): void {
+  for (const watcher of gitWatchers.values()) {
+    watcher.close()
+  }
+  gitWatchers.clear()
+}
 
 export async function getCommitLog(
   worktreePath: string,

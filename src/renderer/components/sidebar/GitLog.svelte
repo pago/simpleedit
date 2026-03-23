@@ -52,6 +52,18 @@
       commits = await window.api.invoke('git:log', path)
       const stagingFiles = await window.api.invoke('git:staging-files', path)
       hasStagingChanges = stagingFiles.length > 0
+
+      // If we were viewing staging but there are no more uncommitted changes,
+      // auto-select the newest commit so the view stays useful
+      if (isRefresh && path) {
+        const currentReview = diffReviewStore.get(path)
+        if (currentReview) {
+          const wasViewingStaging = currentReview.hash === null
+          if (wasViewingStaging && !hasStagingChanges && commits.length > 0) {
+            startReview(path, { hash: commits[0].hash, message: commits[0].message })
+          }
+        }
+      }
     } catch (err: unknown) {
       error = err instanceof Error ? err.message : 'Failed to load git log'
       commits = []
@@ -78,20 +90,32 @@
     }
   })
 
-  // Auto-refresh git log on file changes (debounced)
+  // Watch git refs for commit/staging changes and auto-refresh
   $effect(() => {
     const path = worktreePath
     if (!path) return
 
+    window.api.invoke('git:watch', path)
+
     let timer: ReturnType<typeof setTimeout>
-    const unsubscribe = window.api.on('fs:changed', () => {
+
+    const unsubFs = window.api.on('fs:changed', () => {
       clearTimeout(timer)
       timer = setTimeout(() => fetchLog(path, true), 500)
     })
 
+    const unsubRefs = window.api.on('git:refs-changed', (data) => {
+      if (data.worktreePath === path) {
+        clearTimeout(timer)
+        timer = setTimeout(() => fetchLog(path, true), 300)
+      }
+    })
+
     return () => {
       clearTimeout(timer)
-      unsubscribe()
+      unsubFs()
+      unsubRefs()
+      window.api.invoke('git:unwatch', path)
     }
   })
 </script>
