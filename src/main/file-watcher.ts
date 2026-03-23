@@ -40,7 +40,8 @@ export function watchDirectory(worktreePath: string, webContents: WebContents): 
       ...IGNORED.map((p) => `**/${p}/**`)
     ],
     ignoreInitial: true,
-    persistent: true
+    persistent: true,
+    usePolling: true,
   })
 
   const emit = (filePath: string, event: 'add' | 'change' | 'unlink'): void => {
