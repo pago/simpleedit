@@ -16,6 +16,7 @@
   let tabs: TabInfo[] = $state([])
   let activeTabId: string | undefined = $state(undefined)
   let nextIndex = $state(1)
+  let nextClaudeIndex = $state(1)
 
   function createTab(): void {
     const id = `term-${Date.now()}-${nextIndex}`
@@ -28,9 +29,9 @@
   }
 
   function createClaudeTab(): void {
-    const id = `claude-${Date.now()}-${nextIndex}`
-    const label = `Claude ${nextIndex}`
-    nextIndex++
+    const id = `claude-${Date.now()}-${nextClaudeIndex}`
+    const label = nextClaudeIndex === 1 ? 'Claude' : `Claude ${nextClaudeIndex}`
+    nextClaudeIndex++
     tabs.unshift({ id, label, isClaude: true })
     activeTabId = id
 
@@ -96,7 +97,7 @@
       onclick={createClaudeTab}
       title="Run Claude Code"
     >
-      <span>&#x2726;</span> Claude
+      <span>&#x2726;</span>
     </button>
 
     {#each tabs as tab (tab.id)}
