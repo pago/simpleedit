@@ -1,7 +1,7 @@
 {
   "name": "simpleedit",
   "version": "0.1.0",
-  "description": "An opinionated IDE for agentic development with Claude Code",
+  "description": "An opinionated Agentic Development Environment",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
@@ -9,6 +9,10 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
+    "package": "electron-vite build && electron-builder --config electron-builder.yml",
+    "package:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
+    "package:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "package:linux": "electron-vite build && electron-builder --linux --config electron-builder.yml",
     "postinstall": "electron-rebuild -f -w node-pty"
   },
   "dependencies": {
@@ -25,6 +29,8 @@
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/cli": "^2.30.0",
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^4.0.0",
     "@electron/rebuild": "^4.0.3",
@@ -34,6 +40,7 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "electron": "^35.1.2",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^3.1.0",
     "monaco-editor": "^0.52.2",
     "svelte": "^5.28.2",
