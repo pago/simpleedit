@@ -11,6 +11,7 @@
   let container: HTMLDivElement | undefined = $state()
   let editor: monaco.editor.IStandaloneCodeEditor | undefined
   let currentFilePath: string | null = null
+  let isLoadingFile = false
 
   const extensionToLanguage: Record<string, string> = {
     '.ts': 'typescript',
@@ -56,7 +57,9 @@
       const model = editor.getModel()
       if (model) {
         monaco.editor.setModelLanguage(model, language)
+        isLoadingFile = true
         model.setValue(content)
+        isLoadingFile = false
       }
       currentFilePath = path
       onModified?.(path, false)
@@ -97,7 +100,7 @@
     })
 
     editor.onDidChangeModelContent(() => {
-      if (currentFilePath) {
+      if (currentFilePath && !isLoadingFile) {
         onModified?.(currentFilePath, true)
       }
     })

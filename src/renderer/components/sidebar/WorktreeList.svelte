@@ -36,12 +36,16 @@
     await refreshWorktrees()
   }
 
+  function cancelCreate(): void {
+    creating = false
+    newName = ''
+  }
+
   function handleKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter') {
       handleCreate()
     } else if (e.key === 'Escape') {
-      creating = false
-      newName = ''
+      cancelCreate()
     }
   }
 </script>
@@ -59,12 +63,15 @@
 
   {#if creating}
     <div class="flex gap-1 px-1">
+      <!-- svelte-ignore a11y_autofocus -->
       <input
         class="flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
         type="text"
         placeholder="branch-name"
         bind:value={newName}
         onkeydown={handleKeydown}
+        onblur={cancelCreate}
+        autofocus
       />
       <button
         class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500"
