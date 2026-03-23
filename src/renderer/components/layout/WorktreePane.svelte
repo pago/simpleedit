@@ -54,6 +54,13 @@
     openFiles = openFiles.map((f) => (f.path === path ? { ...f, modified } : f))
   }
 
+  function reorderFiles(fromIndex: number, toIndex: number): void {
+    const updated = [...openFiles]
+    const [moved] = updated.splice(fromIndex, 1)
+    updated.splice(toIndex, 0, moved)
+    openFiles = updated
+  }
+
   function closeDiffReview(): void {
     closeReview(worktreePath)
   }
@@ -133,6 +140,7 @@
           {activeFilePath}
           onclose={closeFile}
           onselect={setActiveFile}
+          onreorder={reorderFiles}
         />
         {#if activeFilePath}
           <div class="flex-1 min-h-0">

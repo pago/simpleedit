@@ -18,6 +18,9 @@
   let nextIndex = $state(1)
   let nextClaudeIndex = $state(1)
 
+  let dragIndex: number | null = $state(null)
+  let dropIndex: number | null = $state(null)
+
   function createTab(): void {
     const id = `term-${Date.now()}-${nextIndex}`
     const label = `Terminal ${nextIndex}`
@@ -62,6 +65,32 @@
     activeTabId = id
   }
 
+  function handleDragStart(e: DragEvent, index: number): void {
+    dragIndex = index
+    e.dataTransfer!.effectAllowed = 'move'
+  }
+
+  function handleDragOver(e: DragEvent, index: number): void {
+    e.preventDefault()
+    e.dataTransfer!.dropEffect = 'move'
+    dropIndex = index
+  }
+
+  function handleDrop(e: DragEvent, index: number): void {
+    e.preventDefault()
+    if (dragIndex !== null && dragIndex !== index) {
+      const [moved] = tabs.splice(dragIndex, 1)
+      tabs.splice(index, 0, moved)
+    }
+    dragIndex = null
+    dropIndex = null
+  }
+
+  function handleDragEnd(): void {
+    dragIndex = null
+    dropIndex = null
+  }
+
   /**
    * Send a message to the first Claude terminal (if any).
    * If no Claude terminal exists, creates one first.
@@ -100,12 +129,18 @@
       <span>&#x2726;</span>
     </button>
 
-    {#each tabs as tab (tab.id)}
+    {#each tabs as tab, i (tab.id)}
       <button
         class="group flex items-center gap-1 px-3 py-1 text-xs transition-colors {tab.id === activeTabId
           ? tab.isClaude ? 'bg-zinc-900 text-orange-300' : 'bg-zinc-900 text-zinc-200'
-          : tab.isClaude ? 'text-orange-400/60 hover:text-orange-300' : 'text-zinc-500 hover:text-zinc-300'}"
+          : tab.isClaude ? 'text-orange-400/60 hover:text-orange-300' : 'text-zinc-500 hover:text-zinc-300'}
+          {dragIndex !== null && dropIndex === i && dragIndex !== i ? 'border-l-2 border-l-blue-500' : ''}"
         onclick={() => selectTab(tab.id)}
+        draggable="true"
+        ondragstart={(e) => handleDragStart(e, i)}
+        ondragover={(e) => handleDragOver(e, i)}
+        ondrop={(e) => handleDrop(e, i)}
+        ondragend={handleDragEnd}
       >
         {#if tab.isClaude}
           <span class="text-[10px]">&#x2726;</span>
