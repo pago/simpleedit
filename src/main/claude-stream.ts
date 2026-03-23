@@ -52,6 +52,9 @@ export function emitPtyData(terminalId: string, data: string): void {
   }
 }
 
+// Strip ANSI escape codes that the PTY layer adds around the JSON output
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[()][0-9A-Z]|\x1b[>=<]|\x0f/g
+
 /**
  * Try to extract relevant events from a single JSON line of Claude Code stream-json output.
  */
@@ -60,9 +63,12 @@ function processJsonLine(
   worktreePath: string,
   webContents: WebContents
 ): void {
+  const clean = line.replace(ANSI_RE, '').trim()
+  if (!clean.startsWith('{')) return
+
   let parsed: unknown
   try {
-    parsed = JSON.parse(line)
+    parsed = JSON.parse(clean)
   } catch {
     // Not valid JSON — expected for most terminal output
     return
