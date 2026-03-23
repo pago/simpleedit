@@ -177,7 +177,7 @@
         class="absolute inset-0"
         class:hidden={tab.id !== activeTabId}
       >
-        <Terminal terminalId={tab.id} active={tab.id === activeTabId} />
+        <Terminal terminalId={tab.id} active={tab.id === activeTabId} isClaude={tab.isClaude} />
       </div>
     {/each}
     {#if tabs.length === 0}

@@ -7,9 +7,10 @@
   interface Props {
     terminalId: string
     active?: boolean
+    isClaude?: boolean
   }
 
-  let { terminalId, active = true }: Props = $props()
+  let { terminalId, active = true, isClaude = false }: Props = $props()
 
   let containerEl: HTMLDivElement | undefined = $state()
 
@@ -49,11 +50,15 @@
       fitAddon?.fit()
     })
 
-    // Intercept Shift+Enter to send CSI u sequence (kitty keyboard protocol)
-    // so Claude Code treats it as a newline instead of submit
+    // Intercept Shift+Enter so Claude Code treats it as a newline instead of submit.
+    // For Claude terminals: send CSI u sequence (kitty keyboard protocol).
+    // For regular shells: just let Enter through normally (Shift has no meaning).
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey) {
-        window.api.invoke('pty:write', id, '\x1b[13;2u')
+      if (e.key === 'Enter' && e.shiftKey) {
+        if (e.type === 'keydown' && isClaude) {
+          e.preventDefault()
+          window.api.invoke('pty:write', id, '\x1b[13;2u')
+        }
         return false
       }
       return true

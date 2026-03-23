@@ -12,7 +12,7 @@ export function listDirectory(dirPath: string): FileEntry[] {
   const entries = readdirSync(dirPath, { withFileTypes: true })
 
   const mapped: FileEntry[] = entries
-    .filter((e) => !IGNORED.includes(e.name) && !e.name.startsWith('.'))
+    .filter((e) => e.name !== '.git')
     .map((e) => ({
       name: e.name,
       path: join(dirPath, e.name),
@@ -37,7 +37,6 @@ export function watchDirectory(worktreePath: string, webContents: WebContents): 
 
   const watcher = watch(worktreePath, {
     ignored: [
-      /(^|[/\\])\./,  // dotfiles/dirs
       ...IGNORED.map((p) => `**/${p}/**`)
     ],
     ignoreInitial: true,
