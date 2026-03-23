@@ -2,6 +2,8 @@
   "name": "simpleedit",
   "version": "0.2.0",
   "description": "An opinionated Agentic Development Environment",
+  "author": "Patrick Gotthardt <patrick@pagosoft.com>",
+  "email": "patrick@pagosoft.com",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
