@@ -24,23 +24,58 @@
 
   // Load file list when commit changes
   $effect(() => {
-    loadFiles()
+    // Track commitHash and worktreePath to re-run on change
+    void commitHash
+    void worktreePath
+    loadFiles(false)
   })
 
-  async function loadFiles(): Promise<void> {
-    loading = true
-    selectedFile = null
+  // Auto-refresh staging diff on file changes (debounced)
+  $effect(() => {
+    if (!isStaging) return
+
+    let timer: ReturnType<typeof setTimeout>
+    const unsubscribe = window.api.on('fs:changed', () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => refreshStaging(), 500)
+    })
+
+    return () => {
+      clearTimeout(timer)
+      unsubscribe()
+    }
+  })
+
+  async function loadFiles(isRefresh: boolean): Promise<void> {
+    if (!isRefresh) {
+      loading = true
+      selectedFile = null
+    }
     try {
       if (isStaging) {
         files = await window.api.invoke('git:staging-files', worktreePath)
       } else {
         files = await window.api.invoke('git:commit-files', worktreePath, commitHash!)
       }
+      // If refreshing and the previously selected file is gone, clear selection
+      if (isRefresh && selectedFile && !files.some((f) => f.path === selectedFile)) {
+        selectedFile = null
+        originalContent = ''
+        modifiedContent = ''
+      }
     } catch (err) {
       console.error('Failed to load files:', err)
       files = []
     }
     loading = false
+  }
+
+  async function refreshStaging(): Promise<void> {
+    await loadFiles(true)
+    // Re-fetch content for the currently selected file
+    if (selectedFile) {
+      await selectFile(selectedFile)
+    }
   }
 
   async function selectFile(filePath: string): Promise<void> {

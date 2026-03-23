@@ -43,8 +43,10 @@
     return message.split('\n')[0] ?? message
   }
 
-  async function fetchLog(path: string): Promise<void> {
-    loading = true
+  async function fetchLog(path: string, isRefresh = false): Promise<void> {
+    if (!isRefresh) {
+      loading = true
+    }
     error = null
     try {
       commits = await window.api.invoke('git:log', path)
@@ -84,7 +86,7 @@
     let timer: ReturnType<typeof setTimeout>
     const unsubscribe = window.api.on('fs:changed', () => {
       clearTimeout(timer)
-      timer = setTimeout(() => fetchLog(path), 500)
+      timer = setTimeout(() => fetchLog(path, true), 500)
     })
 
     return () => {
