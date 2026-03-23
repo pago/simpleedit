@@ -1,0 +1,45 @@
+appId: com.simpleedit.app
+productName: SimpleEdit
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - out/**/*
+  - "!node_modules/**/*"
+
+asarUnpack:
+  - "node_modules/node-pty/**"
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
