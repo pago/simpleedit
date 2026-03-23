@@ -4,12 +4,12 @@
 - svelte-core-bestpractices
 
 ## Project overview
-SimpleEdit is an opinionated, agentic-development IDE built with Electron + Svelte.
-It targets developers using Claude Code across multiple git worktrees in parallel.
+SimpleEdit is an Agentic Development Environment built with Electron + Svelte.
+It targets engineers running Claude Code across multiple git worktrees in parallel.
 
-The core insight: when you run Claude Code across multiple worktrees, the developer's
-job shifts from *writing* code to *reviewing* code and providing direction. The IDE is
-built around that workflow — diff review, file highlighting, and Claude interaction
+The core insight: when you run agents across multiple worktrees, the engineer's
+job shifts from *writing* code to *reviewing* code and providing direction. SimpleEdit
+is built around that workflow — diff review, file highlighting, and Claude interaction
 are first-class features, not afterthoughts.
 
 ## Conventions

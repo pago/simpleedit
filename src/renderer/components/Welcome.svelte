@@ -76,7 +76,7 @@
   <div class="flex w-full max-w-md flex-col gap-6 px-8">
     <div class="text-center">
       <h1 class="text-xl font-semibold text-zinc-200">SimpleEdit</h1>
-      <p class="mt-1 text-sm text-zinc-500">Agentic IDE for Claude Code + worktrees</p>
+      <p class="mt-1 text-sm text-zinc-500">Agentic Development Environment for Claude Code</p>
     </div>
 
     <div class="flex gap-3">
