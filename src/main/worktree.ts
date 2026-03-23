@@ -1,5 +1,6 @@
 import simpleGit from 'simple-git'
 import { join, dirname, basename } from 'path'
+import { existsSync, mkdirSync } from 'fs'
 import type { WorktreeInfo } from '../shared/ipc-types'
 
 /**
@@ -81,6 +82,54 @@ export async function createWorktree(
     isMain: false,
     isCurrent: false
   }
+}
+
+/**
+ * Clone a repository as a bare repo and create a worktree for the default branch.
+ * Returns the path to the bare repo directory.
+ */
+export async function cloneBareRepo(repoUrl: string, parentDir: string): Promise<string> {
+  // Derive repo name from URL (e.g. "my-project" from "https://github.com/user/my-project.git")
+  const urlBasename = repoUrl.split('/').pop() ?? repoUrl
+  const repoName = urlBasename.replace(/\.git$/, '')
+  const projectDir = join(parentDir, repoName)
+  const bareRepoPath = join(projectDir, `${repoName}.git`)
+
+  if (existsSync(projectDir)) {
+    throw new Error(`Directory already exists: ${projectDir}`)
+  }
+
+  // Create the wrapper directory, then clone bare repo inside it
+  mkdirSync(projectDir, { recursive: true })
+
+  const git = simpleGit(projectDir)
+  await git.raw(['clone', '--bare', repoUrl, bareRepoPath])
+
+  // Determine the default branch (main or master)
+  const bareGit = simpleGit(bareRepoPath)
+  const branches = await bareGit.raw(['branch'])
+  const branchList = branches
+    .split('\n')
+    .map((b) => b.replace(/^\*?\s+/, '').trim())
+    .filter(Boolean)
+
+  const defaultBranch = branchList.includes('main')
+    ? 'main'
+    : branchList.includes('master')
+      ? 'master'
+      : branchList[0] ?? null
+
+  if (defaultBranch) {
+    // Configure fetch refspec so `git fetch` works from worktrees
+    await bareGit.raw([
+      'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'
+    ])
+
+    const worktreePath = join(projectDir, defaultBranch)
+    await bareGit.raw(['worktree', 'add', worktreePath, defaultBranch])
+  }
+
+  return bareRepoPath
 }
 
 export async function removeWorktree(

@@ -11,7 +11,7 @@ import {
 } from './pty'
 import type { PtySpawnOptions } from '../shared/ipc-types'
 import { listDirectory, readFile, writeFile, watchDirectory, unwatchAll } from './file-watcher'
-import { listWorktrees, createWorktree, removeWorktree } from './worktree'
+import { listWorktrees, createWorktree, removeWorktree, cloneBareRepo } from './worktree'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead
@@ -109,6 +109,20 @@ function registerAllHandlers(): void {
     })
     if (result.canceled || result.filePaths.length === 0) return null
     return result.filePaths[0]
+  })
+
+  ipcMain.handle('app:pick-directory', async (event) => {
+    const win = getWindowForContents(event.sender.id)
+    const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
+      title: 'Select destination directory',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  ipcMain.handle('app:clone-repo', async (_event, repoUrl: string, parentDir: string) => {
+    return cloneBareRepo(repoUrl, parentDir)
   })
 
   ipcMain.handle('app:recent-repos', () => {
