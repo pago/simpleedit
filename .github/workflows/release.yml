@@ -59,6 +59,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from package.json
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog entry for release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          awk "/^## ${VERSION}/{flag=1; next} /^## [0-9]+\./{flag=0} flag" CHANGELOG.md | sed '/^[[:space:]]*$/d' > /tmp/release-notes.md
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -68,6 +79,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
           draft: true
-          generate_release_notes: true
+          body_path: /tmp/release-notes.md
           files: artifacts/*
