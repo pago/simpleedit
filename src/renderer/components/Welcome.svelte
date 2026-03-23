@@ -130,13 +130,20 @@
         {#if cloneError}
           <p class="text-xs text-red-400">{cloneError}</p>
         {/if}
-        <button
-          class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
-          onclick={cloneRepo}
-          disabled={cloning || !cloneUrl.trim() || !cloneDir.trim()}
-        >
-          {cloning ? 'Cloning...' : 'Clone'}
-        </button>
+        {#if cloning}
+          <div class="flex items-center gap-2 py-1">
+            <div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-400"></div>
+            <span class="text-xs text-zinc-400">Cloning repository...</span>
+          </div>
+        {:else}
+          <button
+            class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+            onclick={cloneRepo}
+            disabled={!cloneUrl.trim() || !cloneDir.trim()}
+          >
+            Clone
+          </button>
+        {/if}
       </div>
     {/if}
 
