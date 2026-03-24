@@ -28,7 +28,13 @@ jobs:
         run: pnpm typecheck
 
       - name: Unit tests
-        run: pnpm test
+        run: pnpm test:unit
+
+      - name: Install Chromium for browser component tests
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Browser component tests
+        run: pnpm test:browser
 
       - name: Build
         run: pnpm build
