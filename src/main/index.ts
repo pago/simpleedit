@@ -10,12 +10,12 @@ import {
   killAllTerminals
 } from './pty'
 import type { PtySpawnOptions } from '../shared/ipc-types'
-import { listDirectory, readFile, writeFile, watchDirectory, unwatchAll } from './file-watcher'
+import { listDirectory, readFile, writeFile } from './file-watcher'
 import { listWorktrees, createWorktree, removeWorktree, cloneBareRepo } from './worktree'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
-  watchGitRefs, unwatchGitRefs, unwatchAllGitRefs
+  watchGitRefs, unwatchGitRefs, unwatchAllGitRefs, triggerStatusCheck
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
@@ -164,14 +164,6 @@ function registerAllHandlers(): void {
     writeFile(filePath, content)
   })
 
-  ipcMain.handle('fs:watch', (event, worktreePath: string) => {
-    watchDirectory(worktreePath, event.sender)
-  })
-
-  ipcMain.handle('fs:unwatch', () => {
-    unwatchAll()
-  })
-
   // ── Editor ──────────────────────────────────────────────
   ipcMain.handle('editor:open', (_event, filePath: string) => {
     return readFile(filePath)
@@ -303,14 +295,12 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
-  try { unwatchAll() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
-  try { unwatchAll() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()

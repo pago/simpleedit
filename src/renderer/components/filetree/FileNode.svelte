@@ -13,7 +13,6 @@
 
   let expanded = $state(false)
   let children = $state<FileEntry[]>([])
-  let loaded = $state(false)
 
   async function toggle(): Promise<void> {
     if (!entry.isDirectory) {
@@ -23,9 +22,8 @@
 
     expanded = !expanded
 
-    if (expanded && !loaded) {
+    if (expanded) {
       children = await window.api.invoke('fs:list', entry.path)
-      loaded = true
     }
   }
 

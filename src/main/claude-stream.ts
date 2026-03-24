@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron'
 import type { ClaudeStatus } from '../shared/ipc-types'
+import { triggerStatusCheck } from './git-operations'
 
 interface TerminalAttachment {
   worktreePath: string
@@ -124,6 +125,9 @@ function sendFileTouch(
   if (!webContents.isDestroyed()) {
     webContents.send('claude:file-touch', { worktreePath, filePath })
   }
+  // Trigger immediate git status check so the UI updates without
+  // waiting for the next poll cycle
+  triggerStatusCheck(worktreePath)
 }
 
 /**

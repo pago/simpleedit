@@ -52,12 +52,6 @@ export interface FsInvokeMap {
   'fs:list': { args: [dirPath: string]; result: FileEntry[] }
   'fs:read': { args: [filePath: string]; result: string }
   'fs:write': { args: [filePath: string, content: string]; result: void }
-  'fs:watch': { args: [worktreePath: string]; result: void }
-  'fs:unwatch': { args: []; result: void }
-}
-
-export interface FsEventMap {
-  'fs:changed': { path: string; event: 'add' | 'change' | 'unlink' }
 }
 
 // ── Editor ────────────────────────────────────────────────
@@ -93,6 +87,7 @@ export interface GitInvokeMap {
 
 export interface GitEventMap {
   'git:refs-changed': { worktreePath: string }
+  'git:status-changed': { worktreePath: string }
 }
 
 // ── Claude stream ─────────────────────────────────────────
@@ -137,6 +132,5 @@ export type InvokeMap = WorktreeInvokeMap &
 
 export type EventMap = WorktreeEventMap &
   PtyEventMap &
-  FsEventMap &
   ClaudeEventMap &
   GitEventMap

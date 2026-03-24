@@ -30,14 +30,15 @@
     loadFiles(false)
   })
 
-  // Auto-refresh staging diff on file changes (debounced)
+  // Auto-refresh staging diff on git status changes (debounced)
   $effect(() => {
     if (!isStaging) return
 
     let timer: ReturnType<typeof setTimeout>
-    const unsubscribe = window.api.on('fs:changed', () => {
+    const unsubscribe = window.api.on('git:status-changed', (data) => {
+      if (data.worktreePath !== worktreePath) return
       clearTimeout(timer)
-      timer = setTimeout(() => refreshStaging(), 500)
+      timer = setTimeout(() => refreshStaging(), 300)
     })
 
     return () => {

@@ -3,16 +3,28 @@ import { watch, type FSWatcher } from 'chokidar'
 import type { WebContents } from 'electron'
 import type { GitCommitInfo, DiffFileEntry } from '../shared/ipc-types'
 
-// ── Git directory watching ──────────────────────────────────
+// ── Git watching ──────────────────────────────────────────────
 
-const gitWatchers = new Map<string, FSWatcher>()
+const STATUS_POLL_INTERVAL = 3000 // ms
+
+interface GitWatchState {
+  refsWatcher: FSWatcher
+  pollTimer: ReturnType<typeof setInterval>
+  lastStatusSnapshot: string
+  webContents: WebContents
+  worktreePath: string
+}
+
+const gitWatchers = new Map<string, GitWatchState>()
 
 /**
- * Watch the git directory (refs, index) for a worktree so we can detect
- * commits, branch changes, and staging changes.
+ * Watch a worktree for git state changes:
+ * 1. Native FS watch on refs/heads + index (detects commits, staging)
+ * 2. Periodic `git status --porcelain` poll (detects working tree changes)
  *
- * For bare-repo worktrees the actual git dir lives outside the worktree
- * (e.g. `<bare>/worktrees/<name>/`), so we resolve it via `rev-parse`.
+ * Emits:
+ * - `git:refs-changed`   — on commit/staging/branch changes (instant via FSEvents)
+ * - `git:status-changed`  — when working tree dirty state changes (polled)
  */
 export async function watchGitRefs(
   worktreePath: string,
@@ -35,37 +47,85 @@ export async function watchGitRefs(
     `${gitDir}/index`           // staging changes
   ]
 
-  const watcher = watch(watchPaths, {
+  const refsWatcher = watch(watchPaths, {
     ignoreInitial: true,
     persistent: true,
     // Git writes refs atomically (write tmp + rename), so watch for adds too
     awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 50 }
   })
 
-  const emit = (): void => {
+  const emitRefs = (): void => {
     if (!webContents.isDestroyed()) {
       webContents.send('git:refs-changed', { worktreePath })
     }
+    // Also trigger an immediate status check since refs changes often
+    // accompany status changes (e.g. commit clears staged files)
+    checkStatus(worktreePath)
   }
 
-  watcher.on('add', emit)
-  watcher.on('change', emit)
-  watcher.on('unlink', emit)
+  refsWatcher.on('add', emitRefs)
+  refsWatcher.on('change', emitRefs)
+  refsWatcher.on('unlink', emitRefs)
 
-  gitWatchers.set(worktreePath, watcher)
+  // Take initial status snapshot
+  const initialSnapshot = await getStatusSnapshot(worktreePath)
+
+  // Start periodic status polling
+  const pollTimer = setInterval(() => checkStatus(worktreePath), STATUS_POLL_INTERVAL)
+
+  gitWatchers.set(worktreePath, {
+    refsWatcher,
+    pollTimer,
+    lastStatusSnapshot: initialSnapshot,
+    webContents,
+    worktreePath
+  })
+}
+
+async function getStatusSnapshot(worktreePath: string): Promise<string> {
+  try {
+    const git = simpleGit(worktreePath)
+    return await git.raw(['status', '--porcelain'])
+  } catch {
+    return ''
+  }
+}
+
+async function checkStatus(worktreePath: string): Promise<void> {
+  const state = gitWatchers.get(worktreePath)
+  if (!state) return
+
+  const snapshot = await getStatusSnapshot(worktreePath)
+  if (snapshot !== state.lastStatusSnapshot) {
+    state.lastStatusSnapshot = snapshot
+    if (!state.webContents.isDestroyed()) {
+      state.webContents.send('git:status-changed', { worktreePath })
+    }
+  }
+}
+
+/**
+ * Trigger an immediate status check for a worktree.
+ * Called when Claude touches a file so the UI updates without
+ * waiting for the next poll cycle.
+ */
+export function triggerStatusCheck(worktreePath: string): void {
+  checkStatus(worktreePath)
 }
 
 export function unwatchGitRefs(worktreePath: string): void {
-  const watcher = gitWatchers.get(worktreePath)
-  if (watcher) {
-    watcher.close()
+  const state = gitWatchers.get(worktreePath)
+  if (state) {
+    state.refsWatcher.close()
+    clearInterval(state.pollTimer)
     gitWatchers.delete(worktreePath)
   }
 }
 
 export function unwatchAllGitRefs(): void {
-  for (const watcher of gitWatchers.values()) {
-    watcher.close()
+  for (const state of gitWatchers.values()) {
+    state.refsWatcher.close()
+    clearInterval(state.pollTimer)
   }
   gitWatchers.clear()
 }

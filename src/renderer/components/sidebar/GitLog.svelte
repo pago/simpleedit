@@ -99,9 +99,11 @@
 
     let timer: ReturnType<typeof setTimeout>
 
-    const unsubFs = window.api.on('fs:changed', () => {
-      clearTimeout(timer)
-      timer = setTimeout(() => fetchLog(path, true), 500)
+    const unsubStatus = window.api.on('git:status-changed', (data) => {
+      if (data.worktreePath === path) {
+        clearTimeout(timer)
+        timer = setTimeout(() => fetchLog(path, true), 300)
+      }
     })
 
     const unsubRefs = window.api.on('git:refs-changed', (data) => {
@@ -113,7 +115,7 @@
 
     return () => {
       clearTimeout(timer)
-      unsubFs()
+      unsubStatus()
       unsubRefs()
       window.api.invoke('git:unwatch', path)
     }
