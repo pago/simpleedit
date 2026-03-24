@@ -128,16 +128,19 @@
     if (!term) return
 
     if (active) {
-      // Becoming visible: refit then restore scroll position
+      // Becoming visible: fit first, then restore scroll in a second rAF so
+      // xterm.js finishes its own post-resize scroll before we override it.
       requestAnimationFrame(() => {
         fitAddon?.fit()
-        if (term) {
-          if (wasAtBottom) {
-            term.scrollToBottom()
-          } else if (savedViewportY !== undefined) {
-            term.scrollToLine(savedViewportY)
+        requestAnimationFrame(() => {
+          if (term) {
+            if (wasAtBottom) {
+              term.scrollToBottom()
+            } else if (savedViewportY !== undefined) {
+              term.scrollToLine(savedViewportY)
+            }
           }
-        }
+        })
       })
     } else {
       // Becoming hidden: save scroll state
