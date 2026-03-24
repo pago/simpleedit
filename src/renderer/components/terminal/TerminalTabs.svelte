@@ -1,11 +1,13 @@
 <script lang="ts">
   import Terminal from './Terminal.svelte'
+  import type { AgentTerminalStore } from '../../stores/agentTerminals.svelte'
 
   interface Props {
     worktreePath: string
+    agentStore: AgentTerminalStore
   }
 
-  let { worktreePath }: Props = $props()
+  let { worktreePath, agentStore }: Props = $props()
 
   interface TabInfo {
     id: string
@@ -31,7 +33,7 @@
     window.api.invoke('pty:spawn', { id, worktreePath })
   }
 
-  function createClaudeTab(): void {
+  function createClaudeTab(): string {
     const id = `claude-${Date.now()}-${nextClaudeIndex}`
     const label = nextClaudeIndex === 1 ? 'Claude' : `Claude ${nextClaudeIndex}`
     nextClaudeIndex++
@@ -39,6 +41,7 @@
     activeTabId = id
 
     window.api.invoke('claude:spawn', { id, worktreePath })
+    return id
   }
 
   function closeTab(id: string): void {
@@ -112,24 +115,19 @@
     tab.label = hasPrefix ? rawTitle.slice(String.fromCodePoint(firstCp).length).trimStart() : rawTitle
   }
 
-  /**
-   * Send a message to the first Claude terminal (if any).
-   * If no Claude terminal exists, creates one first.
-   */
-  export function sendToClaude(message: string): void {
-    let claudeTab = tabs.find((t) => t.isClaude)
-    if (!claudeTab) {
-      createClaudeTab()
-      claudeTab = tabs.find((t) => t.isClaude)
-    }
-    if (claudeTab) {
-      activeTabId = claudeTab.id
-      // Small delay to ensure the terminal is ready if just created
-      setTimeout(() => {
-        window.api.invoke('pty:write', claudeTab!.id, message + '\n')
-      }, claudeTab ? 100 : 1000)
-    }
-  }
+  // Register callbacks and sync Claude tab list into agentStore
+  $effect(() => {
+    agentStore.registerCallbacks(
+      createClaudeTab,
+      (id: string) => { activeTabId = id },
+    )
+  })
+
+  $effect(() => {
+    agentStore.syncTabs(
+      tabs.filter((t) => t.isClaude).map((t) => ({ id: t.id, label: t.label })),
+    )
+  })
 
   // Create an initial terminal tab on mount
   $effect(() => {

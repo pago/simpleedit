@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
+  import type { AgentContext } from '../../lib/agent-message'
 
   interface Props {
     originalContent: string
@@ -7,9 +8,16 @@
     filePath: string
     /** If true, show inline (unified) diff. Otherwise side-by-side. */
     inline?: boolean
+    ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
   }
 
-  let { originalContent, modifiedContent, filePath, inline = true }: Props = $props()
+  let { originalContent, modifiedContent, filePath, inline = true, ondiscusswithagent }: Props = $props()
+
+  // Mutable refs so action closures always read the latest prop values
+  let latestFilePath = filePath
+  let latestOnDiscuss = ondiscusswithagent
+  $effect(() => { latestFilePath = filePath })
+  $effect(() => { latestOnDiscuss = ondiscusswithagent })
 
   let container: HTMLDivElement | undefined = $state()
   let diffEditor: monaco.editor.IStandaloneDiffEditor | undefined
@@ -50,6 +58,45 @@
     const modifiedModel = monaco.editor.createModel(modifiedContent, language)
 
     diffEditor.setModel({ original: originalModel, modified: modifiedModel })
+
+    function registerDiscussAction(
+      ed: monaco.editor.IStandaloneCodeEditor,
+      side: 'original' | 'modified',
+    ): void {
+      ed.addAction({
+        id: `discuss-with-agent-${side}`,
+        label: 'Discuss with Agent',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI],
+        contextMenuGroupId: 'navigation',
+        contextMenuOrder: 1.5,
+        run(e) {
+          const selection = e.getSelection()
+          const model = e.getModel()
+          if (!selection || !model || !container) return
+          const selectedText = model.getValueInRange(selection)
+          const pixelPos = e.getScrolledVisiblePosition({
+            lineNumber: selection.startLineNumber,
+            column: selection.startColumn,
+          })
+          if (!pixelPos) return
+          const rect = container.getBoundingClientRect()
+          latestOnDiscuss?.(
+            {
+              kind: 'diff',
+              filePath: latestFilePath,
+              commitHash: null, // enriched by DiffReview
+              side,
+              selectedText,
+              lineRange: [selection.startLineNumber, selection.endLineNumber],
+            },
+            { x: rect.left + pixelPos.left, y: rect.top + pixelPos.top + pixelPos.height },
+          )
+        },
+      })
+    }
+
+    registerDiscussAction(diffEditor.getOriginalEditor(), 'original')
+    registerDiscussAction(diffEditor.getModifiedEditor(), 'modified')
 
     return () => {
       originalModel.dispose()

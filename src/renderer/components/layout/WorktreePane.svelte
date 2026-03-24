@@ -4,8 +4,11 @@
   import EditorTabs from '../editor/EditorTabs.svelte'
   import CodeEditor from '../editor/CodeEditor.svelte'
   import DiffReview from '../editor/DiffReview.svelte'
+  import AgentPopover from '../editor/AgentPopover.svelte'
   import type { OpenFile } from '../../stores/activeFile.svelte'
   import { diffReviewStore, closeReview } from '../../stores/diffReview.svelte'
+  import { createAgentTerminalStore } from '../../stores/agentTerminals.svelte'
+  import type { AgentContext } from '../../lib/agent-message'
 
   interface Props {
     worktreePath: string
@@ -21,8 +24,24 @@
   // Diff review state from store
   let reviewingCommit = $derived(diffReviewStore.get(worktreePath) ?? null)
 
-  // Reference to TerminalTabs for sending Claude messages
-  let terminalTabsRef = $state<{ sendToClaude: (msg: string) => void } | null>(null)
+  // Per-pane agent terminal store (shared between TerminalTabs and editors)
+  const agentStore = createAgentTerminalStore()
+
+  // Popover state
+  let popoverState = $state<{ x: number; y: number; ctx: AgentContext } | null>(null)
+
+  function openAgentPopover(ctx: AgentContext, pos: { x: number; y: number }): void {
+    popoverState = { ...pos, ctx }
+  }
+
+  function handlePopoverSend(terminalId: string | 'new', message: string): void {
+    if (terminalId === 'new') {
+      agentStore.spawnAndSend(message)
+    } else {
+      agentStore.send(terminalId, message)
+    }
+    popoverState = null
+  }
 
   function openFile(path: string): void {
     closeReview(worktreePath)
@@ -63,10 +82,6 @@
 
   function closeDiffReview(): void {
     closeReview(worktreePath)
-  }
-
-  function sendToClaude(message: string): void {
-    terminalTabsRef?.sendToClaude(message)
   }
 
   let verticalSplit = $state(60)
@@ -132,7 +147,7 @@
           commitMessage={reviewingCommit.message}
           {worktreePath}
           onclose={closeDiffReview}
-          onsendtoclaude={sendToClaude}
+          ondiscusswithagent={openAgentPopover}
         />
       {:else}
         <EditorTabs
@@ -144,7 +159,11 @@
         />
         {#if activeFilePath}
           <div class="flex-1 min-h-0">
-            <CodeEditor filePath={activeFilePath} onModified={markModified} />
+            <CodeEditor
+              filePath={activeFilePath}
+              onModified={markModified}
+              ondiscusswithagent={openAgentPopover}
+            />
           </div>
         {:else}
           <div class="flex flex-1 items-center justify-center">
@@ -185,9 +204,17 @@
 
   <!-- Bottom: terminal area -->
   <div class="min-h-0 flex-1 bg-black">
-    <TerminalTabs
-      {worktreePath}
-      bind:this={terminalTabsRef}
-    />
+    <TerminalTabs {worktreePath} {agentStore} />
   </div>
+
+  {#if popoverState}
+    <AgentPopover
+      x={popoverState.x}
+      y={popoverState.y}
+      context={popoverState.ctx}
+      terminals={agentStore.terminals}
+      onclose={() => (popoverState = null)}
+      onsend={handlePopoverSend}
+    />
+  {/if}
 </div>

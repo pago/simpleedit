@@ -1,6 +1,7 @@
 <script lang="ts">
   import MonacoDiffEditor from './MonacoDiffEditor.svelte'
   import type { DiffFileEntry } from '../../../shared/ipc-types'
+  import type { AgentContext } from '../../lib/agent-message'
 
   interface Props {
     /** null means staging/uncommitted changes */
@@ -8,17 +9,16 @@
     commitMessage: string
     worktreePath: string
     onclose: () => void
-    onsendtoclaude?: (message: string) => void
+    ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
   }
 
-  let { commitHash, commitMessage, worktreePath, onclose, onsendtoclaude }: Props = $props()
+  let { commitHash, commitMessage, worktreePath, onclose, ondiscusswithagent }: Props = $props()
 
   let files = $state<DiffFileEntry[]>([])
   let selectedFile = $state<string | null>(null)
   let originalContent = $state('')
   let modifiedContent = $state('')
   let loading = $state(true)
-  let claudeQuestion = $state('')
 
   const isStaging = $derived(commitHash === null)
 
@@ -130,25 +130,10 @@
     return parts.slice(0, -1).join('/') + '/'
   }
 
-  function sendToClaude(): void {
-    const q = claudeQuestion.trim()
-    if (!q || !onsendtoclaude) return
-
-    let context = ''
-    if (selectedFile) {
-      context = `[Reviewing ${isStaging ? 'uncommitted changes' : `commit ${commitHash?.slice(0, 7)}`} — file: ${selectedFile}]\n`
-    } else {
-      context = `[Reviewing ${isStaging ? 'uncommitted changes' : `commit ${commitHash?.slice(0, 7)}: ${commitMessage}`}]\n`
-    }
-
-    onsendtoclaude(context + q)
-    claudeQuestion = ''
-  }
-
-  function handleQuestionKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendToClaude()
+  function handleDiscussWithAgent(ctx: AgentContext, pos: { x: number; y: number }): void {
+    // Enrich the diff context with the commitHash that MonacoDiffEditor doesn't know about
+    if (ctx.kind === 'diff') {
+      ondiscusswithagent?.({ ...ctx, commitHash }, pos)
     }
   }
 </script>
@@ -211,6 +196,7 @@
             {originalContent}
             {modifiedContent}
             filePath={selectedFile}
+            ondiscusswithagent={handleDiscussWithAgent}
           />
         </div>
       {:else}
@@ -219,26 +205,6 @@
         </div>
       {/if}
 
-      <!-- Ask Claude bar -->
-      {#if onsendtoclaude}
-        <div class="flex items-center gap-2 border-t border-zinc-800 bg-zinc-900 px-3 py-1.5">
-          <span class="text-[10px] text-orange-400/60">&#x2726;</span>
-          <input
-            class="flex-1 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500"
-            type="text"
-            placeholder="Ask Claude about this change..."
-            bind:value={claudeQuestion}
-            onkeydown={handleQuestionKeydown}
-          />
-          <button
-            class="rounded bg-orange-600 px-2 py-1 text-xs text-white hover:bg-orange-500 disabled:opacity-40"
-            disabled={!claudeQuestion.trim()}
-            onclick={sendToClaude}
-          >
-            Ask
-          </button>
-        </div>
-      {/if}
     </div>
   </div>
 </div>
