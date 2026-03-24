@@ -11,11 +11,12 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
-  workflows: write
 
 jobs:
   version:
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
 
     steps:
       - uses: actions/checkout@v4
@@ -43,8 +44,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Trigger release workflow on publish
-        if: steps.changesets.outputs.published == 'true'
-        run: gh workflow run release.yml
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  release:
+    needs: version
+    if: needs.version.outputs.published == 'true'
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    permissions:
+      contents: write
