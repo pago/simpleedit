@@ -86,6 +86,16 @@
     dropIndex = null
   }
 
+  function handleDropAfterLast(e: DragEvent): void {
+    e.preventDefault()
+    if (dragIndex !== null && dragIndex !== tabs.length - 1) {
+      const [moved] = tabs.splice(dragIndex, 1)
+      tabs.push(moved)
+    }
+    dragIndex = null
+    dropIndex = null
+  }
+
   function handleDragEnd(): void {
     dragIndex = null
     dropIndex = null
@@ -160,6 +170,17 @@
         </span>
       </button>
     {/each}
+
+    <!-- Drop zone after last tab -->
+    {#if dragIndex !== null}
+      <div
+        class="h-full min-w-2 flex-1 {dropIndex === tabs.length ? 'border-l-2 border-l-blue-500' : ''}"
+        ondragover={(e) => { e.preventDefault(); dropIndex = tabs.length }}
+        ondrop={handleDropAfterLast}
+        ondragleave={() => { if (dropIndex === tabs.length) dropIndex = null }}
+        role="none"
+      ></div>
+    {/if}
 
     <button
       class="ml-1 flex h-5 w-5 items-center justify-center rounded text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
