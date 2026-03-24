@@ -59,7 +59,7 @@
     }
   })
 
-  // Update models when content changes (e.g. navigating between files)
+  // Update models when content changes (e.g. navigating between files or live refresh)
   $effect(() => {
     if (!diffEditor) return
     const current = diffEditor.getModel()
@@ -68,7 +68,12 @@
       monaco.editor.setModelLanguage(current.original, language)
       monaco.editor.setModelLanguage(current.modified, language)
       current.original.setValue(originalContent)
+      // Preserve scroll position so live file updates don't jump the view
+      const modifiedEditor = diffEditor.getModifiedEditor()
+      const scrollTop = modifiedEditor.getScrollTop()
+      const scrollLeft = modifiedEditor.getScrollLeft()
       current.modified.setValue(modifiedContent)
+      modifiedEditor.setScrollPosition({ scrollTop, scrollLeft })
     }
   })
 </script>
