@@ -19,6 +19,7 @@ import {
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
+import { startReview, cancelReview, cancelAllReviews } from './review'
 
 // ── Per-window repo tracking ──────────────────────────────
 const windowRepoMap = new Map<number, string>()
@@ -244,6 +245,15 @@ function registerAllHandlers(): void {
   ipcMain.handle('git:unwatch', (_event, worktreePath: string) => {
     unwatchGitRefs(worktreePath)
   })
+
+  // ── Review ──────────────────────────────────────────────
+  ipcMain.handle('review:start', (event, worktreePath: string, commitHash: string | null) => {
+    return startReview(worktreePath, commitHash, event.sender)
+  })
+
+  ipcMain.handle('review:cancel', (_event, worktreePath: string, commitHash: string | null) => {
+    cancelReview(worktreePath, commitHash)
+  })
 }
 
 // ── App lifecycle ─────────────────────────────────────────
@@ -296,12 +306,14 @@ app.on('before-quit', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
+  try { cancelAllReviews() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
+  try { cancelAllReviews() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }

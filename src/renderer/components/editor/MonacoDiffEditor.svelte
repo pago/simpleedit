@@ -8,14 +8,17 @@
     filePath: string
     /** If true, show inline (unified) diff. Otherwise side-by-side. */
     inline?: boolean
+    /** Line range [start, end] to highlight in the modified editor. */
+    highlightLines?: [number, number]
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
   }
 
-  let { originalContent, modifiedContent, filePath, inline = true, ondiscusswithagent }: Props = $props()
+  let { originalContent, modifiedContent, filePath, inline = true, highlightLines, ondiscusswithagent }: Props = $props()
 
-  // Mutable refs so action closures always read the latest prop values
-  let latestFilePath = filePath
-  let latestOnDiscuss = ondiscusswithagent
+  // Mutable refs so action closures always read the latest prop values.
+  // Declared as $state so Svelte treats the assignment in $effect as intentional.
+  let latestFilePath = $state(filePath)
+  let latestOnDiscuss = $state(ondiscusswithagent)
   $effect(() => { latestFilePath = filePath })
   $effect(() => { latestOnDiscuss = ondiscusswithagent })
 
@@ -104,6 +107,25 @@
       diffEditor?.dispose()
       diffEditor = undefined
     }
+  })
+
+  // Apply line highlight decoration when a review finding is navigated to
+  $effect(() => {
+    if (!diffEditor || !highlightLines) return
+    const [start, end] = highlightLines
+    const modifiedEditor = diffEditor.getModifiedEditor()
+    const decorations = modifiedEditor.createDecorationsCollection([
+      {
+        range: new monaco.Range(start, 1, end, Number.MAX_SAFE_INTEGER),
+        options: {
+          isWholeLine: true,
+          className: 'review-finding-highlight',
+          overviewRuler: { color: 'rgba(234, 179, 8, 0.6)', position: monaco.editor.OverviewRulerLane.Right },
+        },
+      },
+    ])
+    modifiedEditor.revealLineInCenter(start, monaco.editor.ScrollType.Smooth)
+    return () => decorations.clear()
   })
 
   // Update models when content changes (e.g. navigating between files or live refresh)
