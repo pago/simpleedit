@@ -41,9 +41,3 @@ jobs:
           publish: pnpm changeset tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Trigger release workflow on publish
-        if: steps.changesets.outputs.published == 'true'
-        run: gh workflow run release.yml
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
