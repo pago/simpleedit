@@ -1,12 +1,20 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
+  import type { AgentContext } from '../../lib/agent-message'
 
   interface Props {
     filePath: string | null
     onModified?: (path: string, modified: boolean) => void
+    ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
   }
 
-  let { filePath, onModified }: Props = $props()
+  let { filePath, onModified, ondiscusswithagent }: Props = $props()
+
+  // Mutable refs so action closures always read the latest prop values
+  let latestFilePath = filePath
+  let latestOnDiscuss = ondiscusswithagent
+  $effect(() => { latestFilePath = filePath })
+  $effect(() => { latestOnDiscuss = ondiscusswithagent })
 
   let container: HTMLDivElement | undefined = $state()
   let editor: monaco.editor.IStandaloneCodeEditor | undefined
@@ -97,6 +105,35 @@
 
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       saveFile()
+    })
+
+    editor.addAction({
+      id: 'discuss-with-agent',
+      label: 'Discuss with Agent',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI],
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.5,
+      run(ed) {
+        const selection = ed.getSelection()
+        const model = ed.getModel()
+        if (!selection || !model || !latestFilePath) return
+        const selectedText = model.getValueInRange(selection)
+        const pixelPos = ed.getScrolledVisiblePosition({
+          lineNumber: selection.startLineNumber,
+          column: selection.startColumn,
+        })
+        if (!pixelPos || !container) return
+        const rect = container.getBoundingClientRect()
+        latestOnDiscuss?.(
+          {
+            kind: 'editor',
+            filePath: latestFilePath,
+            selectedText,
+            lineRange: [selection.startLineNumber, selection.endLineNumber],
+          },
+          { x: rect.left + pixelPos.left, y: rect.top + pixelPos.top + pixelPos.height },
+        )
+      },
     })
 
     editor.onDidChangeModelContent(() => {
