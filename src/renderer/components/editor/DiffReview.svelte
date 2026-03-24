@@ -19,6 +19,27 @@
   let originalContent = $state('')
   let modifiedContent = $state('')
   let loading = $state(true)
+  let fileListWidth = $state(224) // w-56 = 14rem = 224px
+  let isResizing = $state(false)
+
+  function onSplitterMouseDown(e: MouseEvent) {
+    isResizing = true
+    const startX = e.clientX
+    const startWidth = fileListWidth
+
+    function onMouseMove(ev: MouseEvent) {
+      fileListWidth = Math.max(120, Math.min(500, startWidth + ev.clientX - startX))
+    }
+
+    function onMouseUp() {
+      isResizing = false
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
 
   const isStaging = $derived(commitHash === null)
 
@@ -157,9 +178,9 @@
     </div>
   </div>
 
-  <div class="flex min-h-0 flex-1">
+  <div class="flex min-h-0 flex-1" class:select-none={isResizing}>
     <!-- File list sidebar -->
-    <div class="w-56 flex-none overflow-y-auto border-r border-zinc-800 bg-zinc-950">
+    <div class="flex-none overflow-y-auto border-r border-zinc-800 bg-zinc-950" style:width="{fileListWidth}px">
       <div class="px-2 py-1.5">
         <span class="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
           {files.length} file{files.length !== 1 ? 's' : ''} changed
@@ -187,6 +208,13 @@
         {/each}
       {/if}
     </div>
+
+    <!-- Resize handle -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="w-1 flex-none cursor-col-resize bg-zinc-800 transition-colors hover:bg-blue-500"
+      onmousedown={onSplitterMouseDown}
+    ></div>
 
     <!-- Diff viewer -->
     <div class="flex min-w-0 flex-1 flex-col">

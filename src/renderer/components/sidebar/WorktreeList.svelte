@@ -62,7 +62,14 @@
   </div>
 
   {#if creating}
-    <div class="flex gap-1 px-1">
+    <div
+      class="flex gap-1 px-1"
+      onfocusout={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          cancelCreate()
+        }
+      }}
+    >
       <!-- svelte-ignore a11y_autofocus -->
       <input
         class="flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
@@ -70,7 +77,6 @@
         placeholder="branch-name"
         bind:value={newName}
         onkeydown={handleKeydown}
-        onblur={cancelCreate}
         autofocus
       />
       <button
