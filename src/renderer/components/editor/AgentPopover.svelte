@@ -50,6 +50,10 @@
   }
 
   function contextLabel(ctx: AgentContext): string {
+    if (ctx.kind === 'finding') {
+      const file = ctx.finding.file.split('/').at(-1) ?? ctx.finding.file
+      return `${file} · ${ctx.finding.label}`
+    }
     const file = ctx.filePath.split('/').at(-1) ?? ctx.filePath
     const lines = `lines ${ctx.lineRange[0]}-${ctx.lineRange[1]}`
     if (ctx.kind === 'editor') {

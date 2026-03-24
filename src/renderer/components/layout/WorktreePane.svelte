@@ -43,6 +43,14 @@
     popoverState = null
   }
 
+  function sendToAgent(terminalId: string | 'new', message: string): void {
+    if (terminalId === 'new') {
+      agentStore.spawnAndSend(message)
+    } else {
+      agentStore.send(terminalId, message)
+    }
+  }
+
   function openFile(path: string): void {
     closeReview(worktreePath)
     if (!openFiles.some((f) => f.path === path)) {
@@ -146,8 +154,10 @@
           commitHash={reviewingCommit.hash}
           commitMessage={reviewingCommit.message}
           {worktreePath}
+          terminals={agentStore.terminals}
           onclose={closeDiffReview}
           ondiscusswithagent={openAgentPopover}
+          onsendtoagent={sendToAgent}
         />
       {:else}
         <EditorTabs

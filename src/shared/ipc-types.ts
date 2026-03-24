@@ -103,6 +103,35 @@ export interface ClaudeEventMap {
   'claude:status': { worktreePath: string; status: ClaudeStatus }
 }
 
+// ── Review ────────────────────────────────────────────────
+export type ConventionalCommentLabel =
+  | 'praise' | 'nitpick' | 'suggestion' | 'issue'
+  | 'question' | 'thought' | 'chore'
+
+export type ReviewFindingDecoration = 'blocking' | 'non-blocking' | 'if-minor'
+
+export interface ReviewFinding {
+  id: string
+  label: ConventionalCommentLabel
+  decoration?: ReviewFindingDecoration
+  file: string
+  lineRange: [number, number]
+  title: string
+  body: string
+}
+
+export type ReviewStatus = 'idle' | 'running' | 'done' | 'error'
+
+export interface ReviewInvokeMap {
+  'review:start': { args: [worktreePath: string, commitHash: string | null]; result: void }
+  'review:cancel': { args: [worktreePath: string, commitHash: string | null]; result: void }
+}
+
+export interface ReviewEventMap {
+  'review:finding': { key: string; finding: ReviewFinding }
+  'review:status': { key: string; status: ReviewStatus; error?: string }
+}
+
 // ── App-level ─────────────────────────────────────────────
 export interface RecentRepo {
   path: string
@@ -127,9 +156,11 @@ export type InvokeMap = WorktreeInvokeMap &
   EditorInvokeMap &
   GitInvokeMap &
   ClaudeInvokeMap &
-  AppInvokeMap
+  AppInvokeMap &
+  ReviewInvokeMap
 
 export type EventMap = WorktreeEventMap &
   PtyEventMap &
   ClaudeEventMap &
-  GitEventMap
+  GitEventMap &
+  ReviewEventMap

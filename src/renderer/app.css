@@ -4,6 +4,11 @@
   -webkit-app-region: drag;
 }
 
+.review-finding-highlight {
+  background-color: rgba(234, 179, 8, 0.08) !important;
+  border-left: 2px solid rgba(234, 179, 8, 0.5);
+}
+
 .drag-region button,
 .drag-region input,
 .drag-region [role="separator"] {
