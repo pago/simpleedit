@@ -1,5 +1,22 @@
 # simpleedit
 
+## 0.5.0
+
+### Minor Changes
+
+- [#15](https://github.com/pago/simpleedit/pull/15) [`9080561`](https://github.com/pago/simpleedit/commit/90805618d0e703a03743bf2512c86e31f719105d) Thanks [@pago](https://github.com/pago)! - Add AI-powered diff review with streaming findings
+
+  Introduces a "✦ Review" button in the diff view that spawns Claude to analyze
+  the current diff and stream back structured findings using Conventional Comments
+  labels (praise, nitpick, suggestion, issue, question, thought, chore).
+
+  Findings appear progressively as Claude streams them, are sorted by severity,
+  and can be navigated to in the diff editor with line highlighting. Bulk operations
+  allow dismissing multiple findings or forwarding them to an agent terminal with
+  a custom instruction.
+
+  Works for both commit diffs and uncommitted (staged) changes.
+
 ## 0.4.0
 
 ### Minor Changes
