@@ -101,7 +101,6 @@ export interface ClaudeInvokeMap {
 
 export interface ClaudeEventMap {
   'claude:status': { worktreePath: string; status: ClaudeStatus }
-  'claude:file-touch': { worktreePath: string; filePath: string }
 }
 
 // ── App-level ─────────────────────────────────────────────

@@ -47,24 +47,6 @@
     }
   })
 
-  // Refresh the selected file's content when Claude touches it.
-  // git:status-changed won't fire if the file was already modified, so we
-  // also watch claude:file-touch for the currently open file.
-  $effect(() => {
-    if (!isStaging) return
-
-    const unsubscribe = window.api.on('claude:file-touch', (data) => {
-      if (data.worktreePath !== worktreePath || !selectedFile) return
-      // filePath may be absolute or relative — normalise to relative
-      const abs = `${worktreePath}/${selectedFile}`
-      const touched = data.filePath
-      if (touched === selectedFile || touched === abs || touched.endsWith(`/${selectedFile}`)) {
-        void selectFile(selectedFile)
-      }
-    })
-
-    return unsubscribe
-  })
 
   async function loadFiles(isRefresh: boolean): Promise<void> {
     if (!isRefresh) {

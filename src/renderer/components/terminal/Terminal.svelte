@@ -8,9 +8,10 @@
     terminalId: string
     active?: boolean
     isClaude?: boolean
+    ontitlechange?: (title: string) => void
   }
 
-  let { terminalId, active = true, isClaude = false }: Props = $props()
+  let { terminalId, active = true, isClaude = false, ontitlechange }: Props = $props()
 
   let containerEl: HTMLDivElement | undefined = $state()
 
@@ -62,6 +63,11 @@
         return false
       }
       return true
+    })
+
+    // Propagate terminal title changes (e.g. Claude Code sets ✳/⠂ session name)
+    term.onTitleChange((title: string) => {
+      ontitlechange?.(title)
     })
 
     // Send keystrokes to the PTY

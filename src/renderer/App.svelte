@@ -4,6 +4,7 @@
   import PaneManager from './components/layout/PaneManager.svelte'
   import Welcome from './components/Welcome.svelte'
   import { refreshWorktrees } from './stores/worktrees.svelte'
+  import { initClaudeStatusListeners } from './stores/claude-status.svelte'
 
   let sidebarWidth = $state(260)
   let isResizing = $state(false)
@@ -15,11 +16,13 @@
   )
 
   onMount(async () => {
+    const unsubscribe = initClaudeStatusListeners()
     const repo = await window.api.invoke('app:get-repo')
     if (repo) {
       repoPath = repo
       refreshWorktrees()
     }
+    return unsubscribe
   })
 
   async function handleRepoSelected(path: string): Promise<void> {

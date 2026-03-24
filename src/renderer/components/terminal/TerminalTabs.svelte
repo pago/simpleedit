@@ -101,6 +101,17 @@
     dropIndex = null
   }
 
+  function handleTitleChange(tabId: string, rawTitle: string): void {
+    const tab = tabs.find((t) => t.id === tabId)
+    if (!tab) return
+    // Strip Claude Code's status prefix character (✳ U+2733 or braille spinner U+2800–U+28FF)
+    // which is always followed by a space, e.g. "✳ Claude Code" → "Claude Code"
+    const firstCp = rawTitle.codePointAt(0) ?? 0
+    const hasPrefix =
+      firstCp === 0x2733 || (firstCp >= 0x2800 && firstCp <= 0x28FF)
+    tab.label = hasPrefix ? rawTitle.slice(String.fromCodePoint(firstCp).length).trimStart() : rawTitle
+  }
+
   /**
    * Send a message to the first Claude terminal (if any).
    * If no Claude terminal exists, creates one first.
@@ -198,7 +209,12 @@
         class="absolute inset-0"
         class:hidden={tab.id !== activeTabId}
       >
-        <Terminal terminalId={tab.id} active={tab.id === activeTabId} isClaude={tab.isClaude} />
+        <Terminal
+          terminalId={tab.id}
+          active={tab.id === activeTabId}
+          isClaude={tab.isClaude}
+          ontitlechange={(title) => handleTitleChange(tab.id, title)}
+        />
       </div>
     {/each}
     {#if tabs.length === 0}
