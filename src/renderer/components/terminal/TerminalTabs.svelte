@@ -86,9 +86,30 @@
     dropIndex = null
   }
 
+  function handleDropAfterLast(e: DragEvent): void {
+    e.preventDefault()
+    if (dragIndex !== null && dragIndex !== tabs.length - 1) {
+      const [moved] = tabs.splice(dragIndex, 1)
+      tabs.push(moved)
+    }
+    dragIndex = null
+    dropIndex = null
+  }
+
   function handleDragEnd(): void {
     dragIndex = null
     dropIndex = null
+  }
+
+  function handleTitleChange(tabId: string, rawTitle: string): void {
+    const tab = tabs.find((t) => t.id === tabId)
+    if (!tab) return
+    // Strip Claude Code's status prefix character (✳ U+2733 or braille spinner U+2800–U+28FF)
+    // which is always followed by a space, e.g. "✳ Claude Code" → "Claude Code"
+    const firstCp = rawTitle.codePointAt(0) ?? 0
+    const hasPrefix =
+      firstCp === 0x2733 || (firstCp >= 0x2800 && firstCp <= 0x28FF)
+    tab.label = hasPrefix ? rawTitle.slice(String.fromCodePoint(firstCp).length).trimStart() : rawTitle
   }
 
   /**
@@ -161,6 +182,17 @@
       </button>
     {/each}
 
+    <!-- Drop zone after last tab -->
+    {#if dragIndex !== null}
+      <div
+        class="h-full min-w-2 flex-1 {dropIndex === tabs.length ? 'border-l-2 border-l-blue-500' : ''}"
+        ondragover={(e) => { e.preventDefault(); dropIndex = tabs.length }}
+        ondrop={handleDropAfterLast}
+        ondragleave={() => { if (dropIndex === tabs.length) dropIndex = null }}
+        role="none"
+      ></div>
+    {/if}
+
     <button
       class="ml-1 flex h-5 w-5 items-center justify-center rounded text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
       onclick={createTab}
@@ -177,7 +209,12 @@
         class="absolute inset-0"
         class:hidden={tab.id !== activeTabId}
       >
-        <Terminal terminalId={tab.id} active={tab.id === activeTabId} isClaude={tab.isClaude} />
+        <Terminal
+          terminalId={tab.id}
+          active={tab.id === activeTabId}
+          isClaude={tab.isClaude}
+          ontitlechange={(title) => handleTitleChange(tab.id, title)}
+        />
       </div>
     {/each}
     {#if tabs.length === 0}

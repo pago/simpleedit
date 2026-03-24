@@ -1,11 +1,9 @@
 import type { WebContents } from 'electron'
 import type { ClaudeStatus } from '../shared/ipc-types'
-import { triggerStatusCheck } from './git-operations'
 
 interface TerminalAttachment {
   worktreePath: string
   webContents: WebContents
-  buffer: string
   removeListener: () => void
 }
 
@@ -53,58 +51,41 @@ export function emitPtyData(terminalId: string, data: string): void {
   }
 }
 
-// Strip ANSI escape codes that the PTY layer adds around the JSON output
-const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[()][0-9A-Z]|\x1b[>=<]|\x0f/g
+/**
+ * Claude Code updates the terminal title via OSC 0 sequences to reflect its status.
+ * Extract all title strings from a raw PTY data chunk.
+ *
+ * Examples seen in the wild:
+ *   \x1b]0;✳ Claude Code\x07          — idle, waiting for input
+ *   \x1b]0;⠂ Claude Code\x07          — thinking/running (braille spinner)
+ *   \x1b]0;✳ My session title\x07     — session done
+ *   \x1b]0;⠐ My session title\x07     — session running
+ */
+function extractOscTitles(data: string): string[] {
+  const re = /\x1b\]0;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
+  const titles: string[] = []
+  let match
+  while ((match = re.exec(data)) !== null) {
+    if (match[1]) titles.push(match[1])
+  }
+  return titles
+}
 
 /**
- * Try to extract relevant events from a single JSON line of Claude Code stream-json output.
+ * Derive Claude status from a terminal title emitted by Claude Code.
+ * Returns null if the title is unrecognised (e.g. a shell title).
  */
-function processJsonLine(
-  line: string,
-  worktreePath: string,
-  webContents: WebContents
-): void {
-  const clean = line.replace(ANSI_RE, '').trim()
-  if (!clean.startsWith('{')) return
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(clean)
-  } catch {
-    // Not valid JSON — expected for most terminal output
-    return
+function statusFromTitle(title: string): ClaudeStatus | null {
+  const firstCp = title.codePointAt(0) ?? 0
+  if (firstCp === 0x2733) {
+    // ✳ U+2733 eight-spoked asterisk — Claude's idle indicator
+    return 'idle'
   }
-
-  if (typeof parsed !== 'object' || parsed === null) return
-
-  const obj = parsed as Record<string, unknown>
-  const type = obj['type']
-
-  if (type === 'assistant') {
-    // Emit running status
-    sendStatus(webContents, worktreePath, 'running')
-
-    // Check for tool_use with file paths
-    const message = obj['message'] as Record<string, unknown> | undefined
-    if (message && Array.isArray(message['content'])) {
-      for (const block of message['content'] as unknown[]) {
-        if (typeof block !== 'object' || block === null) continue
-        const content = block as Record<string, unknown>
-        if (content['type'] === 'tool_use') {
-          const toolName = content['name']
-          if (toolName === 'Write' || toolName === 'Edit' || toolName === 'Read') {
-            const input = content['input'] as Record<string, unknown> | undefined
-            const filePath = input?.['file_path']
-            if (typeof filePath === 'string') {
-              sendFileTouch(webContents, worktreePath, filePath)
-            }
-          }
-        }
-      }
-    }
-  } else if (type === 'result') {
-    sendStatus(webContents, worktreePath, 'idle')
+  if (firstCp >= 0x2800 && firstCp <= 0x28FF) {
+    // Braille pattern block (⠂ ⠐ ⠠ …) — Claude's progress spinner
+    return 'running'
   }
+  return null
 }
 
 function sendStatus(
@@ -117,21 +98,8 @@ function sendStatus(
   }
 }
 
-function sendFileTouch(
-  webContents: WebContents,
-  worktreePath: string,
-  filePath: string
-): void {
-  if (!webContents.isDestroyed()) {
-    webContents.send('claude:file-touch', { worktreePath, filePath })
-  }
-  // Trigger immediate git status check so the UI updates without
-  // waiting for the next poll cycle
-  triggerStatusCheck(worktreePath)
-}
-
 /**
- * Start monitoring a terminal's PTY output for Claude Code stream-json events.
+ * Start monitoring a terminal's PTY output for Claude Code TUI events.
  */
 export function attachToTerminal(
   terminalId: string,
@@ -141,29 +109,16 @@ export function attachToTerminal(
   // Don't double-attach
   if (attachments.has(terminalId)) return
 
-  let buffer = ''
-
   const removeListener = onPtyData(terminalId, (data: string) => {
-    buffer += data
-
-    // Process complete lines
-    const lines = buffer.split('\n')
-    // Keep the last incomplete chunk in the buffer
-    buffer = lines.pop() ?? ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (trimmed.length === 0) continue
-      processJsonLine(trimmed, worktreePath, webContents)
+    for (const title of extractOscTitles(data)) {
+      const status = statusFromTitle(title)
+      if (status !== null) {
+        sendStatus(webContents, worktreePath, status)
+      }
     }
   })
 
-  attachments.set(terminalId, {
-    worktreePath,
-    webContents,
-    buffer: '',
-    removeListener
-  })
+  attachments.set(terminalId, { worktreePath, webContents, removeListener })
 }
 
 /**
