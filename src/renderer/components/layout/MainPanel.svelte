@@ -48,7 +48,7 @@
         <EditorTabs />
         {#if activeFile.value}
           <div class="flex-1 min-h-0">
-            <CodeEditor filePath={activeFile.value} />
+            <CodeEditor filePath={activeFile.value} worktreeRoot={rootPath} />
           </div>
         {:else}
           <div class="flex flex-1 items-center justify-center">

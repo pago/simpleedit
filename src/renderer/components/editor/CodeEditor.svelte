@@ -1,14 +1,16 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
   import type { AgentContext } from '../../lib/agent-message'
+  import { lspClientManager } from '../../lsp/client-manager'
 
   interface Props {
     filePath: string | null
+    worktreeRoot: string | null
     onModified?: (path: string, modified: boolean) => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
   }
 
-  let { filePath, onModified, ondiscusswithagent }: Props = $props()
+  let { filePath, worktreeRoot, onModified, ondiscusswithagent }: Props = $props()
 
   // Mutable refs so action closures always read the latest prop values
   let latestFilePath = filePath
@@ -62,15 +64,36 @@
     try {
       const content = await window.api.invoke('editor:open', path)
       const language = getLanguage(path)
-      const model = editor.getModel()
-      if (model) {
-        monaco.editor.setModelLanguage(model, language)
+
+      // Create (or reuse) a model keyed by the real file URI so that LSP
+      // requests include a URI the server actually knows about.
+      const fileUri = monaco.Uri.file(path)
+      const existingModel = monaco.editor.getModel(fileUri)
+
+      if (existingModel) {
+        monaco.editor.setModelLanguage(existingModel, language)
         isLoadingFile = true
-        model.setValue(content)
+        existingModel.setValue(content)
         isLoadingFile = false
+        editor.setModel(existingModel)
+      } else {
+        const prevModel = editor.getModel()
+        const newModel = monaco.editor.createModel(content, language, fileUri)
+        editor.setModel(newModel)
+        // Dispose the old inmemory placeholder — it has no persistent value
+        if (prevModel && prevModel.uri.scheme === 'inmemory') {
+          prevModel.dispose()
+        }
       }
+
       currentFilePath = path
       onModified?.(path, false)
+
+      if (worktreeRoot) {
+        lspClientManager.openDocument(path, language, content, worktreeRoot).catch(() => {
+          // LSP unavailable for this language — editor still works
+        })
+      }
     } catch (err: unknown) {
       console.error('Failed to load file:', err)
     }
@@ -139,12 +162,23 @@
     editor.onDidChangeModelContent(() => {
       if (currentFilePath && !isLoadingFile) {
         onModified?.(currentFilePath, true)
+        if (worktreeRoot) {
+          const content = editor!.getValue()
+          const language = getLanguage(currentFilePath)
+          lspClientManager.changeDocument(currentFilePath, language, content, worktreeRoot)
+        }
       }
     })
 
     return () => {
+      if (currentFilePath && worktreeRoot) {
+        const language = getLanguage(currentFilePath)
+        lspClientManager.closeDocument(currentFilePath, language, worktreeRoot)
+      }
+      const model = editor?.getModel()
       editor?.dispose()
       editor = undefined
+      model?.dispose()
     }
   })
 

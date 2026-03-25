@@ -1,10 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { InvokeMap, EventMap } from '../shared/ipc-types'
+import type { InvokeMap, EventMap, SendMap } from '../shared/ipc-types'
 
 type Channel = keyof InvokeMap
 type EventChannel = keyof EventMap
+type SendChannel = keyof SendMap
 
 const api = {
+  send<K extends SendChannel>(channel: K, data: SendMap[K]): void {
+    ipcRenderer.send(channel, data)
+  },
+
   invoke<K extends Channel>(
     channel: K,
     ...args: InvokeMap[K]['args']
