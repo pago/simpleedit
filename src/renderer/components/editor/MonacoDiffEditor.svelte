@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
   import type { AgentContext } from '../../lib/agent-message'
+  import { getLanguage } from '../../lib/monaco-utils'
 
   interface Props {
     originalContent: string
@@ -24,22 +25,6 @@
 
   let container: HTMLDivElement | undefined = $state()
   let diffEditor: monaco.editor.IStandaloneDiffEditor | undefined
-
-  const extensionToLanguage: Record<string, string> = {
-    '.ts': 'typescript', '.tsx': 'typescript',
-    '.js': 'javascript', '.jsx': 'javascript',
-    '.json': 'json', '.html': 'html', '.css': 'css',
-    '.scss': 'scss', '.md': 'markdown', '.svelte': 'html',
-    '.py': 'python', '.rs': 'rust', '.go': 'go',
-    '.sh': 'shell', '.yaml': 'yaml', '.yml': 'yaml',
-    '.xml': 'xml', '.sql': 'sql', '.toml': 'ini'
-  }
-
-  function getLanguage(path: string): string {
-    const dot = path.lastIndexOf('.')
-    if (dot === -1) return 'plaintext'
-    return extensionToLanguage[path.slice(dot).toLowerCase()] ?? 'plaintext'
-  }
 
   $effect(() => {
     if (!container) return

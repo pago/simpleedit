@@ -15,11 +15,13 @@ import { listWorktrees, createWorktree, removeWorktree, cloneBareRepo } from './
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
+  getBranchDiff, getBranchFiles, getFileAtBranchBase,
   watchGitRefs, unwatchGitRefs, unwatchAllGitRefs, triggerStatusCheck
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
+import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 
 // ── Per-window repo tracking ──────────────────────────────
 const windowRepoMap = new Map<number, string>()
@@ -246,6 +248,18 @@ function registerAllHandlers(): void {
     unwatchGitRefs(worktreePath)
   })
 
+  ipcMain.handle('git:branch-diff', (_event, worktreePath: string) => {
+    return getBranchDiff(worktreePath)
+  })
+
+  ipcMain.handle('git:branch-files', (_event, worktreePath: string) => {
+    return getBranchFiles(worktreePath)
+  })
+
+  ipcMain.handle('git:file-at-branch-base', (_event, worktreePath: string, filePath: string) => {
+    return getFileAtBranchBase(worktreePath, filePath)
+  })
+
   // ── Review ──────────────────────────────────────────────
   ipcMain.handle('review:start', (event, worktreePath: string, commitHash: string | null) => {
     return startReview(worktreePath, commitHash, event.sender)
@@ -253,6 +267,23 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('review:cancel', (_event, worktreePath: string, commitHash: string | null) => {
     cancelReview(worktreePath, commitHash)
+  })
+
+  // ── Tour ───────────────────────────────────────────────
+  ipcMain.handle('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
+    return startTour(worktreePath, commitHash, event.sender, overrideOverview)
+  })
+
+  ipcMain.handle('tour:cancel', (_event, worktreePath: string, commitHash: string | null) => {
+    cancelTour(worktreePath, commitHash)
+  })
+
+  ipcMain.handle('tour:load', (_event, worktreePath: string, commitHash: string | null) => {
+    return loadTour(worktreePath, commitHash)
+  })
+
+  ipcMain.handle('tour:save-overview', (_event, worktreePath: string, commitHash: string | null, overview: string) => {
+    saveOverview(worktreePath, commitHash, overview)
   })
 }
 
@@ -307,6 +338,7 @@ app.on('before-quit', () => {
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
+  try { cancelAllTours() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
@@ -314,6 +346,7 @@ app.on('window-all-closed', () => {
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
+  try { cancelAllTours() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }
