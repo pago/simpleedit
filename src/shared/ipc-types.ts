@@ -186,6 +186,30 @@ export interface AppInvokeMap {
   'app:open-window': { args: [repoPath?: string]; result: void }
 }
 
+// ── LSP ───────────────────────────────────────────────────
+/** Opaque JSON-RPC message passed between renderer and LSP server */
+export type JsonRpcMessage = Record<string, unknown>
+
+export interface LspInvokeMap {
+  'lsp:start': {
+    args: [{ language: string; rootUri: string }]
+    result:
+      | { serverId: string; initializationOptions: Record<string, unknown> | undefined }
+      | { serverId: null; reason: string }
+  }
+  'lsp:stop': { args: [{ serverId: string }]; result: void }
+}
+
+/** Fire-and-forget messages from renderer → main (no response) */
+export interface LspSendMap {
+  'lsp:send': { serverId: string; message: JsonRpcMessage }
+}
+
+export interface LspEventMap {
+  'lsp:message': { serverId: string; message: JsonRpcMessage }
+  'lsp:server-exit': { serverId: string; code: number | null }
+}
+
 // ── Aggregate maps for type-safe IPC helpers ──────────────
 export type InvokeMap = WorktreeInvokeMap &
   PtyInvokeMap &
@@ -195,11 +219,15 @@ export type InvokeMap = WorktreeInvokeMap &
   ClaudeInvokeMap &
   AppInvokeMap &
   ReviewInvokeMap &
-  TourInvokeMap
+  TourInvokeMap &
+  LspInvokeMap
+
+export type SendMap = LspSendMap
 
 export type EventMap = WorktreeEventMap &
   PtyEventMap &
   ClaudeEventMap &
   GitEventMap &
   ReviewEventMap &
-  TourEventMap
+  TourEventMap &
+  LspEventMap

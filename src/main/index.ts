@@ -22,6 +22,8 @@ import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } f
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
+import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
+import type { JsonRpcMessage } from '../shared/ipc-types'
 
 // ── Per-window repo tracking ──────────────────────────────
 const windowRepoMap = new Map<number, string>()
@@ -72,6 +74,11 @@ function createWindow(repoPath?: string): BrowserWindow {
 
   win.on('ready-to-show', () => {
     win.show()
+    // Set peek/reference zone widget font to match the editor (13px).
+    // insertCSS creates a user stylesheet which overrides Monaco's author styles.
+    win.webContents.insertCSS(
+      '.monaco-editor .zone-widget { font-size: 13px !important; }'
+    ).catch(() => { /* non-critical */ })
   })
 
   win.webContents.setWindowOpenHandler((details) => {
@@ -285,6 +292,25 @@ function registerAllHandlers(): void {
   ipcMain.handle('tour:save-overview', (_event, worktreePath: string, commitHash: string | null, overview: string) => {
     saveOverview(worktreePath, commitHash, overview)
   })
+
+  // ── LSP ─────────────────────────────────────────────────
+  ipcMain.handle('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
+    try {
+      return startServer(language, rootUri, event.sender)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.warn('[LSP] Server unavailable:', reason)
+      return { serverId: null, reason }
+    }
+  })
+
+  ipcMain.handle('lsp:stop', (_event, { serverId }: { serverId: string }) => {
+    stopServer(serverId)
+  })
+
+  ipcMain.on('lsp:send', (_event, { serverId, message }: { serverId: string; message: JsonRpcMessage }) => {
+    sendToServer(serverId, message)
+  })
 }
 
 // ── App lifecycle ─────────────────────────────────────────
@@ -339,6 +365,7 @@ app.on('before-quit', () => {
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
+  try { stopAllServers() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
@@ -347,6 +374,7 @@ app.on('window-all-closed', () => {
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
+  try { stopAllServers() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }

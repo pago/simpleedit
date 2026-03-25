@@ -68,6 +68,60 @@ pnpm package:mac    # macOS only
 
 ---
 
+## Language server support
+
+SimpleEdit provides LSP-powered diagnostics, hover info, and go-to-definition for several languages. Each language server is resolved from your project's `node_modules/.bin` first, then your system PATH — so you can install them locally per project or globally.
+
+### TypeScript / JavaScript
+
+```bash
+# local (recommended — picks up project's own TypeScript)
+npm install --save-dev typescript typescript-language-server
+
+# global
+npm install -g typescript typescript-language-server
+```
+
+Both `typescript` and `typescript-language-server` are needed. SimpleEdit automatically passes the project's local `tsserver.js` path to the language server so it uses the same TypeScript version as your build.
+
+### CSS / SCSS / Less
+
+```bash
+# local
+npm install --save-dev vscode-langservers-extracted
+
+# global
+npm install -g vscode-langservers-extracted
+```
+
+### JSON
+
+Included in `vscode-langservers-extracted` (see CSS above).
+
+### Rust
+
+Install `rust-analyzer` via rustup or your system package manager:
+
+```bash
+rustup component add rust-analyzer
+# or: brew install rust-analyzer
+```
+
+### Python
+
+```bash
+pip install python-lsp-server
+# or: pipx install python-lsp-server
+```
+
+### Go
+
+```bash
+go install golang.org/x/tools/gopls@latest
+```
+
+---
+
 ## Tech stack
 
 - **Electron** — desktop shell
