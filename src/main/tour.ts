@@ -11,7 +11,7 @@ import type {
   TourSegment,
   TourStatus,
 } from '../shared/ipc-types'
-import { getCommitDiff, getStagingDiff } from './git-operations'
+import { getCommitDiff, getStagingDiff, getBranchDiff } from './git-operations'
 import { findJsonObjectEnd } from './lib/json-scanner'
 
 const MAX_DIFF_BYTES = 120_000
@@ -78,14 +78,19 @@ export function saveOverview(worktreePath: string, commitHash: string | null, ov
 
 // ── Prompt ───────────────────────────────────────────────
 
-function buildTourPrompt(diff: string, commitMessage?: string, overrideOverview?: string): string {
+function buildTourPrompt(diff: string, commitMessage?: string, overrideOverview?: string, isBranchMode?: boolean): string {
   const body = diff.length > MAX_DIFF_BYTES
     ? diff.slice(0, MAX_DIFF_BYTES) + '\n\n[diff truncated]'
     : diff
 
-  const commitContext = commitMessage
-    ? `\nThe commit message is: "${commitMessage}"\n`
-    : '\nThese are uncommitted (staged/unstaged) changes.\n'
+  let commitContext: string
+  if (isBranchMode && commitMessage) {
+    commitContext = `\nThis is a branch tour — all changes on this branch compared to main. The commit messages on this branch are:\n${commitMessage}\n`
+  } else if (commitMessage) {
+    commitContext = `\nThe commit message is: "${commitMessage}"\n`
+  } else {
+    commitContext = '\nThese are uncommitted (staged/unstaged) changes.\n'
+  }
 
   const overviewContext = overrideOverview
     ? `\nThe user has described this changeset as follows — use this understanding to guide your groupings and correct any prior misunderstanding:\n"${overrideOverview}"\n`
@@ -175,11 +180,17 @@ export async function startTour(
   cancelTour(worktreePath, commitHash)
   sendStatus(webContents, key, 'running')
 
+  const isBranchMode = commitHash === 'branch'
+
   let diff: string
   try {
-    diff = commitHash
-      ? await getCommitDiff(worktreePath, commitHash)
-      : await getStagingDiff(worktreePath)
+    if (isBranchMode) {
+      diff = await getBranchDiff(worktreePath)
+    } else if (commitHash) {
+      diff = await getCommitDiff(worktreePath, commitHash)
+    } else {
+      diff = await getStagingDiff(worktreePath)
+    }
   } catch (err: unknown) {
     sendStatus(webContents, key, 'error', String(err))
     return
@@ -190,9 +201,17 @@ export async function startTour(
     return
   }
 
-  // Retrieve commit message for context if available
+  // Retrieve commit message(s) for context if available
   let commitMessage: string | undefined
-  if (commitHash) {
+  if (isBranchMode) {
+    try {
+      const { simpleGit } = await import('simple-git')
+      const git = simpleGit(worktreePath)
+      const mergeBase = (await git.raw(['merge-base', 'main', 'HEAD'])).trim()
+      const logResult = await git.log({ from: mergeBase, to: 'HEAD' })
+      commitMessage = logResult.all.map((c) => c.message.split('\n')[0]).join('\n')
+    } catch { /* no messages available */ }
+  } else if (commitHash) {
     try {
       const { simpleGit } = await import('simple-git')
       const git = simpleGit(worktreePath)
@@ -201,7 +220,7 @@ export async function startTour(
     } catch { /* no message available */ }
   }
 
-  const prompt = buildTourPrompt(diff, commitMessage, overrideOverview)
+  const prompt = buildTourPrompt(diff, commitMessage, overrideOverview, isBranchMode)
 
   const proc = spawn('claude', [
     '--print',

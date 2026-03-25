@@ -11,6 +11,7 @@
   let { worktreePath, commitHash, commitMessage }: Props = $props()
 
   const isStaging = $derived(commitHash === null)
+  const isBranch = $derived(commitHash === 'branch')
   const key = $derived(tourKey(worktreePath, commitHash))
   const tourState = $derived(tourStore.get(key))
 
@@ -66,7 +67,10 @@
       try {
         let original: string
         let modified: string
-        if (isStaging) {
+        if (isBranch) {
+          original = await window.api.invoke('git:file-at-branch-base', worktreePath, file).catch(() => '')
+          modified = await window.api.invoke('fs:read', `${worktreePath}/${file}`).catch(() => '')
+        } else if (isStaging) {
           original = await window.api.invoke('git:file-at-head', worktreePath, file)
           modified = await window.api.invoke('fs:read', `${worktreePath}/${file}`)
         } else {
@@ -169,7 +173,7 @@
     {#if tourState.overview || tourState.status === 'running'}
       <div class="mb-6">
         <h2 class="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Overview</h2>
-        {#if isStaging}
+        {#if isStaging || isBranch}
           <textarea
             class="w-full resize-y rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             rows="3"
@@ -190,7 +194,7 @@
               class="rounded bg-zinc-800 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-300"
               onclick={handleCopyAsCommitMessage}
             >
-              Copy as commit message
+              {isBranch ? 'Copy as PR description' : 'Copy as commit message'}
             </button>
           </div>
         {:else}

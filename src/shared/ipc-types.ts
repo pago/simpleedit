@@ -83,6 +83,9 @@ export interface GitInvokeMap {
   'git:file-at-head': { args: [worktreePath: string, filePath: string]; result: string }
   'git:watch': { args: [worktreePath: string]; result: void }
   'git:unwatch': { args: [worktreePath: string]; result: void }
+  'git:branch-diff': { args: [worktreePath: string]; result: string }
+  'git:branch-files': { args: [worktreePath: string]; result: DiffFileEntry[] }
+  'git:file-at-branch-base': { args: [worktreePath: string, filePath: string]; result: string }
 }
 
 export interface GitEventMap {

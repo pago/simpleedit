@@ -75,6 +75,12 @@
   }
 
   const isStaging = $derived(commitHash === null)
+  const isBranch = $derived(commitHash === 'branch')
+
+  // Auto-switch to Tour tab for branch tour
+  $effect(() => {
+    if (isBranch) activeTab = 'tour'
+  })
 
   // Load file list when commit changes
   $effect(() => {
@@ -107,7 +113,9 @@
       highlightLines = undefined
     }
     try {
-      if (isStaging) {
+      if (isBranch) {
+        files = await window.api.invoke('git:branch-files', worktreePath)
+      } else if (isStaging) {
         files = await window.api.invoke('git:staging-files', worktreePath)
       } else {
         files = await window.api.invoke('git:commit-files', worktreePath, commitHash!)
@@ -134,7 +142,10 @@
   async function selectFile(filePath: string): Promise<void> {
     selectedFile = filePath
     try {
-      if (isStaging) {
+      if (isBranch) {
+        originalContent = await window.api.invoke('git:file-at-branch-base', worktreePath, filePath).catch(() => '')
+        modifiedContent = await window.api.invoke('fs:read', `${worktreePath}/${filePath}`).catch(() => '')
+      } else if (isStaging) {
         originalContent = await window.api.invoke('git:file-at-head', worktreePath, filePath)
         modifiedContent = await window.api.invoke('fs:read', `${worktreePath}/${filePath}`)
       } else {
@@ -210,7 +221,9 @@
       &larr; Back
     </button>
     <div class="min-w-0 flex-1">
-      {#if isStaging}
+      {#if isBranch}
+        <span class="text-xs font-medium text-blue-400">Branch tour</span>
+      {:else if isStaging}
         <span class="text-xs font-medium text-amber-400">Uncommitted changes</span>
       {:else}
         <span class="font-mono text-[10px] text-zinc-500">{commitHash?.slice(0, 7)}</span>

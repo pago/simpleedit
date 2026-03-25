@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { GitCommitInfo } from '../../../shared/ipc-types'
   import { diffReviewStore, startReview } from '../../stores/diffReview.svelte'
+  import { triggerTour } from '../../stores/tourStore.svelte'
 
   interface Props {
     worktreePath: string | null
@@ -81,6 +82,12 @@
     if (worktreePath) startReview(worktreePath, { hash: commit.hash, message: commit.message })
   }
 
+  function startBranchTour(): void {
+    if (!worktreePath) return
+    startReview(worktreePath, { hash: 'branch', message: 'Branch tour' })
+    triggerTour(worktreePath, 'branch')
+  }
+
   $effect(() => {
     if (worktreePath) {
       fetchLog(worktreePath)
@@ -125,15 +132,24 @@
 <div class="flex flex-col gap-1">
   <div class="flex items-center justify-between px-1">
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Git Log</span>
-    {#if worktreePath}
-      <button
-        class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-        onclick={() => worktreePath && fetchLog(worktreePath)}
-        title="Refresh"
-      >
-        ↻
-      </button>
-    {/if}
+    <div class="flex items-center gap-1">
+      {#if worktreePath}
+        <button
+          class="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+          onclick={startBranchTour}
+          title="Generate a guided tour of all changes on this branch"
+        >
+          ✦ Tour Branch
+        </button>
+        <button
+          class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+          onclick={() => worktreePath && fetchLog(worktreePath)}
+          title="Refresh"
+        >
+          ↻
+        </button>
+      {/if}
+    </div>
   </div>
 
   {#if !worktreePath}

@@ -151,7 +151,9 @@ export async function getCommitDiff(
 ): Promise<string> {
   const git = simpleGit(worktreePath)
   const diff = await git.diff([`${commitHash}~1`, commitHash]).catch(async () => {
-    return git.diff(['4b825dc642cb6eb9a060e54bf899d15f3f0bcf37', commitHash])
+    // First commit — diff against the empty tree (computed dynamically to support SHA-256 repos)
+    const emptyTree = (await git.raw(['hash-object', '-t', 'tree', '/dev/null'])).trim()
+    return git.diff([emptyTree, commitHash])
   })
   return diff
 }
@@ -168,10 +170,11 @@ export async function getCommitFiles(
   const raw = await git.raw([
     'diff-tree', '--no-commit-id', '-r', '--name-status', commitHash
   ]).catch(async () => {
-    // First commit — diff against empty tree
+    // First commit — diff against the empty tree (computed dynamically)
+    const emptyTree = (await git.raw(['hash-object', '-t', 'tree', '/dev/null'])).trim()
     return git.raw([
       'diff-tree', '--no-commit-id', '-r', '--name-status',
-      '4b825dc642cb6eb9a060e54bf899d15f3f0bcf37', commitHash
+      emptyTree, commitHash
     ])
   })
 
@@ -255,6 +258,45 @@ export async function getStagingDiff(
   // Show both staged and unstaged changes against HEAD
   const diff = await git.diff(['HEAD'])
   return diff
+}
+
+/**
+ * Get the unified diff of the current branch against its merge-base with main.
+ * Includes uncommitted changes if present.
+ */
+export async function getBranchDiff(worktreePath: string): Promise<string> {
+  const git = simpleGit(worktreePath)
+  // Find the merge-base with main
+  const mergeBase = (await git.raw(['merge-base', 'main', 'HEAD'])).trim()
+  // Diff from merge-base to working tree (includes staged + unstaged)
+  const diff = await git.diff([mergeBase])
+  return diff
+}
+
+/**
+ * List files changed on the current branch relative to main (including uncommitted).
+ */
+export async function getBranchFiles(worktreePath: string): Promise<DiffFileEntry[]> {
+  const git = simpleGit(worktreePath)
+  const mergeBase = (await git.raw(['merge-base', 'main', 'HEAD'])).trim()
+  const raw = await git.raw(['diff', '--name-status', mergeBase])
+  return parseNameStatus(raw)
+}
+
+/**
+ * Get file content at the merge-base of the current branch with main.
+ */
+export async function getFileAtBranchBase(
+  worktreePath: string,
+  filePath: string
+): Promise<string> {
+  const git = simpleGit(worktreePath)
+  try {
+    const mergeBase = (await git.raw(['merge-base', 'main', 'HEAD'])).trim()
+    return await git.show([`${mergeBase}:${filePath}`])
+  } catch {
+    return ''
+  }
 }
 
 function parseNameStatus(raw: string): DiffFileEntry[] {

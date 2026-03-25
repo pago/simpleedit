@@ -15,6 +15,7 @@ import { listWorktrees, createWorktree, removeWorktree, cloneBareRepo } from './
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
+  getBranchDiff, getBranchFiles, getFileAtBranchBase,
   watchGitRefs, unwatchGitRefs, unwatchAllGitRefs, triggerStatusCheck
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
@@ -245,6 +246,18 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('git:unwatch', (_event, worktreePath: string) => {
     unwatchGitRefs(worktreePath)
+  })
+
+  ipcMain.handle('git:branch-diff', (_event, worktreePath: string) => {
+    return getBranchDiff(worktreePath)
+  })
+
+  ipcMain.handle('git:branch-files', (_event, worktreePath: string) => {
+    return getBranchFiles(worktreePath)
+  })
+
+  ipcMain.handle('git:file-at-branch-base', (_event, worktreePath: string, filePath: string) => {
+    return getFileAtBranchBase(worktreePath, filePath)
   })
 
   // ── Review ──────────────────────────────────────────────
