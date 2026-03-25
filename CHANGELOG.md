@@ -1,5 +1,41 @@
 # simpleedit
 
+## 0.6.0
+
+### Minor Changes
+
+- [#18](https://github.com/pago/simpleedit/pull/18) [`015b7d8`](https://github.com/pago/simpleedit/commit/015b7d8d10eaa0757c1be85084e57b55ecf6c7d6) Thanks [@pago](https://github.com/pago)! - Add Language Server Protocol (LSP) integration for the Monaco editor
+
+  Connects Monaco to language servers (TypeScript, JavaScript, and others) via an
+  IPC-based JSON-RPC proxy. The main process resolves and spawns language servers
+  from the project's own `node_modules/.bin` first, falling back to PATH.
+
+  Features include go-to-definition, find all references, hover documentation,
+  completions, signature help, document highlights, and inline diagnostics.
+  Cross-file navigation works via Monaco's peek/reference overlay, which
+  auto-loads file content for files not yet open in the editor.
+
+  For TypeScript projects, the server uses the project's own `tsserver.js` so
+  type resolution matches the installed TypeScript version exactly.
+
+- [#16](https://github.com/pago/simpleedit/pull/16) [`de3eeec`](https://github.com/pago/simpleedit/commit/de3eeecfb1a794b33a1d4c58702c641509bdce0a) Thanks [@pago](https://github.com/pago)! - Add AI-powered changeset tour with commit and branch modes
+
+  Introduces a "Tour" tab in the diff review that generates an AI-narrated
+  walkthrough of a changeset, grouped by logical topic. Each topic includes
+  prose explaining what changed and why, with lazy-mounted compact inline diff
+  editors for relevant code hunks.
+
+  **Commit tour:** Click "✦ Tour" on any commit or staged changes to get a
+  guided walkthrough. Topics stream in progressively and are persisted to disk.
+
+  **Branch tour:** Click "✦ Tour Branch" in the Git Log header to tour all
+  changes on the current branch compared to main. The overview is editable
+  and can be copied as a PR description.
+
+  For staging tours, the overview is editable and can be used as a commit
+  message. Editing the overview and clicking "Re-generate" feeds the correction
+  back to Claude for a more accurate tour.
+
 ## 0.5.0
 
 ### Minor Changes
