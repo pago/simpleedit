@@ -1,11 +1,13 @@
 <script lang="ts">
   import MonacoDiffEditor from './MonacoDiffEditor.svelte'
   import ReviewPanel from './ReviewPanel.svelte'
+  import TourPanel from './TourPanel.svelte'
   import type { DiffFileEntry } from '../../../shared/ipc-types'
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
   import { tick } from 'svelte'
   import { reviewStore, reviewKey, triggerReview } from '../../stores/reviewStore.svelte'
+  import { tourStore, tourKey, triggerTour } from '../../stores/tourStore.svelte'
 
   interface Props {
     /** null means staging/uncommitted changes */
@@ -28,8 +30,8 @@
   let fileListWidth = $state(224) // w-56 = 14rem = 224px
   let isResizing = $state(false)
 
-  // Tab state: 'files' or 'findings'
-  let activeTab = $state<'files' | 'findings'>('files')
+  // Tab state: 'files', 'findings', or 'tour'
+  let activeTab = $state<'files' | 'findings' | 'tour'>('files')
 
   // Highlight range set by navigating to a finding
   let highlightLines = $state<[number, number] | undefined>(undefined)
@@ -44,6 +46,14 @@
     const blocking = active.filter((f) => f.decoration === 'blocking').length
     return { total: active.length, blocking }
   })
+
+  const tKey = $derived(tourKey(worktreePath, commitHash))
+  const tourState = $derived(tourStore.get(tKey))
+
+  function handleStartTour(): void {
+    triggerTour(worktreePath, commitHash)
+    activeTab = 'tour'
+  }
 
   function onSplitterMouseDown(e: MouseEvent) {
     isResizing = true
@@ -236,8 +246,34 @@
         <span>✦ Review</span>
       {/if}
     </button>
+
+    <!-- Tour button -->
+    <button
+      class="flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors
+        {tourState?.status === 'running'
+          ? 'cursor-default text-zinc-500'
+          : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
+      onclick={handleStartTour}
+      disabled={tourState?.status === 'running'}
+      title={tourState?.status === 'running' ? 'Tour in progress…' : 'Generate a guided tour of this changeset'}
+    >
+      {#if tourState?.status === 'running'}
+        <span class="animate-spin text-[10px]">⠿</span>
+        <span>Touring…</span>
+      {:else if tourState && tourState.topics.length > 0}
+        <span>✦ Re-tour</span>
+        <span class="rounded bg-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400">
+          {tourState.topics.length}
+        </span>
+      {:else}
+        <span>✦ Tour</span>
+      {/if}
+    </button>
   </div>
 
+  {#if activeTab === 'tour'}
+    <TourPanel {worktreePath} {commitHash} {commitMessage} />
+  {:else}
   <div class="flex min-h-0 flex-1" class:select-none={isResizing}>
     <!-- Left panel (file list or findings) -->
     <div class="flex flex-none flex-col border-r border-zinc-800 bg-zinc-950" style:width="{fileListWidth}px">
@@ -271,6 +307,18 @@
             {/if}
           {:else}
             Findings
+          {/if}
+        </button>
+        <button
+          class="flex-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-colors
+            {activeTab === 'tour'
+              ? 'border-b-2 border-blue-500 text-zinc-300'
+              : 'text-zinc-600 hover:text-zinc-400'}"
+          onclick={() => (activeTab = 'tour')}
+        >
+          Tour
+          {#if tourState && tourState.topics.length > 0}
+            <span class="ml-1 text-zinc-500">({tourState.topics.length})</span>
           {/if}
         </button>
       </div>
@@ -338,4 +386,5 @@
       {/if}
     </div>
   </div>
+  {/if}
 </div>

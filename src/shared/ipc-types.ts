@@ -132,6 +132,40 @@ export interface ReviewEventMap {
   'review:status': { key: string; status: ReviewStatus; error?: string }
 }
 
+// ── Tour ─────────────────────────────────────────────────
+export interface TourSegment {
+  prose: string
+  file: string
+  lineRange: [number, number]
+}
+
+export interface TourTopic {
+  id: string
+  title: string
+  summary: string
+  segments: TourSegment[]
+}
+
+export interface Tour {
+  overview: string
+  topics: TourTopic[]
+}
+
+export type TourStatus = 'idle' | 'running' | 'done' | 'error'
+
+export interface TourInvokeMap {
+  'tour:start': { args: [worktreePath: string, commitHash: string | null, overrideOverview?: string]; result: void }
+  'tour:cancel': { args: [worktreePath: string, commitHash: string | null]; result: void }
+  'tour:load': { args: [worktreePath: string, commitHash: string | null]; result: Tour | null }
+  'tour:save-overview': { args: [worktreePath: string, commitHash: string | null, overview: string]; result: void }
+}
+
+export interface TourEventMap {
+  'tour:overview': { key: string; overview: string }
+  'tour:topic': { key: string; topic: TourTopic }
+  'tour:status': { key: string; status: TourStatus; error?: string }
+}
+
 // ── App-level ─────────────────────────────────────────────
 export interface RecentRepo {
   path: string
@@ -157,10 +191,12 @@ export type InvokeMap = WorktreeInvokeMap &
   GitInvokeMap &
   ClaudeInvokeMap &
   AppInvokeMap &
-  ReviewInvokeMap
+  ReviewInvokeMap &
+  TourInvokeMap
 
 export type EventMap = WorktreeEventMap &
   PtyEventMap &
   ClaudeEventMap &
   GitEventMap &
-  ReviewEventMap
+  ReviewEventMap &
+  TourEventMap
