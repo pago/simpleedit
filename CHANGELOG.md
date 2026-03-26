@@ -1,5 +1,17 @@
 # simpleedit
 
+## 0.7.0
+
+### Minor Changes
+
+- [#20](https://github.com/pago/simpleedit/pull/20) [`dba6538`](https://github.com/pago/simpleedit/commit/dba6538fed14cb163273281c1a1f46c59150de73) Thanks [@pago](https://github.com/pago)! - Add ability to check out an existing branch as a new worktree from the sidebar
+
+### Patch Changes
+
+- [#23](https://github.com/pago/simpleedit/pull/23) [`6e61002`](https://github.com/pago/simpleedit/commit/6e61002f05d1ef4cd55fa8ac38b68ac458e5ae41) Thanks [@pago](https://github.com/pago)! - Add custom app icon (four-pointed star on dark violet background) for macOS, Windows, and Linux builds.
+
+- [#19](https://github.com/pago/simpleedit/pull/19) [`7859314`](https://github.com/pago/simpleedit/commit/7859314e8baac607ca46968c2c3df092047ecce6) Thanks [@pago](https://github.com/pago)! - Fix node-pty not found in packaged builds by including it in electron-builder files list
+
 ## 0.6.0
 
 ### Minor Changes
