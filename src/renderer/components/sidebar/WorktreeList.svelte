@@ -9,9 +9,21 @@
   } from '../../stores/worktrees.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
 
+  type CreateMode = 'new' | 'checkout'
+
   let creating = $state(false)
+  let createMode = $state<CreateMode>('new')
   let newName = $state('')
+  let selectedBranch = $state('')
+  let availableBranches = $state<string[]>([])
+  let branchFilter = $state('')
   let removing = $state<string | null>(null)
+
+  let filteredBranches = $derived(
+    branchFilter
+      ? availableBranches.filter((b) => b.toLowerCase().includes(branchFilter.toLowerCase()))
+      : availableBranches
+  )
 
   onMount(() => {
     refreshWorktrees()
@@ -21,12 +33,26 @@
     setActiveWorktree(worktree)
   }
 
+  async function startCreate(mode: CreateMode): Promise<void> {
+    createMode = mode
+    creating = true
+    if (mode === 'checkout') {
+      availableBranches = await window.api.invoke('worktree:branches')
+      branchFilter = ''
+      selectedBranch = ''
+    }
+  }
+
   async function handleCreate(): Promise<void> {
-    const name = newName.trim()
-    if (!name) return
-    await window.api.invoke('worktree:create', name)
-    newName = ''
-    creating = false
+    if (createMode === 'new') {
+      const name = newName.trim()
+      if (!name) return
+      await window.api.invoke('worktree:create', name)
+    } else {
+      if (!selectedBranch) return
+      await window.api.invoke('worktree:checkout', selectedBranch)
+    }
+    cancelCreate()
     await refreshWorktrees()
   }
 
@@ -39,6 +65,8 @@
   function cancelCreate(): void {
     creating = false
     newName = ''
+    selectedBranch = ''
+    branchFilter = ''
   }
 
   function handleKeydown(e: KeyboardEvent): void {
@@ -53,15 +81,25 @@
 <div class="flex flex-col gap-1">
   <div class="flex items-center justify-between px-1">
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Worktrees</span>
-    <button
-      class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-      onclick={() => (creating = true)}
-    >
-      + New
-    </button>
+    <div class="flex gap-1">
+      <button
+        class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+        onclick={() => startCreate('checkout')}
+        title="Check out existing branch"
+      >
+        Checkout
+      </button>
+      <button
+        class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+        onclick={() => startCreate('new')}
+        title="Create new branch"
+      >
+        + New
+      </button>
+    </div>
   </div>
 
-  {#if creating}
+  {#if creating && createMode === 'new'}
     <div
       class="flex gap-1 px-1"
       onfocusout={(e) => {
@@ -85,6 +123,61 @@
       >
         Create
       </button>
+    </div>
+  {/if}
+
+  {#if creating && createMode === 'checkout'}
+    <div
+      class="flex flex-col gap-1 px-1"
+      onfocusout={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          cancelCreate()
+        }
+      }}
+    >
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        class="rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+        type="text"
+        placeholder="Filter branches…"
+        bind:value={branchFilter}
+        onkeydown={(e) => {
+          if (e.key === 'Escape') cancelCreate()
+        }}
+        autofocus
+      />
+      <div class="max-h-40 overflow-y-auto rounded border border-zinc-700 bg-zinc-800">
+        {#each filteredBranches as branch (branch)}
+          <button
+            class="w-full px-2 py-1 text-left text-xs {selectedBranch === branch
+              ? 'bg-blue-600 text-white'
+              : 'text-zinc-300 hover:bg-zinc-700'}"
+            onclick={() => (selectedBranch = branch)}
+            ondblclick={handleCreate}
+          >
+            {branch}
+          </button>
+        {:else}
+          <p class="px-2 py-1 text-xs text-zinc-500">
+            {availableBranches.length === 0 ? 'No branches available' : 'No matches'}
+          </p>
+        {/each}
+      </div>
+      <div class="flex justify-end gap-1">
+        <button
+          class="rounded px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200"
+          onclick={cancelCreate}
+        >
+          Cancel
+        </button>
+        <button
+          class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
+          onclick={handleCreate}
+          disabled={!selectedBranch}
+        >
+          Checkout
+        </button>
+      </div>
     </div>
   {/if}
 
