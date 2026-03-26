@@ -1,5 +1,15 @@
 # simpleedit
 
+## 0.7.2
+
+### Patch Changes
+
+- [#26](https://github.com/pago/simpleedit/pull/26) [`902b7be`](https://github.com/pago/simpleedit/commit/902b7bea6c63cb728e2b8023328a8a1079216bc4) Thanks [@pago](https://github.com/pago)! - Fix production build packaging and terminal issues
+
+  - Add `.DS_Store` to `.gitignore`
+  - Add `shamefully-hoist=true` to `.npmrc` so electron-builder can resolve transitive pnpm dependencies (fixes "Cannot find module 'ms'" on startup)
+  - Spawn Claude terminal with a login shell (`zsh -l -c`) so `claude` is found on PATH when the app is launched via macOS GUI rather than a terminal
+
 ## 0.7.1
 
 ### Patch Changes
