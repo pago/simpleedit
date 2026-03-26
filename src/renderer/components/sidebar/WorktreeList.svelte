@@ -19,6 +19,27 @@
   let branchFilter = $state('')
   let removing = $state<string | null>(null)
 
+  /** Strip characters illegal in git branch names (see git-check-ref-format). */
+  function sanitizeBranchName(input: string): string {
+    return input
+      .replace(/[\s~^:?*[\]\\@{]/g, '') // illegal characters
+      .replace(/\.\./g, '.')             // no consecutive dots
+      .replace(/\/\//g, '/')             // no consecutive slashes
+      .replace(/\.lock(\/|$)/g, '$1')    // no .lock component
+      .replace(/^[./]/, '')              // cannot start with . or /
+  }
+
+  function handleNameInput(e: Event): void {
+    const input = e.target as HTMLInputElement
+    const sanitized = sanitizeBranchName(input.value)
+    if (sanitized !== input.value) {
+      input.value = sanitized
+    }
+    newName = sanitized
+  }
+
+  let isValidName = $derived(newName.trim().length > 0 && !newName.endsWith('.') && !newName.endsWith('/'))
+
   let filteredBranches = $derived(
     branchFilter
       ? availableBranches.filter((b) => b.toLowerCase().includes(branchFilter.toLowerCase()))
@@ -45,9 +66,8 @@
 
   async function handleCreate(): Promise<void> {
     if (createMode === 'new') {
-      const name = newName.trim()
-      if (!name) return
-      await window.api.invoke('worktree:create', name)
+      if (!isValidName) return
+      await window.api.invoke('worktree:create', newName.trim())
     } else {
       if (!selectedBranch) return
       await window.api.invoke('worktree:checkout', selectedBranch)
@@ -113,13 +133,15 @@
         class="flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
         type="text"
         placeholder="branch-name"
-        bind:value={newName}
+        value={newName}
+        oninput={handleNameInput}
         onkeydown={handleKeydown}
         autofocus
       />
       <button
-        class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500"
+        class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
         onclick={handleCreate}
+        disabled={!isValidName}
       >
         Create
       </button>
