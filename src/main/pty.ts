@@ -62,7 +62,7 @@ export function spawnClaudeTerminal(
 
   const shell = defaultShell()
   // Spawn a shell that immediately runs claude with stream-json output
-  const term = pty.spawn(shell, ['-c', 'claude --output-format stream-json'], {
+  const term = pty.spawn(shell, ['-l', '-c', 'claude --output-format stream-json'], {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
