@@ -61,8 +61,9 @@ export function spawnClaudeTerminal(
   }
 
   const shell = defaultShell()
-  // Spawn a shell that immediately runs claude with stream-json output
-  const term = pty.spawn(shell, ['-l', '-c', 'claude --output-format stream-json'], {
+  // Spawn an interactive login shell so both ~/.zprofile and ~/.zshrc are
+  // sourced, ensuring claude is on PATH regardless of how it was installed.
+  const term = pty.spawn(shell, ['-i', '-l', '-c', 'claude --output-format stream-json'], {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
