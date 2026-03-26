@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2d1b69"/>
+      <stop offset="100%" stop-color="#0f0c29"/>
+    </linearGradient>
+    <linearGradient id="starGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <filter id="starGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="accentGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background: macOS-safe square (system applies mask), subtle rounded for other platforms -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- Subtle inner glow ring -->
+  <circle cx="512" cy="512" r="440" fill="none" stroke="#4c2d9e" stroke-width="1" opacity="0.4"/>
+
+  <!-- Main four-pointed star (✦), the Claude/AI motif already used in the UI -->
+  <!-- Outer radius: 296, inner radius: 88, centered at 512,512 -->
+  <!-- Outer points: top(512,216) right(808,512) bottom(512,808) left(216,512) -->
+  <!-- Inner points at 45°: (574,450) (574,574) (450,574) (450,450) -->
+  <path d="M512,216 L574,450 L808,512 L574,574 L512,808 L450,574 L216,512 L450,450 Z"
+        fill="url(#starGrad)"
+        filter="url(#starGlow)"/>
+
+  <!-- Small accent star in amber/gold — "AI active" indicator, bottom-right -->
+  <!-- Center: (694, 694), outer: 68, inner: 20 -->
+  <!-- Outer points: top(694,626) right(762,694) bottom(694,762) left(626,694) -->
+  <!-- Inner points at 45°: (708,680) (708,708) (680,708) (680,680) -->
+  <path d="M694,626 L708,680 L762,694 L708,708 L694,762 L680,708 L626,694 L680,680 Z"
+        fill="url(#accentGrad)"
+        filter="url(#accentGlow)"/>
+</svg>
