@@ -2,4 +2,4 @@
 "simpleedit": patch
 ---
 
-Fix node-pty not found in packaged builds by including it in electron-builder files list
+Fix missing native modules in packaged builds — remove the blanket node_modules exclusion from electron-builder so all production dependencies (simple-git, chokidar, vscode-jsonrpc, node-pty) are correctly bundled
