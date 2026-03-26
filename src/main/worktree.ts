@@ -132,6 +132,61 @@ export async function cloneBareRepo(repoUrl: string, parentDir: string): Promise
   return bareRepoPath
 }
 
+/**
+ * Check out an existing branch into a new worktree (no new branch created).
+ */
+export async function checkoutWorktree(
+  bareRepoPath: string,
+  branch: string
+): Promise<WorktreeInfo> {
+  const git = simpleGit(bareRepoPath)
+  const parentDir = dirname(bareRepoPath)
+  const worktreePath = join(parentDir, branch)
+
+  await git.raw(['worktree', 'add', worktreePath, branch])
+
+  return {
+    path: worktreePath,
+    branch,
+    isMain: branch === 'main' || branch === 'master',
+    isCurrent: false
+  }
+}
+
+/**
+ * List branches available for checkout as worktrees.
+ * Returns local + remote-tracking branches, excluding those already checked out.
+ */
+export async function listAvailableBranches(bareRepoPath: string): Promise<string[]> {
+  const git = simpleGit(bareRepoPath)
+
+  // Get all branches (local + remote)
+  const raw = await git.raw(['branch', '-a', '--no-color'])
+  const allBranches = raw
+    .split('\n')
+    .map((line) => line.replace(/^\*?\s+/, '').trim())
+    .filter(Boolean)
+    .filter((b) => !b.includes(' -> ')) // skip HEAD -> origin/main aliases
+
+  // Get branches already checked out in worktrees
+  const worktrees = await listWorktrees(bareRepoPath)
+  const checkedOut = new Set(worktrees.map((w) => w.branch))
+
+  // Normalize remote branches (remotes/origin/foo → foo) and deduplicate
+  const seen = new Set<string>()
+  const available: string[] = []
+
+  for (const b of allBranches) {
+    const name = b.replace(/^remotes\/origin\//, '')
+    if (!seen.has(name) && !checkedOut.has(name)) {
+      seen.add(name)
+      available.push(name)
+    }
+  }
+
+  return available.sort()
+}
+
 export async function removeWorktree(
   bareRepoPath: string,
   worktreePath: string

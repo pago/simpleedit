@@ -15,6 +15,8 @@ export interface WorktreeInfo {
 export interface WorktreeInvokeMap {
   'worktree:list': { args: []; result: WorktreeInfo[] }
   'worktree:create': { args: [name: string, baseBranch?: string]; result: WorktreeInfo }
+  'worktree:checkout': { args: [branch: string]; result: WorktreeInfo }
+  'worktree:branches': { args: []; result: string[] }
   'worktree:remove': { args: [path: string]; result: void }
 }
 

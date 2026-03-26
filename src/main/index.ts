@@ -11,7 +11,7 @@ import {
 } from './pty'
 import type { PtySpawnOptions } from '../shared/ipc-types'
 import { listDirectory, readFile, writeFile } from './file-watcher'
-import { listWorktrees, createWorktree, removeWorktree, cloneBareRepo } from './worktree'
+import { listWorktrees, createWorktree, checkoutWorktree, listAvailableBranches, removeWorktree, cloneBareRepo } from './worktree'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
@@ -197,6 +197,16 @@ function registerAllHandlers(): void {
   ipcMain.handle('worktree:create', async (event, name: string, baseBranch?: string) => {
     const repoPath = getRepoForSenderOrThrow(event.sender.id)
     return createWorktree(repoPath, name, baseBranch)
+  })
+
+  ipcMain.handle('worktree:checkout', async (event, branch: string) => {
+    const repoPath = getRepoForSenderOrThrow(event.sender.id)
+    return checkoutWorktree(repoPath, branch)
+  })
+
+  ipcMain.handle('worktree:branches', async (event) => {
+    const repoPath = getRepoForSenderOrThrow(event.sender.id)
+    return listAvailableBranches(repoPath)
   })
 
   ipcMain.handle('worktree:remove', async (event, worktreePath: string) => {
