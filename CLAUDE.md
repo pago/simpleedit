@@ -181,6 +181,22 @@ SIMPLEEDIT_TEST_REPO=/path/to/repo.git pnpm test:e2e -- repro.test
 - If it covers a regression worth guarding: move it to the appropriate permanent test file.
 - Otherwise, delete `e2e/repro.test.ts` before committing.
 
+## Adding changesets
+
+Never run `pnpm changeset` — it's interactive and will hang. Instead, create the file directly:
+
+```bash
+cat > .changeset/short-description.md << 'EOF'
+---
+"simpleedit": patch
+---
+
+Description of the change.
+EOF
+```
+
+Use `patch` for bug fixes, `minor` for new features, `major` for breaking changes.
+
 ## Packaging & releases
 - **electron-builder** packages the app for macOS (dmg/zip), Windows (NSIS), and Linux (AppImage/deb)
 - **Changesets** manages versioning and changelogs (`@changesets/cli`)

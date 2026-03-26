@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import type { WorktreeInfo } from '../../../shared/ipc-types'
   import {
     worktreeList,
@@ -18,6 +18,7 @@
   let availableBranches = $state<string[]>([])
   let branchFilter = $state('')
   let removing = $state<string | null>(null)
+  let nameInput = $state<HTMLInputElement | null>(null)
 
   /** Strip characters illegal in git branch names (see git-check-ref-format). */
   function sanitizeBranchName(input: string): string {
@@ -61,6 +62,9 @@
       availableBranches = await window.api.invoke('worktree:branches')
       branchFilter = ''
       selectedBranch = ''
+    } else {
+      await tick()
+      nameInput?.focus()
     }
   }
 
@@ -128,15 +132,14 @@
         }
       }}
     >
-      <!-- svelte-ignore a11y_autofocus -->
       <input
+        bind:this={nameInput}
         class="flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
         type="text"
         placeholder="branch-name"
         value={newName}
         oninput={handleNameInput}
         onkeydown={handleKeydown}
-        autofocus
       />
       <button
         class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
