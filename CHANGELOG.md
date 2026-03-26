@@ -1,5 +1,11 @@
 # simpleedit
 
+## 0.7.1
+
+### Patch Changes
+
+- [#24](https://github.com/pago/simpleedit/pull/24) [`78d712c`](https://github.com/pago/simpleedit/commit/78d712c11d27acdf14045c5fff7586903c923334) Thanks [@pago](https://github.com/pago)! - Fix missing native modules in packaged builds — remove the blanket node_modules exclusion from electron-builder so all production dependencies (simple-git, chokidar, vscode-jsonrpc, node-pty) are correctly bundled
+
 ## 0.7.0
 
 ### Minor Changes
