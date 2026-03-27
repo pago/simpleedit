@@ -25,7 +25,7 @@ export function spawnTerminal(
   }
 
   const shell = defaultShell()
-  const term = pty.spawn(shell, [], {
+  const term = pty.spawn(shell, ['-l'], {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
