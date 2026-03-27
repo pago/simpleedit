@@ -7,7 +7,8 @@ import {
   writeToTerminal,
   resizeTerminal,
   killTerminal,
-  killAllTerminals
+  killAllTerminals,
+  getActiveTerminalIds
 } from './pty'
 import type { PtySpawnOptions } from '../shared/ipc-types'
 import { listDirectory, readFile, writeFile } from './file-watcher'
@@ -159,6 +160,10 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('pty:kill', (_event, id: string) => {
     killTerminal(id)
+  })
+
+  ipcMain.handle('pty:active-ids', () => {
+    return getActiveTerminalIds()
   })
 
   // ── File system ─────────────────────────────────────────

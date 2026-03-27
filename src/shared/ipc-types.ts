@@ -35,6 +35,7 @@ export interface PtyInvokeMap {
   'pty:write': { args: [id: string, data: string]; result: void }
   'pty:resize': { args: [id: string, cols: number, rows: number]; result: void }
   'pty:kill': { args: [id: string]; result: void }
+  'pty:active-ids': { args: []; result: string[] }
 }
 
 export interface PtyEventMap {

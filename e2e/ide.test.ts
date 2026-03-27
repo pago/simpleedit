@@ -37,3 +37,62 @@ test.describe('IDE layout', () => {
     await expect(window.getByRole('complementary')).toBeVisible()
   })
 })
+
+test.describe('Claude terminal tabs', () => {
+  test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run IDE tests')
+
+  let app: ElectronApplication
+  let window: Page
+
+  test.beforeEach(async () => {
+    app = await electron.launch({
+      args: [MAIN, ...SANDBOX_ARGS],
+      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+    })
+    window = await app.firstWindow()
+    await window.waitForLoadState('domcontentloaded')
+  })
+
+  test.afterEach(async () => {
+    await app.close()
+  })
+
+  test('each Claude button click creates exactly one terminal', async () => {
+    const before: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const claudeBefore = before.filter((id) => id.startsWith('claude-'))
+
+    await window.getByTitle('Run Claude Code').first().click()
+    await window.waitForTimeout(1000)
+
+    const after: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const claudeAfter = after.filter((id) => id.startsWith('claude-'))
+
+    expect(claudeAfter.length).toBe(claudeBefore.length + 1)
+  })
+
+  test('exiting one Claude terminal does not close the other', async () => {
+    await window.evaluate(() => {
+      ;(window as any).__exitEvents = [] as string[]
+      window.api.on('pty:exit', (payload) => {
+        ;(window as any).__exitEvents.push(payload.id)
+      })
+    })
+
+    await window.getByTitle('Run Claude Code').first().click()
+    await window.waitForTimeout(4000)
+    await window.getByTitle('Run Claude Code').first().click()
+    await window.waitForTimeout(4000)
+
+    const allIds: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const claudeIds = allIds.filter((id) => id.startsWith('claude-'))
+    expect(claudeIds.length).toBeGreaterThanOrEqual(2)
+
+    const [id1, id2] = claudeIds
+    await window.evaluate((id) => window.api.invoke('pty:write', id as string, '/exit\r'), id1)
+    await window.waitForTimeout(4000)
+
+    const activeAfter: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    expect(activeAfter).not.toContain(id1)
+    expect(activeAfter).toContain(id2)
+  })
+})

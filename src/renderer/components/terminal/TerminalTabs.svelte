@@ -129,6 +129,15 @@
     )
   })
 
+  // Auto-close a tab when its PTY exits (e.g. user typed /exit in Claude)
+  $effect(() => {
+    return window.api.on('pty:exit', ({ id }) => {
+      if (tabs.some((t) => t.id === id)) {
+        closeTab(id)
+      }
+    })
+  })
+
   // Create an initial terminal tab on mount
   $effect(() => {
     if (tabs.length === 0) {

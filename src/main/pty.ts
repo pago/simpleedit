@@ -110,6 +110,10 @@ export function killTerminal(id: string): void {
   }
 }
 
+export function getActiveTerminalIds(): string[] {
+  return Array.from(terminals.keys())
+}
+
 export function killAllTerminals(): void {
   for (const [id, term] of terminals) {
     try { term.kill() } catch { /* process may already be dead */ }
