@@ -1,7 +1,7 @@
 import simpleGit from 'simple-git'
 import { join, dirname, basename } from 'path'
 import { existsSync, mkdirSync } from 'fs'
-import type { WorktreeInfo } from '../shared/ipc-types'
+import type { WorktreeInfo, BranchInfo } from '../shared/ipc-types'
 
 /**
  * Parse `git worktree list --porcelain` output into WorktreeInfo[].
@@ -43,7 +43,7 @@ function parsePorcelain(raw: string): WorktreeInfo[] {
     results.push({
       path,
       branch,
-      isMain: branch === 'main' || branch === 'master',
+      isMain: results.length === 0, // first entry from git worktree list is always the main worktree
       isCurrent: false
     })
   }
@@ -148,7 +148,7 @@ export async function checkoutWorktree(
   return {
     path: worktreePath,
     branch,
-    isMain: branch === 'main' || branch === 'master',
+    isMain: false,
     isCurrent: false
   }
 }
@@ -157,7 +157,7 @@ export async function checkoutWorktree(
  * List branches available for checkout as worktrees.
  * Returns local + remote-tracking branches, excluding those already checked out.
  */
-export async function listAvailableBranches(bareRepoPath: string): Promise<string[]> {
+export async function listAvailableBranches(bareRepoPath: string): Promise<BranchInfo[]> {
   const git = simpleGit(bareRepoPath)
 
   // Get all branches (local + remote)
@@ -172,19 +172,27 @@ export async function listAvailableBranches(bareRepoPath: string): Promise<strin
   const worktrees = await listWorktrees(bareRepoPath)
   const checkedOut = new Set(worktrees.map((w) => w.branch))
 
-  // Normalize remote branches (remotes/origin/foo → foo) and deduplicate
-  const seen = new Set<string>()
-  const available: string[] = []
-
+  // Separate local branches from remote-tracking branches
+  const localBranches = new Set<string>()
+  const remoteBranches = new Set<string>()
   for (const b of allBranches) {
-    const name = b.replace(/^remotes\/origin\//, '')
-    if (!seen.has(name) && !checkedOut.has(name)) {
-      seen.add(name)
-      available.push(name)
+    if (b.startsWith('remotes/origin/')) {
+      remoteBranches.add(b.slice('remotes/origin/'.length))
+    } else {
+      localBranches.add(b)
     }
   }
 
-  return available.sort()
+  // Merge: a branch is remote-only if it has no local counterpart
+  const seen = new Set<string>()
+  const available: BranchInfo[] = []
+  for (const name of [...localBranches, ...remoteBranches]) {
+    if (seen.has(name) || checkedOut.has(name)) continue
+    seen.add(name)
+    available.push({ name, isRemote: !localBranches.has(name) })
+  }
+
+  return available.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export async function removeWorktree(

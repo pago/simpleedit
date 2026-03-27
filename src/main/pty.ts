@@ -14,6 +14,16 @@ function defaultShell(): string {
   return process.env['SHELL'] ?? '/bin/zsh'
 }
 
+function getPtyOptions(worktreePath: string): pty.IPtyForkOptions {
+  return {
+    name: 'xterm-256color',
+    cols: 80,
+    rows: 24,
+    cwd: worktreePath,
+    env: process.env as Record<string, string>
+  }
+}
+
 export function spawnTerminal(
   options: PtySpawnOptions,
   webContents: WebContents
@@ -25,13 +35,7 @@ export function spawnTerminal(
   }
 
   const shell = defaultShell()
-  const term = pty.spawn(shell, [], {
-    name: 'xterm-256color',
-    cols: 80,
-    rows: 24,
-    cwd: worktreePath,
-    env: process.env as Record<string, string>
-  })
+  const term = pty.spawn(shell, ['-l'], getPtyOptions(worktreePath))
 
   terminals.set(id, term)
 
@@ -61,15 +65,9 @@ export function spawnClaudeTerminal(
   }
 
   const shell = defaultShell()
-  // Spawn an interactive login shell so both ~/.zprofile and ~/.zshrc are
-  // sourced, ensuring claude is on PATH regardless of how it was installed.
-  const term = pty.spawn(shell, ['-i', '-l', '-c', 'claude --output-format stream-json'], {
-    name: 'xterm-256color',
-    cols: 80,
-    rows: 24,
-    cwd: worktreePath,
-    env: process.env as Record<string, string>
-  })
+  // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
+  // ensuring claude is on PATH regardless of how it was installed.
+  const term = pty.spawn(shell, ['-i', '-l', '-c', 'claude --output-format stream-json'], getPtyOptions(worktreePath))
 
   terminals.set(id, term)
 
@@ -108,6 +106,10 @@ export function killTerminal(id: string): void {
     try { term.kill() } catch { /* process may already be dead */ }
     terminals.delete(id)
   }
+}
+
+export function getActiveTerminalIds(): string[] {
+  return Array.from(terminals.keys())
 }
 
 export function killAllTerminals(): void {

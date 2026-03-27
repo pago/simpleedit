@@ -141,6 +141,62 @@ src/
     git-types.ts       ← Re-exports from ipc-types
 ```
 
+## E2E repro workflow
+
+When asked to fix a bug, reproduce a problem, or verify a change, **always write an E2E test** — don't just make the change and declare it done.
+
+### When to write a repro test
+- User describes a bug or unexpected behaviour
+- You're about to make a non-trivial UI or IPC change
+- You want to confirm a fix actually works end-to-end
+
+### Scratch file convention
+Write ad-hoc tests to `e2e/repro.test.ts`. This file is a scratch pad — not committed unless you promote a test to a permanent file (e.g. `e2e/ide.test.ts`).
+
+### Fixture cheat-sheet
+```ts
+// Welcome screen (no repo needed)
+import { test, expect } from './fixtures'
+
+// IDE layout (requires a bare repo)
+import { makeRepoTest, expect } from './fixtures'
+const REPO = process.env.SIMPLEEDIT_TEST_REPO!
+const test = makeRepoTest(REPO)
+test.skip(!process.env.SIMPLEEDIT_TEST_REPO, 'Set SIMPLEEDIT_TEST_REPO')
+```
+
+### Run commands
+```bash
+# Build + run repro test only
+pnpm test:e2e:build -- repro.test
+
+# Skip rebuild if app is already built
+pnpm test:e2e -- repro.test
+
+# Run with a repo
+SIMPLEEDIT_TEST_REPO=/path/to/repo.git pnpm test:e2e -- repro.test
+```
+
+### After the test passes
+- If it covers a regression worth guarding: move it to the appropriate permanent test file.
+- Otherwise, delete `e2e/repro.test.ts` before committing.
+
+## Adding changesets
+
+Never run `pnpm changeset` — it's interactive and will hang. Instead, create the file directly:
+
+```bash
+cat > .changeset/short-description.md << 'EOF'
+---
+"simpleedit": patch
+---
+
+Description of the change.
+EOF
+```
+
+Use `patch` for bug fixes, `minor` for new features, `major` for breaking changes.
+
 ## Packaging & releases
 - **electron-builder** packages the app for macOS (dmg/zip), Windows (NSIS), and Linux (AppImage/deb)
 - **Changesets** manages versioning and changelogs (`@changesets/cli`)

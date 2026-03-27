@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
-  import type { WorktreeInfo } from '../../../shared/ipc-types'
+  import { onMount, tick } from 'svelte'
+  import type { WorktreeInfo, BranchInfo } from '../../../shared/ipc-types'
   import {
     worktreeList,
     activeWorktree,
     setActiveWorktree,
-    refreshWorktrees
+    refreshWorktrees,
+    focusedPane,
+    secondPaneWorktree,
+    setSecondaryWorktree
   } from '../../stores/worktrees.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
 
@@ -15,9 +18,12 @@
   let createMode = $state<CreateMode>('new')
   let newName = $state('')
   let selectedBranch = $state('')
-  let availableBranches = $state<string[]>([])
+  let availableBranches = $state<BranchInfo[]>([])
   let branchFilter = $state('')
   let removing = $state<string | null>(null)
+  let nameInput = $state<HTMLInputElement | null>(null)
+  let busy = $state(false)
+  let errorMsg = $state('')
 
   /** Strip characters illegal in git branch names (see git-check-ref-format). */
   function sanitizeBranchName(input: string): string {
@@ -42,7 +48,7 @@
 
   let filteredBranches = $derived(
     branchFilter
-      ? availableBranches.filter((b) => b.toLowerCase().includes(branchFilter.toLowerCase()))
+      ? availableBranches.filter((b) => b.name.toLowerCase().includes(branchFilter.toLowerCase()))
       : availableBranches
   )
 
@@ -51,35 +57,65 @@
   })
 
   function handleSelect(worktree: WorktreeInfo): void {
-    setActiveWorktree(worktree)
+    if (focusedPane() === 'secondary' && secondPaneWorktree() !== null) {
+      setSecondaryWorktree(worktree)
+    } else {
+      setActiveWorktree(worktree)
+    }
   }
 
   async function startCreate(mode: CreateMode): Promise<void> {
     createMode = mode
     creating = true
+    errorMsg = ''
     if (mode === 'checkout') {
-      availableBranches = await window.api.invoke('worktree:branches')
+      busy = true
+      try {
+        availableBranches = await window.api.invoke('worktree:branches')
+      } catch (err) {
+        errorMsg = err instanceof Error ? err.message : 'Failed to load branches'
+      } finally {
+        busy = false
+      }
       branchFilter = ''
       selectedBranch = ''
+    } else {
+      await tick()
+      nameInput?.focus()
     }
   }
 
   async function handleCreate(): Promise<void> {
-    if (createMode === 'new') {
-      if (!isValidName) return
-      await window.api.invoke('worktree:create', newName.trim())
-    } else {
-      if (!selectedBranch) return
-      await window.api.invoke('worktree:checkout', selectedBranch)
+    if (createMode === 'new' ? !isValidName : !selectedBranch) return
+    busy = true
+    errorMsg = ''
+    try {
+      const created = createMode === 'new'
+        ? await window.api.invoke('worktree:create', newName.trim())
+        : await window.api.invoke('worktree:checkout', selectedBranch)
+      cancelCreate()
+      await refreshWorktrees()
+      setActiveWorktree(created)
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : 'Operation failed'
+    } finally {
+      busy = false
     }
-    cancelCreate()
-    await refreshWorktrees()
   }
 
   async function handleRemove(worktreePath: string): Promise<void> {
-    await window.api.invoke('worktree:remove', worktreePath)
-    removing = null
-    await refreshWorktrees()
+    busy = true
+    errorMsg = ''
+    try {
+      await window.api.invoke('worktree:remove', worktreePath)
+      removing = null
+      await refreshWorktrees()
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : 'Failed to remove worktree'
+      removing = null
+    } finally {
+      busy = false
+    }
   }
 
   function cancelCreate(): void {
@@ -87,6 +123,7 @@
     newName = ''
     selectedBranch = ''
     branchFilter = ''
+    errorMsg = ''
   }
 
   function handleKeydown(e: KeyboardEvent): void {
@@ -121,30 +158,37 @@
 
   {#if creating && createMode === 'new'}
     <div
-      class="flex gap-1 px-1"
+      class="flex flex-col gap-1 px-1"
       onfocusout={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          cancelCreate()
+          // Defer so that onclick on a button inside the form fires first.
+          // In Electron/Chromium, relatedTarget can be null on button clicks,
+          // which would otherwise cancel the form before the click is handled.
+          setTimeout(() => { if (!busy) cancelCreate() }, 0)
         }
       }}
     >
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        class="flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
-        type="text"
-        placeholder="branch-name"
-        value={newName}
-        oninput={handleNameInput}
-        onkeydown={handleKeydown}
-        autofocus
-      />
-      <button
-        class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
-        onclick={handleCreate}
-        disabled={!isValidName}
-      >
-        Create
-      </button>
+      <div class="flex gap-1">
+        <input
+          bind:this={nameInput}
+          class="flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          type="text"
+          placeholder="branch-name"
+          value={newName}
+          oninput={handleNameInput}
+          onkeydown={handleKeydown}
+        />
+        <button
+          class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
+          onclick={handleCreate}
+          disabled={!isValidName || busy}
+        >
+          {busy ? 'Creating…' : 'Create'}
+        </button>
+      </div>
+      {#if errorMsg}
+        <p class="text-xs text-red-400">{errorMsg}</p>
+      {/if}
     </div>
   {/if}
 
@@ -153,7 +197,10 @@
       class="flex flex-col gap-1 px-1"
       onfocusout={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          cancelCreate()
+          // Defer so that onclick on a button inside the form fires first.
+          // In Electron/Chromium, relatedTarget can be null on button clicks,
+          // which would otherwise cancel the form before the click is handled.
+          setTimeout(() => { if (!busy) cancelCreate() }, 0)
         }
       }}
     >
@@ -169,22 +216,31 @@
         autofocus
       />
       <div class="max-h-40 overflow-y-auto rounded border border-zinc-700 bg-zinc-800">
-        {#each filteredBranches as branch (branch)}
-          <button
-            class="w-full px-2 py-1 text-left text-xs {selectedBranch === branch
-              ? 'bg-blue-600 text-white'
-              : 'text-zinc-300 hover:bg-zinc-700'}"
-            onclick={() => (selectedBranch = branch)}
-            ondblclick={handleCreate}
-          >
-            {branch}
-          </button>
+        {#if busy && availableBranches.length === 0}
+          <p class="px-2 py-1 text-xs text-zinc-500">Loading…</p>
         {:else}
-          <p class="px-2 py-1 text-xs text-zinc-500">
-            {availableBranches.length === 0 ? 'No branches available' : 'No matches'}
-          </p>
-        {/each}
+          {#each filteredBranches as branch (branch.name)}
+            <button
+              class="w-full px-2 py-1 text-left text-xs {selectedBranch === branch.name
+                ? 'bg-blue-600 text-white'
+                : 'text-zinc-300 hover:bg-zinc-700'}"
+              onclick={() => (selectedBranch = branch.name)}
+              ondblclick={handleCreate}
+            >
+              {#if branch.isRemote}
+                <span class="opacity-50">origin/</span>
+              {/if}{branch.name}
+            </button>
+          {:else}
+            <p class="px-2 py-1 text-xs text-zinc-500">
+              {availableBranches.length === 0 ? 'No branches available' : 'No matches'}
+            </p>
+          {/each}
+        {/if}
       </div>
+      {#if errorMsg}
+        <p class="text-xs text-red-400">{errorMsg}</p>
+      {/if}
       <div class="flex justify-end gap-1">
         <button
           class="rounded px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200"
@@ -195,9 +251,9 @@
         <button
           class="rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
           onclick={handleCreate}
-          disabled={!selectedBranch}
+          disabled={!selectedBranch || busy}
         >
-          Checkout
+          {busy ? 'Checking out…' : 'Checkout'}
         </button>
       </div>
     </div>
@@ -233,13 +289,14 @@
         {#if !worktree.isMain}
           {#if removing === worktree.path}
             <button
-              class="shrink-0 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-red-500"
+              class="shrink-0 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-red-500 disabled:opacity-50"
               onclick={(e) => {
                 e.stopPropagation()
                 handleRemove(worktree.path)
               }}
+              disabled={busy}
             >
-              Confirm
+              {busy ? '…' : 'Confirm'}
             </button>
             <button
               class="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
