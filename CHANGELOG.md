@@ -1,5 +1,27 @@
 # simpleedit
 
+## 0.7.3
+
+### Patch Changes
+
+- [#31](https://github.com/pago/simpleedit/pull/31) [`71b5c14`](https://github.com/pago/simpleedit/commit/71b5c141eaebd136e0f8d8138a6275f6b9147b5d) Thanks [@pago](https://github.com/pago)! - Auto-close terminal tabs when their PTY exits (e.g. after `/exit` in Claude), so the surviving tab becomes active automatically instead of showing a dead terminal.
+
+- [#31](https://github.com/pago/simpleedit/pull/31) [`7ba4a80`](https://github.com/pago/simpleedit/commit/7ba4a806c02a49ea7fd7f4fea6e3d425c06480a8) Thanks [@pago](https://github.com/pago)! - Auto-select newly created or checked-out worktrees so the pane switches immediately without requiring a manual click.
+
+- [#31](https://github.com/pago/simpleedit/pull/31) [`3363e1f`](https://github.com/pago/simpleedit/commit/3363e1f7305a5913624150551d258734db15bec2) Thanks [@pago](https://github.com/pago)! - Show a dimmed `origin/` prefix on remote-only branches in the checkout list so users can distinguish them from local branches.
+
+- [#30](https://github.com/pago/simpleedit/pull/30) [`f901490`](https://github.com/pago/simpleedit/commit/f901490f326c779dfbfa5066dd29244895c809a8) Thanks [@pago](https://github.com/pago)! - Fix AI Review and AI Tour failing to find `claude` in packaged builds.
+
+  Both features spawned `claude` by bare name, which fails when the app is packaged because the system `PATH` does not include shell-configured directories (nvm, Homebrew, etc.). They now resolve the full path to `claude` via an interactive login shell (`which claude`) — the same approach used for the Claude terminal — before spawning the subprocess.
+
+- [#28](https://github.com/pago/simpleedit/pull/28) [`c30a302`](https://github.com/pago/simpleedit/commit/c30a30299604fadaf644f1596a34eacf3dc7a40d) Thanks [@pago](https://github.com/pago)! - fix: source ~/.zshrc in Claude terminal so claude is found on PATH
+
+  The previous fix used a login shell (-l) which sources ~/.zprofile but not ~/.zshrc. Tools installed via nvm, npm global installs, or other ~/.zshrc-based PATH modifications were not available. Adding -i (interactive) ensures both files are sourced.
+
+- [#31](https://github.com/pago/simpleedit/pull/31) [`a4f7d63`](https://github.com/pago/simpleedit/commit/a4f7d639f4f215345abf24a4db8e7da297380b26) Thanks [@pago](https://github.com/pago)! - Spawn regular terminal tabs as login shells so tools like pnpm are on PATH in production builds.
+
+- [#31](https://github.com/pago/simpleedit/pull/31) [`44a67b3`](https://github.com/pago/simpleedit/commit/44a67b34f60a405b9238b609e5eebb0a117c5ff9) Thanks [@pago](https://github.com/pago)! - Focus the branch-name input automatically when clicking "+ New" in the worktree list.
+
 ## 0.7.2
 
 ### Patch Changes
