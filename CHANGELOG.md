@@ -1,5 +1,17 @@
 # simpleedit
 
+## 0.7.4
+
+### Patch Changes
+
+- [#33](https://github.com/pago/simpleedit/pull/33) [`c8f22df`](https://github.com/pago/simpleedit/commit/c8f22df1e2d0c76c225d7ee209d9c8046cce2095) Thanks [@pago](https://github.com/pago)! - Fix MonacoDiffEditor recreating the entire Monaco instance on every file switch or content refresh. The creation effect now uses `untrack` for content and filePath reads, so it only re-runs when the container mounts. The existing content-update effect handles all subsequent changes cheaply.
+
+- [#32](https://github.com/pago/simpleedit/pull/32) [`c585418`](https://github.com/pago/simpleedit/commit/c58541899f5c0ecd4d4c21714a7331032f558f57) Thanks [@pago](https://github.com/pago)! - Fix missing node_modules in production builds by bundling pure-JS dependencies into the main process bundle instead of externalizing them. Only node-pty (native module) remains external.
+
+- [#33](https://github.com/pago/simpleedit/pull/33) [`9c0703b`](https://github.com/pago/simpleedit/commit/9c0703b312c6cd0bfd3937d3fd076e50a46b7b82) Thanks [@pago](https://github.com/pago)! - Fix renamed files showing a broken path in the diff review file list. Git outputs `R100\told\tnew` for renames, but the parser joined both paths with a tab. Now correctly uses the new (destination) path.
+
+- [#33](https://github.com/pago/simpleedit/pull/33) [`b332e9e`](https://github.com/pago/simpleedit/commit/b332e9e84c278e2619eaff98f9b366bb770ddc3d) Thanks [@pago](https://github.com/pago)! - Fix staging entry in Git Log never showing as selected. The `?? undefined` fallback coerced `null` (staging hash) to `undefined`, so the "Uncommitted changes" row never got the highlighted style or correct `aria-selected` attribute.
+
 ## 0.7.3
 
 ### Patch Changes
