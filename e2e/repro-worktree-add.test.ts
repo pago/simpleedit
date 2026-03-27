@@ -126,6 +126,22 @@ test.describe('Add new worktree', () => {
     })
   })
 
+  test('newly created worktree is automatically activated', async () => {
+    const branchName = `test-autoselect-${Date.now()}`
+    const listbox = window.getByRole('listbox', { name: 'Worktrees' })
+
+    await window.getByRole('button', { name: '+ New' }).click()
+    await window.getByPlaceholder('branch-name').fill(branchName)
+    await window.getByRole('button', { name: 'Create' }).click()
+
+    // Wait for the new entry to appear
+    const newItem = listbox.getByRole('option', { name: new RegExp(branchName) })
+    await expect(newItem).toBeVisible({ timeout: 10_000 })
+
+    // It must be the selected worktree immediately — no manual click needed
+    await expect(newItem).toHaveAttribute('aria-selected', 'true')
+  })
+
   test('clicking away from the form (focus-out) cancels creation', async () => {
     await window.getByRole('button', { name: '+ New' }).click()
     await expect(window.getByPlaceholder('branch-name')).toBeVisible()

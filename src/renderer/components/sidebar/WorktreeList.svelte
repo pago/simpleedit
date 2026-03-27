@@ -83,13 +83,12 @@
     busy = true
     errorMsg = ''
     try {
-      if (createMode === 'new') {
-        await window.api.invoke('worktree:create', newName.trim())
-      } else {
-        await window.api.invoke('worktree:checkout', selectedBranch)
-      }
+      const created = createMode === 'new'
+        ? await window.api.invoke('worktree:create', newName.trim())
+        : await window.api.invoke('worktree:checkout', selectedBranch)
       cancelCreate()
       await refreshWorktrees()
+      setActiveWorktree(created)
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : 'Operation failed'
     } finally {
