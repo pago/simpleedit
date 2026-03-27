@@ -43,7 +43,7 @@ function parsePorcelain(raw: string): WorktreeInfo[] {
     results.push({
       path,
       branch,
-      isMain: branch === 'main' || branch === 'master',
+      isMain: results.length === 0, // first entry from git worktree list is always the main worktree
       isCurrent: false
     })
   }
@@ -148,7 +148,7 @@ export async function checkoutWorktree(
   return {
     path: worktreePath,
     branch,
-    isMain: branch === 'main' || branch === 'master',
+    isMain: false,
     isCurrent: false
   }
 }
