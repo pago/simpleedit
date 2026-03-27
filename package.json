@@ -24,10 +24,7 @@
     "postinstall": "electron-rebuild -f -w node-pty"
   },
   "dependencies": {
-    "chokidar": "^4.0.3",
-    "node-pty": "^1.0.0",
-    "simple-git": "^3.27.0",
-    "vscode-jsonrpc": "^8.2.1"
+    "node-pty": "^1.0.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -38,6 +35,9 @@
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "chokidar": "^4.0.3",
+    "simple-git": "^3.27.0",
+    "vscode-jsonrpc": "^8.2.1",
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.30.0",
     "@electron-toolkit/preload": "^3.0.1",

@@ -8,18 +8,9 @@ importers:
 
   .:
     dependencies:
-      chokidar:
-        specifier: ^4.0.3
-        version: 4.0.3
       node-pty:
         specifier: ^1.0.0
         version: 1.1.0
-      simple-git:
-        specifier: ^3.27.0
-        version: 3.33.0
-      vscode-jsonrpc:
-        specifier: ^8.2.1
-        version: 8.2.1
     devDependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.39.0
@@ -69,6 +60,9 @@ importers:
       '@xterm/xterm':
         specifier: ^5.5.0
         version: 5.5.0
+      chokidar:
+        specifier: ^4.0.3
+        version: 4.0.3
       electron:
         specifier: ^35.1.2
         version: 35.7.5
@@ -84,6 +78,9 @@ importers:
       playwright:
         specifier: ^1.58.2
         version: 1.58.2
+      simple-git:
+        specifier: ^3.27.0
+        version: 3.33.0
       svelte:
         specifier: ^5.28.2
         version: 5.54.0
@@ -96,6 +93,9 @@ importers:
       vitest:
         specifier: ^4.1.1
         version: 4.1.1(@types/node@22.19.15)(@vitest/browser-playwright@4.1.1)(vite@6.4.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0))
+      vscode-jsonrpc:
+        specifier: ^8.2.1
+        version: 8.2.1
       vscode-languageserver-protocol:
         specifier: ^3.17.5
         version: 3.17.5
