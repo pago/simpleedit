@@ -133,3 +133,73 @@ Remaining, roughly ordered:
 4. ~~**Remote vs local branch distinction** (C4) — done~~
 5. ~~**`onfocusout` robustness** (A5, C3) — done~~
 6. ~~**Sidebar targets focused pane in split view** (S3) — done~~
+
+---
+
+# Diff Review Feature — Bugs & Improvements
+
+## Bugs
+
+- [x] **GitLog: staging entry never shows selected highlight**
+  `GitLog.svelte:12-14` — `diffReviewStore.get(worktreePath)?.hash ?? undefined` coerces
+  `null` (staging) to `undefined`. The staging entry condition
+  `selectedCommitHash === null` is therefore always `false`, so the "Uncommitted
+  changes" row never gets the selected style or `aria-selected="true"`.
+  **Fix:** remove `?? undefined`.
+
+- [x] **parseNameStatus: wrong file path for renames**
+  `git-operations.ts:302-316` — git outputs `R100\told_name\tnew_name` for renames.
+  `line.split('\t')` yields `['R100', 'old_name', 'new_name']` and `pathParts.join('\t')`
+  produces `'old_name\tnew_name'` as the path, which is wrong and will fail when
+  loading file content.
+  **Fix:** for rename status, use the last path part (`new_name`).
+
+- [x] **MonacoDiffEditor: recreates entire editor on every content change**
+  `MonacoDiffEditor.svelte:29-95` — the creation `$effect` reads `filePath`,
+  `originalContent`, and `modifiedContent`, so it disposes and rebuilds the
+  Monaco diff editor each time a different file is selected or content refreshes.
+  The second `$effect` (lines 117-132) that was meant to update models cheaply
+  is redundant because effect 1 always fires first.
+  **Fix:** use `untrack` for content/filePath reads in the creation effect,
+  so it only depends on `container`. Let effect 2 handle all content updates.
+
+## Future Enhancements
+
+- **Auto-select first file** — when opening diff review for a commit, auto-select
+  the first file so the diff is immediately visible instead of showing
+  "Select a file to view its diff".
+
+- **Keyboard navigation** — arrow keys to move between files in the file list;
+  `]` / `[` to navigate to the next/previous finding.
+
+- **Toggle inline / side-by-side diff** — button in the diff review header to
+  switch between inline (unified) and side-by-side diff layout.
+
+- **Diff statistics per file** — show `+N / -N` line counts next to each file
+  in the file list, similar to GitHub.
+
+- **File loading indicator** — show a spinner or skeleton while file content
+  is being fetched for the Monaco diff editor.
+
+- **Filter files by status** — buttons or toggles to show only
+  added / modified / deleted files in the file list.
+
+- **Renamed file indicator** — show an "R" status badge for renamed files
+  with the old and new path, rather than collapsing renames to "M" (modified).
+
+- **Persist review findings** — save findings to disk alongside tour caches
+  so they survive commit switching and app restarts.
+
+- **Copy finding to clipboard** — one-click button to copy a finding's title
+  and body for pasting into commit messages or PR descriptions.
+
+- **Include untracked files in AI review** — `getStagingDiff()` uses
+  `git diff HEAD` which excludes untracked files. The AI review prompt
+  misses new files that appear in the staging file list.
+
+- **Accessible roles for diff review UI** — add `aria-label` and appropriate
+  roles to the diff review header, file list, and diff viewer regions to
+  improve screen-reader support and testability.
+
+- **Batch file content loading** — when a commit is selected, preload
+  content for the first few files in the background so switching feels instant.

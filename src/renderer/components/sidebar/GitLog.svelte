@@ -10,7 +10,7 @@
   let { worktreePath }: Props = $props()
 
   let selectedCommitHash = $derived(
-    worktreePath ? (diffReviewStore.get(worktreePath)?.hash ?? undefined) : undefined
+    worktreePath ? diffReviewStore.get(worktreePath)?.hash : undefined
   )
 
   let commits = $state<GitCommitInfo[]>([])
@@ -164,7 +164,7 @@
       {#if hasStagingChanges}
         <button
           class="flex flex-col gap-0.5 rounded px-2 py-1.5 text-left transition-colors
-            {selectedCommitHash === null && selectedCommitHash !== undefined
+            {selectedCommitHash === null
             ? 'bg-zinc-700 text-zinc-100'
             : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
           role="option"
