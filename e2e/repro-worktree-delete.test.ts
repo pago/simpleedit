@@ -123,6 +123,33 @@ test.describe('Delete worktree', () => {
     await waitForWorktreeGone(window, branchName)
   })
 
+  // ── delete active worktree ────────────────────────────────────────────────
+
+  test('deleting the active worktree switches pane to another worktree', async () => {
+    const branchName = `test-active-delete-${Date.now()}`
+    const listbox = window.getByRole('listbox', { name: 'Worktrees' })
+
+    // Create a new worktree
+    await window.getByRole('button', { name: '+ New' }).click()
+    await window.getByPlaceholder('branch-name').fill(branchName)
+    await window.getByRole('button', { name: 'Create' }).click()
+    await waitForWorktreeItem(window, branchName)
+
+    // Click the new worktree to make it active
+    const newItem = listbox.getByRole('option', { name: new RegExp(branchName) })
+    await newItem.click()
+    await expect(newItem).toHaveAttribute('aria-selected', 'true')
+
+    // Delete it while it is active
+    await newItem.hover()
+    await newItem.getByRole('button', { name: 'Remove' }).click()
+    await newItem.getByRole('button', { name: 'Confirm' }).click()
+    await waitForWorktreeGone(window, branchName)
+
+    // Some other worktree must now be selected — not null / no worktree
+    await expect(listbox.getByRole('option', { selected: true })).toBeVisible()
+  })
+
   // ── main worktree protection ───────────────────────────────────────────────
 
   test('main worktree does not expose a Remove button', async () => {
