@@ -1,5 +1,8 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron'
-import { join, basename } from 'path'
+import { join, basename, dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   spawnTerminal,
