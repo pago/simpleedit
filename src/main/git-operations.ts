@@ -306,11 +306,15 @@ function parseNameStatus(raw: string): DiffFileEntry[] {
     .filter((line) => line.length > 0)
     .map((line) => {
       const [statusChar, ...pathParts] = line.split('\t')
-      const path = pathParts.join('\t') // handle paths with tabs (unlikely but safe)
       let status: DiffFileEntry['status'] = 'modified'
       if (statusChar === 'A') status = 'added'
       else if (statusChar === 'D') status = 'deleted'
       else if (statusChar?.startsWith('R')) status = 'modified' // renamed
+      // For renames (R100\told\tnew), use the new path (last element).
+      // For other statuses, there's only one path part.
+      const path = statusChar?.startsWith('R')
+        ? pathParts[pathParts.length - 1] ?? pathParts.join('\t')
+        : pathParts.join('\t')
       return { path, status }
     })
 }
