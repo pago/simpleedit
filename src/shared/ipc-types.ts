@@ -16,7 +16,7 @@ export interface WorktreeInvokeMap {
   'worktree:list': { args: []; result: WorktreeInfo[] }
   'worktree:create': { args: [name: string, baseBranch?: string]; result: WorktreeInfo }
   'worktree:checkout': { args: [branch: string]; result: WorktreeInfo }
-  'worktree:branches': { args: []; result: string[] }
+  'worktree:branches': { args: []; result: BranchInfo[] }
   'worktree:remove': { args: [path: string]; result: void }
 }
 
@@ -28,6 +28,11 @@ export interface WorktreeEventMap {
 export interface PtySpawnOptions {
   worktreePath: string
   id: string
+}
+
+export interface BranchInfo {
+  name: string
+  isRemote: boolean // true = exists only on origin, not as a local branch
 }
 
 export interface PtyInvokeMap {

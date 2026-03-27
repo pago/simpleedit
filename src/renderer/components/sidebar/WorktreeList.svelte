@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import type { WorktreeInfo } from '../../../shared/ipc-types'
+  import type { WorktreeInfo, BranchInfo } from '../../../shared/ipc-types'
   import {
     worktreeList,
     activeWorktree,
@@ -15,7 +15,7 @@
   let createMode = $state<CreateMode>('new')
   let newName = $state('')
   let selectedBranch = $state('')
-  let availableBranches = $state<string[]>([])
+  let availableBranches = $state<BranchInfo[]>([])
   let branchFilter = $state('')
   let removing = $state<string | null>(null)
   let nameInput = $state<HTMLInputElement | null>(null)
@@ -45,7 +45,7 @@
 
   let filteredBranches = $derived(
     branchFilter
-      ? availableBranches.filter((b) => b.toLowerCase().includes(branchFilter.toLowerCase()))
+      ? availableBranches.filter((b) => b.name.toLowerCase().includes(branchFilter.toLowerCase()))
       : availableBranches
   )
 
@@ -206,15 +206,17 @@
         {#if busy && availableBranches.length === 0}
           <p class="px-2 py-1 text-xs text-zinc-500">Loading…</p>
         {:else}
-          {#each filteredBranches as branch (branch)}
+          {#each filteredBranches as branch (branch.name)}
             <button
-              class="w-full px-2 py-1 text-left text-xs {selectedBranch === branch
+              class="w-full px-2 py-1 text-left text-xs {selectedBranch === branch.name
                 ? 'bg-blue-600 text-white'
                 : 'text-zinc-300 hover:bg-zinc-700'}"
-              onclick={() => (selectedBranch = branch)}
+              onclick={() => (selectedBranch = branch.name)}
               ondblclick={handleCreate}
             >
-              {branch}
+              {#if branch.isRemote}
+                <span class="opacity-50">origin/</span>
+              {/if}{branch.name}
             </button>
           {:else}
             <p class="px-2 py-1 text-xs text-zinc-500">
