@@ -9,6 +9,7 @@ import type {
 } from '../shared/ipc-types'
 import { getCommitDiff, getStagingDiff } from './git-operations'
 import { findJsonObjectEnd } from './lib/json-scanner'
+import { resolveClaudePath } from './lib/shell-path'
 
 const MAX_DIFF_BYTES = 120_000
 
@@ -121,7 +122,8 @@ export async function startReview(
 
   const prompt = buildPrompt(diff)
 
-  const proc = spawn('claude', [
+  const claudeBin = await resolveClaudePath()
+  const proc = spawn(claudeBin, [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
