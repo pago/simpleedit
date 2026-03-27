@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
+  import { untrack } from 'svelte'
   import type { AgentContext } from '../../lib/agent-message'
   import { getLanguage } from '../../lib/monaco-utils'
 
@@ -26,10 +27,14 @@
   let container: HTMLDivElement | undefined = $state()
   let diffEditor: monaco.editor.IStandaloneDiffEditor | undefined
 
+  // Create the diff editor once when the container mounts (or when inline layout changes).
+  // Content/filePath reads are untracked — the content-update effect handles those.
   $effect(() => {
     if (!container) return
 
-    const language = getLanguage(filePath)
+    const lang = untrack(() => getLanguage(filePath))
+    const origContent = untrack(() => originalContent)
+    const modContent = untrack(() => modifiedContent)
 
     diffEditor = monaco.editor.createDiffEditor(container, {
       theme: 'vs-dark',
@@ -42,8 +47,8 @@
       renderOverviewRuler: false
     })
 
-    const originalModel = monaco.editor.createModel(originalContent, language)
-    const modifiedModel = monaco.editor.createModel(modifiedContent, language)
+    const originalModel = monaco.editor.createModel(origContent, lang)
+    const modifiedModel = monaco.editor.createModel(modContent, lang)
 
     diffEditor.setModel({ original: originalModel, modified: modifiedModel })
 
