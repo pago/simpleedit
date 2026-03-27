@@ -5,7 +5,10 @@
     worktreeList,
     activeWorktree,
     setActiveWorktree,
-    refreshWorktrees
+    refreshWorktrees,
+    focusedPane,
+    secondPaneWorktree,
+    setSecondaryWorktree
   } from '../../stores/worktrees.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
 
@@ -54,7 +57,11 @@
   })
 
   function handleSelect(worktree: WorktreeInfo): void {
-    setActiveWorktree(worktree)
+    if (focusedPane() === 'secondary' && secondPaneWorktree() !== null) {
+      setSecondaryWorktree(worktree)
+    } else {
+      setActiveWorktree(worktree)
+    }
   }
 
   async function startCreate(mode: CreateMode): Promise<void> {
@@ -154,7 +161,10 @@
       class="flex flex-col gap-1 px-1"
       onfocusout={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          cancelCreate()
+          // Defer so that onclick on a button inside the form fires first.
+          // In Electron/Chromium, relatedTarget can be null on button clicks,
+          // which would otherwise cancel the form before the click is handled.
+          setTimeout(() => { if (!busy) cancelCreate() }, 0)
         }
       }}
     >
@@ -187,7 +197,10 @@
       class="flex flex-col gap-1 px-1"
       onfocusout={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          cancelCreate()
+          // Defer so that onclick on a button inside the form fires first.
+          // In Electron/Chromium, relatedTarget can be null on button clicks,
+          // which would otherwise cancel the form before the click is handled.
+          setTimeout(() => { if (!busy) cancelCreate() }, 0)
         }
       }}
     >
