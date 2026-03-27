@@ -13,6 +13,7 @@ import type {
 } from '../shared/ipc-types'
 import { getCommitDiff, getStagingDiff, getBranchDiff } from './git-operations'
 import { findJsonObjectEnd } from './lib/json-scanner'
+import { resolveClaudePath } from './lib/shell-path'
 
 const MAX_DIFF_BYTES = 120_000
 
@@ -222,7 +223,8 @@ export async function startTour(
 
   const prompt = buildTourPrompt(diff, commitMessage, overrideOverview, isBranchMode)
 
-  const proc = spawn('claude', [
+  const claudeBin = await resolveClaudePath()
+  const proc = spawn(claudeBin, [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
