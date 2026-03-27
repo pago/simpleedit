@@ -1,15 +1,18 @@
 <script lang="ts">
   import WorktreePane from './WorktreePane.svelte'
   import { untrack } from 'svelte'
-  import { worktreeList, activeWorktree } from '../../stores/worktrees.svelte'
+  import {
+    worktreeList, activeWorktree,
+    secondPaneWorktree, setSecondaryWorktree,
+    setFocusedPane
+  } from '../../stores/worktrees.svelte'
   import type { WorktreeInfo } from '../../../shared/ipc-types'
 
   let splitRatio = $state(50)
   let isResizing = $state(false)
-  let secondPaneWorktree = $state<WorktreeInfo | null>(null)
 
   let primaryPath = $derived(activeWorktree()?.path ?? null)
-  let secondaryPath = $derived(secondPaneWorktree?.path ?? null)
+  let secondaryPath = $derived(secondPaneWorktree()?.path ?? null)
   let hasTwoPanes = $derived(secondaryPath !== null)
 
   // Track all worktree paths that have been opened so we can keep their panes alive.
@@ -46,12 +49,12 @@
 
   function openSecondPane(): void {
     if (availableForSecondPane.length > 0) {
-      secondPaneWorktree = availableForSecondPane[0]
+      setSecondaryWorktree(availableForSecondPane[0])
     }
   }
 
   function closeSecondPane(): void {
-    secondPaneWorktree = null
+    setSecondaryWorktree(null)
     visitedSecondaryPaths = []
   }
 
@@ -83,9 +86,11 @@
 >
   {#if primaryPath}
     <!-- Primary pane — keep all visited panes alive, show/hide -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="min-w-0 overflow-hidden"
       style:width={hasTwoPanes ? `${splitRatio}%` : '100%'}
+      onpointerdown={() => setFocusedPane('primary')}
     >
       <div class="flex h-full flex-col">
         <!-- Pane header -->
@@ -130,7 +135,11 @@
       ></div>
 
       <!-- Secondary pane -->
-      <div class="min-w-0 flex-1 overflow-hidden">
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="min-w-0 flex-1 overflow-hidden"
+        onpointerdown={() => setFocusedPane('secondary')}
+      >
         <div class="flex h-full flex-col">
           <!-- Pane header with worktree selector -->
           <div class="flex h-7 flex-none items-center justify-between border-b border-zinc-800 bg-zinc-900 px-2">
@@ -140,7 +149,7 @@
               onchange={(e) => {
                 const path = (e.target as HTMLSelectElement).value
                 const wt = worktreeList().find((w) => w.path === path)
-                if (wt) secondPaneWorktree = wt
+                if (wt) setSecondaryWorktree(wt)
               }}
             >
               {#each availableForSecondPane as wt (wt.path)}
