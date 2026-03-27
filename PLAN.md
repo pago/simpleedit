@@ -8,28 +8,26 @@ and prioritises the improvements.
 
 ## Cross-cutting issues (affect all flows)
 
-### 1. Silent error handling everywhere
-Every async operation (`handleCreate`, `handleCheckout`, `handleRemove`) has no
-`try/catch`. If the IPC call throws, the UI silently dismisses itself. Users see no
-feedback; the operation may have failed.
+### ~~1. Silent error handling everywhere~~ ✓ Done
+~~Every async operation (`handleCreate`, `handleCheckout`, `handleRemove`) has no
+`try/catch`.~~
 
-**Fix:** Add a shared `let errorMsg = $state('')` displayed as a small red message
-below the active action area, wrapping every IPC call in `try/catch`.
+`try/catch` added to all three flows; errors surface as a red message below the active
+form panel (`errorMsg` rune). Error cleared on cancel or new attempt.
 
-### 2. No in-progress feedback on any async operation
-Creating, checking out, and deleting a worktree all involve IPC calls that can take
-seconds. None of them show a spinner or disabled state while in flight.
+### ~~2. No in-progress feedback on any async operation~~ ✓ Done
+~~None of them show a spinner or disabled state while in flight.~~
 
-**Fix:** Add a `let busy = $state(false)` flag; set it around every IPC call to
-disable the confirm button and show a spinner.
+`busy` flag added; confirm buttons are disabled and their labels update ("Creating…",
+"Checking out…", "…") while the IPC call is pending. Branch list shows "Loading…"
+while `worktree:branches` fetches.
 
-### 3. `isMain` heuristic is fragile
-`isMain: branch === 'main' || branch === 'master'` is hard-coded in three places.
-Repos using `trunk`, `develop`, or any other default branch name will never protect
-their primary worktree from deletion, and may not show correct status badges.
+### ~~3. `isMain` heuristic is fragile~~ ✓ Done
+~~`isMain: branch === 'main' || branch === 'master'` is hard-coded in three places.~~
 
-**Fix:** Mark `isMain` based on position in `git worktree list` output (the first
-entry is always the main worktree), not branch name.
+`parsePorcelain` now sets `isMain: results.length === 0` — the first entry from
+`git worktree list` is always the main worktree, regardless of branch name.
+`checkoutWorktree` always returns `isMain: false` (newly created worktrees are never main).
 
 ---
 
@@ -123,14 +121,15 @@ entry is always the main worktree), not branch name.
 
 ## Priority order
 
-These are the highest-impact changes to tackle first, roughly ordered:
+- ~~**Error handling everywhere** (A2, C2 — cross-cutting) — done~~
+- ~~**Loading states** (A1, C1, D3 — cross-cutting) — done~~
+- ~~**`isMain` heuristic** (cross-cutting #3) — done~~
 
-1. **Error handling everywhere** (A2, C2, D1 — cross-cutting) — silent failures are the most confusing UX possible
-2. **Delete active worktree → pane fallback** (D2) — likely causes a broken UI state today
-3. **`isMain` heuristic** (cross-cutting #3) — currently fails silently for non-standard default branches
-4. **Auto-select after create** (A4) — biggest workflow friction: create → must manually click
-5. **Loading states** (A1, C1, D3) — makes the app feel responsive
-6. **Cancel `stopPropagation`** (D4, S5) — two-line fix, eliminates a subtle bug
-7. **Remote vs local branch distinction** (C5) — prevents confusing checkout failures
-8. **`onfocusout` robustness** (A5, C3) — edge case but can lose work
-9. **Sidebar targets focused pane in split view** (S3) — important for the multi-pane workflow
+Remaining, roughly ordered:
+
+1. ~~**Delete active worktree → pane fallback** (D2) — already handled by `refreshWorktrees` in the store; verified by test~~
+2. ~~**Auto-select after create** (A4) — done~~
+3. ~~**Cancel `stopPropagation`** (D4, S5) — already present in the code~~
+4. ~~**Remote vs local branch distinction** (C4) — done~~
+5. ~~**`onfocusout` robustness** (A5, C3) — done~~
+6. ~~**Sidebar targets focused pane in split view** (S3) — done~~
