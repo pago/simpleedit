@@ -14,7 +14,7 @@ import {
   getActiveTerminalIds
 } from './pty'
 import type { PtySpawnOptions } from '../shared/ipc-types'
-import { listDirectory, readFile, writeFile } from './file-watcher'
+import { listDirectory, listAllFiles, readFile, writeFile } from './file-watcher'
 import { listWorktrees, createWorktree, checkoutWorktree, listAvailableBranches, removeWorktree, cloneBareRepo } from './worktree'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
@@ -176,6 +176,10 @@ function registerAllHandlers(): void {
   // ── File system ─────────────────────────────────────────
   ipcMain.handle('fs:list', (_event, dirPath: string) => {
     return listDirectory(dirPath)
+  })
+
+  ipcMain.handle('fs:list-all', (_event, worktreePath: string) => {
+    return listAllFiles(worktreePath)
   })
 
   ipcMain.handle('fs:read', (_event, filePath: string) => {

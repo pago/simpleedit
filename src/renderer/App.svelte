@@ -3,8 +3,10 @@
   import Sidebar from './components/sidebar/Sidebar.svelte'
   import PaneManager from './components/layout/PaneManager.svelte'
   import Welcome from './components/Welcome.svelte'
+  import CommandPalette from './components/command-palette/CommandPalette.svelte'
   import { refreshWorktrees } from './stores/worktrees.svelte'
   import { initClaudeStatusListeners } from './stores/claude-status.svelte'
+  import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
 
   let sidebarWidth = $state(260)
   let isResizing = $state(false)
@@ -31,6 +33,13 @@
     refreshWorktrees()
   }
 
+  function handleGlobalKeydown(e: KeyboardEvent): void {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault()
+      togglePalette()
+    }
+  }
+
   function onMouseDown() {
     isResizing = true
 
@@ -48,6 +57,12 @@
     window.addEventListener('mouseup', onMouseUp)
   }
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
+
+{#if isPaletteOpen()}
+  <CommandPalette />
+{/if}
 
 {#if repoPath}
   <div class="flex h-full flex-col" class:select-none={isResizing}>

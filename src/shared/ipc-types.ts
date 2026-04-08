@@ -58,6 +58,7 @@ export interface FileEntry {
 
 export interface FsInvokeMap {
   'fs:list': { args: [dirPath: string]; result: FileEntry[] }
+  'fs:list-all': { args: [worktreePath: string]; result: string[] }
   'fs:read': { args: [filePath: string]; result: string }
   'fs:write': { args: [filePath: string, content: string]; result: void }
 }
