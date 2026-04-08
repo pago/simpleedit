@@ -38,6 +38,46 @@ test.describe('IDE layout', () => {
   })
 })
 
+test.describe('Terminal links', () => {
+  test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run IDE tests')
+
+  let app: ElectronApplication
+  let window: Page
+
+  test.beforeEach(async () => {
+    app = await electron.launch({
+      args: [MAIN, ...SANDBOX_ARGS],
+      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+    })
+    window = await app.firstWindow()
+    await window.waitForLoadState('domcontentloaded')
+  })
+
+  test.afterEach(async () => {
+    await app.close()
+  })
+
+  test('app:open-external IPC channel opens URLs in default browser', async () => {
+    // Intercept shell.openExternal to capture the URL without opening a browser
+    await app.evaluate(({ shell }) => {
+      ;(globalThis as Record<string, unknown>).__openedUrl = null
+      shell.openExternal = async (url: string) => {
+        ;(globalThis as Record<string, unknown>).__openedUrl = url
+      }
+    })
+
+    await window.evaluate(() =>
+      window.api.invoke('app:open-external', 'https://example.com')
+    )
+
+    const openedUrl = await app.evaluate(() => {
+      return (globalThis as Record<string, unknown>).__openedUrl
+    })
+
+    expect(openedUrl).toBe('https://example.com')
+  })
+})
+
 test.describe('Claude terminal tabs', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run IDE tests')
 
