@@ -25,6 +25,25 @@
   let savedViewportY: number | undefined
   let wasAtBottom = true
 
+  function isScrolledToBottom(): boolean {
+    if (!term) return true
+    const buf = term.buffer.active
+    return buf.viewportY >= buf.baseY
+  }
+
+  /** Run fitAddon.fit() while preserving the user's scroll position. */
+  function fitPreservingScroll(): void {
+    if (!fitAddon || !term) return
+    const atBottom = isScrolledToBottom()
+    const prevViewportY = buf.viewportY
+    fitAddon.fit()
+    if (atBottom) {
+      term.scrollToBottom()
+    } else {
+      term.scrollToLine(prevViewportY)
+    }
+  }
+
   function setup(el: HTMLDivElement, id: string): void {
     cleanup()
 
@@ -75,10 +94,17 @@
       window.api.invoke('pty:write', id, data)
     })
 
-    // Receive data from the PTY
+    // Receive data from the PTY.
+    // When the user has scrolled up, preserve their viewport position so
+    // incoming output doesn't yank them to the bottom (or top after a reflow).
     cleanupDataListener = window.api.on('pty:data', (payload) => {
       if (payload.id === id && term) {
+        const atBottom = isScrolledToBottom()
+        const prevViewportY = term.buffer.active.viewportY
         term.write(payload.data)
+        if (!atBottom) {
+          term.scrollToLine(prevViewportY)
+        }
       }
     })
 
@@ -88,10 +114,13 @@
       }
     })
 
-    // Auto-resize on container size change
+    // Auto-resize on container size change.
+    // Guard against zero dimensions: ResizeObserver fires when a tab is hidden
+    // (display:none), which would cause fitAddon to calculate 0 columns and
+    // corrupt the PTY's line wrapping.
     resizeObserver = new ResizeObserver(() => {
-      if (fitAddon) {
-        fitAddon.fit()
+      if (fitAddon && el.offsetWidth > 0 && el.offsetHeight > 0) {
+        fitPreservingScroll()
         if (term) {
           window.api.invoke('pty:resize', id, term.cols, term.rows)
         }
@@ -128,25 +157,26 @@
     if (!term) return
 
     if (active) {
-      // Becoming visible: fit first, then restore scroll in a second rAF so
-      // xterm.js finishes its own post-resize scroll before we override it.
+      // Becoming visible: fit and restore scroll position.
+      // Use rAF so the container has dimensions (no longer display:none).
       requestAnimationFrame(() => {
-        fitAddon?.fit()
-        requestAnimationFrame(() => {
-          if (term) {
-            if (wasAtBottom) {
-              term.scrollToBottom()
-            } else if (savedViewportY !== undefined) {
-              term.scrollToLine(savedViewportY)
-            }
-          }
-        })
+        if (!term || !fitAddon) return
+        fitAddon.fit()
+        if (term) {
+          window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
+        }
+        // Restore scroll after fit. If the user was at the bottom when the
+        // tab was hidden, follow new content; otherwise stay at the saved line.
+        if (wasAtBottom) {
+          term.scrollToBottom()
+        } else if (savedViewportY !== undefined) {
+          term.scrollToLine(savedViewportY)
+        }
       })
     } else {
       // Becoming hidden: save scroll state
-      const buf = term.buffer.active
-      wasAtBottom = buf.viewportY >= buf.baseY
-      savedViewportY = buf.viewportY
+      wasAtBottom = isScrolledToBottom()
+      savedViewportY = term.buffer.active.viewportY
     }
   })
 </script>

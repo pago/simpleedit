@@ -70,6 +70,72 @@ test.describe('Claude terminal tabs', () => {
     expect(claudeAfter.length).toBe(claudeBefore.length + 1)
   })
 
+  test('switching tabs does not collapse terminal columns to zero (#37)', async () => {
+    // Wait for the default terminal tab to stabilise
+    await window.waitForTimeout(1000)
+
+    // Create a second terminal tab and switch between them repeatedly
+    await window.getByTitle('New terminal').first().click()
+    await window.waitForTimeout(500)
+
+    const tabButtons = window.locator(
+      'div.flex.items-center.border-b.border-zinc-800 button'
+    )
+    const allButtons = await tabButtons.all()
+
+    // Switch back to first tab
+    for (const btn of allButtons) {
+      const text = await btn.textContent()
+      if (text?.includes('Terminal 1')) {
+        await btn.click()
+        break
+      }
+    }
+    await window.waitForTimeout(500)
+
+    // Rapid tab switching to trigger ResizeObserver on hidden containers
+    for (let i = 0; i < 3; i++) {
+      for (const btn of allButtons) {
+        if ((await btn.textContent())?.includes('Terminal 2')) {
+          await btn.click()
+          break
+        }
+      }
+      await window.waitForTimeout(200)
+      for (const btn of allButtons) {
+        if ((await btn.textContent())?.includes('Terminal 1')) {
+          await btn.click()
+          break
+        }
+      }
+      await window.waitForTimeout(200)
+    }
+    await window.waitForTimeout(500)
+
+    // Write `tput cols` and read the output from the terminal DOM
+    const termIds: string[] = await window.evaluate(() =>
+      window.api.invoke('pty:active-ids')
+    )
+    const firstTermId = termIds.find((id) => id.startsWith('term-'))!
+    await window.evaluate(
+      (id) => window.api.invoke('pty:write', id, 'tput cols\r'),
+      firstTermId
+    )
+    await window.waitForTimeout(1000)
+
+    const cols = await window.evaluate(() => {
+      const rows = document.querySelectorAll('.xterm-rows > div')
+      for (const row of rows) {
+        const text = row.textContent?.trim() ?? ''
+        if (/^\d+$/.test(text)) return parseInt(text, 10)
+      }
+      return null
+    })
+
+    expect(cols).not.toBeNull()
+    expect(cols!).toBeGreaterThanOrEqual(40)
+  })
+
   test('exiting one Claude terminal does not close the other', async () => {
     await window.evaluate(() => {
       ;(window as any).__exitEvents = [] as string[]
