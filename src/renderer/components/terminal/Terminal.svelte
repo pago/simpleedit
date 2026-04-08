@@ -25,11 +25,16 @@
   let savedViewportY: number | undefined
   let wasAtBottom = true
 
+  function isScrolledToBottom(): boolean {
+    if (!term) return true
+    const buf = term.buffer.active
+    return buf.viewportY >= buf.baseY
+  }
+
   /** Run fitAddon.fit() while preserving the user's scroll position. */
   function fitPreservingScroll(): void {
     if (!fitAddon || !term) return
-    const buf = term.buffer.active
-    const atBottom = buf.viewportY >= buf.baseY
+    const atBottom = isScrolledToBottom()
     const prevViewportY = buf.viewportY
     fitAddon.fit()
     if (atBottom) {
@@ -94,11 +99,11 @@
     // incoming output doesn't yank them to the bottom (or top after a reflow).
     cleanupDataListener = window.api.on('pty:data', (payload) => {
       if (payload.id === id && term) {
-        const buf = term.buffer.active
-        const atBottom = buf.viewportY >= buf.baseY
+        const atBottom = isScrolledToBottom()
+        const prevViewportY = term.buffer.active.viewportY
         term.write(payload.data)
         if (!atBottom) {
-          term.scrollToLine(buf.viewportY)
+          term.scrollToLine(prevViewportY)
         }
       }
     })
@@ -170,9 +175,8 @@
       })
     } else {
       // Becoming hidden: save scroll state
-      const buf = term.buffer.active
-      wasAtBottom = buf.viewportY >= buf.baseY
-      savedViewportY = buf.viewportY
+      wasAtBottom = isScrolledToBottom()
+      savedViewportY = term.buffer.active.viewportY
     }
   })
 </script>
