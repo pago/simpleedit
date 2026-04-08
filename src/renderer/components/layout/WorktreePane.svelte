@@ -6,8 +6,9 @@
   import DiffReview from '../editor/DiffReview.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
   import type { OpenFile } from '../../stores/activeFile.svelte'
-  import { diffReviewStore, closeReview } from '../../stores/diffReview.svelte'
+  import { diffReviewStore, closeReview, startReview } from '../../stores/diffReview.svelte'
   import { createAgentTerminalStore } from '../../stores/agentTerminals.svelte'
+  import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
 
   interface Props {
@@ -26,6 +27,18 @@
 
   // Per-pane agent terminal store (shared between TerminalTabs and editors)
   const agentStore = createAgentTerminalStore()
+
+  // Consume palette actions targeting this pane's worktree
+  $effect(() => {
+    const action = pendingPaletteAction()
+    if (action?.type === 'open-file' && action.worktreePath === worktreePath) {
+      consumePaletteAction()
+      openFile(action.filePath)
+    } else if (action?.type === 'start-review' && action.worktreePath === worktreePath) {
+      consumePaletteAction()
+      startReview(worktreePath, { hash: action.hash, message: action.message })
+    }
+  })
 
   // Popover state
   let popoverState = $state<{ x: number; y: number; ctx: AgentContext } | null>(null)
