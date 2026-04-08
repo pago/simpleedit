@@ -160,6 +160,13 @@ export async function checkoutWorktree(
 export async function listAvailableBranches(bareRepoPath: string): Promise<BranchInfo[]> {
   const git = simpleGit(bareRepoPath)
 
+  // Fetch latest remote refs so the branch list is up-to-date
+  try {
+    await git.fetch()
+  } catch {
+    // Fetch may fail if no remote is configured — continue with local state
+  }
+
   // Get all branches (local + remote)
   const raw = await git.raw(['branch', '-a', '--no-color'])
   const allBranches = raw
