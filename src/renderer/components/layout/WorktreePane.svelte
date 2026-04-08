@@ -105,6 +105,15 @@
     closeReview(worktreePath)
   }
 
+  const FILE_TREE_COLLAPSED_KEY = 'simpleedit:fileTreeCollapsed'
+
+  let fileTreeCollapsed = $state(localStorage.getItem(FILE_TREE_COLLAPSED_KEY) === 'true')
+
+  function toggleFileTree(): void {
+    fileTreeCollapsed = !fileTreeCollapsed
+    localStorage.setItem(FILE_TREE_COLLAPSED_KEY, String(fileTreeCollapsed))
+  }
+
   let verticalSplit = $state(60)
   let fileTreeWidth = $state(220)
   let isResizingVertical = $state(false)
@@ -197,23 +206,34 @@
       {/if}
     </div>
 
-    <!-- File tree resize handle -->
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-    <div
-      class="w-1 flex-none cursor-col-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
-      role="separator"
-      aria-orientation="vertical"
-      tabindex="0"
-      onmousedown={onFileTreeResizeStart}
-    ></div>
+    {#if fileTreeCollapsed}
+      <!-- Collapsed file tree: thin expand strip -->
+      <button
+        class="flex-none flex items-center justify-center w-6 border-l border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+        onclick={toggleFileTree}
+        title="Expand file tree"
+      >
+        <span class="text-xs">⏴</span>
+      </button>
+    {:else}
+      <!-- File tree resize handle -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div
+        class="w-1 flex-none cursor-col-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
+        role="separator"
+        aria-orientation="vertical"
+        tabindex="0"
+        onmousedown={onFileTreeResizeStart}
+      ></div>
 
-    <!-- File tree (right side, resizable) -->
-    <div
-      class="flex-none overflow-y-auto border-l border-zinc-800 p-2"
-      style:width="{fileTreeWidth}px"
-    >
-      <FileTree rootPath={worktreePath} onselect={openFile} />
-    </div>
+      <!-- File tree (right side, resizable) -->
+      <div
+        class="flex-none overflow-y-auto border-l border-zinc-800 p-2"
+        style:width="{fileTreeWidth}px"
+      >
+        <FileTree rootPath={worktreePath} onselect={openFile} oncollapse={toggleFileTree} />
+      </div>
+    {/if}
   </div>
 
   <!-- Vertical resize handle -->
