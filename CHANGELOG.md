@@ -1,5 +1,27 @@
 # simpleedit
 
+## 0.8.0
+
+### Minor Changes
+
+- [#42](https://github.com/pago/simpleedit/pull/42) [`0fa03c7`](https://github.com/pago/simpleedit/commit/0fa03c72ac3301036e3dd66b3c2136fc5851a884) Thanks [@pago](https://github.com/pago)! - Add command palette (Cmd+K) for fast keyboard-driven navigation to files, worktrees, actions, and commits. Supports prefix-based filtering (> actions, @ worktrees, # commits) and fuzzy matching with filename-aware scoring.
+
+- [#43](https://github.com/pago/simpleedit/pull/43) [`0d699be`](https://github.com/pago/simpleedit/commit/0d699bedc72e162c0d7b32581cddd62196b09087) Thanks [@pago](https://github.com/pago)! - Add collapsible file tree panel with persistent state via localStorage.
+
+### Patch Changes
+
+- [#38](https://github.com/pago/simpleedit/pull/38) [`9cc9e8e`](https://github.com/pago/simpleedit/commit/9cc9e8e210b57ef8c2f436551d593602ade542cc) Thanks [@pago](https://github.com/pago)! - Creating a worktree with "+ New" now checks out the existing branch instead of failing when a branch with that name already exists.
+
+- [#38](https://github.com/pago/simpleedit/pull/38) [`50f4fdc`](https://github.com/pago/simpleedit/commit/50f4fdc104b2c544cdb42ddd766a7be0258972f1) Thanks [@pago](https://github.com/pago)! - Fetch remote refs before listing branches in the checkout panel so newly pushed branches are visible.
+
+- [#41](https://github.com/pago/simpleedit/pull/41) [`d84909f`](https://github.com/pago/simpleedit/commit/d84909f980aba0d6b89566170fb595157b771af4) Thanks [@pago](https://github.com/pago)! - Fix clicking links in terminal sessions. The xterm.js WebLinksAddon default handler
+  used `window.open()` which is blocked by Electron's popup policy. Links now open in
+  the default browser via a new `app:open-external` IPC channel.
+
+- [#39](https://github.com/pago/simpleedit/pull/39) [`a9e4251`](https://github.com/pago/simpleedit/commit/a9e4251db47d0189c5032fc45579d60b11c70f7b) Thanks [@pago](https://github.com/pago)! - Fix terminal output rendering in a narrow strip after tab switches. The ResizeObserver was firing on hidden containers (display:none), causing fitAddon to calculate 0 columns and corrupt the PTY.
+
+- [#39](https://github.com/pago/simpleedit/pull/39) [`8a81624`](https://github.com/pago/simpleedit/commit/8a816240ed34c2e0afb523ca5500ca26b703dc8d) Thanks [@pago](https://github.com/pago)! - Fix terminal scrolling to top when content arrives or the container resizes. Scroll position is now preserved across fit() calls, tab switches, and incoming PTY data when the user has scrolled up.
+
 ## 0.7.4
 
 ### Patch Changes
