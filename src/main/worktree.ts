@@ -66,15 +66,21 @@ export async function createWorktree(
   const parentDir = dirname(bareRepoPath)
   const worktreePath = join(parentDir, name)
 
-  const args = ['worktree', 'add', worktreePath]
-  if (baseBranch) {
-    // Create a new branch `name` based on `baseBranch`
-    args.push('-b', name, baseBranch)
-  } else {
-    args.push('-b', name)
-  }
+  // Check if a branch with this name already exists (local or remote-tracking)
+  const existing = await git.raw(['branch', '--list', name]).then((s) => s.trim())
 
-  await git.raw(args)
+  if (existing) {
+    // Branch exists — just check it out into a new worktree
+    await git.raw(['worktree', 'add', worktreePath, name])
+  } else {
+    const args = ['worktree', 'add', worktreePath]
+    if (baseBranch) {
+      args.push('-b', name, baseBranch)
+    } else {
+      args.push('-b', name)
+    }
+    await git.raw(args)
+  }
 
   return {
     path: worktreePath,
@@ -159,6 +165,13 @@ export async function checkoutWorktree(
  */
 export async function listAvailableBranches(bareRepoPath: string): Promise<BranchInfo[]> {
   const git = simpleGit(bareRepoPath)
+
+  // Fetch latest remote refs so the branch list is up-to-date
+  try {
+    await git.fetch()
+  } catch {
+    // Fetch may fail if no remote is configured — continue with local state
+  }
 
   // Get all branches (local + remote)
   const raw = await git.raw(['branch', '-a', '--no-color'])
