@@ -95,7 +95,7 @@ export function writeToTerminal(id: string, data: string): void {
 
 export function resizeTerminal(id: string, cols: number, rows: number): void {
   const term = terminals.get(id)
-  if (term) {
+  if (term && cols > 0 && rows > 0) {
     term.resize(cols, rows)
   }
 }

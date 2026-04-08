@@ -88,9 +88,12 @@
       }
     })
 
-    // Auto-resize on container size change
+    // Auto-resize on container size change.
+    // Guard against zero dimensions: ResizeObserver fires when a tab is hidden
+    // (display:none), which would cause fitAddon to calculate 0 columns and
+    // corrupt the PTY's line wrapping.
     resizeObserver = new ResizeObserver(() => {
-      if (fitAddon) {
+      if (fitAddon && el.offsetWidth > 0 && el.offsetHeight > 0) {
         fitAddon.fit()
         if (term) {
           window.api.invoke('pty:resize', id, term.cols, term.rows)
