@@ -148,6 +148,10 @@ function registerAllHandlers(): void {
     createWindow(repoPath)
   })
 
+  ipcMain.handle('app:open-external', (_event, url: string) => {
+    shell.openExternal(url)
+  })
+
   // ── PTY ─────────────────────────────────────────────────
   ipcMain.handle('pty:spawn', (event, options: PtySpawnOptions) => {
     spawnTerminal(options, event.sender)

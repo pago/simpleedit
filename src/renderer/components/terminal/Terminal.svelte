@@ -61,7 +61,9 @@
 
     fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(new WebLinksAddon((_event, url) => {
+      window.api.invoke('app:open-external', url)
+    }))
 
     term.open(el)
 

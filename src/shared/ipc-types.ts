@@ -192,6 +192,7 @@ export interface AppInvokeMap {
   'app:clone-repo': { args: [repoUrl: string, parentDir: string]; result: string }
   'app:recent-repos': { args: []; result: RecentRepo[] }
   'app:open-window': { args: [repoPath?: string]; result: void }
+  'app:open-external': { args: [url: string]; result: void }
 }
 
 // ── LSP ───────────────────────────────────────────────────
