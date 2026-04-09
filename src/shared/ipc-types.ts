@@ -177,6 +177,48 @@ export interface TourEventMap {
   'tour:status': { key: string; status: TourStatus; error?: string }
 }
 
+// ── Plan ─────────────────────────────────────────────────
+export type PlanReaction = 'thumbs-up' | 'thumbs-down' | 'question' | 'rocket' | 'eyes'
+
+export interface PlanDiscussionMessage {
+  id: string
+  taskId: string
+  role: 'user' | 'assistant'
+  text: string
+}
+
+export interface PlanTask {
+  id: string
+  title: string
+  description: string
+  affectedFiles?: string[]
+  status: 'todo' | 'in-progress' | 'done' | 'rejected'
+  reactions: PlanReaction[]
+  discussion: PlanDiscussionMessage[]
+}
+
+export interface Plan {
+  overview: string
+  tasks: PlanTask[]
+}
+
+export type PlanStatus = 'idle' | 'running' | 'revising' | 'done' | 'error'
+
+export interface PlanInvokeMap {
+  'plan:start': { args: [worktreePath: string, commitHash: string | null]; result: void }
+  'plan:start-from-description': { args: [worktreePath: string, description: string]; result: void }
+  'plan:cancel': { args: [worktreePath: string, commitHash: string | null]; result: void }
+  'plan:load': { args: [worktreePath: string, commitHash: string | null]; result: Plan | null }
+  'plan:save': { args: [worktreePath: string, commitHash: string | null, plan: Plan]; result: void }
+  'plan:revise': { args: [worktreePath: string, commitHash: string | null, feedback: string]; result: void }
+}
+
+export interface PlanEventMap {
+  'plan:overview': { key: string; overview: string }
+  'plan:task': { key: string; task: PlanTask }
+  'plan:status': { key: string; status: PlanStatus; error?: string }
+}
+
 // ── App-level ─────────────────────────────────────────────
 export interface RecentRepo {
   path: string
@@ -228,6 +270,7 @@ export type InvokeMap = WorktreeInvokeMap &
   AppInvokeMap &
   ReviewInvokeMap &
   TourInvokeMap &
+  PlanInvokeMap &
   LspInvokeMap
 
 export type SendMap = LspSendMap
@@ -238,4 +281,5 @@ export type EventMap = WorktreeEventMap &
   GitEventMap &
   ReviewEventMap &
   TourEventMap &
+  PlanEventMap &
   LspEventMap

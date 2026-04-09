@@ -88,6 +88,11 @@
     triggerTour(worktreePath, 'branch')
   }
 
+  function openPlan(): void {
+    if (!worktreePath) return
+    startReview(worktreePath, { hash: 'plan', message: 'Plan' })
+  }
+
   $effect(() => {
     if (worktreePath) {
       fetchLog(worktreePath)
@@ -134,6 +139,13 @@
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Git Log</span>
     <div class="flex items-center gap-1">
       {#if worktreePath}
+        <button
+          class="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+          onclick={openPlan}
+          title="Create an implementation plan"
+        >
+          ✦ Plan
+        </button>
         <button
           class="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
           onclick={startBranchTour}

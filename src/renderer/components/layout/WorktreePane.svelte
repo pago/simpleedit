@@ -4,6 +4,7 @@
   import EditorTabs from '../editor/EditorTabs.svelte'
   import CodeEditor from '../editor/CodeEditor.svelte'
   import DiffReview from '../editor/DiffReview.svelte'
+  import PlanView from '../editor/PlanView.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
   import type { OpenFile } from '../../stores/activeFile.svelte'
   import { diffReviewStore, closeReview } from '../../stores/diffReview.svelte'
@@ -149,7 +150,14 @@
   <div class="flex min-h-0" style:height="{verticalSplit}%">
     <!-- Editor / Diff review area (left, takes remaining space) -->
     <div class="flex flex-1 flex-col overflow-hidden">
-      {#if reviewingCommit}
+      {#if reviewingCommit?.hash === 'plan'}
+        <PlanView
+          {worktreePath}
+          terminals={agentStore.terminals}
+          onclose={closeDiffReview}
+          onsendtoagent={sendToAgent}
+        />
+      {:else if reviewingCommit}
         <DiffReview
           commitHash={reviewingCommit.hash}
           commitMessage={reviewingCommit.message}
