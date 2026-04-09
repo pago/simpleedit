@@ -28,12 +28,13 @@ export function createAgentTerminalStore() {
       window.api.invoke('pty:write', terminalId, message + '\r')
     },
 
-    spawnAndSend(message: string): void {
-      if (!_createClaudeTab) return
+    spawnAndSend(message: string): string | undefined {
+      if (!_createClaudeTab) return undefined
       const id = _createClaudeTab()
       setTimeout(() => {
         window.api.invoke('pty:write', id, message + '\r')
       }, 1000)
+      return id
     },
   }
 }

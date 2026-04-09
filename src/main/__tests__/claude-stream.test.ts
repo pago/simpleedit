@@ -58,7 +58,8 @@ describe('attachToTerminal — OSC title parsing', () => {
     emitPtyData('ta1', '\x1b]0;✳ Claude Code\x07')
     expect(wc.send).toHaveBeenCalledWith('claude:status', {
       worktreePath: '/repo/worktree',
-      status: 'idle'
+      status: 'idle',
+      terminalId: 'ta1'
     })
   })
 
@@ -69,7 +70,8 @@ describe('attachToTerminal — OSC title parsing', () => {
     emitPtyData('ta2', '\x1b]0;⠂ Claude Code\x07')
     expect(wc.send).toHaveBeenCalledWith('claude:status', {
       worktreePath: '/repo/worktree',
-      status: 'running'
+      status: 'running',
+      terminalId: 'ta2'
     })
   })
 
@@ -81,7 +83,8 @@ describe('attachToTerminal — OSC title parsing', () => {
       emitPtyData(`ta-spin-${spinner}`, `\x1b]0;${spinner} Claude Code\x07`)
       expect(wc.send).toHaveBeenCalledWith('claude:status', {
         worktreePath: '/repo',
-        status: 'running'
+        status: 'running',
+        terminalId: `ta-spin-${spinner}`
       })
     }
   })
@@ -101,11 +104,13 @@ describe('attachToTerminal — OSC title parsing', () => {
     expect(wc.send).toHaveBeenCalledTimes(2)
     expect(wc.send).toHaveBeenNthCalledWith(1, 'claude:status', {
       worktreePath: '/repo',
-      status: 'running'
+      status: 'running',
+      terminalId: 'ta4'
     })
     expect(wc.send).toHaveBeenNthCalledWith(2, 'claude:status', {
       worktreePath: '/repo',
-      status: 'idle'
+      status: 'idle',
+      terminalId: 'ta4'
     })
   })
 
@@ -138,7 +143,8 @@ describe('attachToTerminal — OSC title parsing', () => {
     emitPtyData('ta8', '\x1b]0;✳ Claude Code\x1b\\')
     expect(wc.send).toHaveBeenCalledWith('claude:status', {
       worktreePath: '/repo',
-      status: 'idle'
+      status: 'idle',
+      terminalId: 'ta8'
     })
   })
 })

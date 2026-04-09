@@ -7,7 +7,7 @@
     worktreePath: string
     terminals: AgentTabInfo[]
     onclose: () => void
-    onsendtoagent?: (terminalId: string | 'new', message: string) => void
+    onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
   }
 
   let { worktreePath, terminals, onclose, onsendtoagent }: Props = $props()
@@ -111,6 +111,7 @@
         commitHash="user-plan"
         {terminals}
         {onsendtoagent}
+        hideEmptyInput
       />
     </div>
   </div>

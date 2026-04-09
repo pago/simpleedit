@@ -19,7 +19,7 @@
     terminals: AgentTabInfo[]
     onclose: () => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
-    onsendtoagent?: (terminalId: string | 'new', message: string) => void
+    onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
   }
 
   let { commitHash, commitMessage, worktreePath, terminals, onclose, ondiscusswithagent, onsendtoagent }: Props = $props()

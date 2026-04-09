@@ -7,10 +7,12 @@
     worktreePath: string
     commitHash: string | null
     terminals: AgentTabInfo[]
-    onsendtoagent?: (terminalId: string | 'new', message: string) => void
+    onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
+    /** When true, suppress the empty-state description input (parent handles it) */
+    hideEmptyInput?: boolean
   }
 
-  let { worktreePath, commitHash, terminals, onsendtoagent }: Props = $props()
+  let { worktreePath, commitHash, terminals, onsendtoagent, hideEmptyInput = false }: Props = $props()
 
   const key = $derived(planKey(worktreePath, commitHash))
   const planState = $derived(planStore.get(key))
@@ -23,6 +25,37 @@
 
   // General revision input
   let revisionInput = $state('')
+
+  // Track which terminal is executing which task(s)
+  // Maps terminalId → set of taskIds being run on that terminal
+  let terminalToTasks = $state<Map<string, Set<string>>>(new Map())
+
+  // Listen for Claude status changes to auto-complete tasks
+  $effect(() => {
+    const mapping = terminalToTasks
+    if (mapping.size === 0) return
+
+    const unsub = window.api.on('claude:status', ({ terminalId, status }) => {
+      if (status !== 'idle') return
+      const taskIds = mapping.get(terminalId)
+      if (!taskIds) return
+
+      // Terminal went idle → mark all associated tasks as done
+      for (const taskId of taskIds) {
+        const task = planStore.get(key)?.tasks.find((t) => t.id === taskId)
+        if (task && task.status === 'in-progress') {
+          planStore.updateTaskStatus(key, taskId, 'done')
+        }
+      }
+      // Clean up the mapping
+      const next = new Map(mapping)
+      next.delete(terminalId)
+      terminalToTasks = next
+      savePlanState()
+    })
+
+    return unsub
+  })
 
   // Subscribe to plan IPC events
   $effect(() => {
@@ -228,9 +261,19 @@
     return ['Please implement the following plan:', ...items].join('\n\n')
   }
 
+  function trackTerminal(termId: string | undefined, taskIds: string[]): void {
+    if (!termId) return
+    const next = new Map(terminalToTasks)
+    const existing = next.get(termId) ?? new Set()
+    for (const id of taskIds) existing.add(id)
+    next.set(termId, existing)
+    terminalToTasks = next
+  }
+
   function startTask(task: PlanTask): void {
     const message = buildTaskMessage(task)
-    onsendtoagent?.('new', message)
+    const termId = onsendtoagent?.('new', message)
+    trackTerminal(termId, [task.id])
     planStore.updateTaskStatus(key, task.id, 'in-progress')
     savePlanState()
   }
@@ -239,7 +282,8 @@
     const todoTasks = activeTasks.filter((t) => t.status === 'todo')
     if (todoTasks.length === 0) return
     const message = buildAllTasksMessage(todoTasks)
-    onsendtoagent?.('new', message)
+    const termId = onsendtoagent?.('new', message)
+    trackTerminal(termId, todoTasks.map((t) => t.id))
     for (const t of todoTasks) {
       planStore.updateTaskStatus(key, t.id, 'in-progress')
     }
@@ -294,24 +338,26 @@
   <!-- Main content -->
   <div class="min-h-0 flex-1 overflow-y-auto bg-zinc-950 px-4 py-3">
     {#if !planState || (planState.status === 'idle' && planState.tasks.length === 0)}
-      <!-- No plan yet — show description input -->
-      <div class="flex flex-col gap-3 py-4">
-        <label class="text-xs font-medium text-zinc-400">What would you like to plan?</label>
-        <textarea
-          bind:value={planDescription}
-          class="w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500"
-          rows="3"
-          placeholder="Describe what you want to build…"
-          onkeydown={handleDescriptionKeydown}
-        ></textarea>
-        <button
-          class="self-start rounded bg-purple-700/80 px-3 py-1.5 text-xs text-purple-200 hover:bg-purple-600 disabled:cursor-not-allowed disabled:opacity-40"
-          onclick={handleStartPlan}
-          disabled={!planDescription.trim()}
-        >
-          ✦ Generate Plan
-        </button>
-      </div>
+      <!-- No plan yet — show description input (unless parent handles it) -->
+      {#if !hideEmptyInput}
+        <div class="flex flex-col gap-3 py-4">
+          <label class="text-xs font-medium text-zinc-400">What would you like to plan?</label>
+          <textarea
+            bind:value={planDescription}
+            class="w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500"
+            rows="3"
+            placeholder="Describe what you want to build…"
+            onkeydown={handleDescriptionKeydown}
+          ></textarea>
+          <button
+            class="self-start rounded bg-purple-700/80 px-3 py-1.5 text-xs text-purple-200 hover:bg-purple-600 disabled:cursor-not-allowed disabled:opacity-40"
+            onclick={handleStartPlan}
+            disabled={!planDescription.trim()}
+          >
+            ✦ Generate Plan
+          </button>
+        </div>
+      {/if}
     {:else if (planState.status === 'running' || planState.status === 'revising') && planState.tasks.length === 0}
       <!-- Generating but no tasks yet -->
       <div class="flex flex-col items-center justify-center gap-2 py-12 text-center">

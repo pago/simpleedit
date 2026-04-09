@@ -57,11 +57,12 @@
     popoverState = null
   }
 
-  function sendToAgent(terminalId: string | 'new', message: string): void {
+  function sendToAgent(terminalId: string | 'new', message: string): string | undefined {
     if (terminalId === 'new') {
-      agentStore.spawnAndSend(message)
+      return agentStore.spawnAndSend(message)
     } else {
       agentStore.send(terminalId, message)
+      return terminalId
     }
   }
 
