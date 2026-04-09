@@ -35,7 +35,7 @@
   function fitPreservingScroll(): void {
     if (!fitAddon || !term) return
     const atBottom = isScrolledToBottom()
-    const prevViewportY = buf.viewportY
+    const prevViewportY = term.buffer.active.viewportY
     fitAddon.fit()
     if (atBottom) {
       term.scrollToBottom()
@@ -183,5 +183,5 @@
 
 <div
   bind:this={containerEl}
-  class="h-full w-full"
+  class="h-full w-full overflow-hidden"
 ></div>
