@@ -2,12 +2,14 @@
   import MonacoDiffEditor from './MonacoDiffEditor.svelte'
   import ReviewPanel from './ReviewPanel.svelte'
   import TourPanel from './TourPanel.svelte'
+  import PlanPanel from './PlanPanel.svelte'
   import type { DiffFileEntry } from '../../../shared/ipc-types'
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
   import { tick } from 'svelte'
   import { reviewStore, reviewKey, triggerReview } from '../../stores/reviewStore.svelte'
   import { tourStore, tourKey, triggerTour } from '../../stores/tourStore.svelte'
+  import { planStore, planKey } from '../../stores/planStore.svelte'
 
   interface Props {
     /** null means staging/uncommitted changes */
@@ -30,8 +32,8 @@
   let fileListWidth = $state(224) // w-56 = 14rem = 224px
   let isResizing = $state(false)
 
-  // Tab state: 'files', 'findings', or 'tour'
-  let activeTab = $state<'files' | 'findings' | 'tour'>('files')
+  // Tab state: 'files', 'findings', 'tour', or 'plan'
+  let activeTab = $state<'files' | 'findings' | 'tour' | 'plan'>('files')
 
   // Highlight range set by navigating to a finding
   let highlightLines = $state<[number, number] | undefined>(undefined)
@@ -49,6 +51,9 @@
 
   const tKey = $derived(tourKey(worktreePath, commitHash))
   const tourState = $derived(tourStore.get(tKey))
+
+  const pKey = $derived(planKey(worktreePath, commitHash))
+  const pState = $derived(planStore.get(pKey))
 
   function handleStartTour(): void {
     triggerTour(worktreePath, commitHash)
@@ -282,10 +287,13 @@
         <span>✦ Tour</span>
       {/if}
     </button>
+
   </div>
 
   {#if activeTab === 'tour'}
     <TourPanel {worktreePath} {commitHash} {commitMessage} />
+  {:else if activeTab === 'plan'}
+    <PlanPanel {worktreePath} {commitHash} {terminals} {onsendtoagent} />
   {:else}
   <div class="flex min-h-0 flex-1" class:select-none={isResizing}>
     <!-- Left panel (file list or findings) -->
@@ -332,6 +340,18 @@
           Tour
           {#if tourState && tourState.topics.length > 0}
             <span class="ml-1 text-zinc-500">({tourState.topics.length})</span>
+          {/if}
+        </button>
+        <button
+          class="flex-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-colors
+            {activeTab === 'plan'
+              ? 'border-b-2 border-blue-500 text-zinc-300'
+              : 'text-zinc-600 hover:text-zinc-400'}"
+          onclick={() => (activeTab = 'plan')}
+        >
+          Plan
+          {#if pState && pState.tasks.length > 0}
+            <span class="ml-1 text-zinc-500">({pState.tasks.length})</span>
           {/if}
         </button>
       </div>
