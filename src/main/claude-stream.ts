@@ -90,11 +90,12 @@ function statusFromTitle(title: string): ClaudeStatus | null {
 
 function sendStatus(
   webContents: WebContents,
+  terminalId: string,
   worktreePath: string,
   status: ClaudeStatus
 ): void {
   if (!webContents.isDestroyed()) {
-    webContents.send('claude:status', { worktreePath, status })
+    webContents.send('claude:status', { worktreePath, status, terminalId })
   }
 }
 
@@ -113,7 +114,7 @@ export function attachToTerminal(
     for (const title of extractOscTitles(data)) {
       const status = statusFromTitle(title)
       if (status !== null) {
-        sendStatus(webContents, worktreePath, status)
+        sendStatus(webContents, terminalId, worktreePath, status)
       }
     }
   })

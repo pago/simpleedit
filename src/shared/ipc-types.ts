@@ -112,7 +112,7 @@ export interface ClaudeInvokeMap {
 }
 
 export interface ClaudeEventMap {
-  'claude:status': { worktreePath: string; status: ClaudeStatus }
+  'claude:status': { worktreePath: string; status: ClaudeStatus; terminalId: string }
 }
 
 // ── Review ────────────────────────────────────────────────
