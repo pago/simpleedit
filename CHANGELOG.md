@@ -1,5 +1,11 @@
 # simpleedit
 
+## 0.10.1
+
+### Patch Changes
+
+- [#51](https://github.com/pago/simpleedit/pull/51) [`c43fe76`](https://github.com/pago/simpleedit/commit/c43fe763aaca92c30b134b676f3f8e47af25d9fd) Thanks [@pago](https://github.com/pago)! - Fix Claude-originated plans not appearing by using the authoritative worktree path from the terminal attachment instead of relying on the path Claude provides in the show_plan tool call.
+
 ## 0.10.0
 
 ### Minor Changes
