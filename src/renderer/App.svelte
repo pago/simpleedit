@@ -9,6 +9,7 @@
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
   import { hydrateSession, serializeSession } from './lib/sessionPersistence'
+  import UpdateBanner from './components/UpdateBanner.svelte'
 
   let sidebarWidth = $state(260)
   let isResizing = $state(false)
@@ -137,6 +138,7 @@
 
 {#if repoPath}
   <div class="flex h-full flex-col" class:select-none={isResizing}>
+    <UpdateBanner />
     <!-- Title bar / drag region -->
     <div class="drag-region flex h-9 flex-none items-center border-b border-zinc-700 bg-zinc-900">
       <div class="flex items-center gap-2 pl-[78px]" style:width="{sidebarWidth}px">
@@ -169,6 +171,7 @@
   </div>
 {:else}
   <div class="flex h-full flex-col">
+    <UpdateBanner />
     <!-- Title bar / drag region (welcome) -->
     <div class="drag-region h-9 flex-none bg-zinc-950"></div>
     <Welcome onreposelected={handleRepoSelected} />

@@ -4,6 +4,11 @@ directories:
   buildResources: build
   output: dist
 
+publish:
+  provider: github
+  owner: pago
+  repo: simpleedit
+
 files:
   - out/**/*
 

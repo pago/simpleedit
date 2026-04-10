@@ -41,8 +41,6 @@ jobs:
 
       - name: Build and package
         run: pnpm package:${{ matrix.platform }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -54,6 +52,8 @@ jobs:
             dist/*.exe
             dist/*.AppImage
             dist/*.deb
+            dist/*.yml
+            dist/*.blockmap
 
   release:
     needs: build

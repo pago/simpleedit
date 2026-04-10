@@ -413,6 +413,23 @@ export interface AgentPanelEventMap {
   }
 }
 
+// ── Auto-update ──────────────────────────────────────────
+export interface UpdateInfo {
+  version: string
+  releaseNotes?: string
+}
+
+export interface UpdateInvokeMap {
+  'update:check': { args: []; result: void }
+  'update:install': { args: []; result: void }
+}
+
+export interface UpdateEventMap {
+  'update:available': UpdateInfo
+  'update:downloaded': UpdateInfo
+  'update:error': { message: string }
+}
+
 // ── Aggregate maps for type-safe IPC helpers ──────────────
 export type InvokeMap = WorktreeInvokeMap &
   PtyInvokeMap &
@@ -424,7 +441,8 @@ export type InvokeMap = WorktreeInvokeMap &
   ReviewInvokeMap &
   TourInvokeMap &
   LspInvokeMap &
-  SessionInvokeMap
+  SessionInvokeMap &
+  UpdateInvokeMap
 
 export type SendMap = LspSendMap
 
@@ -435,4 +453,5 @@ export type EventMap = WorktreeEventMap &
   ReviewEventMap &
   TourEventMap &
   LspEventMap &
-  AgentPanelEventMap
+  AgentPanelEventMap &
+  UpdateEventMap
