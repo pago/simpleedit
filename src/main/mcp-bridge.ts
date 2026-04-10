@@ -6,6 +6,7 @@ import { app } from 'electron'
 import type { WebContents } from 'electron'
 import type { Plan } from '../shared/ipc-types'
 import { savePlan } from './plan'
+import { getWorktreeForTerminal } from './claude-stream'
 
 interface BridgeInstance {
   server: Server
@@ -73,10 +74,18 @@ function handleToolCall(payload: ToolCallPayload, webContents: WebContents): { s
 
   if (tool === 'show_plan') {
     const plan = args['plan'] as Plan | undefined
-    const worktreePath = args['worktreePath'] as string | undefined
+    const claudeWorktreePath = args['worktreePath'] as string | undefined
 
-    if (!plan || !worktreePath) {
-      return { status: 400, body: { error: 'show_plan requires plan and worktreePath in args' } }
+    if (!plan) {
+      return { status: 400, body: { error: 'show_plan requires plan in args' } }
+    }
+
+    // Use the authoritative worktree path from the terminal attachment,
+    // falling back to what Claude provided. The terminal-to-worktree mapping
+    // is set when the terminal is spawned and always matches the WorktreePane's path.
+    const worktreePath = getWorktreeForTerminal(terminalId) ?? claudeWorktreePath
+    if (!worktreePath) {
+      return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
     }
 
     // Persist the plan to disk so it survives app restarts
@@ -86,6 +95,8 @@ function handleToolCall(payload: ToolCallPayload, webContents: WebContents): { s
     const key = `${worktreePath}:claude-${terminalId}`
     if (!webContents.isDestroyed()) {
       webContents.send('plan:from-claude', { key, terminalId, plan })
+    } else {
+      console.warn(`[MCP Bridge] webContents is destroyed, cannot send plan:from-claude IPC`)
     }
 
     return { status: 200, body: { ok: true } }
