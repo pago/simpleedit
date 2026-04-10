@@ -16,6 +16,7 @@
 
   const key = $derived(planKey(worktreePath, commitHash))
   const planState = $derived(planStore.get(key))
+  const isFromClaude = $derived(!!planState?.sourceTerminalId)
 
   // Expanded task ids
   let expandedIds = $state(new Set<string>())
@@ -191,6 +192,23 @@
     discussionInputs = next
   }
 
+  // Claude session feedback input
+  let claudeFeedbackInput = $state('')
+
+  function handleSendFeedback(): void {
+    const text = claudeFeedbackInput.trim()
+    if (!text) return
+    planStore.sendFeedbackToSession(key, text)
+    claudeFeedbackInput = ''
+  }
+
+  function handleFeedbackKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      handleSendFeedback()
+    }
+  }
+
   // Description input for empty state
   let planDescription = $state('')
 
@@ -243,7 +261,12 @@
   function autoReviseFromFeedback(): void {
     const feedback = collectFeedbackSummary()
     if (!feedback) return
-    revisePlan(worktreePath, commitHash, feedback)
+    if (isFromClaude) {
+      // Route feedback to the originating Claude session
+      planStore.sendFeedbackToSession(key, feedback)
+    } else {
+      revisePlan(worktreePath, commitHash, feedback)
+    }
   }
 
   // ── Start task / Start all ──────────────────────────────
@@ -270,25 +293,30 @@
     terminalToTasks = next
   }
 
-  function startTask(task: PlanTask): void {
+  function startTask(task: PlanTask, target?: string | 'new'): void {
     const message = buildTaskMessage(task)
-    const termId = onsendtoagent?.('new', message)
+    const dest = target ?? (isFromClaude ? planState!.sourceTerminalId! : 'new')
+    const termId = onsendtoagent?.(dest, message)
     trackTerminal(termId, [task.id])
     planStore.updateTaskStatus(key, task.id, 'in-progress')
     savePlanState()
   }
 
-  function startAllTasks(): void {
+  function startAllTasks(target?: string | 'new'): void {
     const todoTasks = activeTasks.filter((t) => t.status === 'todo')
     if (todoTasks.length === 0) return
     const message = buildAllTasksMessage(todoTasks)
-    const termId = onsendtoagent?.('new', message)
+    const dest = target ?? (isFromClaude ? planState!.sourceTerminalId! : 'new')
+    const termId = onsendtoagent?.(dest, message)
     trackTerminal(termId, todoTasks.map((t) => t.id))
     for (const t of todoTasks) {
       planStore.updateTaskStatus(key, t.id, 'in-progress')
     }
     savePlanState()
   }
+
+  // Track which task's agent dropdown is open
+  let openAgentDropdown = $state<string | null>(null)
 
   function savePlanState(): void {
     const plan = planStore.toPlan(key)
@@ -365,6 +393,15 @@
         <p class="text-xs text-zinc-600">Tasks will appear here as they are planned</p>
       </div>
     {:else}
+      <!-- Claude session indicator -->
+      {#if isFromClaude}
+        <div class="mb-3 flex items-center gap-2 rounded border border-purple-800/40 bg-purple-950/30 px-3 py-1.5">
+          <span class="text-[10px] text-purple-400">✦ From Claude session</span>
+          <span class="text-[10px] text-purple-600">·</span>
+          <span class="font-mono text-[10px] text-purple-500">{planState.sourceTerminalId}</span>
+        </div>
+      {/if}
+
       <!-- Overview -->
       {#if planState.overview}
         <div class="mb-4">
@@ -383,11 +420,20 @@
             {#if todoTasks.length > 0 && planState.status === 'done'}
               <button
                 class="rounded bg-orange-700/80 px-2 py-1 text-[10px] text-orange-200 hover:bg-orange-600"
-                onclick={startAllTasks}
-                title="Start all remaining tasks with a new Claude agent"
+                onclick={() => startAllTasks()}
+                title={isFromClaude ? 'Start all with originating Claude session' : 'Start all remaining tasks with a new Claude agent'}
               >
                 ✦ Start All ({todoTasks.length})
               </button>
+              {#if isFromClaude}
+                <button
+                  class="rounded bg-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-600"
+                  onclick={() => startAllTasks('new')}
+                  title="Start all with a new Claude agent"
+                >
+                  New Session
+                </button>
+              {/if}
             {/if}
           </div>
         </div>
@@ -451,13 +497,50 @@
                 </span>
               {/if}
               {#if task.status === 'todo'}
-                <button
-                  class="rounded bg-orange-700/80 px-2 py-0.5 text-[10px] text-orange-200 hover:bg-orange-600"
-                  onclick={() => startTask(task)}
-                  title="Start this task with a new Claude agent"
-                >
-                  Start
-                </button>
+                {#if isFromClaude}
+                  <div class="relative">
+                    <button
+                      class="rounded bg-orange-700/80 px-2 py-0.5 text-[10px] text-orange-200 hover:bg-orange-600"
+                      onclick={() => startTask(task)}
+                      title="Send to originating Claude session"
+                    >
+                      Start
+                    </button>
+                    <button
+                      class="ml-0.5 rounded bg-orange-700/80 px-1 py-0.5 text-[10px] text-orange-200 hover:bg-orange-600"
+                      onclick={() => (openAgentDropdown = openAgentDropdown === task.id ? null : task.id)}
+                      title="Choose where to send"
+                    >▾</button>
+                    {#if openAgentDropdown === task.id}
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <div
+                        class="absolute right-0 top-full z-10 mt-1 min-w-[140px] rounded border border-zinc-700 bg-zinc-800 py-1 shadow-lg"
+                        onmouseleave={() => (openAgentDropdown = null)}
+                      >
+                        <button
+                          class="block w-full px-3 py-1 text-left text-[10px] text-zinc-300 hover:bg-zinc-700"
+                          onclick={() => { startTask(task, planState!.sourceTerminalId!); openAgentDropdown = null }}
+                        >
+                          Send to Claude session
+                        </button>
+                        <button
+                          class="block w-full px-3 py-1 text-left text-[10px] text-zinc-300 hover:bg-zinc-700"
+                          onclick={() => { startTask(task, 'new'); openAgentDropdown = null }}
+                        >
+                          New Claude session
+                        </button>
+                      </div>
+                    {/if}
+                  </div>
+                {:else}
+                  <button
+                    class="rounded bg-orange-700/80 px-2 py-0.5 text-[10px] text-orange-200 hover:bg-orange-600"
+                    onclick={() => startTask(task)}
+                    title="Start this task with a new Claude agent"
+                  >
+                    Start
+                  </button>
+                {/if}
               {/if}
             </div>
 
@@ -509,7 +592,7 @@
                       class="rounded bg-purple-700/80 px-2 py-1 text-[10px] text-purple-200 hover:bg-purple-600"
                       onclick={() => addDiscussionMessage(task.id)}
                     >
-                      ✦ Revise
+                      {isFromClaude ? 'Send to Claude' : '✦ Revise'}
                     </button>
                   </div>
                 </div>
@@ -547,29 +630,57 @@
         </div>
       {/if}
 
-      <!-- General adjustments -->
+      <!-- Feedback / Adjustments -->
       {#if activeTasks.length > 0}
-        <div class="mt-3 border-t border-zinc-800 pt-3">
-          <label class="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-            Adjustments
-          </label>
-          <div class="flex gap-1.5">
-            <input
-              type="text"
-              bind:value={revisionInput}
-              class="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500"
-              placeholder="e.g. Split task 2 into smaller pieces, add error handling…"
-              onkeydown={handleRevisionKeydown}
-            />
-            <button
-              class="rounded bg-purple-700/80 px-2 py-1 text-xs text-purple-200 hover:bg-purple-600 disabled:cursor-not-allowed disabled:opacity-40"
-              onclick={handleRevise}
-              disabled={!revisionInput.trim() && !hasFeedback}
-            >
-              ✦ Revise Plan
-            </button>
+        {#if isFromClaude}
+          <div class="mt-3 border-t border-zinc-800 pt-3">
+            <label class="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+              Feedback to Claude
+            </label>
+            <div class="flex gap-1.5">
+              <input
+                type="text"
+                bind:value={claudeFeedbackInput}
+                class="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-purple-500"
+                placeholder="Suggest changes, ask questions about the plan…"
+                onkeydown={handleFeedbackKeydown}
+              />
+              <button
+                class="rounded bg-purple-700/80 px-2 py-1 text-xs text-purple-200 hover:bg-purple-600 disabled:cursor-not-allowed disabled:opacity-40"
+                onclick={handleSendFeedback}
+                disabled={!claudeFeedbackInput.trim()}
+              >
+                Send to Claude
+              </button>
+            </div>
+            <p class="mt-1 text-[10px] text-zinc-600">
+              Includes your reactions and comments on tasks.
+              {navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to send
+            </p>
           </div>
-        </div>
+        {:else}
+          <div class="mt-3 border-t border-zinc-800 pt-3">
+            <label class="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+              Adjustments
+            </label>
+            <div class="flex gap-1.5">
+              <input
+                type="text"
+                bind:value={revisionInput}
+                class="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500"
+                placeholder="e.g. Split task 2 into smaller pieces, add error handling…"
+                onkeydown={handleRevisionKeydown}
+              />
+              <button
+                class="rounded bg-purple-700/80 px-2 py-1 text-xs text-purple-200 hover:bg-purple-600 disabled:cursor-not-allowed disabled:opacity-40"
+                onclick={handleRevise}
+                disabled={!revisionInput.trim() && !hasFeedback}
+              >
+                ✦ Revise Plan
+              </button>
+            </div>
+          </div>
+        {/if}
       {/if}
     {/if}
   </div>

@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { GitCommitInfo } from '../../../shared/ipc-types'
-  import { diffReviewStore, startReview } from '../../stores/diffReview.svelte'
+  import { diffReviewStore, startReview, startPlanReview } from '../../stores/diffReview.svelte'
   import { triggerTour } from '../../stores/tourStore.svelte'
+  import { planStore } from '../../stores/planStore.svelte'
 
   interface Props {
     worktreePath: string | null
@@ -88,9 +89,15 @@
     triggerTour(worktreePath, 'branch')
   }
 
-  function openPlan(): void {
+  async function openPlan(): Promise<void> {
     if (!worktreePath) return
-    startReview(worktreePath, { hash: 'plan', message: 'Plan' })
+    // Prefer reopening the most recent Claude-originated plan if one exists (check disk too)
+    const claudeTerminalId = await planStore.loadLatestClaudePlanTerminalId(worktreePath)
+    if (claudeTerminalId) {
+      startPlanReview(worktreePath, { hash: `plan-claude:${claudeTerminalId}`, message: 'Claude Plan' })
+    } else {
+      startPlanReview(worktreePath, { hash: 'plan', message: 'Plan' })
+    }
   }
 
   $effect(() => {

@@ -28,6 +28,7 @@ import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startPlan, startPlanFromDescription, revisePlan, cancelPlan, cancelAllPlans, loadPlan, savePlan } from './plan'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
+import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan } from './mcp-bridge'
 import type { JsonRpcMessage } from '../shared/ipc-types'
 
 // ── Per-window repo tracking ──────────────────────────────
@@ -71,9 +72,13 @@ function createWindow(repoPath?: string): BrowserWindow {
   if (repoPath) {
     windowRepoMap.set(webContentsId, repoPath)
     addRecentRepo(repoPath)
+    startBridge(webContentsId, win.webContents).catch((err) => {
+      console.error('[SimpleEdit] Failed to start MCP bridge:', err)
+    })
   }
 
   win.on('closed', () => {
+    stopBridge(webContentsId)
     windowRepoMap.delete(webContentsId)
   })
 
@@ -115,6 +120,9 @@ function registerAllHandlers(): void {
     if (win) {
       win.setTitle(`SimpleEdit — ${basename(repoPath).replace('.git', '')}`)
     }
+    startBridge(event.sender.id, event.sender).catch((err) => {
+      console.error('[SimpleEdit] Failed to start MCP bridge:', err)
+    })
   })
 
   ipcMain.handle('app:pick-repo', async (event) => {
@@ -233,7 +241,14 @@ function registerAllHandlers(): void {
 
   // ── Claude stream ───────────────────────────────────────
   ipcMain.handle('claude:spawn', (event, options: PtySpawnOptions) => {
-    spawnClaudeTerminal(options, event.sender)
+    const bridge = getBridgeInfo(event.sender.id)
+    spawnClaudeTerminal(
+      {
+        ...options,
+        ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
+      },
+      event.sender
+    )
     attachToTerminal(options.id, options.worktreePath, event.sender)
   })
 
@@ -345,6 +360,10 @@ function registerAllHandlers(): void {
     return revisePlan(worktreePath, commitHash, feedback, event.sender)
   })
 
+  ipcMain.handle('plan:latest-claude', (_event, worktreePath: string) => {
+    return loadLatestClaudePlan(worktreePath)
+  })
+
   // ── LSP ─────────────────────────────────────────────────
   ipcMain.handle('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
     try {
@@ -419,6 +438,7 @@ app.on('before-quit', () => {
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllPlans() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
+  try { stopAllBridges() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
@@ -429,6 +449,7 @@ app.on('window-all-closed', () => {
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllPlans() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
+  try { stopAllBridges() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }

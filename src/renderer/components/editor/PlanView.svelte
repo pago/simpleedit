@@ -5,20 +5,28 @@
 
   interface Props {
     worktreePath: string
+    commitHash?: string | null
     terminals: AgentTabInfo[]
     onclose: () => void
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
   }
 
-  let { worktreePath, terminals, onclose, onsendtoagent }: Props = $props()
+  let { worktreePath, commitHash = 'user-plan', terminals, onclose, onsendtoagent }: Props = $props()
 
   let description = $state('')
   let inputExpanded = $state(false)
+  /** When true, override the Claude plan view to show the user-plan input instead. */
+  let showingUserPlan = $state(false)
 
-  const key = $derived(planKey(worktreePath, 'user-plan'))
+  const baseHash = $derived(commitHash ?? 'user-plan')
+  const effectiveHash = $derived(showingUserPlan ? 'user-plan' : baseHash)
+  const key = $derived(planKey(worktreePath, effectiveHash))
   const planState = $derived(planStore.get(key))
   const isGenerating = $derived(planState?.status === 'running' || planState?.status === 'revising')
   const hasPlan = $derived(planState && planState.tasks.length > 0)
+  const isFromClaude = $derived(!!planState?.sourceTerminalId)
+  /** True when the original commitHash points to a Claude plan (even if we're showing user plan). */
+  const hasClaudePlan = $derived(baseHash !== 'user-plan' && baseHash !== null)
 
   function handleGenerate(): void {
     const text = description.trim()
@@ -31,6 +39,15 @@
       e.preventDefault()
       handleGenerate()
     }
+  }
+
+  function switchToUserPlan(): void {
+    showingUserPlan = true
+  }
+
+  function switchToClaudePlan(): void {
+    showingUserPlan = false
+    inputExpanded = false
   }
 </script>
 
@@ -48,25 +65,52 @@
 
   <!-- Content -->
   <div class="flex min-h-0 flex-1 flex-col">
-    <!-- Description input area — collapsed when a plan exists -->
-    {#if hasPlan && !inputExpanded}
+    <!-- Description input area -->
+    {#if isFromClaude && !inputExpanded}
+      <!-- Claude plan active — offer to create a new user plan -->
+      <button
+        class="flex w-full items-center gap-2 border-b border-zinc-800 bg-zinc-950 px-4 py-2 text-left text-xs text-zinc-500 hover:bg-zinc-900 hover:text-zinc-400"
+        onclick={switchToUserPlan}
+      >
+        <span>✦ New plan...</span>
+        <span class="text-[10px] text-zinc-600">(replaces Claude plan)</span>
+      </button>
+    {:else if !isFromClaude && (hasPlan || showingUserPlan) && !inputExpanded}
+      <!-- Existing user plan or just switched from Claude — show collapsed trigger -->
+      {#if showingUserPlan && hasClaudePlan}
+        <button
+          class="flex w-full items-center gap-2 border-b border-zinc-800/50 bg-zinc-950 px-4 py-1 text-left text-[10px] text-zinc-600 hover:text-zinc-400"
+          onclick={switchToClaudePlan}
+        >
+          &larr; Back to Claude plan
+        </button>
+      {/if}
       <button
         class="flex w-full items-center gap-2 border-b border-zinc-800 bg-zinc-950 px-4 py-2 text-left text-xs text-zinc-500 hover:bg-zinc-900 hover:text-zinc-400"
         onclick={() => (inputExpanded = true)}
       >
         <span>✦ New plan…</span>
-        <span class="text-[10px] text-zinc-600">(replaces current)</span>
+        <span class="text-[10px] text-zinc-600">{hasClaudePlan ? '(replaces Claude plan)' : '(replaces current)'}</span>
       </button>
-    {:else}
+    {:else if inputExpanded || (!isFromClaude && !hasPlan && !showingUserPlan)}
+      <!-- Expanded description input form -->
+      {#if showingUserPlan && hasClaudePlan && !isGenerating}
+        <button
+          class="flex w-full items-center gap-2 border-b border-zinc-800/50 bg-zinc-950 px-4 py-1 text-left text-[10px] text-zinc-600 hover:text-zinc-400"
+          onclick={switchToClaudePlan}
+        >
+          &larr; Back to Claude plan
+        </button>
+      {/if}
       <div class="border-b border-zinc-800 bg-zinc-950 px-4 py-3">
         <div class="flex items-center justify-between">
           <label class="mb-1.5 block text-xs font-medium text-zinc-400">
-            {hasPlan ? 'Replace current plan' : 'What would you like to plan?'}
+            {hasPlan || (showingUserPlan && hasClaudePlan) ? 'Replace current plan' : 'What would you like to plan?'}
           </label>
-          {#if hasPlan}
+          {#if hasPlan || (showingUserPlan && hasClaudePlan)}
             <button
               class="mb-1.5 text-[10px] text-zinc-600 hover:text-zinc-400"
-              onclick={() => (inputExpanded = false)}
+              onclick={() => { inputExpanded = false; if (hasClaudePlan) switchToClaudePlan() }}
             >✕</button>
           {/if}
         </div>
@@ -108,7 +152,7 @@
     <div class="min-h-0 flex-1">
       <PlanPanel
         {worktreePath}
-        commitHash="user-plan"
+        commitHash={effectiveHash}
         {terminals}
         {onsendtoagent}
         hideEmptyInput
