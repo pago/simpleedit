@@ -181,7 +181,11 @@ describe('MCP Bridge — HTTP endpoints', () => {
   })
 })
 
-describe('MCP Server → Bridge integration', () => {
+// This test requires the built MCP server artifact (out/mcp-server/index.mjs).
+// Skip in CI where it may not be available during the unit test phase.
+const skipIntegration = !!process.env.CI
+
+describe.skipIf(skipIntegration)('MCP Server → Bridge integration', () => {
   const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', 'out', 'mcp-server', 'index.mjs')
   let port: number
   let token: string
