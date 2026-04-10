@@ -1,11 +1,55 @@
 import * as pty from 'node-pty'
-import type { WebContents } from 'electron'
+import { app, type WebContents } from 'electron'
+import { writeFileSync, unlinkSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import type { PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
 
 type IPty = pty.IPty
 
 const terminals = new Map<string, IPty>()
+const mcpConfigPaths = new Map<string, string>()
+
+export interface ClaudeSpawnOptions extends PtySpawnOptions {
+  bridgePort?: number
+  bridgeToken?: string
+}
+
+function getMcpServerPath(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'mcp-server', 'index.mjs')
+  }
+  return join(app.getAppPath(), 'out', 'mcp-server', 'index.mjs')
+}
+
+function writeMcpConfig(terminalId: string, bridgePort: number, bridgeToken: string): string {
+  const configPath = join(tmpdir(), `simpleedit-mcp-${terminalId}.json`)
+  const config = {
+    mcpServers: {
+      simpleedit: {
+        type: 'stdio',
+        command: 'node',
+        args: [getMcpServerPath()],
+        env: {
+          SIMPLEEDIT_BRIDGE_PORT: String(bridgePort),
+          SIMPLEEDIT_BRIDGE_TOKEN: bridgeToken,
+          SIMPLEEDIT_TERMINAL_ID: terminalId
+        }
+      }
+    }
+  }
+  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  return configPath
+}
+
+function cleanupMcpConfig(terminalId: string): void {
+  const configPath = mcpConfigPaths.get(terminalId)
+  if (configPath) {
+    try { unlinkSync(configPath) } catch { /* file may already be gone */ }
+    mcpConfigPaths.delete(terminalId)
+  }
+}
 
 function defaultShell(): string {
   if (process.platform === 'win32') {
@@ -55,19 +99,27 @@ export function spawnTerminal(
 }
 
 export function spawnClaudeTerminal(
-  options: PtySpawnOptions,
+  options: ClaudeSpawnOptions,
   webContents: WebContents
 ): void {
-  const { id, worktreePath } = options
+  const { id, worktreePath, bridgePort, bridgeToken } = options
 
   if (terminals.has(id)) {
     return
   }
 
+  let claudeCmd = 'claude --output-format stream-json'
+
+  if (bridgePort != null && bridgeToken != null) {
+    const configPath = writeMcpConfig(id, bridgePort, bridgeToken)
+    mcpConfigPaths.set(id, configPath)
+    claudeCmd += ` --mcp-config ${configPath}`
+  }
+
   const shell = defaultShell()
   // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
   // ensuring claude is on PATH regardless of how it was installed.
-  const term = pty.spawn(shell, ['-i', '-l', '-c', 'claude --output-format stream-json'], getPtyOptions(worktreePath))
+  const term = pty.spawn(shell, ['-i', '-l', '-c', claudeCmd], getPtyOptions(worktreePath))
 
   terminals.set(id, term)
 
@@ -79,6 +131,7 @@ export function spawnClaudeTerminal(
   })
 
   term.onExit(({ exitCode }: { exitCode: number }) => {
+    cleanupMcpConfig(id)
     terminals.delete(id)
     if (!webContents.isDestroyed()) {
       webContents.send('pty:exit', { id, exitCode })
@@ -104,6 +157,7 @@ export function killTerminal(id: string): void {
   const term = terminals.get(id)
   if (term) {
     try { term.kill() } catch { /* process may already be dead */ }
+    cleanupMcpConfig(id)
     terminals.delete(id)
   }
 }
@@ -115,6 +169,7 @@ export function getActiveTerminalIds(): string[] {
 export function killAllTerminals(): void {
   for (const [id, term] of terminals) {
     try { term.kill() } catch { /* process may already be dead */ }
+    cleanupMcpConfig(id)
     terminals.delete(id)
   }
 }

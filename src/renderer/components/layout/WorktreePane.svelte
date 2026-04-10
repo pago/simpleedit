@@ -7,7 +7,8 @@
   import PlanView from '../editor/PlanView.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
   import type { OpenFile } from '../../stores/activeFile.svelte'
-  import { diffReviewStore, closeReview, startReview } from '../../stores/diffReview.svelte'
+  import { diffReviewStore, closeReview, startReview, startPlanReview, isPlanHash, getClaudeTerminalFromHash } from '../../stores/diffReview.svelte'
+  import { planStore } from '../../stores/planStore.svelte'
   import { createAgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
@@ -40,6 +41,44 @@
       startReview(worktreePath, { hash: action.hash, message: action.message })
     }
   })
+
+  // Plan-from-Claude notification state
+  let pendingPlanNotification = $state<{ key: string; terminalId: string } | null>(null)
+
+  // Listen for plan:from-claude events targeted at this worktree
+  $effect(() => {
+    const wt = worktreePath
+    const unsub = window.api.on('plan:from-claude', (data) => {
+      // The key format from MCP bridge is `worktreePath:claude-terminalId`
+      if (!data.key.startsWith(wt + ':')) return
+
+      // Store the plan data in the planStore
+      planStore.receivePlanFromClaude(data.key, data.terminalId, data.plan)
+
+      const claudePlanHash = `plan-claude:${data.terminalId}`
+      const current = diffReviewStore.get(wt)
+
+      if (current && isPlanHash(current.hash)) {
+        // Already in plan mode — update in-place (store handles merge)
+        startPlanReview(wt, { hash: claudePlanHash, message: 'Claude Plan' })
+      } else {
+        // Show non-intrusive notification instead of forcibly switching
+        pendingPlanNotification = { key: data.key, terminalId: data.terminalId }
+      }
+    })
+    return unsub
+  })
+
+  function activatePendingPlan(): void {
+    if (!pendingPlanNotification) return
+    const claudePlanHash = `plan-claude:${pendingPlanNotification.terminalId}`
+    startPlanReview(worktreePath, { hash: claudePlanHash, message: 'Claude Plan' })
+    pendingPlanNotification = null
+  }
+
+  function dismissPlanNotification(): void {
+    pendingPlanNotification = null
+  }
 
   // Popover state
   let popoverState = $state<{ x: number; y: number; ctx: AgentContext } | null>(null)
@@ -166,16 +205,39 @@
 
 <div
   id="pane-{paneId}"
-  class="flex h-full flex-col"
+  class="relative flex h-full flex-col"
   class:select-none={isResizing}
 >
+  <!-- Plan notification toast -->
+  {#if pendingPlanNotification}
+    <div class="absolute left-1/2 top-2 z-20 -translate-x-1/2">
+      <div class="flex items-center gap-2 rounded-lg border border-purple-800/50 bg-purple-950/90 px-3 py-2 shadow-lg backdrop-blur-sm">
+        <span class="text-xs text-purple-300">✦ Claude generated a plan</span>
+        <button
+          class="rounded bg-purple-700 px-2 py-0.5 text-[10px] text-purple-200 hover:bg-purple-600"
+          onclick={activatePendingPlan}
+        >
+          View
+        </button>
+        <button
+          class="text-[10px] text-purple-500 hover:text-purple-300"
+          onclick={dismissPlanNotification}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Top: editor/diff + file tree -->
   <div class="flex min-h-0" style:height="{verticalSplit}%">
     <!-- Editor / Diff review area (left, takes remaining space) -->
     <div class="flex flex-1 flex-col overflow-hidden">
-      {#if reviewingCommit?.hash === 'plan'}
+      {#if reviewingCommit && isPlanHash(reviewingCommit.hash)}
+        {@const claudeTerminalId = getClaudeTerminalFromHash(reviewingCommit.hash)}
         <PlanView
           {worktreePath}
+          commitHash={claudeTerminalId ? `claude-${claudeTerminalId}` : 'user-plan'}
           terminals={agentStore.terminals}
           onclose={closeDiffReview}
           onsendtoagent={sendToAgent}

@@ -212,12 +212,14 @@ export interface PlanInvokeMap {
   'plan:load': { args: [worktreePath: string, commitHash: string | null]; result: Plan | null }
   'plan:save': { args: [worktreePath: string, commitHash: string | null, plan: Plan]; result: void }
   'plan:revise': { args: [worktreePath: string, commitHash: string | null, feedback: string]; result: void }
+  'plan:latest-claude': { args: [worktreePath: string]; result: string | null }
 }
 
 export interface PlanEventMap {
   'plan:overview': { key: string; overview: string }
   'plan:task': { key: string; task: PlanTask }
   'plan:status': { key: string; status: PlanStatus; error?: string }
+  'plan:from-claude': { key: string; terminalId: string; plan: Plan }
 }
 
 // ── App-level ─────────────────────────────────────────────

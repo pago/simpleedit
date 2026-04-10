@@ -165,6 +165,101 @@ test.describe('Plan Mode — Lifecycle', () => {
   })
 })
 
+test.describe('Plan Mode — Claude-originated plan', () => {
+  test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run Plan Mode tests')
+
+  let app: ElectronApplication
+  let window: Page
+
+  test.beforeEach(async () => {
+    app = await electron.launch({
+      args: [MAIN, ...SANDBOX_ARGS],
+      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+    })
+    window = await app.firstWindow()
+    await window.waitForLoadState('domcontentloaded')
+    await window.waitForTimeout(2000)
+  })
+
+  test.afterEach(async () => {
+    await app.close()
+  })
+
+  /** Get the active worktree path from the renderer. */
+  async function getWorktreePath(): Promise<string> {
+    return window.evaluate(() =>
+      (window as unknown as { api: { invoke: (ch: string) => Promise<Array<{ path: string }>> } })
+        .api.invoke('worktree:list').then((list) => list[0]?.path ?? '')
+    )
+  }
+
+  /** Send a plan:from-claude IPC event using the correct worktree path. */
+  async function sendPlan(terminalId: string, overview: string): Promise<void> {
+    const wt = await getWorktreePath()
+    await app.evaluate(
+      ({ BrowserWindow }, { wt: worktreePath, tid, overview: ov }) => {
+        const win = BrowserWindow.getAllWindows()[0]
+        if (!win) return
+        win.webContents.send('plan:from-claude', {
+          key: `${worktreePath}:claude-${tid}`,
+          terminalId: tid,
+          plan: {
+            overview: ov,
+            tasks: [
+              { id: 'e2e1', title: 'E2E Task', description: 'Test task', status: 'todo', reactions: [], discussion: [] }
+            ]
+          }
+        })
+      },
+      { wt, tid: terminalId, overview }
+    )
+  }
+
+  test('plan notification toast appears when Claude sends a plan via bridge', async () => {
+    await sendPlan('test-terminal', 'E2E Test Plan')
+    await window.waitForTimeout(1000)
+
+    const toast = window.locator('text=Claude generated a plan')
+    await expect(toast).toBeVisible({ timeout: 5000 })
+  })
+
+  test('clicking View on toast opens PlanView', async () => {
+    await sendPlan('view-term', 'Viewable Plan')
+    await window.waitForTimeout(1000)
+
+    const toastContainer = window.locator('div:has(> span:text("Claude generated a plan"))')
+    const viewBtn = toastContainer.locator('button:has-text("View")')
+    await expect(viewBtn).toBeVisible({ timeout: 5000 })
+    await viewBtn.click()
+    await window.waitForTimeout(500)
+
+    const indicator = window.locator('span:text-is("✦ From Claude session")')
+    await expect(indicator).toBeVisible({ timeout: 5000 })
+  })
+
+  test('Send to Claude button appears for Claude-originated plans', async () => {
+    await sendPlan('feedback-term', 'Feedback Plan')
+    await window.waitForTimeout(1000)
+
+    const toastContainer = window.locator('div:has(> span:text("Claude generated a plan"))')
+    const viewBtn = toastContainer.locator('button:has-text("View")')
+    await expect(viewBtn).toBeVisible({ timeout: 5000 })
+    await viewBtn.click()
+    await window.waitForTimeout(500)
+
+    const sendBtn = window.locator('button:has-text("Send to Claude")')
+    await expect(sendBtn).toBeVisible({ timeout: 5000 })
+  })
+
+  test('PlanView shows user-plan textarea when not from Claude', async () => {
+    await openPlanView(window)
+    await window.waitForTimeout(500)
+
+    const textarea = window.locator('textarea').first()
+    await expect(textarea).toBeVisible({ timeout: 3000 })
+  })
+})
+
 test.describe('Plan Mode — DiffReview tab', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run Plan Mode tests')
 
