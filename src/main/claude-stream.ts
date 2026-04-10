@@ -100,6 +100,14 @@ function sendStatus(
 }
 
 /**
+ * Look up the worktree path for a terminal by its ID.
+ * Returns null if the terminal is not attached.
+ */
+export function getWorktreeForTerminal(terminalId: string): string | null {
+  return attachments.get(terminalId)?.worktreePath ?? null
+}
+
+/**
  * Start monitoring a terminal's PTY output for Claude Code TUI events.
  */
 export function attachToTerminal(
