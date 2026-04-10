@@ -1,5 +1,21 @@
 # simpleedit
 
+## 0.10.0
+
+### Minor Changes
+
+- [#49](https://github.com/pago/simpleedit/pull/49) [`2a5f94f`](https://github.com/pago/simpleedit/commit/2a5f94fe2c00e73677bba2b5826003eb1fbcfe28) Thanks [@pago](https://github.com/pago)! - Add Claude-originated plan support via MCP bridge. When Claude Code calls the `show_plan` MCP tool from an interactive terminal session, the plan is displayed in Plan Mode with a feedback loop back to the originating session. Includes plan persistence across app restarts, toast notifications, session-aware task routing, and per-task feedback that routes to Claude.
+
+### Patch Changes
+
+- [#46](https://github.com/pago/simpleedit/pull/46) [`b6a235c`](https://github.com/pago/simpleedit/commit/b6a235ca3b62eb8bc8504de6022b40cc986b574d) Thanks [@pago](https://github.com/pago)! - Fix terminal height not updating on resize due to undefined `buf` reference in `fitPreservingScroll`.
+
+- [#47](https://github.com/pago/simpleedit/pull/47) [`c43bbdc`](https://github.com/pago/simpleedit/commit/c43bbdc680f7c4dbe0e509704cb1397689c962e1) Thanks [@pago](https://github.com/pago)! - Fix plan mode: deduplicate plan form and auto-complete tasks when Claude finishes.
+
+  - PlanView no longer shows two description forms (PlanPanel's empty-state input is suppressed when embedded in PlanView)
+  - Plan tasks now transition from "in-progress" to "done" when the associated Claude terminal goes idle
+  - claude:status IPC event now includes terminalId for per-terminal tracking
+
 ## 0.9.0
 
 ### Minor Changes
