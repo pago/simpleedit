@@ -1,15 +1,21 @@
 <script lang="ts">
   import FileTree from '../filetree/FileTree.svelte'
   import TerminalTabs from '../terminal/TerminalTabs.svelte'
-  import EditorTabs from '../editor/EditorTabs.svelte'
-  import CodeEditor from '../editor/CodeEditor.svelte'
-  import DiffReview from '../editor/DiffReview.svelte'
-  import PlanView from '../editor/PlanView.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
-  import type { OpenFile } from '../../stores/activeFile.svelte'
-  import { diffReviewStore, closeReview, startReview, startPlanReview, startTourReview, isPlanHash, getClaudeTerminalFromHash } from '../../stores/diffReview.svelte'
+  import PaneTabBar from './PaneTabBar.svelte'
+  import TabContainer from './TabContainer.svelte'
+  import {
+    diffReviewStore,
+    closeReview,
+    startReview,
+    startPlanReview,
+    startTourReview,
+    isPlanHash,
+    getClaudeTerminalFromHash,
+  } from '../../stores/diffReview.svelte'
   import { planStore } from '../../stores/planStore.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
+  import { tabsStore, tabIdFor, type Tab, type FileTab, type DiffTab, type PlanTab } from '../../stores/tabsStore.svelte'
   import { createAgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
@@ -21,15 +27,56 @@
 
   let { worktreePath, paneId }: Props = $props()
 
-  // Per-pane file state (independent from other panes)
-  let openFiles = $state<OpenFile[]>([])
-  let activeFilePath = $state<string | null>(null)
-
-  // Diff review state from store
-  let reviewingCommit = $derived(diffReviewStore.get(worktreePath) ?? null)
-
   // Per-pane agent terminal store (shared between TerminalTabs and editors)
   const agentStore = createAgentTerminalStore()
+
+  // Reactive view of the unified tab list for this worktree.
+  let tabs = $derived(tabsStore.list(worktreePath))
+  let activeTab = $derived(tabsStore.active(worktreePath))
+  let activeId = $derived(tabsStore.activeId(worktreePath))
+  let peekId = $derived(tabsStore.peekId(worktreePath))
+  let unreadIds = $derived(new Set(tabs.filter((t) => tabsStore.isUnread(worktreePath, t.id)).map((t) => t.id)))
+
+  // Mirror diffReviewStore → tabsStore. diffReviewStore remains the external
+  // API for GitLog / palette / claude bridges until Phases 2/3 migrate them.
+  let lastMirroredId = $state<string | null>(null)
+  $effect(() => {
+    const review = diffReviewStore.get(worktreePath)
+    let nextTab: Tab | null = null
+    if (review) {
+      if (isPlanHash(review.hash)) {
+        const claudeTerminalId = getClaudeTerminalFromHash(review.hash)
+        const planHash = claudeTerminalId ? `claude-${claudeTerminalId}` : 'user-plan'
+        const id = tabIdFor({ kind: 'plan', planHash })
+        nextTab = {
+          kind: 'plan',
+          id,
+          planHash,
+          label: review.message,
+          claudeTerminalId: claudeTerminalId ?? null,
+        } satisfies PlanTab
+      } else {
+        const id = tabIdFor({ kind: 'diff', commitHash: review.hash })
+        nextTab = {
+          kind: 'diff',
+          id,
+          commitHash: review.hash,
+          commitMessage: review.message,
+          initialTab: review.initialTab,
+        } satisfies DiffTab
+      }
+    }
+    // Close the previous mirrored tab if switching targets (e.g. commit A → B).
+    if (lastMirroredId && lastMirroredId !== nextTab?.id) {
+      tabsStore.close(worktreePath, lastMirroredId)
+    }
+    if (nextTab) {
+      tabsStore.open(worktreePath, nextTab)
+      lastMirroredId = nextTab.id
+    } else {
+      lastMirroredId = null
+    }
+  })
 
   // Consume palette actions targeting this pane's worktree
   $effect(() => {
@@ -46,24 +93,19 @@
   // Plan-from-Claude notification state
   let pendingPlanNotification = $state<{ key: string; terminalId: string } | null>(null)
 
-  // Listen for plan:from-claude events targeted at this worktree
   $effect(() => {
     const wt = worktreePath
     const unsub = window.api.on('plan:from-claude', (data) => {
-      // The key format from MCP bridge is `worktreePath:claude-terminalId`
       if (!data.key.startsWith(wt + ':')) return
 
-      // Store the plan data in the planStore
       planStore.receivePlanFromClaude(data.key, data.terminalId, data.plan)
 
       const claudePlanHash = `plan-claude:${data.terminalId}`
       const current = diffReviewStore.get(wt)
 
       if (current && isPlanHash(current.hash)) {
-        // Already in plan mode — update in-place (store handles merge)
         startPlanReview(wt, { hash: claudePlanHash, message: 'Claude Plan' })
       } else {
-        // Show non-intrusive notification instead of forcibly switching
         pendingPlanNotification = { key: data.key, terminalId: data.terminalId }
       }
     })
@@ -84,24 +126,22 @@
   // Tour-from-Claude notification state
   let pendingTourNotification = $state<{ commitHash: string | null; hasOpenQuestions: boolean } | null>(null)
 
-  // Listen for tour:from-claude events targeted at this worktree
   $effect(() => {
     const wt = worktreePath
     const unsub = window.api.on('tour:from-claude', (data) => {
       if (data.worktreePath !== wt) return
 
-      // Record the tour in the store so it's ready when the user opens it
       tourStore.receiveTourFromClaude(data.key, data.tour)
 
       const current = diffReviewStore.get(wt)
       const alreadyViewing = current !== undefined && current.hash === data.commitHash
 
       if (alreadyViewing) {
-        // User is already in the matching review — leave their tab alone, tour content refreshes via the store
         return
       }
 
-      const paneEmpty = current === undefined && openFiles.length === 0
+      const fileTabCount = tabsStore.list(wt).filter((t) => t.kind === 'file').length
+      const paneEmpty = current === undefined && fileTabCount === 0
       if (paneEmpty) {
         startTourReview(wt, data.commitHash, data.commitHash ? `Commit ${data.commitHash.slice(0, 7)}` : 'Uncommitted changes')
         return
@@ -151,45 +191,52 @@
     }
   }
 
+  // File tabs flow through tabsStore; opening a file in Phase 1 still clears
+  // any active diff/plan via closeReview — that matches today's UX where
+  // opening a file takes over the whole editor area. Phases 2/3 relax this.
   function openFile(path: string): void {
     closeReview(worktreePath)
-    if (!openFiles.some((f) => f.path === path)) {
-      openFiles = [...openFiles, { path, modified: false }]
+    const tab: FileTab = {
+      kind: 'file',
+      id: tabIdFor({ kind: 'file', path }),
+      path,
+      modified: false,
     }
-    activeFilePath = path
+    tabsStore.open(worktreePath, tab)
   }
 
-  function closeFile(path: string): void {
-    const idx = openFiles.findIndex((f) => f.path === path)
-    if (idx === -1) return
-    openFiles = openFiles.filter((f) => f.path !== path)
-    if (activeFilePath === path) {
-      activeFilePath = openFiles.length > 0
-        ? openFiles[Math.min(idx, openFiles.length - 1)].path
-        : null
+  function closeTab(tabId: string): void {
+    const tab = tabsStore.list(worktreePath).find((t) => t.id === tabId)
+    if (!tab) return
+    if (tab.kind === 'diff' || tab.kind === 'plan') {
+      // Round-trip through diffReviewStore so its closeReview "restore previous
+      // plan state" logic still runs. The mirror effect handles the tab close.
+      closeReview(worktreePath)
+      return
     }
+    tabsStore.close(worktreePath, tabId)
   }
 
-  function setActiveFile(path: string): void {
-    closeReview(worktreePath)
-    if (openFiles.some((f) => f.path === path)) {
-      activeFilePath = path
+  function selectTab(tabId: string): void {
+    const tab = tabsStore.list(worktreePath).find((t) => t.id === tabId)
+    if (!tab) return
+    if (tab.kind === 'file') {
+      // Today's behavior: focusing a file closes any open diff/plan review.
+      closeReview(worktreePath)
     }
+    tabsStore.focus(worktreePath, tabId)
+  }
+
+  function pinTab(tabId: string): void {
+    tabsStore.pinPeek(worktreePath, tabId)
+  }
+
+  function reorderTabs(fromIndex: number, toIndex: number): void {
+    tabsStore.reorder(worktreePath, fromIndex, toIndex)
   }
 
   function markModified(path: string, modified: boolean): void {
-    openFiles = openFiles.map((f) => (f.path === path ? { ...f, modified } : f))
-  }
-
-  function reorderFiles(fromIndex: number, toIndex: number): void {
-    const updated = [...openFiles]
-    const [moved] = updated.splice(fromIndex, 1)
-    updated.splice(toIndex, 0, moved)
-    openFiles = updated
-  }
-
-  function closeDiffReview(): void {
-    closeReview(worktreePath)
+    tabsStore.patch(worktreePath, tabIdFor({ kind: 'file', path }), { modified } as Partial<FileTab>)
   }
 
   const FILE_TREE_COLLAPSED_KEY = 'simpleedit:fileTreeCollapsed'
@@ -305,48 +352,31 @@
   <div class="flex min-h-0" style:height="{verticalSplit}%">
     <!-- Editor / Diff review area (left, takes remaining space) -->
     <div class="flex flex-1 flex-col overflow-hidden">
-      {#if reviewingCommit && isPlanHash(reviewingCommit.hash)}
-        {@const claudeTerminalId = getClaudeTerminalFromHash(reviewingCommit.hash)}
-        <PlanView
+      <PaneTabBar
+        {tabs}
+        {activeId}
+        {peekId}
+        unread={unreadIds}
+        onselect={selectTab}
+        onclose={closeTab}
+        onpin={pinTab}
+        onreorder={reorderTabs}
+      />
+
+      {#if activeTab}
+        <TabContainer
+          tab={activeTab}
           {worktreePath}
-          commitHash={claudeTerminalId ? `claude-${claudeTerminalId}` : 'user-plan'}
           terminals={agentStore.terminals}
-          onclose={closeDiffReview}
-          onsendtoagent={sendToAgent}
-        />
-      {:else if reviewingCommit}
-        <DiffReview
-          commitHash={reviewingCommit.hash}
-          commitMessage={reviewingCommit.message}
-          initialTab={reviewingCommit.initialTab}
-          {worktreePath}
-          terminals={agentStore.terminals}
-          onclose={closeDiffReview}
+          onclose={() => closeTab(activeTab!.id)}
+          onFileModified={markModified}
           ondiscusswithagent={openAgentPopover}
           onsendtoagent={sendToAgent}
         />
       {:else}
-        <EditorTabs
-          {openFiles}
-          {activeFilePath}
-          onclose={closeFile}
-          onselect={setActiveFile}
-          onreorder={reorderFiles}
-        />
-        {#if activeFilePath}
-          <div class="flex-1 min-h-0">
-            <CodeEditor
-              filePath={activeFilePath}
-              worktreeRoot={worktreePath}
-              onModified={markModified}
-              ondiscusswithagent={openAgentPopover}
-            />
-          </div>
-        {:else}
-          <div class="flex flex-1 items-center justify-center">
-            <p class="text-sm text-zinc-600">Open a file to start editing</p>
-          </div>
-        {/if}
+        <div class="flex flex-1 items-center justify-center">
+          <p class="text-sm text-zinc-600">Open a file to start editing</p>
+        </div>
       {/if}
     </div>
 
