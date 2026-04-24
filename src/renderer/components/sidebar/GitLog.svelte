@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { GitCommitInfo } from '../../../shared/ipc-types'
-  import { diffReviewStore, startReview, startPlanReview } from '../../stores/diffReview.svelte'
+  import { openDiffTab, openPlanTab, openTourTab, activeDiffHash } from '../../stores/diffReview.svelte'
   import { triggerTour } from '../../stores/tourStore.svelte'
   import { planStore } from '../../stores/planStore.svelte'
 
@@ -11,7 +11,7 @@
   let { worktreePath }: Props = $props()
 
   let selectedCommitHash = $derived(
-    worktreePath ? diffReviewStore.get(worktreePath)?.hash : undefined
+    worktreePath ? activeDiffHash(worktreePath) : undefined
   )
 
   let commits = $state<GitCommitInfo[]>([])
@@ -58,12 +58,9 @@
       // If we were viewing staging but there are no more uncommitted changes,
       // auto-select the newest commit so the view stays useful
       if (isRefresh && path) {
-        const currentReview = diffReviewStore.get(path)
-        if (currentReview) {
-          const wasViewingStaging = currentReview.hash === null
-          if (wasViewingStaging && !hasStagingChanges && commits.length > 0) {
-            startReview(path, { hash: commits[0].hash, message: commits[0].message })
-          }
+        const currentHash = activeDiffHash(path)
+        if (currentHash === null && !hasStagingChanges && commits.length > 0) {
+          openDiffTab(path, commits[0].hash, commits[0].message)
         }
       }
     } catch (err: unknown) {
@@ -76,16 +73,16 @@
   }
 
   function selectStaging(): void {
-    if (worktreePath) startReview(worktreePath, { hash: null, message: 'Uncommitted changes' })
+    if (worktreePath) openDiffTab(worktreePath, null, 'Uncommitted changes', { peek: true })
   }
 
   function selectCommit(commit: GitCommitInfo): void {
-    if (worktreePath) startReview(worktreePath, { hash: commit.hash, message: commit.message })
+    if (worktreePath) openDiffTab(worktreePath, commit.hash, commit.message, { peek: true })
   }
 
   function startBranchTour(): void {
     if (!worktreePath) return
-    startReview(worktreePath, { hash: 'branch', message: 'Branch tour' })
+    openTourTab(worktreePath, 'branch', 'Branch tour')
     triggerTour(worktreePath, 'branch')
   }
 
@@ -94,9 +91,11 @@
     // Prefer reopening the most recent Claude-originated plan if one exists (check disk too)
     const claudeTerminalId = await planStore.loadLatestClaudePlanTerminalId(worktreePath)
     if (claudeTerminalId) {
-      startPlanReview(worktreePath, { hash: `plan-claude:${claudeTerminalId}`, message: 'Claude Plan' })
+      openPlanTab(worktreePath, `claude-${claudeTerminalId}`, 'Claude Plan', {
+        claudeTerminalId,
+      })
     } else {
-      startPlanReview(worktreePath, { hash: 'plan', message: 'Plan' })
+      openPlanTab(worktreePath, 'user-plan', 'Plan')
     }
   }
 

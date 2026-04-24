@@ -4,7 +4,7 @@ import {
   refreshWorktrees, setSecondaryWorktree,
   secondPaneWorktree, worktreeList
 } from '../../../stores/worktrees.svelte'
-import { startReview } from '../../../stores/diffReview.svelte'
+import { openDiffTab, openTourTab } from '../../../stores/diffReview.svelte'
 import { triggerTour } from '../../../stores/tourStore.svelte'
 
 interface ActionDef {
@@ -29,7 +29,7 @@ const actions: ActionDef[] = [
     execute(context) {
       const path = getWorktreePath(context)
       if (!path) return
-      startReview(path, { hash: 'branch', message: 'Branch tour' })
+      openTourTab(path, 'branch', 'Branch tour')
       triggerTour(path, 'branch')
     }
   },
@@ -40,7 +40,7 @@ const actions: ActionDef[] = [
     execute(context) {
       const path = getWorktreePath(context)
       if (!path) return
-      startReview(path, { hash: null, message: 'Uncommitted changes' })
+      openDiffTab(path, null, 'Uncommitted changes')
     }
   },
   {
@@ -50,7 +50,7 @@ const actions: ActionDef[] = [
     execute(context) {
       const path = getWorktreePath(context)
       if (!path) return
-      startReview(path, { hash: 'branch', message: 'Branch changes' })
+      openDiffTab(path, 'branch', 'Branch changes')
     }
   },
   {
