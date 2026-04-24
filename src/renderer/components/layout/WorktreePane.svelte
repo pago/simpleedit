@@ -239,10 +239,6 @@
     tabsStore.patch(worktreePath, tabIdFor({ kind: 'file', path }), { modified } as Partial<FileTab>)
   }
 
-  function closeActiveReview(): void {
-    closeReview(worktreePath)
-  }
-
   const FILE_TREE_COLLAPSED_KEY = 'simpleedit:fileTreeCollapsed'
 
   let fileTreeCollapsed = $state(localStorage.getItem(FILE_TREE_COLLAPSED_KEY) === 'true')
@@ -368,27 +364,15 @@
       />
 
       {#if activeTab}
-        {#if activeTab.kind === 'file'}
-          <TabContainer
-            tab={activeTab}
-            {worktreePath}
-            terminals={agentStore.terminals}
-            onclose={() => closeTab(activeTab!.id)}
-            onFileModified={markModified}
-            ondiscusswithagent={openAgentPopover}
-            onsendtoagent={sendToAgent}
-          />
-        {:else}
-          <TabContainer
-            tab={activeTab}
-            {worktreePath}
-            terminals={agentStore.terminals}
-            onclose={closeActiveReview}
-            onFileModified={markModified}
-            ondiscusswithagent={openAgentPopover}
-            onsendtoagent={sendToAgent}
-          />
-        {/if}
+        <TabContainer
+          tab={activeTab}
+          {worktreePath}
+          terminals={agentStore.terminals}
+          onclose={() => closeTab(activeTab!.id)}
+          onFileModified={markModified}
+          ondiscusswithagent={openAgentPopover}
+          onsendtoagent={sendToAgent}
+        />
       {:else}
         <div class="flex flex-1 items-center justify-center">
           <p class="text-sm text-zinc-600">Open a file to start editing</p>
