@@ -1,7 +1,7 @@
 import type { PaletteProvider, PaletteItem, PaletteContext } from '../types'
 import type { GitCommitInfo } from '../../../../shared/ipc-types'
 import { fuzzyMatch } from '../fuzzy-match'
-import { startReview } from '../../../stores/diffReview.svelte'
+import { openDiffTab } from '../../../stores/diffReview.svelte'
 
 const cache = new Map<string, { files: GitCommitInfo[]; timestamp: number }>()
 const CACHE_TTL = 30_000
@@ -70,7 +70,7 @@ export const commitProvider: PaletteProvider = {
     const commit = item.data as GitCommitInfo
     const worktreePath = getWorktreePath(context)
     if (!worktreePath) return
-    startReview(worktreePath, { hash: commit.hash, message: commit.message })
+    openDiffTab(worktreePath, commit.hash, commit.message)
   }
 }
 

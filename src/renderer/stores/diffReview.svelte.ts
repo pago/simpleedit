@@ -1,75 +1,75 @@
-/** Tracks which commit is being reviewed, per worktree. */
-
-export type ReviewInitialTab = 'files' | 'findings' | 'tour' | 'plan'
-
-interface ReviewTarget {
-  hash: string | null  // null = staging, 'plan' = user plan, 'plan-claude:<terminalId>' = Claude plan
-  message: string
-  /** Optional initial tab hint for a freshly-opened review. */
-  initialTab?: ReviewInitialTab
-}
-
-let _reviews = $state<Map<string, ReviewTarget>>(new Map())
-/** Stores the previous review target so we can restore it when closing plan mode. */
-let _previousReviews = $state<Map<string, ReviewTarget>>(new Map())
-
-export const diffReviewStore = {
-  get(worktreePath: string): ReviewTarget | undefined {
-    return _reviews.get(worktreePath)
-  }
-}
-
-export function startReview(worktreePath: string, target: ReviewTarget): void {
-  _reviews = new Map(_reviews)
-  _reviews.set(worktreePath, target)
-}
-
 /**
- * Start a tour review for the given commit (or staging when commitHash is null).
- * Equivalent to startReview but forces the Tour tab to be selected initially.
+ * Helpers for opening diff, plan, and tour tabs. The historical
+ * `diffReviewStore` with its hash sentinel and save-and-restore dance is gone
+ * — every first-class view is now a tab on {@link tabsStore}, and call sites
+ * reach for these helpers to avoid re-deriving the `tabIdFor(...)` + `open(...)`
+ * shape everywhere.
  */
-export function startTourReview(worktreePath: string, commitHash: string | null, message: string): void {
-  startReview(worktreePath, { hash: commitHash, message, initialTab: 'tour' })
+
+import { tabsStore, tabIdFor, type DiffTab, type PlanTab, type TourTab, type OpenOptions } from './tabsStore.svelte'
+
+export interface OpenDiffOptions extends OpenOptions {
+  /** Hint the Findings section to show immediately after the diff loads. */
+  showFindings?: boolean
 }
 
-/** Start a plan review, saving the current review state for later restoration. */
-export function startPlanReview(worktreePath: string, target: ReviewTarget): void {
-  const current = _reviews.get(worktreePath)
-  if (current && !isPlanHash(current.hash)) {
-    _previousReviews = new Map(_previousReviews)
-    _previousReviews.set(worktreePath, current)
+export function openDiffTab(
+  worktreePath: string,
+  commitHash: string | null,
+  commitMessage: string,
+  opts: OpenDiffOptions = {},
+): DiffTab {
+  const { showFindings, ...openOpts } = opts
+  const tab: DiffTab = {
+    kind: 'diff',
+    id: tabIdFor({ kind: 'diff', commitHash }),
+    commitHash,
+    commitMessage,
+    initialTab: showFindings ? 'findings' : undefined,
   }
-  startReview(worktreePath, target)
+  return tabsStore.open(worktreePath, tab, openOpts) as DiffTab
 }
 
-export function closeReview(worktreePath: string): void {
-  const current = _reviews.get(worktreePath)
-
-  // If closing a plan view, restore the previous review state
-  if (current && isPlanHash(current.hash)) {
-    const prev = _previousReviews.get(worktreePath)
-    _previousReviews = new Map(_previousReviews)
-    _previousReviews.delete(worktreePath)
-    if (prev) {
-      _reviews = new Map(_reviews)
-      _reviews.set(worktreePath, prev)
-      return
-    }
+export function openTourTab(
+  worktreePath: string,
+  commitHash: string | null,
+  commitMessage: string,
+  opts: OpenOptions = {},
+): TourTab {
+  const tab: TourTab = {
+    kind: 'tour',
+    id: tabIdFor({ kind: 'tour', commitHash }),
+    commitHash,
+    commitMessage,
   }
-
-  _reviews = new Map(_reviews)
-  _reviews.delete(worktreePath)
+  return tabsStore.open(worktreePath, tab, opts) as TourTab
 }
 
-/** Check if a hash represents a plan view (user-initiated or Claude-originated). */
-export function isPlanHash(hash: string | null): boolean {
-  return hash === 'plan' || (hash !== null && hash.startsWith('plan-claude:'))
+export interface OpenPlanOptions extends OpenOptions {
+  /** Terminal that originated a Claude plan, if any. */
+  claudeTerminalId?: string | null
 }
 
-/** Extract the terminal ID from a Claude plan hash, or null if not a Claude plan. */
-export function getClaudeTerminalFromHash(hash: string | null): string | null {
-  if (hash !== null && hash.startsWith('plan-claude:')) {
-    return hash.slice('plan-claude:'.length)
+export function openPlanTab(
+  worktreePath: string,
+  planHash: string,
+  label: string,
+  opts: OpenPlanOptions = {},
+): PlanTab {
+  const { claudeTerminalId, ...openOpts } = opts
+  const tab: PlanTab = {
+    kind: 'plan',
+    id: tabIdFor({ kind: 'plan', planHash }),
+    planHash,
+    label,
+    claudeTerminalId: claudeTerminalId ?? null,
   }
-  return null
+  return tabsStore.open(worktreePath, tab, openOpts) as PlanTab
+}
+
+/** The hash of the currently-active diff tab for a worktree, if any. */
+export function activeDiffHash(worktreePath: string): string | null | undefined {
+  const active = tabsStore.active(worktreePath)
+  if (!active || active.kind !== 'diff') return undefined
+  return active.commitHash
 }
