@@ -4,8 +4,9 @@ import { mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import type { WebContents } from 'electron'
-import type { Plan } from '../shared/ipc-types'
+import type { Plan, Tour } from '../shared/ipc-types'
 import { savePlan } from './plan'
+import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
 
 interface BridgeInstance {
@@ -97,6 +98,53 @@ function handleToolCall(payload: ToolCallPayload, webContents: WebContents): { s
       webContents.send('plan:from-claude', { key, terminalId, plan })
     } else {
       console.warn(`[MCP Bridge] webContents is destroyed, cannot send plan:from-claude IPC`)
+    }
+
+    return { status: 200, body: { ok: true } }
+  }
+
+  if (tool === 'complete_task') {
+    const tour = args['tour'] as Tour | undefined
+    const claudeWorktreePath = args['worktreePath'] as string | undefined
+    const commitHashArg = args['commitHash']
+    const openQuestions = args['openQuestions'] as string[] | undefined
+
+    if (!tour) {
+      return { status: 400, body: { error: 'complete_task requires tour in args' } }
+    }
+
+    const worktreePath = getWorktreeForTerminal(terminalId) ?? claudeWorktreePath
+    if (!worktreePath) {
+      return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
+    }
+
+    const commitHash: string | null = typeof commitHashArg === 'string' && commitHashArg ? commitHashArg : null
+
+    // Assign stable topic ids so Svelte's keyed iteration and segment toggle state work correctly —
+    // the MCP schema doesn't carry ids because they're not meaningful to the agent.
+    const keyPrefix = tourKey(worktreePath, commitHash)
+    const topicsWithIds = tour.topics.map((t, i) => ({ ...t, id: `${keyPrefix}:topic-${i}` }))
+
+    const persistedTour: Tour = { ...tour, topics: topicsWithIds }
+    if (openQuestions && openQuestions.length > 0) {
+      persistedTour.openQuestions = openQuestions
+    } else {
+      delete persistedTour.openQuestions
+    }
+
+    saveTour(worktreePath, commitHash, persistedTour)
+
+    const key = tourKey(worktreePath, commitHash)
+    if (!webContents.isDestroyed()) {
+      webContents.send('tour:from-claude', {
+        key,
+        terminalId,
+        worktreePath,
+        commitHash,
+        tour: persistedTour,
+      })
+    } else {
+      console.warn(`[MCP Bridge] webContents is destroyed, cannot send tour:from-claude IPC`)
     }
 
     return { status: 200, body: { ok: true } }

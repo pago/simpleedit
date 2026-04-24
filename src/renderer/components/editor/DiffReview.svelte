@@ -17,12 +17,14 @@
     commitMessage: string
     worktreePath: string
     terminals: AgentTabInfo[]
+    /** Optional initial tab hint — applied once per target-hash change. */
+    initialTab?: 'files' | 'findings' | 'tour' | 'plan'
     onclose: () => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
   }
 
-  let { commitHash, commitMessage, worktreePath, terminals, onclose, ondiscusswithagent, onsendtoagent }: Props = $props()
+  let { commitHash, commitMessage, worktreePath, terminals, initialTab, onclose, ondiscusswithagent, onsendtoagent }: Props = $props()
 
   let files = $state<DiffFileEntry[]>([])
   let selectedFile = $state<string | null>(null)
@@ -85,6 +87,16 @@
   // Auto-switch to Tour tab for branch tour
   $effect(() => {
     if (isBranch) activeTab = 'tour'
+  })
+
+  // Apply initial tab hint once per target change
+  let lastAppliedHintKey = $state<string | null>(null)
+  $effect(() => {
+    if (!initialTab) return
+    const hintKey = `${commitHash ?? 'staging'}:${initialTab}`
+    if (hintKey === lastAppliedHintKey) return
+    lastAppliedHintKey = hintKey
+    activeTab = initialTab
   })
 
   // Load file list when commit changes

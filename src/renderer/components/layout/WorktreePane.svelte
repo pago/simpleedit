@@ -7,8 +7,9 @@
   import PlanView from '../editor/PlanView.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
   import type { OpenFile } from '../../stores/activeFile.svelte'
-  import { diffReviewStore, closeReview, startReview, startPlanReview, isPlanHash, getClaudeTerminalFromHash } from '../../stores/diffReview.svelte'
+  import { diffReviewStore, closeReview, startReview, startPlanReview, startTourReview, isPlanHash, getClaudeTerminalFromHash } from '../../stores/diffReview.svelte'
   import { planStore } from '../../stores/planStore.svelte'
+  import { tourStore } from '../../stores/tourStore.svelte'
   import { createAgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
@@ -78,6 +79,51 @@
 
   function dismissPlanNotification(): void {
     pendingPlanNotification = null
+  }
+
+  // Tour-from-Claude notification state
+  let pendingTourNotification = $state<{ commitHash: string | null; hasOpenQuestions: boolean } | null>(null)
+
+  // Listen for tour:from-claude events targeted at this worktree
+  $effect(() => {
+    const wt = worktreePath
+    const unsub = window.api.on('tour:from-claude', (data) => {
+      if (data.worktreePath !== wt) return
+
+      // Record the tour in the store so it's ready when the user opens it
+      tourStore.receiveTourFromClaude(data.key, data.tour)
+
+      const current = diffReviewStore.get(wt)
+      const alreadyViewing = current !== undefined && current.hash === data.commitHash
+
+      if (alreadyViewing) {
+        // User is already in the matching review — leave their tab alone, tour content refreshes via the store
+        return
+      }
+
+      const paneEmpty = current === undefined && openFiles.length === 0
+      if (paneEmpty) {
+        startTourReview(wt, data.commitHash, data.commitHash ? `Commit ${data.commitHash.slice(0, 7)}` : 'Uncommitted changes')
+        return
+      }
+
+      pendingTourNotification = {
+        commitHash: data.commitHash,
+        hasOpenQuestions: (data.tour.openQuestions?.length ?? 0) > 0,
+      }
+    })
+    return unsub
+  })
+
+  function activatePendingTour(): void {
+    if (!pendingTourNotification) return
+    const { commitHash } = pendingTourNotification
+    startTourReview(worktreePath, commitHash, commitHash ? `Commit ${commitHash.slice(0, 7)}` : 'Uncommitted changes')
+    pendingTourNotification = null
+  }
+
+  function dismissTourNotification(): void {
+    pendingTourNotification = null
   }
 
   // Popover state
@@ -229,6 +275,32 @@
     </div>
   {/if}
 
+  <!-- Tour notification toast -->
+  {#if pendingTourNotification}
+    <div class="absolute left-1/2 top-2 z-20 -translate-x-1/2">
+      <div class="flex items-center gap-2 rounded-lg border border-sky-800/50 bg-sky-950/90 px-3 py-2 shadow-lg backdrop-blur-sm">
+        <span class="text-xs text-sky-300">
+          ✦ Claude finished a task
+          {#if pendingTourNotification.hasOpenQuestions}
+            <span class="ml-1 rounded bg-amber-900/60 px-1 py-px text-[9px] font-medium text-amber-200">Open questions</span>
+          {/if}
+        </span>
+        <button
+          class="rounded bg-sky-700 px-2 py-0.5 text-[10px] text-sky-200 hover:bg-sky-600"
+          onclick={activatePendingTour}
+        >
+          View tour
+        </button>
+        <button
+          class="text-[10px] text-sky-500 hover:text-sky-300"
+          onclick={dismissTourNotification}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Top: editor/diff + file tree -->
   <div class="flex min-h-0" style:height="{verticalSplit}%">
     <!-- Editor / Diff review area (left, takes remaining space) -->
@@ -246,6 +318,7 @@
         <DiffReview
           commitHash={reviewingCommit.hash}
           commitMessage={reviewingCommit.message}
+          initialTab={reviewingCommit.initialTab}
           {worktreePath}
           terminals={agentStore.terminals}
           onclose={closeDiffReview}

@@ -6,6 +6,7 @@ export interface TourState {
   topics: TourTopic[]
   editedOverview?: string
   error?: string
+  openQuestions?: string[]
 }
 
 export function tourKey(worktreePath: string, commitHash: string | null): string {
@@ -27,6 +28,7 @@ export const tourStore = {
       overview: existing?.overview ?? '',
       topics: existing?.topics ?? [],
       editedOverview: existing?.editedOverview,
+      openQuestions: existing?.openQuestions,
       error,
     })
     _tours = next
@@ -62,6 +64,19 @@ export const tourStore = {
       status: 'done' as TourStatus,
       overview: tour.overview,
       topics: tour.topics,
+      openQuestions: tour.openQuestions,
+    })
+    _tours = next
+  },
+
+  /** Receive a fully-formed tour from a Claude session (via MCP bridge). */
+  receiveTourFromClaude(key: string, tour: Tour): void {
+    const next = new Map(_tours)
+    next.set(key, {
+      status: 'done' as TourStatus,
+      overview: tour.overview,
+      topics: tour.topics,
+      openQuestions: tour.openQuestions,
     })
     _tours = next
   },
