@@ -81,4 +81,6 @@
   <div class="flex flex-1 items-center justify-center">
     <p class="text-sm text-zinc-600">Composed tabs are not yet implemented.</p>
   </div>
+{:else}
+  {@const _exhaustive: never = tab}
 {/if}

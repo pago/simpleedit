@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import FileTree from '../filetree/FileTree.svelte'
   import TerminalTabs from '../terminal/TerminalTabs.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
@@ -67,8 +68,12 @@
       }
     }
     // Close the previous mirrored tab if switching targets (e.g. commit A → B).
-    if (lastMirroredId && lastMirroredId !== nextTab?.id) {
-      tabsStore.close(worktreePath, lastMirroredId)
+    // `untrack` because reading+writing lastMirroredId inside this effect
+    // shouldn't re-schedule it on every tick — the effect is driven by
+    // diffReviewStore changes, not by lastMirroredId.
+    const prev = untrack(() => lastMirroredId)
+    if (prev && prev !== nextTab?.id) {
+      tabsStore.close(worktreePath, prev)
     }
     if (nextTab) {
       tabsStore.open(worktreePath, nextTab)
@@ -236,7 +241,7 @@
   }
 
   function markModified(path: string, modified: boolean): void {
-    tabsStore.patch(worktreePath, tabIdFor({ kind: 'file', path }), { modified } as Partial<FileTab>)
+    tabsStore.setFileModified(worktreePath, tabIdFor({ kind: 'file', path }), modified)
   }
 
   const FILE_TREE_COLLAPSED_KEY = 'simpleedit:fileTreeCollapsed'
