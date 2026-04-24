@@ -1,17 +1,54 @@
 import type { PaletteProvider, PaletteItem, PaletteContext } from '../types'
+import type { GitCommitInfo } from '../../../../shared/ipc-types'
 import { fuzzyMatch } from '../fuzzy-match'
 import {
   refreshWorktrees, setSecondaryWorktree,
   secondPaneWorktree, worktreeList
 } from '../../../stores/worktrees.svelte'
 import { openDiffTab, openTourTab } from '../../../stores/diffReview.svelte'
-import { triggerTour } from '../../../stores/tourStore.svelte'
+import { triggerTour, loadCachedTour, tourStore } from '../../../stores/tourStore.svelte'
 
 interface ActionDef {
   id: string
   label: string
+  description?: string
   keywords: string
   execute: (context: PaletteContext) => void
+}
+
+const tourCommitsCache = new Map<string, { commits: GitCommitInfo[]; timestamp: number }>()
+const TOUR_COMMITS_CACHE_TTL = 30_000
+const TOUR_COMMITS_MAX = 15
+
+async function getRecentCommits(worktreePath: string): Promise<GitCommitInfo[]> {
+  const cached = tourCommitsCache.get(worktreePath)
+  if (cached && Date.now() - cached.timestamp < TOUR_COMMITS_CACHE_TTL) {
+    return cached.commits
+  }
+  const commits = await window.api.invoke('git:log', worktreePath, TOUR_COMMITS_MAX)
+  tourCommitsCache.set(worktreePath, { commits, timestamp: Date.now() })
+  return commits
+}
+
+function buildTourCommitActions(worktreePath: string, commits: GitCommitInfo[]): ActionDef[] {
+  return commits.map((commit) => {
+    const firstLine = commit.message.split('\n')[0] ?? commit.message
+    const label = `Tour: ${firstLine || commit.hash.slice(0, 7)}`
+    return {
+      id: `action:tour-commit:${commit.hash}`,
+      label: `Tour commit: ${firstLine}`,
+      description: `${commit.hash.slice(0, 7)} by ${commit.author}`,
+      keywords: `tour commit ${commit.hash.slice(0, 7)} ${commit.message} ${commit.author}`,
+      execute(context) {
+        const path = getWorktreePath(context)
+        if (!path) return
+        openTourTab(path, commit.hash, label)
+        if (!tourStore.hasTourForCommit(path, commit.hash)) {
+          loadCachedTour(path, commit.hash).catch(() => undefined)
+        }
+      },
+    }
+  })
 }
 
 function getWorktreePath(context: PaletteContext): string | null {
@@ -84,37 +121,55 @@ const actions: ActionDef[] = [
   }
 ]
 
+function toItem(action: ActionDef, matchIndices?: number[]): PaletteItem {
+  return {
+    id: action.id,
+    category: 'action',
+    label: action.label,
+    description: action.description,
+    matchIndices,
+    data: action,
+  }
+}
+
 export const actionProvider: PaletteProvider = {
   category: 'action',
 
-  search(query: string): PaletteItem[] {
-    if (query.length === 0) {
-      return actions.map((a) => ({
-        id: a.id,
-        category: 'action',
-        label: a.label,
-        data: a
-      }))
+  async search(query: string, context: PaletteContext): Promise<PaletteItem[]> {
+    const worktreePath = getWorktreePath(context)
+
+    let tourCommitActions: ActionDef[] = []
+    if (worktreePath) {
+      try {
+        const commits = await getRecentCommits(worktreePath)
+        tourCommitActions = buildTourCommitActions(worktreePath, commits)
+      } catch {
+        tourCommitActions = []
+      }
     }
 
-    const results: PaletteItem[] = []
-    for (const action of actions) {
+    const allActions = [...actions, ...tourCommitActions]
+
+    if (query.length === 0) {
+      // Static actions only when no query — per-commit tour entries would
+      // dominate the palette otherwise.
+      return actions.map((a) => toItem(a))
+    }
+
+    const results: { item: PaletteItem; score: number }[] = []
+    for (const action of allActions) {
       const searchText = `${action.label} ${action.keywords}`
       const match = fuzzyMatch(query, searchText)
       if (match) {
-        // Re-match against just the label for highlight indices
         const labelMatch = fuzzyMatch(query, action.label)
         results.push({
-          id: action.id,
-          category: 'action',
-          label: action.label,
-          matchIndices: labelMatch?.indices,
-          data: action
+          item: toItem(action, labelMatch?.indices),
+          score: match.score,
         })
       }
     }
 
-    return results
+    return results.sort((a, b) => b.score - a.score).map((r) => r.item)
   },
 
   execute(item: PaletteItem, context: PaletteContext): void {

@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { GitCommitInfo } from '../../../shared/ipc-types'
   import { openDiffTab, openPlanTab, openTourTab, activeDiffHash } from '../../stores/diffReview.svelte'
-  import { triggerTour } from '../../stores/tourStore.svelte'
+  import { triggerTour, tourStore, loadCachedTour } from '../../stores/tourStore.svelte'
   import { planStore } from '../../stores/planStore.svelte'
+  import TabIcon from '../layout/TabIcon.svelte'
 
   interface Props {
     worktreePath: string | null
@@ -97,6 +98,24 @@
     } else {
       openPlanTab(worktreePath, 'user-plan', 'Plan')
     }
+  }
+
+  function openTour(commit: { hash: string | null; message: string }): void {
+    if (!worktreePath) return
+    const label = commit.hash
+      ? `Tour: ${commit.message.split('\n')[0] || commit.hash.slice(0, 7)}`
+      : 'Tour: Uncommitted changes'
+    openTourTab(worktreePath, commit.hash, label)
+    // Best-effort: warm the in-memory tourStore from disk so the user sees a
+    // populated panel rather than an empty one.
+    if (commit.hash !== null && !tourStore.hasTourForCommit(worktreePath, commit.hash)) {
+      loadCachedTour(worktreePath, commit.hash).catch(() => undefined)
+    }
+  }
+
+  function handleTourIconClick(e: MouseEvent, commit: GitCommitInfo): void {
+    e.stopPropagation()
+    openTour({ hash: commit.hash, message: commit.message })
   }
 
   $effect(() => {
@@ -195,24 +214,45 @@
       {/if}
 
       {#each commits as commit (commit.hash)}
-        <button
-          class="flex flex-col gap-0.5 rounded px-2 py-1.5 text-left transition-colors
-            {selectedCommitHash === commit.hash
-            ? 'bg-zinc-700 text-zinc-100'
-            : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
-          role="option"
-          aria-selected={selectedCommitHash === commit.hash}
-          onclick={() => selectCommit(commit)}
-        >
-          <span class="truncate text-xs font-medium">{firstLine(commit.message)}</span>
-          <span class="flex items-center gap-1.5 text-[10px] text-zinc-500">
-            <span class="font-mono">{shortHash(commit.hash)}</span>
-            <span>&middot;</span>
-            <span class="truncate">{commit.author}</span>
-            <span>&middot;</span>
-            <span class="shrink-0">{relativeDate(commit.date)}</span>
-          </span>
-        </button>
+        {@const isSelected = selectedCommitHash === commit.hash}
+        {@const hasTour = worktreePath
+          ? tourStore.hasTourForCommit(worktreePath, commit.hash)
+          : false}
+        <div class="group relative">
+          <button
+            class="flex w-full flex-col gap-0.5 rounded px-2 py-1.5 pr-7 text-left transition-colors
+              {isSelected
+              ? 'bg-zinc-700 text-zinc-100'
+              : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
+            role="option"
+            aria-selected={isSelected}
+            onclick={() => selectCommit(commit)}
+          >
+            <span class="truncate text-xs font-medium">{firstLine(commit.message)}</span>
+            <span class="flex items-center gap-1.5 text-[10px] text-zinc-500">
+              <span class="font-mono">{shortHash(commit.hash)}</span>
+              <span>&middot;</span>
+              <span class="truncate">{commit.author}</span>
+              <span>&middot;</span>
+              <span class="shrink-0">{relativeDate(commit.date)}</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            data-testid="gitlog-tour-icon"
+            data-has-tour={String(hasTour)}
+            title="Tour"
+            aria-label="Open tour for this commit"
+            class="absolute right-1 top-1.5 rounded p-1 transition-colors
+              {hasTour
+                ? 'text-sky-400 hover:bg-zinc-600 hover:text-sky-300'
+                : 'text-zinc-400 opacity-0 hover:bg-zinc-600 hover:text-zinc-200 group-hover:opacity-100 focus:opacity-100'}
+              {isSelected && !hasTour ? 'opacity-100' : ''}"
+            onclick={(e) => handleTourIconClick(e, commit)}
+          >
+            <TabIcon kind="tour" class="h-3.5 w-3.5" />
+          </button>
+        </div>
       {/each}
 
       {#if commits.length === 0 && !hasStagingChanges}
