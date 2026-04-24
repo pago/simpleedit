@@ -89,14 +89,26 @@
 </script>
 
 {#if tabs.length > 0}
-  <div class="flex h-9 items-center overflow-x-auto border-b border-zinc-800 bg-zinc-900">
+  <div
+    data-testid="worktree-tab-bar"
+    class="flex h-9 items-center overflow-x-auto border-b border-zinc-800 bg-zinc-900"
+  >
     {#each tabs as tab, i (tab.id)}
       {@const isActive = activeId === tab.id}
       {@const isPeek = peekId === tab.id}
       {@const isUnread = unread.has(tab.id)}
       {@const isModified = tab.kind === 'file' && tab.modified}
-      <button
-        class="group flex h-full items-center gap-1.5 border-r border-zinc-800 px-3 text-xs transition-colors
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        role="tab"
+        tabindex="0"
+        aria-selected={isActive}
+        data-testid="worktree-tab"
+        data-kind={tab.kind}
+        data-peek={String(isPeek)}
+        data-active={String(isActive)}
+        data-unread={String(isUnread)}
+        class="group flex h-full cursor-pointer items-center gap-1.5 border-r border-zinc-800 px-3 text-xs transition-colors
           {isActive
             ? 'bg-zinc-950 text-zinc-200'
             : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300'}
@@ -104,6 +116,12 @@
           {dragIndex !== null && dropIndex === i && dragIndex !== i ? 'border-l-2 border-l-blue-500' : ''}"
         onclick={() => onselect(tab.id)}
         ondblclick={() => handleDblClick(tab.id)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onselect(tab.id)
+          }
+        }}
         title={titleFor(tab)}
         draggable="true"
         ondragstart={(e) => handleDragStart(e, i)}
@@ -118,17 +136,17 @@
         {/if}
         <TabIcon kind={tab.kind} class="h-3.5 w-3.5 flex-none text-zinc-500" />
         <span class="truncate max-w-40" class:italic={isPeek}>{labelFor(tab)}</span>
-        <span
-          role="button"
-          tabindex="0"
+        <button
+          type="button"
+          data-testid="worktree-tab-close"
+          aria-label="Close tab"
           class="ml-1 flex-none rounded p-0.5 text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-700 hover:text-zinc-300 group-hover:opacity-100
             {isActive ? 'opacity-100' : ''}"
           onclick={(e) => handleClose(e, tab.id)}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClose(e as unknown as MouseEvent, tab.id) }}
         >
           &times;
-        </span>
-      </button>
+        </button>
+      </div>
     {/each}
   </div>
 {/if}
