@@ -161,6 +161,7 @@ export interface TourTopic {
 export interface Tour {
   overview: string
   topics: TourTopic[]
+  openQuestions?: string[]
 }
 
 export type TourStatus = 'idle' | 'running' | 'done' | 'error'
@@ -176,6 +177,13 @@ export interface TourEventMap {
   'tour:overview': { key: string; overview: string }
   'tour:topic': { key: string; topic: TourTopic }
   'tour:status': { key: string; status: TourStatus; error?: string }
+  'tour:from-claude': {
+    key: string
+    terminalId: string
+    worktreePath: string
+    commitHash: string | null
+    tour: Tour
+  }
 }
 
 // ── Plan ─────────────────────────────────────────────────

@@ -1,8 +1,12 @@
 /** Tracks which commit is being reviewed, per worktree. */
 
+export type ReviewInitialTab = 'files' | 'findings' | 'tour' | 'plan'
+
 interface ReviewTarget {
   hash: string | null  // null = staging, 'plan' = user plan, 'plan-claude:<terminalId>' = Claude plan
   message: string
+  /** Optional initial tab hint for a freshly-opened review. */
+  initialTab?: ReviewInitialTab
 }
 
 let _reviews = $state<Map<string, ReviewTarget>>(new Map())
@@ -18,6 +22,14 @@ export const diffReviewStore = {
 export function startReview(worktreePath: string, target: ReviewTarget): void {
   _reviews = new Map(_reviews)
   _reviews.set(worktreePath, target)
+}
+
+/**
+ * Start a tour review for the given commit (or staging when commitHash is null).
+ * Equivalent to startReview but forces the Tour tab to be selected initially.
+ */
+export function startTourReview(worktreePath: string, commitHash: string | null, message: string): void {
+  startReview(worktreePath, { hash: commitHash, message, initialTab: 'tour' })
 }
 
 /** Start a plan review, saving the current review state for later restoration. */

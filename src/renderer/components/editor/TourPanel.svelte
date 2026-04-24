@@ -157,6 +157,20 @@
     </div>
   {/if}
 
+  <!-- Open-questions attention banner -->
+  {#if tourState && tourState.openQuestions && tourState.openQuestions.length > 0}
+    <a
+      href="#tour-open-questions"
+      class="mb-4 flex items-center gap-2 rounded border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200 no-underline hover:bg-amber-950/60"
+    >
+      <span aria-hidden="true">⚠</span>
+      <span class="font-medium">Your input needed</span>
+      <span class="text-amber-300/80">
+        — {tourState.openQuestions.length} open question{tourState.openQuestions.length === 1 ? '' : 's'} below
+      </span>
+    </a>
+  {/if}
+
   <!-- No tour yet: prompt to start -->
   {#if !tourState || (tourState.status === 'idle' && tourState.topics.length === 0)}
     <div class="flex flex-1 flex-col items-center justify-center gap-3">
@@ -246,6 +260,24 @@
         {/each}
       </div>
     {/each}
+
+    <!-- Open questions list (below the tour) -->
+    {#if tourState.openQuestions && tourState.openQuestions.length > 0}
+      <div id="tour-open-questions" class="mt-2 border-t border-amber-800/40 pt-4">
+        <h3 class="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-amber-300">
+          <span aria-hidden="true">⚠</span>
+          Open questions
+        </h3>
+        <ul class="space-y-2">
+          {#each tourState.openQuestions as q}
+            <li class="flex gap-2 rounded border border-amber-800/30 bg-amber-950/20 px-3 py-2 text-sm text-amber-100">
+              <span class="text-amber-500" aria-hidden="true">•</span>
+              <span class="whitespace-pre-wrap">{q}</span>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
 
   {/if}
 </div>
