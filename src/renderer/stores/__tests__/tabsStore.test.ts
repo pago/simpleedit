@@ -137,6 +137,18 @@ describe('close + MRU focus', () => {
     tabsStore.close(W, 'file:/ghost')
     expect(tabsStore.list(W)).toHaveLength(1)
   })
+
+  it('closing the active tab falls back to a neighbor when MRU is empty but tabs remain', () => {
+    // Repro: after background-opening B alongside active A, MRU only holds A.
+    // Closing A leaves MRU empty but B is still a visible tab.
+    const a = fileTab('/w/a.ts')
+    const b = fileTab('/w/b.ts')
+    tabsStore.open(W, a) // active=a, mru=[a]
+    tabsStore.open(W, b, { focus: 'background' }) // b added, mru=[a], active=a, b unread
+    tabsStore.close(W, a.id)
+    expect(tabsStore.list(W)).toHaveLength(1)
+    expect(tabsStore.activeId(W)).toBe(b.id)
+  })
 })
 
 describe('peek mode', () => {
@@ -192,6 +204,27 @@ describe('peek mode', () => {
     expect(tabsStore.list(W)).toHaveLength(2)
     expect(tabsStore.peekId(W)).toBe(peek.id)
   })
+
+  it('combining { peek: true, focus: "background" } opens a new peek tab unread, without focus', () => {
+    // Pane is non-empty (an already-focused file), so background open should
+    // not steal focus. The tab still participates in peek — subsequent peek
+    // opens replace it.
+    const sticky = fileTab('/w/a.ts')
+    tabsStore.open(W, sticky)
+    const d1 = diffTab('aaa')
+    tabsStore.open(W, d1, { peek: true, focus: 'background' })
+    expect(tabsStore.list(W)).toHaveLength(2)
+    expect(tabsStore.activeId(W)).toBe(sticky.id) // focus unchanged
+    expect(tabsStore.isUnread(W, d1.id)).toBe(true)
+    expect(tabsStore.peekId(W)).toBe(d1.id)
+
+    // A second peek (also background) replaces the first in place.
+    const d2 = diffTab('bbb')
+    tabsStore.open(W, d2, { peek: true, focus: 'background' })
+    expect(tabsStore.list(W)).toHaveLength(2) // sticky + d2, d1 replaced
+    expect(tabsStore.peekId(W)).toBe(d2.id)
+    expect(tabsStore.list(W).some((t) => t.id === d1.id)).toBe(false)
+  })
 })
 
 describe('unread + background open', () => {
@@ -240,21 +273,30 @@ describe('unread + background open', () => {
   })
 })
 
-describe('patch + reorder', () => {
-  it('patch updates tab fields in place without disturbing MRU', () => {
+describe('setFileModified + reorder', () => {
+  it('setFileModified updates a file tab without disturbing MRU', () => {
     const a = fileTab('/w/a.ts')
     const b = fileTab('/w/b.ts')
     tabsStore.open(W, a)
     tabsStore.open(W, b)
-    tabsStore.patch(W, a.id, { modified: true } as Partial<FileTab>)
+    tabsStore.setFileModified(W, a.id, true)
     const updated = tabsStore.list(W).find((t) => t.id === a.id) as FileTab
     expect(updated.modified).toBe(true)
     expect(tabsStore.activeId(W)).toBe(b.id)
   })
 
-  it('patch is a no-op for unknown ids', () => {
+  it('setFileModified is a no-op for unknown ids', () => {
     tabsStore.open(W, fileTab('/w/a.ts'))
-    expect(() => tabsStore.patch(W, 'ghost', { modified: true } as Partial<FileTab>)).not.toThrow()
+    expect(() => tabsStore.setFileModified(W, 'ghost', true)).not.toThrow()
+  })
+
+  it('setFileModified is a no-op for non-file tabs', () => {
+    const d = diffTab('abc')
+    tabsStore.open(W, d)
+    tabsStore.setFileModified(W, d.id, true)
+    const tab = tabsStore.list(W).find((t) => t.id === d.id)
+    expect(tab?.kind).toBe('diff')
+    expect(tab).not.toHaveProperty('modified')
   })
 
   it('reorder moves a tab within the list', () => {

@@ -262,7 +262,8 @@ export const tabsStore = {
    */
   close(worktreePath: string, tabId: string): void {
     const s = getState(worktreePath)
-    if (!s.tabs.some((t) => t.id === tabId)) return
+    const oldIdx = s.tabs.findIndex((t) => t.id === tabId)
+    if (oldIdx < 0) return
     const tabs = s.tabs.filter((t) => t.id !== tabId)
     const mru = dropFromMru(s.mru, tabId)
     const unread = s.unread.has(tabId)
@@ -272,7 +273,16 @@ export const tabsStore = {
 
     let activeId = s.activeId
     if (activeId === tabId) {
-      activeId = mru.length > 0 ? mru[0] : null
+      if (mru.length > 0) {
+        activeId = mru[0]
+      } else if (tabs.length > 0) {
+        // MRU was empty (e.g. closed tab was only ever background-opened, or
+        // remaining tabs never received focus). Fall back to a neighbor so we
+        // never leave tabs visible with activeId === null.
+        activeId = tabs[Math.min(oldIdx, tabs.length - 1)].id
+      } else {
+        activeId = null
+      }
     }
 
     setState(worktreePath, { tabs, activeId, mru, unread, peekId })
@@ -312,15 +322,19 @@ export const tabsStore = {
   },
 
   /**
-   * Mutate a single tab in place (e.g. mark a file tab modified). Preserves
-   * MRU/peek/unread state. No-op for unknown ids.
+   * Mark a file tab as modified (or not). No-op if the tab is missing or not a
+   * file tab — prevents accidental cross-kind mutation that a generic patch
+   * would allow.
    */
-  patch(worktreePath: string, tabId: string, patch: Partial<Tab>): void {
+  setFileModified(worktreePath: string, tabId: string, modified: boolean): void {
     const s = getState(worktreePath)
     const idx = s.tabs.findIndex((t) => t.id === tabId)
     if (idx < 0) return
+    const existing = s.tabs[idx]
+    if (existing.kind !== 'file') return
+    if (existing.modified === modified) return
     const tabs = s.tabs.slice()
-    tabs[idx] = { ...s.tabs[idx], ...patch } as Tab
+    tabs[idx] = { ...existing, modified }
     setState(worktreePath, { ...s, tabs })
   },
 
