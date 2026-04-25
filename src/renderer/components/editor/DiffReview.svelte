@@ -15,11 +15,8 @@
     commitMessage: string
     worktreePath: string
     terminals: AgentTabInfo[]
-    /**
-     * Optional initial sub-view hint. Only 'findings' is honored now — tour and
-     * plan are top-level tabs, not sub-views of DiffReview.
-     */
-    initialTab?: 'files' | 'findings' | 'tour' | 'plan'
+    /** Optional initial sub-view hint. */
+    initialTab?: 'files' | 'findings'
     onclose: () => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined

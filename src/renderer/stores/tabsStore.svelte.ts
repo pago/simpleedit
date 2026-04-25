@@ -34,8 +34,8 @@ export interface DiffTab {
   /** null = staging/uncommitted, 'branch' = branch tour, otherwise commit SHA. */
   commitHash: string | null
   commitMessage: string
-  /** Optional first-tab hint for the diff-internal tab bar (Phase 2 removes). */
-  initialTab?: 'files' | 'findings' | 'tour' | 'plan'
+  /** Optional first sub-view hint for DiffReview. */
+  initialTab?: 'files' | 'findings'
 }
 
 export interface TourTab {

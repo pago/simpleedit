@@ -35,9 +35,6 @@
     if (action?.type === 'open-file' && action.worktreePath === worktreePath) {
       consumePaletteAction()
       openFile(action.filePath)
-    } else if (action?.type === 'start-review' && action.worktreePath === worktreePath) {
-      consumePaletteAction()
-      openDiffTab(action.worktreePath, action.hash, action.message)
     }
   })
 

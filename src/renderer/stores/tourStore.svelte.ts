@@ -27,8 +27,7 @@ export const tourStore = {
    */
   hasTourForCommit(worktreePath: string, commitHash: string | null): boolean {
     const state = _tours.get(tourKey(worktreePath, commitHash))
-    if (!state) return false
-    return state.topics.length > 0 || state.overview.length > 0
+    return state !== undefined && state.topics.length > 0
   },
 
   setStatus(key: string, status: TourStatus, error?: string): void {

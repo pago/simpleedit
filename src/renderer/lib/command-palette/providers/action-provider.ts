@@ -34,9 +34,10 @@ function buildTourCommitActions(worktreePath: string, commits: GitCommitInfo[]):
   return commits.map((commit) => {
     const firstLine = commit.message.split('\n')[0] ?? commit.message
     const label = `Tour: ${firstLine || commit.hash.slice(0, 7)}`
+    const fallback = firstLine || commit.hash.slice(0, 7)
     return {
       id: `action:tour-commit:${commit.hash}`,
-      label: `Tour commit: ${firstLine}`,
+      label: `Tour commit: ${fallback}`,
       description: `${commit.hash.slice(0, 7)} by ${commit.author}`,
       keywords: `tour commit ${commit.hash.slice(0, 7)} ${commit.message} ${commit.author}`,
       execute(context) {
