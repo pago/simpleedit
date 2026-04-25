@@ -8,12 +8,18 @@ importers:
 
   .:
     dependencies:
+      '@json-render/svelte':
+        specifier: ^0.18.0
+        version: 0.18.0(svelte@5.54.0)(zod@4.3.6)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.3.6)
       node-pty:
         specifier: ^1.0.0
         version: 1.1.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.39.0
@@ -507,6 +513,17 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@json-render/core@0.18.0':
+    resolution: {integrity: sha512-zm0K9cgxZLGshw5TmdKe3Xc6fpjbONdlj3v+Er+HhCYZ9fSJpv32d9VzQds4bDW36vPfdieAOcsPR9+EcTff7Q==}
+    peerDependencies:
+      zod: ^4.0.0
+
+  '@json-render/svelte@0.18.0':
+    resolution: {integrity: sha512-ASYbURzLMESA2UiV3/asjn/VSUeNbcU1PDtgDhk0ysGU8sOZX4Z2iw7I2keU7L9yRfDzbt0q5ZnXBCSYWi4mHw==}
+    peerDependencies:
+      svelte: ^5.0.0
+      zod: ^4.0.0
 
   '@kwsites/file-exists@1.1.1':
     resolution: {integrity: sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw==}
@@ -3565,6 +3582,16 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@json-render/core@0.18.0(zod@4.3.6)':
+    dependencies:
+      zod: 4.3.6
+
+  '@json-render/svelte@0.18.0(svelte@5.54.0)(zod@4.3.6)':
+    dependencies:
+      '@json-render/core': 0.18.0(zod@4.3.6)
+      svelte: 5.54.0
+      zod: 4.3.6
 
   '@kwsites/file-exists@1.1.1':
     dependencies:
