@@ -3,6 +3,7 @@
   import DiffReview from '../editor/DiffReview.svelte'
   import PlanView from '../editor/PlanView.svelte'
   import TourPanel from '../editor/TourPanel.svelte'
+  import ComposedPanel from '../composed/ComposedPanel.svelte'
   import type { Tab } from '../../stores/tabsStore.svelte'
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
@@ -77,10 +78,7 @@
     </div>
   </div>
 {:else if tab.kind === 'composed'}
-  <!-- Reserved for the generative-UI follow-up. Renderer intentionally not wired in Phase 1. -->
-  <div class="flex flex-1 items-center justify-center">
-    <p class="text-sm text-zinc-600">Composed tabs are not yet implemented.</p>
-  </div>
+  <ComposedPanel spec={tab.spec} terminalId={tab.terminalId} {onclose} />
 {:else}
   {@const _exhaustive: never = tab}
 {/if}
