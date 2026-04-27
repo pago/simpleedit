@@ -29,6 +29,7 @@ import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from '.
 import { startPlan, startPlanFromDescription, revisePlan, cancelPlan, cancelAllPlans, loadPlan, savePlan } from './plan'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan } from './mcp-bridge'
+import { saveDroppedBlob } from './dropped-files'
 import type { JsonRpcMessage } from '../shared/ipc-types'
 
 // ── Per-window repo tracking ──────────────────────────────
@@ -159,6 +160,10 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('app:open-external', (_event, url: string) => {
     shell.openExternal(url)
+  })
+
+  ipcMain.handle('app:save-dropped-blob', (_event, filename: string, bytes: Uint8Array) => {
+    return saveDroppedBlob(filename, bytes)
   })
 
   // ── PTY ─────────────────────────────────────────────────

@@ -14,6 +14,7 @@
   let { terminalId, active = true, isClaude = false, ontitlechange }: Props = $props()
 
   let containerEl: HTMLDivElement | undefined = $state()
+  let isDropTarget = $state(false)
 
   let term: Terminal | undefined
   let fitAddon: FitAddon | undefined
@@ -154,6 +155,58 @@
     }
   })
 
+  /**
+   * Format dropped paths for the foreground process. Claude Code parses paths
+   * via regex and accepts newline-separated lists; a regular shell would
+   * submit on a literal newline, so we space-separate (and quote spaces) there.
+   */
+  function shellEscape(p: string): string {
+    if (/^[\w./@:+=-]+$/.test(p)) return p
+    return `'${p.replace(/'/g, `'\\''`)}'`
+  }
+
+  function formatPaths(paths: string[]): string {
+    if (isClaude) return paths.join('\n')
+    return paths.map(shellEscape).join(' ')
+  }
+
+  async function resolveDropPath(file: File): Promise<string> {
+    const path = window.api.getPathForFile(file)
+    if (path) return path
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    return window.api.invoke('app:save-dropped-blob', file.name || 'paste', bytes)
+  }
+
+  function handleDragEnter(e: DragEvent): void {
+    if (!e.dataTransfer?.types.includes('Files')) return
+    e.preventDefault()
+    isDropTarget = true
+  }
+
+  function handleDragOver(e: DragEvent): void {
+    if (!e.dataTransfer?.types.includes('Files')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  function handleDragLeave(e: DragEvent): void {
+    // Ignore leave events that fire as the cursor crosses child elements.
+    const next = e.relatedTarget as Node | null
+    if (next && containerEl?.contains(next)) return
+    isDropTarget = false
+  }
+
+  async function handleDrop(e: DragEvent): Promise<void> {
+    isDropTarget = false
+    if (!e.dataTransfer?.files.length) return
+    e.preventDefault()
+    const files = Array.from(e.dataTransfer.files)
+    const paths = await Promise.all(files.map(resolveDropPath))
+    if (paths.length === 0) return
+    await window.api.invoke('pty:write', terminalId, formatPaths(paths))
+    term?.focus()
+  }
+
   // Save/restore scroll position on tab visibility changes
   $effect(() => {
     if (!term) return
@@ -184,6 +237,19 @@
 </script>
 
 <div
-  bind:this={containerEl}
-  class="h-full w-full overflow-hidden"
-></div>
+  class="relative h-full w-full overflow-hidden"
+  ondragenter={handleDragEnter}
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
+  data-testid="terminal-drop-target"
+>
+  <div bind:this={containerEl} class="h-full w-full"></div>
+  {#if isDropTarget}
+    <div
+      class="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-md border-2 border-dashed border-sky-400/70 bg-sky-500/10 text-sm font-medium text-sky-200 backdrop-blur-sm"
+    >
+      Drop file to attach
+    </div>
+  {/if}
+</div>

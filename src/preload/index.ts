@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { InvokeMap, EventMap, SendMap } from '../shared/ipc-types'
 
 type Channel = keyof InvokeMap
@@ -33,6 +33,12 @@ const api = {
     callback: (data: EventMap[K]) => void
   ): void {
     ipcRenderer.once(channel, (_event, data: EventMap[K]) => callback(data))
+  },
+
+  // Resolve a `File` from a drag/drop or clipboard event to its filesystem path.
+  // Returns '' for files that have no path (e.g. images dragged from a browser).
+  getPathForFile(file: File): string {
+    return webUtils.getPathForFile(file)
   }
 }
 

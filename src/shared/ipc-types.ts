@@ -248,6 +248,7 @@ export interface AppInvokeMap {
   'app:recent-repos': { args: []; result: RecentRepo[] }
   'app:open-window': { args: [repoPath?: string]; result: void }
   'app:open-external': { args: [url: string]; result: void }
+  'app:save-dropped-blob': { args: [filename: string, bytes: Uint8Array]; result: string }
 }
 
 // ── LSP ───────────────────────────────────────────────────
