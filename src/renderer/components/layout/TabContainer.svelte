@@ -58,25 +58,11 @@
     {onsendtoagent}
   />
 {:else if tab.kind === 'tour'}
-  <div class="flex h-full flex-col">
-    <div class="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5">
-      <button
-        class="rounded px-1.5 py-0.5 text-xs text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300"
-        onclick={onclose}
-      >
-        &larr; Close
-      </button>
-      <span class="text-xs font-medium text-zinc-300">Tour</span>
-      <span class="truncate text-[10px] text-zinc-500">{tab.commitMessage}</span>
-    </div>
-    <div class="min-h-0 flex-1">
-      <TourPanel
-        {worktreePath}
-        commitHash={tab.commitHash}
-        commitMessage={tab.commitMessage}
-      />
-    </div>
-  </div>
+  <TourPanel
+    {worktreePath}
+    commitHash={tab.commitHash}
+    commitMessage={tab.commitMessage}
+  />
 {:else if tab.kind === 'composed'}
   <ComposedPanel
     spec={tab.spec}
