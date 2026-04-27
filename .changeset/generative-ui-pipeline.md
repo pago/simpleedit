@@ -1,5 +1,0 @@
----
-"simpleedit": minor
----
-
-Add a generative UI pipeline so Claude can compose panels at runtime instead of every interaction type requiring its own bespoke MCP tool. A new `show_panel(spec)` tool accepts a Zod-validated JSON spec built from a catalog of 13 primitives (prose, file lists, code snippets, decision cards, status indicators, key-value summaries, sections, action buttons, text inputs, callouts, rows, and graph/sequence diagrams). User interactions in the rendered panel route back to the originating Claude session via an enumerated capability set (`send_to_agent`, `open_file`, `show_diff`, `dismiss_panel`, `set_state`), with rate limiting on the agent-write path and main-side validation rejecting paths outside the active worktree. Diagrams ship with two backing technologies behind one primitive: graph kind via Svelte Flow + ELK, sequence kind via mermaid compiled from typed JSON (the agent never produces mermaid DSL). The Diagram dependencies (`@xyflow/svelte`, `elkjs`, `mermaid`) are dynamic-imported so panels that don't include a diagram pay nothing for them.
