@@ -133,11 +133,40 @@ describe('primitive prop schemas — rejections', () => {
     ).toBe(false)
   })
 
-  it('rejects DiagramProps for any kind other than the Phase-3 placeholder', () => {
-    // Phase 3 fills this in with the real graph + sequence discriminated union;
-    // for now the schema rejects everything except its placeholder marker.
-    expect(DiagramProps.safeParse({ kind: 'graph' }).success).toBe(false)
-    expect(DiagramProps.safeParse({ kind: 'sequence' }).success).toBe(false)
-    expect(DiagramProps.safeParse({ kind: '__phase3_pending__' }).success).toBe(true)
+  it('accepts Diagram graph with valid node/edge cross-references', () => {
+    expect(
+      DiagramProps.safeParse({
+        kind: 'graph',
+        nodes: [
+          { id: 'a', label: 'A' },
+          { id: 'b', label: 'B' },
+        ],
+        edges: [{ source: 'a', target: 'b' }],
+      }).success,
+    ).toBe(true)
+  })
+
+  it('accepts Diagram sequence with valid actor cross-references', () => {
+    expect(
+      DiagramProps.safeParse({
+        kind: 'sequence',
+        actors: [
+          { id: 'u', label: 'User' },
+          { id: 's', label: 'Server' },
+        ],
+        messages: [{ from: 'u', to: 's', label: 'request', kind: 'sync' }],
+      }).success,
+    ).toBe(true)
+  })
+
+  it('rejects Diagram with no nodes / no actors / unknown discriminator', () => {
+    // graph requires at least one node
+    expect(DiagramProps.safeParse({ kind: 'graph', nodes: [], edges: [] }).success).toBe(false)
+    // sequence requires at least one actor and one message
+    expect(
+      DiagramProps.safeParse({ kind: 'sequence', actors: [], messages: [] }).success,
+    ).toBe(false)
+    // unknown discriminator
+    expect(DiagramProps.safeParse({ kind: 'tornado' }).success).toBe(false)
   })
 })

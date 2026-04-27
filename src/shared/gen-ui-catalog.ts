@@ -143,14 +143,95 @@ export const RowProps = z.object({
 })
 
 /**
- * Reserved slot for Phase 3 (Diagram primitive — graph + sequence kinds via
- * Svelte Flow + ELK and a Zod-to-mermaid compiler). Phase 1 declares the
- * primitive name so the catalog shape is final, but rejects all input by
- * schema until Phase 3 fills in the real discriminated union.
+ * Diagram primitive — discriminated by `kind`:
+ *
+ *  - `graph`    rendered via @xyflow/svelte + elkjs. The agent emits typed
+ *               nodes + edges; ELK assigns positions; Svelte Flow draws.
+ *  - `sequence` compiled by our code into mermaid sequence-diagram source
+ *               and rendered via mermaid. The agent never emits mermaid DSL.
+ *
+ * Both branches lazy-load their backing renderer, so panels that don't
+ * include a Diagram pay nothing for it.
  */
-export const DiagramProps = z.object({
-  kind: z.literal('__phase3_pending__'),
+const GraphNodeSchema = z.object({
+  id: z.string().min(1),
+  label: z.string(),
+  kind: z.string().optional(),
 })
+
+const GraphEdgeSchema = z.object({
+  source: z.string().min(1),
+  target: z.string().min(1),
+  label: z.string().optional(),
+})
+
+const GraphDiagramSchema = z
+  .object({
+    kind: z.literal('graph'),
+    nodes: z.array(GraphNodeSchema).min(1),
+    edges: z.array(GraphEdgeSchema),
+    layout: z.enum(['layered', 'force', 'tree']).optional(),
+  })
+  .superRefine((value, ctx) => {
+    const ids = new Set(value.nodes.map((n) => n.id))
+    value.edges.forEach((e, idx) => {
+      if (!ids.has(e.source)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['edges', idx, 'source'],
+          message: `edge source "${e.source}" does not match any node id`,
+        })
+      }
+      if (!ids.has(e.target)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['edges', idx, 'target'],
+          message: `edge target "${e.target}" does not match any node id`,
+        })
+      }
+    })
+  })
+
+const SequenceActorSchema = z.object({
+  id: z.string().min(1),
+  label: z.string(),
+})
+
+const SequenceMessageSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  label: z.string(),
+  kind: z.enum(['sync', 'async', 'return']).optional(),
+})
+
+const SequenceDiagramSchema = z
+  .object({
+    kind: z.literal('sequence'),
+    actors: z.array(SequenceActorSchema).min(1),
+    messages: z.array(SequenceMessageSchema).min(1),
+  })
+  .superRefine((value, ctx) => {
+    const ids = new Set(value.actors.map((a) => a.id))
+    value.messages.forEach((m, idx) => {
+      if (!ids.has(m.from)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['messages', idx, 'from'],
+          message: `message from "${m.from}" does not match any actor id`,
+        })
+      }
+      if (!ids.has(m.to)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['messages', idx, 'to'],
+          message: `message to "${m.to}" does not match any actor id`,
+        })
+      }
+    })
+  })
+
+export const DiagramProps = z.discriminatedUnion('kind', [GraphDiagramSchema, SequenceDiagramSchema])
+export type DiagramSpec = z.infer<typeof DiagramProps>
 
 // ---------------------------------------------------------------------------
 // Catalog definition
@@ -234,7 +315,9 @@ export const catalog = defineCatalog(schema, {
       props: DiagramProps,
       slots: [],
       description:
-        'Reserved for the upcoming graph and sequence diagram kinds. Not yet implemented; specs that include it will be rejected.',
+        'Architecture / flowchart / sequence diagram. Discriminated by kind: ' +
+        '"graph" {nodes,edges,layout?} renders via Svelte Flow + ELK; ' +
+        '"sequence" {actors,messages} renders via mermaid (compiled from your typed JSON — you never write mermaid DSL).',
     },
   },
   actions: {

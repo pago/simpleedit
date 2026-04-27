@@ -43,15 +43,80 @@ describe('validateSpec — schema layer', () => {
     }
   })
 
-  it('rejects the Diagram primitive — reserved for a future release', () => {
+  it('accepts a Diagram graph with referentially-valid edges', () => {
     const result = validateSpec({
       root: 'd',
-      elements: { d: { type: 'Diagram', props: { kind: 'graph', nodes: [], edges: [] } } },
+      elements: {
+        d: {
+          type: 'Diagram',
+          props: {
+            kind: 'graph',
+            nodes: [
+              { id: 'a', label: 'A' },
+              { id: 'b', label: 'B' },
+            ],
+            edges: [{ source: 'a', target: 'b' }],
+          },
+        },
+      },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects a Diagram graph whose edge references an unknown node id', () => {
+    const result = validateSpec({
+      root: 'd',
+      elements: {
+        d: {
+          type: 'Diagram',
+          props: {
+            kind: 'graph',
+            nodes: [{ id: 'a', label: 'A' }],
+            edges: [{ source: 'a', target: 'ghost' }],
+          },
+        },
+      },
     })
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.issues[0].message).toContain('Diagram')
+      expect(result.issues.some((i) => i.message.includes('"ghost"'))).toBe(true)
     }
+  })
+
+  it('accepts a Diagram sequence and rejects messages referencing unknown actors', () => {
+    expect(
+      validateSpec({
+        root: 'd',
+        elements: {
+          d: {
+            type: 'Diagram',
+            props: {
+              kind: 'sequence',
+              actors: [
+                { id: 'u', label: 'User' },
+                { id: 's', label: 'Server' },
+              ],
+              messages: [{ from: 'u', to: 's', label: 'GET /' }],
+            },
+          },
+        },
+      }).ok,
+    ).toBe(true)
+
+    const bad = validateSpec({
+      root: 'd',
+      elements: {
+        d: {
+          type: 'Diagram',
+          props: {
+            kind: 'sequence',
+            actors: [{ id: 'u', label: 'User' }],
+            messages: [{ from: 'u', to: 'mystery', label: 'x' }],
+          },
+        },
+      },
+    })
+    expect(bad.ok).toBe(false)
   })
 
   it('rejects when a primitive prop fails its catalog schema', () => {

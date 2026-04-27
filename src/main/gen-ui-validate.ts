@@ -83,15 +83,6 @@ export function validateSpec(input: unknown): ValidationResult {
   for (const [key, el] of Object.entries(spec.elements)) {
     const at = `elements.${key}`
 
-    if (el.type === 'Diagram') {
-      earlyIssues.push({
-        path: at,
-        message:
-          'Diagram primitive is reserved for a future release; this build cannot render it.',
-      })
-      continue
-    }
-
     if (!componentNames.has(el.type)) {
       earlyIssues.push({
         path: `${at}.type`,
@@ -121,7 +112,6 @@ export function validateSpec(input: unknown): ValidationResult {
   >
   const propIssues: ValidationIssue[] = []
   for (const [key, el] of Object.entries(spec.elements)) {
-    if (el.type === 'Diagram') continue // already gated above
     const def = componentSchemas[el.type]
     if (!def) continue // unknown type already reported in earlyIssues
     const result = def.props.safeParse(el.props)

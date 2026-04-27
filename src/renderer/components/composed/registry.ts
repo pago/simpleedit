@@ -14,6 +14,7 @@ import ActionButton from './ActionButton.svelte'
 import Callout from './Callout.svelte'
 import CodeSnippet from './CodeSnippet.svelte'
 import DecisionCard from './DecisionCard.svelte'
+import Diagram from './Diagram.svelte'
 import FileList from './FileList.svelte'
 import KeyValueSummary from './KeyValueSummary.svelte'
 import ProseBlock from './ProseBlock.svelte'
@@ -29,6 +30,7 @@ export const { registry, handlers, executeAction } = defineRegistry(catalog, {
     Callout,
     CodeSnippet,
     DecisionCard,
+    Diagram,
     FileList,
     KeyValueSummary,
     ProseBlock,
