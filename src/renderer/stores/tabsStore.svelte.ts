@@ -56,13 +56,19 @@ export interface PlanTab {
 }
 
 /**
- * Reserved tab kind for the generative-UI follow-up issue. Type surface only
- * in Phase 1 — the renderer is intentionally not wired yet.
+ * Agent-composed panel rendered through the gen-ui catalog (#62).
+ *
+ * `spec` is the json-render flat-tree spec validated against the catalog at
+ * the IPC boundary; the renderer hands it to `<ComposedPanel>`. `terminalId`
+ * lets `send_to_agent` route back to the originating Claude session — Phase 2
+ * wires the action handlers that consume it.
  */
 export interface ComposedTab {
   kind: 'composed'
   id: string
   title: string
+  spec: import('../../shared/gen-ui-catalog').Spec
+  terminalId?: string
 }
 
 export type TabKind = Tab['kind']

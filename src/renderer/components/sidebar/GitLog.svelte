@@ -172,11 +172,12 @@
           ✦ Plan
         </button>
         <button
-          class="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+          class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
           onclick={startBranchTour}
           title="Generate a guided tour of all changes on this branch"
         >
-          ✦ Tour Branch
+          <TabIcon kind="tour" class="h-3 w-3" />
+          Tour Branch
         </button>
         <button
           class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
@@ -220,7 +221,7 @@
           : false}
         <div class="group relative">
           <button
-            class="flex w-full flex-col gap-0.5 rounded px-2 py-1.5 pr-7 text-left transition-colors
+            class="flex w-full flex-col gap-0.5 rounded px-2 py-1.5 text-left transition-colors
               {isSelected
               ? 'bg-zinc-700 text-zinc-100'
               : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
@@ -243,10 +244,10 @@
             data-has-tour={String(hasTour)}
             title="Tour"
             aria-label="Open tour for this commit"
-            class="absolute right-1 top-1.5 rounded p-1 transition-colors
+            class="absolute right-1 top-1.5 rounded p-1 shadow-sm transition-opacity backdrop-blur-sm
               {hasTour
-                ? 'text-sky-400 hover:bg-zinc-600 hover:text-sky-300'
-                : 'text-zinc-400 opacity-0 hover:bg-zinc-600 hover:text-zinc-200 group-hover:opacity-100 focus:opacity-100'}
+                ? 'text-sky-400 bg-zinc-800/85 hover:bg-zinc-600 hover:text-sky-300'
+                : 'text-zinc-300 bg-zinc-700/90 opacity-0 hover:bg-zinc-600 hover:text-zinc-100 group-hover:opacity-100 focus:opacity-100'}
               {isSelected && !hasTour ? 'opacity-100' : ''}"
             onclick={(e) => handleTourIconClick(e, commit)}
           >

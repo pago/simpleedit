@@ -7,7 +7,7 @@
   import { openDiffTab, openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
   import { planStore } from '../../stores/planStore.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
-  import { tabsStore, tabIdFor, type FileTab } from '../../stores/tabsStore.svelte'
+  import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { createAgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
@@ -38,8 +38,8 @@
     }
   })
 
-  // Plan-from-Claude: open a plan tab directly. tabsStore.open handles
-  // idle auto-focus vs background-unread automatically.
+  // Plan-from-Claude: focus when the pane is idle, otherwise open in
+  // background with the unread marker so we don't steal focus mid-task.
   $effect(() => {
     const wt = worktreePath
     const unsub = window.api.on('plan:from-claude', (data) => {
@@ -47,17 +47,16 @@
 
       planStore.receivePlanFromClaude(data.key, data.terminalId, data.plan)
 
-      openPlanTab(
-        wt,
-        `claude-${data.terminalId}`,
-        'Claude Plan',
-        { focus: 'background', claudeTerminalId: data.terminalId },
-      )
+      const paneIdle = tabsStore.activeId(wt) === null
+      openPlanTab(wt, `claude-${data.terminalId}`, 'Claude Plan', {
+        focus: paneIdle ? 'active' : 'background',
+        claudeTerminalId: data.terminalId,
+      })
     })
     return unsub
   })
 
-  // Tour-from-Claude: open a tour tab directly. Same background-open semantics.
+  // Tour-from-Claude: same idle-vs-busy focus rule.
   $effect(() => {
     const wt = worktreePath
     const unsub = window.api.on('tour:from-claude', (data) => {
@@ -68,7 +67,34 @@
       const label = data.commitHash
         ? `Commit ${data.commitHash.slice(0, 7)}`
         : 'Uncommitted changes'
-      openTourTab(wt, data.commitHash, label, { focus: 'background' })
+      const paneIdle = tabsStore.activeId(wt) === null
+      openTourTab(wt, data.commitHash, label, {
+        focus: paneIdle ? 'active' : 'background',
+      })
+    })
+    return unsub
+  })
+
+  // Agent-composed panel from show_panel MCP call. One panel per source
+  // terminal — re-opens replace the existing tab in place via tabsStore's
+  // identity-based reuse. When the pane is idle (no active tab) we focus the
+  // panel so the user sees it; when busy we open in the background with the
+  // unread marker so we don't steal focus mid-task.
+  $effect(() => {
+    const wt = worktreePath
+    const unsub = window.api.on('agent-panel:open', (data) => {
+      if (data.worktreePath !== wt) return
+
+      const composedId = `panel-${data.sourceTerminalId}`
+      const tab: ComposedTab = {
+        kind: 'composed',
+        id: tabIdFor({ kind: 'composed', id: composedId }),
+        title: data.title,
+        spec: data.spec,
+        terminalId: data.sourceTerminalId,
+      }
+      const paneIdle = tabsStore.activeId(wt) === null
+      tabsStore.open(wt, tab, { focus: paneIdle ? 'active' : 'background' })
     })
     return unsub
   })
