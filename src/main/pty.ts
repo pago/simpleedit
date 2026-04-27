@@ -3,7 +3,7 @@ import { app, type WebContents } from 'electron'
 import { writeFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import type { PtySpawnOptions } from '../shared/ipc-types'
+import type { ClaudeSpawnOptions as ClaudeSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
 
 type IPty = pty.IPty
@@ -11,7 +11,7 @@ type IPty = pty.IPty
 const terminals = new Map<string, IPty>()
 const mcpConfigPaths = new Map<string, string>()
 
-export interface ClaudeSpawnOptions extends PtySpawnOptions {
+export interface ClaudeSpawnOptions extends ClaudeSpawnOptionsShared {
   bridgePort?: number
   bridgeToken?: string
 }
@@ -102,7 +102,7 @@ export function spawnClaudeTerminal(
   options: ClaudeSpawnOptions,
   webContents: WebContents
 ): void {
-  const { id, worktreePath, bridgePort, bridgeToken } = options
+  const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId } = options
 
   if (terminals.has(id)) {
     return
@@ -114,6 +114,10 @@ export function spawnClaudeTerminal(
     const configPath = writeMcpConfig(id, bridgePort, bridgeToken)
     mcpConfigPaths.set(id, configPath)
     claudeCmd += ` --mcp-config ${configPath}`
+  }
+
+  if (resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)) {
+    claudeCmd += ` --resume ${resumeSessionId}`
   }
 
   const shell = defaultShell()

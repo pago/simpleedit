@@ -7,31 +7,85 @@
   import { refreshWorktrees } from './stores/worktrees.svelte'
   import { initClaudeStatusListeners } from './stores/claude-status.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
+  import { initClaudeSessionIdListener, sessionRestoreStore } from './stores/sessionRestore.svelte'
+  import { hydrateSession, serializeSession } from './lib/sessionPersistence'
 
   let sidebarWidth = $state(260)
   let isResizing = $state(false)
   let repoPath = $state<string | null>(null)
+  let sessionReady = $state(false)
   let repoName = $derived(
     repoPath
       ? repoPath.split('/').pop()?.replace('.git', '') ?? 'SimpleEdit'
       : 'SimpleEdit'
   )
 
-  onMount(async () => {
-    const unsubscribe = initClaudeStatusListeners()
-    const repo = await window.api.invoke('app:get-repo')
-    if (repo) {
-      repoPath = repo
-      refreshWorktrees()
+  onMount(() => {
+    const unsubStatus = initClaudeStatusListeners()
+    const unsubSessionId = initClaudeSessionIdListener()
+    void initRepoFromMain()
+    window.addEventListener('beforeunload', flushSessionSave)
+    return () => {
+      unsubStatus()
+      unsubSessionId()
+      window.removeEventListener('beforeunload', flushSessionSave)
     }
-    return unsubscribe
   })
 
-  async function handleRepoSelected(path: string): Promise<void> {
-    await window.api.invoke('app:set-repo', path)
-    repoPath = path
-    refreshWorktrees()
+  async function initRepoFromMain(): Promise<void> {
+    const repo = await window.api.invoke('app:get-repo')
+    if (repo) {
+      await openRepo(repo)
+    }
   }
+
+  async function openRepo(path: string, persisted = true): Promise<void> {
+    if (!persisted) {
+      await window.api.invoke('app:set-repo', path)
+    }
+    repoPath = path
+    sessionRestoreStore.reset()
+    await refreshWorktrees()
+    const saved = await window.api.invoke('session:load', path)
+    if (saved) {
+      hydrateSession(saved)
+    }
+    // Defer enabling auto-save by one tick so initial hydration writes don't
+    // round-trip back to disk before the user has done anything.
+    queueMicrotask(() => { sessionReady = true })
+  }
+
+  async function handleRepoSelected(path: string): Promise<void> {
+    await openRepo(path, false)
+  }
+
+  // ── Debounced auto-save ────────────────────────────────────
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+  function scheduleSave(): void {
+    if (!sessionReady || !repoPath) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(flushSessionSave, 500)
+  }
+
+  function flushSessionSave(): void {
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+    }
+    if (!repoPath) return
+    const payload = serializeSession(repoPath)
+    void window.api.invoke('session:save', payload)
+  }
+
+  // Reactive snapshot — touching every field we serialize triggers re-runs.
+  $effect(() => {
+    if (!sessionReady || !repoPath) return
+    // Touch: serializeSession reads all of these via the store getters.
+    // Calling it here makes the effect track them.
+    serializeSession(repoPath)
+    scheduleSave()
+  })
 
   function handleGlobalKeydown(e: KeyboardEvent): void {
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {

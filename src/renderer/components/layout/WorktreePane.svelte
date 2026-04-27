@@ -15,9 +15,10 @@
   interface Props {
     worktreePath: string
     paneId: string
+    paneRole: 'primary' | 'secondary'
   }
 
-  let { worktreePath, paneId }: Props = $props()
+  let { worktreePath, paneId, paneRole }: Props = $props()
 
   // Per-pane agent terminal store (shared between TerminalTabs and editors)
   const agentStore = createAgentTerminalStore()
@@ -295,7 +296,7 @@
 
   <!-- Bottom: terminal area -->
   <div class="min-h-0 flex-1 bg-black">
-    <TerminalTabs {worktreePath} {agentStore} />
+    <TerminalTabs {worktreePath} {agentStore} {paneRole} />
   </div>
 
   {#if popoverState}

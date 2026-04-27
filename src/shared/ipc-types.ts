@@ -107,14 +107,20 @@ export interface GitEventMap {
 // ── Claude stream ─────────────────────────────────────────
 export type ClaudeStatus = 'idle' | 'running' | 'waiting' | 'error'
 
+export interface ClaudeSpawnOptions extends PtySpawnOptions {
+  /** When set, claude is launched with `--resume <id>` to restore a prior session. */
+  resumeSessionId?: string
+}
+
 export interface ClaudeInvokeMap {
-  'claude:spawn': { args: [options: PtySpawnOptions]; result: void }
+  'claude:spawn': { args: [options: ClaudeSpawnOptions]; result: void }
   'claude:attach': { args: [terminalId: string, worktreePath: string]; result: void }
   'claude:detach': { args: [terminalId: string]; result: void }
 }
 
 export interface ClaudeEventMap {
   'claude:status': { worktreePath: string; status: ClaudeStatus; terminalId: string }
+  'claude:session-id': { terminalId: string; sessionId: string }
 }
 
 // ── Review ────────────────────────────────────────────────
@@ -232,6 +238,64 @@ export interface PlanEventMap {
   'plan:from-claude': { key: string; terminalId: string; plan: Plan }
 }
 
+// ── Session save/restore ─────────────────────────────────
+/**
+ * Per-repo persisted snapshot of what was open last time the user quit.
+ * Restored on next launch so engineers don't have to manually reopen tabs
+ * or `/resume` Claude sessions across worktrees.
+ */
+export type SerializedTab =
+  | { kind: 'file'; id: string; path: string }
+  | { kind: 'diff'; id: string; commitHash: string | null; commitMessage: string }
+  | { kind: 'tour'; id: string; commitHash: string | null; commitMessage: string }
+  | { kind: 'plan'; id: string; planHash: string; label: string; claudeTerminalId: string | null }
+
+/**
+ * A Claude Code session that was running when SimpleEdit was last closed.
+ * On restore, these come back as placeholder tabs the user clicks to resume
+ * (avoids spawning N concurrent claude processes on launch). Plain terminals
+ * are not persisted — each pane auto-spawns one on mount.
+ */
+export interface SerializedClaudeSession {
+  /** UI label as last observed (e.g. "Claude" or a session-derived title). */
+  label: string
+  /** Captured from claude's stream-json init event. Required to `--resume`. */
+  sessionId?: string
+}
+
+export interface SerializedWorktreeState {
+  worktreePath: string
+  tabs: SerializedTab[]
+  activeTabId: string | null
+  mru: string[]
+  unread: string[]
+  /** Claude sessions that lived in the primary pane's terminal list. */
+  primaryClaudeSessions: SerializedClaudeSession[]
+  /** Claude sessions that lived in the secondary pane's terminal list. */
+  secondaryClaudeSessions: SerializedClaudeSession[]
+}
+
+export interface SerializedSession {
+  version: 1
+  repoPath: string
+  savedAt: string
+  layout: {
+    primaryWorktreePath: string | null
+    secondaryWorktreePath: string | null
+    focusedPane: 'primary' | 'secondary'
+    splitRatio: number
+    visitedPrimary: string[]
+    visitedSecondary: string[]
+  }
+  worktreeStates: SerializedWorktreeState[]
+}
+
+export interface SessionInvokeMap {
+  'session:save': { args: [payload: SerializedSession]; result: void }
+  'session:load': { args: [repoPath: string]; result: SerializedSession | null }
+  'session:clear': { args: [repoPath: string]; result: void }
+}
+
 // ── App-level ─────────────────────────────────────────────
 export interface RecentRepo {
   path: string
@@ -297,7 +361,8 @@ export type InvokeMap = WorktreeInvokeMap &
   ReviewInvokeMap &
   TourInvokeMap &
   PlanInvokeMap &
-  LspInvokeMap
+  LspInvokeMap &
+  SessionInvokeMap
 
 export type SendMap = LspSendMap
 

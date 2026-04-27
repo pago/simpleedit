@@ -4,7 +4,8 @@ import {
   emitPtyData,
   attachToTerminal,
   detachFromTerminal,
-  detachAll
+  detachAll,
+  getSessionId
 } from '../claude-stream'
 
 // WebContents is import type in claude-stream.ts — no Electron mock needed.
@@ -146,5 +147,69 @@ describe('attachToTerminal — OSC title parsing', () => {
       status: 'idle',
       terminalId: 'ta8'
     })
+  })
+})
+
+describe('attachToTerminal — session_id extraction', () => {
+  it('captures session_id from a stream-json init line and emits the event', () => {
+    const wc = makeWebContents()
+    attachToTerminal('sid1', '/repo', wc as never)
+    emitPtyData(
+      'sid1',
+      '{"type":"system","subtype":"init","session_id":"abc-123"}\n'
+    )
+    expect(wc.send).toHaveBeenCalledWith('claude:session-id', {
+      terminalId: 'sid1',
+      sessionId: 'abc-123'
+    })
+    expect(getSessionId('sid1')).toBe('abc-123')
+  })
+
+  it('handles split chunks across PTY data boundaries', () => {
+    const wc = makeWebContents()
+    attachToTerminal('sid2', '/repo', wc as never)
+    emitPtyData('sid2', '{"type":"system","sub')
+    emitPtyData('sid2', 'type":"init","session_id":"split-456"}\n')
+    expect(wc.send).toHaveBeenCalledWith('claude:session-id', {
+      terminalId: 'sid2',
+      sessionId: 'split-456'
+    })
+  })
+
+  it('captures only the first session_id and stops scanning afterwards', () => {
+    const wc = makeWebContents()
+    attachToTerminal('sid3', '/repo', wc as never)
+    emitPtyData('sid3', '{"session_id":"first"}\n{"session_id":"second"}\n')
+    expect(getSessionId('sid3')).toBe('first')
+    const calls = (wc.send as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => c[0] === 'claude:session-id'
+    )
+    expect(calls).toHaveLength(1)
+  })
+
+  it('ignores ANSI escape sequences interleaved with the JSON line', () => {
+    const wc = makeWebContents()
+    attachToTerminal('sid4', '/repo', wc as never)
+    // CSI sequence prefixed before the JSON
+    emitPtyData('sid4', '\x1b[2J\x1b[H{"session_id":"ansi-789"}\n')
+    expect(getSessionId('sid4')).toBe('ansi-789')
+  })
+
+  it('clears captured session_id on detach', () => {
+    const wc = makeWebContents()
+    attachToTerminal('sid5', '/repo', wc as never)
+    emitPtyData('sid5', '{"session_id":"x"}\n')
+    expect(getSessionId('sid5')).toBe('x')
+    detachFromTerminal('sid5')
+    expect(getSessionId('sid5')).toBeNull()
+  })
+
+  it('skips lines that are not valid JSON', () => {
+    const wc = makeWebContents()
+    attachToTerminal('sid6', '/repo', wc as never)
+    emitPtyData('sid6', 'not json at all\n')
+    emitPtyData('sid6', '{"incomplete":\n')
+    emitPtyData('sid6', '{"session_id":"only-good-line"}\n')
+    expect(getSessionId('sid6')).toBe('only-good-line')
   })
 })

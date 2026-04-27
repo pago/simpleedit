@@ -6,26 +6,26 @@
     secondPaneWorktree, setSecondaryWorktree,
     setFocusedPane
   } from '../../stores/worktrees.svelte'
-  import type { WorktreeInfo } from '../../../shared/ipc-types'
+  import { sessionRestoreStore } from '../../stores/sessionRestore.svelte'
 
-  let splitRatio = $state(50)
   let isResizing = $state(false)
 
+  let splitRatio = $derived(sessionRestoreStore.splitRatio())
   let primaryPath = $derived(activeWorktree()?.path ?? null)
   let secondaryPath = $derived(secondPaneWorktree()?.path ?? null)
   let hasTwoPanes = $derived(secondaryPath !== null)
 
   // Track all worktree paths that have been opened so we can keep their panes alive.
-  // Use a plain array with $state — the $effect only reads primaryPath, not the array itself.
-  let visitedPrimaryPaths = $state<string[]>([])
-  let visitedSecondaryPaths = $state<string[]>([])
+  let visitedPrimaryPaths = $derived(sessionRestoreStore.visitedPrimaryPaths())
+  let visitedSecondaryPaths = $derived(sessionRestoreStore.visitedSecondaryPaths())
 
   $effect(() => {
     const path = primaryPath
     if (path) {
       untrack(() => {
-        if (!visitedPrimaryPaths.includes(path)) {
-          visitedPrimaryPaths = [...visitedPrimaryPaths, path]
+        const current = sessionRestoreStore.visitedPrimaryPaths()
+        if (!current.includes(path)) {
+          sessionRestoreStore.setVisitedPrimaryPaths([...current, path])
         }
       })
     }
@@ -35,8 +35,9 @@
     const path = secondaryPath
     if (path) {
       untrack(() => {
-        if (!visitedSecondaryPaths.includes(path)) {
-          visitedSecondaryPaths = [...visitedSecondaryPaths, path]
+        const current = sessionRestoreStore.visitedSecondaryPaths()
+        if (!current.includes(path)) {
+          sessionRestoreStore.setVisitedSecondaryPaths([...current, path])
         }
       })
     }
@@ -55,7 +56,7 @@
 
   function closeSecondPane(): void {
     setSecondaryWorktree(null)
-    visitedSecondaryPaths = []
+    sessionRestoreStore.setVisitedSecondaryPaths([])
   }
 
   function onSplitResizeStart(): void {
@@ -65,7 +66,7 @@
     function onMouseMove(ev: MouseEvent) {
       const rect = container.getBoundingClientRect()
       const pct = ((ev.clientX - rect.left) / rect.width) * 100
-      splitRatio = Math.max(25, Math.min(75, pct))
+      sessionRestoreStore.setSplitRatio(Math.max(25, Math.min(75, pct)))
     }
 
     function onMouseUp() {
@@ -116,7 +117,7 @@
               class="absolute inset-0"
               class:hidden={path !== primaryPath}
             >
-              <WorktreePane worktreePath={path} paneId="primary-{path}" />
+              <WorktreePane worktreePath={path} paneId="primary-{path}" paneRole="primary" />
             </div>
           {/each}
         </div>
@@ -170,7 +171,7 @@
                 class="absolute inset-0"
                 class:hidden={path !== secondaryPath}
               >
-                <WorktreePane worktreePath={path} paneId="secondary-{path}" />
+                <WorktreePane worktreePath={path} paneId="secondary-{path}" paneRole="secondary" />
               </div>
             {/each}
           </div>
