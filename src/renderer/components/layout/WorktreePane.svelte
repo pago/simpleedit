@@ -375,7 +375,12 @@
         class="flex-none overflow-y-auto border-l border-zinc-800 p-2"
         style:width="{fileTreeWidth}px"
       >
-        <FileTree rootPath={worktreePath} onselect={openFile} oncollapse={toggleFileTree} />
+        <FileTree
+          rootPath={worktreePath}
+          {activeFilePath}
+          onselect={openFile}
+          oncollapse={toggleFileTree}
+        />
       </div>
     {/if}
   </div>
