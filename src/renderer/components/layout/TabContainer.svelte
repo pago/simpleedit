@@ -78,7 +78,12 @@
     </div>
   </div>
 {:else if tab.kind === 'composed'}
-  <ComposedPanel spec={tab.spec} terminalId={tab.terminalId} {onclose} />
+  <ComposedPanel
+    spec={tab.spec}
+    terminalId={tab.terminalId}
+    {worktreePath}
+    {onclose}
+  />
 {:else}
   {@const _exhaustive: never = tab}
 {/if}

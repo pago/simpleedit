@@ -7,7 +7,7 @@
   import { openDiffTab, openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
   import { planStore } from '../../stores/planStore.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
-  import { tabsStore, tabIdFor, type FileTab } from '../../stores/tabsStore.svelte'
+  import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { createAgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
@@ -69,6 +69,27 @@
         ? `Commit ${data.commitHash.slice(0, 7)}`
         : 'Uncommitted changes'
       openTourTab(wt, data.commitHash, label, { focus: 'background' })
+    })
+    return unsub
+  })
+
+  // Agent-composed panel from show_panel MCP call. One panel per source
+  // terminal — re-opens replace the existing tab in place via tabsStore's
+  // identity-based reuse. Background open with idle auto-focus, busy unread.
+  $effect(() => {
+    const wt = worktreePath
+    const unsub = window.api.on('agent-panel:open', (data) => {
+      if (data.worktreePath !== wt) return
+
+      const composedId = `panel-${data.sourceTerminalId}`
+      const tab: ComposedTab = {
+        kind: 'composed',
+        id: tabIdFor({ kind: 'composed', id: composedId }),
+        title: data.title,
+        spec: data.spec,
+        terminalId: data.sourceTerminalId,
+      }
+      tabsStore.open(wt, tab, { focus: 'background' })
     })
     return unsub
   })
