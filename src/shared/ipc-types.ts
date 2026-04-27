@@ -4,6 +4,8 @@
  * Main → Renderer: event channels (push)
  */
 
+import type { Spec } from './gen-ui-catalog'
+
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
   path: string
@@ -272,6 +274,17 @@ export interface LspEventMap {
   'lsp:server-exit': { serverId: string; code: number | null }
 }
 
+// ── AgentPanel (gen-ui composed panels) ───────────────────
+
+export interface AgentPanelEventMap {
+  'agent-panel:open': {
+    spec: Spec
+    title: string
+    worktreePath: string
+    sourceTerminalId: string
+  }
+}
+
 // ── Aggregate maps for type-safe IPC helpers ──────────────
 export type InvokeMap = WorktreeInvokeMap &
   PtyInvokeMap &
@@ -294,4 +307,5 @@ export type EventMap = WorktreeEventMap &
   ReviewEventMap &
   TourEventMap &
   PlanEventMap &
-  LspEventMap
+  LspEventMap &
+  AgentPanelEventMap

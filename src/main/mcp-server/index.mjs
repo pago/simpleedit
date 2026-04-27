@@ -144,5 +144,116 @@ server.registerTool(
   }
 )
 
+// ── show_panel: agent-composed UI ──────────────────────────────────────────
+
+const ActionRefSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('send_to_agent'), text: z.string().min(1) }),
+  z.object({
+    type: z.literal('open_file'),
+    path: z.string().min(1),
+    line: z.number().int().positive().optional(),
+  }),
+  z.object({
+    type: z.literal('show_diff'),
+    commitHash: z.string().min(1),
+    file: z.string().optional(),
+  }),
+  z.object({ type: z.literal('dismiss_panel') }),
+  z.object({ type: z.literal('set_state'), key: z.string().min(1), value: z.unknown() }),
+])
+
+server.registerTool(
+  'show_panel',
+  {
+    description: [
+      'Display an interactive UI panel composed from a constrained catalog of primitives.',
+      'The user is working in SimpleEdit\'s IDE and reads agent output through interactive panels — never serialise the panel content as terminal text.',
+      '',
+      'Use this tool when:',
+      '- Pausing on an ambiguous decision and asking the user to pick (compose ProseBlock + DecisionCard).',
+      '- Summarising structured output like a test run (compose KeyValueSummary + FileList).',
+      '- Offering several variants of code to pick from (compose CodeSnippets in a Row, each with an ActionButton).',
+      '- Surfacing change-impact, semantic bookmarks, or any structured signal the user should review and act on.',
+      '',
+      'Catalog of primitives (12; reference each by name in spec.elements[*].type):',
+      '- ProseBlock { content }: markdown narrative.',
+      '- FileList { items[{path,status?,detail?,action?}], title? }: clickable file rows; status ∈ added|modified|deleted|renamed|error|ok.',
+      '- CodeSnippet { language, code, annotation?, lineNumbers?, maxLines? }: read-only code with optional commentary.',
+      '- DecisionCard { question, context?, options[{label,variant?,action}] }: 2–5 options, each option dispatches an action.',
+      '- StatusIndicator { kind, label, detail? }: kind ∈ running|ok|warn|error|pending.',
+      '- KeyValueSummary { items[{label,value,status?}] }: label→value pairs.',
+      '- Section { title, defaultOpen? } [children]: collapsible group; children belong via spec.elements[id].children.',
+      '- ActionButton { label, variant?, action }: standalone action button.',
+      '- TextInput { bind, placeholder?, submitAction? }: bind = JSON Pointer state path.',
+      '- Textarea: same shape as TextInput, multi-line.',
+      '- Callout { variant, title?, body }: variant ∈ info|warn|error|success.',
+      '- Row { gap?, wrap? } [children]: horizontal flex; default flow is vertical.',
+      'Diagram is reserved for a future release and will be rejected.',
+      '',
+      'Action set (referenced inside DecisionCard.options[].action, ActionButton.action, FileList.items[].action, TextInput/Textarea.submitAction):',
+      '- { type: "send_to_agent", text }: sends text to your terminal as if the user typed it. Rate-limited.',
+      '- { type: "open_file", path, line? }: opens a file tab; path is validated against the active worktree.',
+      '- { type: "show_diff", commitHash, file? }: opens a diff tab; commit must be reachable.',
+      '- { type: "dismiss_panel" }: closes this panel.',
+      '- { type: "set_state", key, value }: mutates the panel\'s local $bindState scope.',
+      '',
+      'Spec format — flat tree:',
+      '  spec = { root: "elementId", elements: { elementId: { type, props, children?, visible? } } }',
+      'children is an array of element ids that point into the same elements map. Use this for Section/Row contents.',
+      '',
+      'Example — checkpoint:',
+      '  {',
+      '    "title": "Approach?",',
+      '    "spec": {',
+      '      "root": "card",',
+      '      "elements": {',
+      '        "ctx": { "type": "ProseBlock", "props": { "content": "Two ways to handle the cache invalidation…" } },',
+      '        "card": { "type": "DecisionCard", "props": {',
+      '          "question": "Which approach?",',
+      '          "options": [',
+      '            { "label": "Refresh on write", "variant": "primary", "action": { "type": "send_to_agent", "text": "use refresh-on-write" } },',
+      '            { "label": "TTL-based", "action": { "type": "send_to_agent", "text": "use TTL" } }',
+      '          ]',
+      '        }, "children": ["ctx"] }',
+      '      }',
+      '    }',
+      '  }',
+      '',
+      'After dispatching the panel, the user\'s reaction returns through your terminal as plain text (when an action sends_to_agent) — read it and continue.',
+    ].join('\n'),
+    inputSchema: {
+      worktreePath: z.string().describe('Absolute path to the git worktree this panel applies to'),
+      title: z.string().optional().describe('Tab title shown in SimpleEdit. Defaults to "Agent panel".'),
+      spec: z
+        .object({
+          root: z.string(),
+          elements: z.record(
+            z.string(),
+            z.object({
+              type: z.string(),
+              props: z.record(z.string(), z.unknown()).optional(),
+              children: z.array(z.string()).optional(),
+              visible: z.unknown().optional(),
+            }),
+          ),
+        })
+        .describe(
+          'Flat-tree spec. spec.root is the entry element id; spec.elements maps every element id to {type, props, children?}. ' +
+            'Per-element props are validated against the catalog schema main-side; invalid specs are returned to you with a list of issues so you can self-correct.',
+        ),
+      _actionRefShape: ActionRefSchema.optional().describe(
+        'Reference for the ActionRef shape used inside element props (FYI; not a parameter). Type-discriminated by `type`.',
+      ),
+    },
+  },
+  async ({ worktreePath, title, spec }) => {
+    const result = await postToBridge('show_panel', { worktreePath, title, spec })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(
+      'Panel displayed in SimpleEdit. Wait for the user\'s response — interactive actions will arrive in your terminal.',
+    )
+  },
+)
+
 const transport = new StdioServerTransport()
 await server.connect(transport)

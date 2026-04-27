@@ -8,6 +8,7 @@ import type { Plan, Tour } from '../shared/ipc-types'
 import { savePlan } from './plan'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
+import { validateSpec, validateSpecActions } from './gen-ui-validate'
 
 interface BridgeInstance {
   server: Server
@@ -70,7 +71,7 @@ export function loadLatestClaudePlan(worktreePath: string): string | null {
 
 // -- Tool call handling ----------------------------------------
 
-function handleToolCall(payload: ToolCallPayload, webContents: WebContents): { status: number; body: Record<string, unknown> } {
+async function handleToolCall(payload: ToolCallPayload, webContents: WebContents): Promise<{ status: number; body: Record<string, unknown> }> {
   const { tool, args, terminalId } = payload
 
   if (tool === 'show_plan') {
@@ -150,6 +151,51 @@ function handleToolCall(payload: ToolCallPayload, webContents: WebContents): { s
     return { status: 200, body: { ok: true } }
   }
 
+  if (tool === 'show_panel') {
+    const claudeWorktreePath = args['worktreePath'] as string | undefined
+    const title = typeof args['title'] === 'string' ? (args['title'] as string) : 'Agent panel'
+
+    const worktreePath = getWorktreeForTerminal(terminalId) ?? claudeWorktreePath
+    if (!worktreePath) {
+      return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
+    }
+
+    const validation = validateSpec(args['spec'])
+    if (!validation.ok) {
+      return {
+        status: 400,
+        body: {
+          error: 'spec validation failed',
+          issues: validation.issues,
+        },
+      }
+    }
+
+    const actionIssues = await validateSpecActions(validation.spec, worktreePath)
+    if (actionIssues.length > 0) {
+      return {
+        status: 400,
+        body: {
+          error: 'spec actions reference content outside the active worktree',
+          issues: actionIssues,
+        },
+      }
+    }
+
+    if (!webContents.isDestroyed()) {
+      webContents.send('agent-panel:open', {
+        spec: validation.spec,
+        title,
+        worktreePath,
+        sourceTerminalId: terminalId,
+      })
+    } else {
+      console.warn(`[MCP Bridge] webContents is destroyed, cannot send agent-panel:open IPC`)
+    }
+
+    return { status: 200, body: { ok: true } }
+  }
+
   return { status: 400, body: { error: `Unknown tool: ${tool}` } }
 }
 
@@ -172,7 +218,7 @@ function createBridgeServer(token: string, webContents: WebContents): Server {
           return
         }
 
-        const result = handleToolCall(payload, webContents)
+        const result = await handleToolCall(payload, webContents)
         jsonResponse(res, result.status, result.body)
       } catch {
         jsonResponse(res, 400, { error: 'Invalid JSON body' })
