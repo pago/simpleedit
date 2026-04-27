@@ -263,7 +263,7 @@
     {#each worktreeList() as worktree (worktree.path)}
       {@const isActive = activeWorktree()?.path === worktree.path}
       <div
-        class="group flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm {isActive
+        class="group relative flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm {isActive
           ? 'bg-zinc-700 text-zinc-100'
           : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
         role="option"
@@ -309,13 +309,28 @@
             </button>
           {:else}
             <button
-              class="shrink-0 rounded px-1 py-0.5 text-[10px] text-zinc-500 opacity-0 hover:text-red-400 group-hover:opacity-100"
+              class="absolute right-1 top-1/2 -translate-y-1/2 rounded bg-zinc-700/90 p-1 text-zinc-300 opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-zinc-600 hover:text-red-400 group-hover:opacity-100 focus:opacity-100"
               onclick={(e) => {
                 e.stopPropagation()
                 removing = worktree.path
               }}
+              title="Remove worktree"
+              aria-label="Remove worktree"
             >
-              Remove
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+                class="h-3.5 w-3.5"
+              >
+                <path
+                  d="M3 4h10M6.5 4V2.5h3V4M4.5 4v9.5a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V4M6.5 7v4.5M9.5 7v4.5"
+                  stroke="currentColor"
+                  stroke-width="1.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
             </button>
           {/if}
         {/if}
