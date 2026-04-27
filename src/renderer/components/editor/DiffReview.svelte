@@ -1,15 +1,13 @@
 <script lang="ts">
   import MonacoDiffEditor from './MonacoDiffEditor.svelte'
   import ReviewPanel from './ReviewPanel.svelte'
-  import TourPanel from './TourPanel.svelte'
-  import PlanPanel from './PlanPanel.svelte'
   import type { DiffFileEntry } from '../../../shared/ipc-types'
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
   import { tick } from 'svelte'
   import { reviewStore, reviewKey, triggerReview } from '../../stores/reviewStore.svelte'
   import { tourStore, tourKey, triggerTour } from '../../stores/tourStore.svelte'
-  import { planStore, planKey } from '../../stores/planStore.svelte'
+  import { openTourTab } from '../../stores/diffReview.svelte'
 
   interface Props {
     /** null means staging/uncommitted changes */
@@ -17,8 +15,8 @@
     commitMessage: string
     worktreePath: string
     terminals: AgentTabInfo[]
-    /** Optional initial tab hint — applied once per target-hash change. */
-    initialTab?: 'files' | 'findings' | 'tour' | 'plan'
+    /** Optional initial sub-view hint. */
+    initialTab?: 'files' | 'findings'
     onclose: () => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
@@ -34,8 +32,8 @@
   let fileListWidth = $state(224) // w-56 = 14rem = 224px
   let isResizing = $state(false)
 
-  // Tab state: 'files', 'findings', 'tour', or 'plan'
-  let activeTab = $state<'files' | 'findings' | 'tour' | 'plan'>('files')
+  // Left-side toggle: files list vs findings list.
+  let leftPane = $state<'files' | 'findings'>('files')
 
   // Highlight range set by navigating to a finding
   let highlightLines = $state<[number, number] | undefined>(undefined)
@@ -54,12 +52,14 @@
   const tKey = $derived(tourKey(worktreePath, commitHash))
   const tourState = $derived(tourStore.get(tKey))
 
-  const pKey = $derived(planKey(worktreePath, commitHash))
-  const pState = $derived(planStore.get(pKey))
-
   function handleStartTour(): void {
     triggerTour(worktreePath, commitHash)
-    activeTab = 'tour'
+    const label = commitHash === null
+      ? 'Uncommitted changes'
+      : commitHash === 'branch'
+        ? 'Branch tour'
+        : `Commit ${commitHash.slice(0, 7)}`
+    openTourTab(worktreePath, commitHash, label)
   }
 
   function onSplitterMouseDown(e: MouseEvent) {
@@ -84,19 +84,14 @@
   const isStaging = $derived(commitHash === null)
   const isBranch = $derived(commitHash === 'branch')
 
-  // Auto-switch to Tour tab for branch tour
-  $effect(() => {
-    if (isBranch) activeTab = 'tour'
-  })
-
-  // Apply initial tab hint once per target change
+  // Apply the initial-tab hint once per target change (findings only).
   let lastAppliedHintKey = $state<string | null>(null)
   $effect(() => {
-    if (!initialTab) return
+    if (initialTab !== 'findings') return
     const hintKey = `${commitHash ?? 'staging'}:${initialTab}`
     if (hintKey === lastAppliedHintKey) return
     lastAppliedHintKey = hintKey
-    activeTab = initialTab
+    leftPane = 'findings'
   })
 
   // Load file list when commit changes
@@ -197,7 +192,7 @@
 
   function handleStartReview(): void {
     triggerReview(worktreePath, commitHash)
-    activeTab = 'findings'
+    leftPane = 'findings'
   }
 
   function statusColor(status: DiffFileEntry['status']): string {
@@ -277,7 +272,7 @@
       {/if}
     </button>
 
-    <!-- Tour button -->
+    <!-- Tour button — opens a top-level tour tab -->
     <button
       class="flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors
         {tourState?.status === 'running'
@@ -299,35 +294,29 @@
         <span>✦ Tour</span>
       {/if}
     </button>
-
   </div>
 
-  {#if activeTab === 'tour'}
-    <TourPanel {worktreePath} {commitHash} {commitMessage} />
-  {:else if activeTab === 'plan'}
-    <PlanPanel {worktreePath} {commitHash} {terminals} {onsendtoagent} />
-  {:else}
   <div class="flex min-h-0 flex-1" class:select-none={isResizing}>
-    <!-- Left panel (file list or findings) -->
+    <!-- Left panel (files or findings) -->
     <div class="flex flex-none flex-col border-r border-zinc-800 bg-zinc-950" style:width="{fileListWidth}px">
 
-      <!-- Tab bar -->
+      <!-- Left-pane toggle -->
       <div class="flex border-b border-zinc-800">
         <button
           class="flex-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-colors
-            {activeTab === 'files'
+            {leftPane === 'files'
               ? 'border-b-2 border-blue-500 text-zinc-300'
               : 'text-zinc-600 hover:text-zinc-400'}"
-          onclick={() => (activeTab = 'files')}
+          onclick={() => (leftPane = 'files')}
         >
           Files {files.length > 0 ? `(${files.length})` : ''}
         </button>
         <button
           class="flex-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-colors
-            {activeTab === 'findings'
+            {leftPane === 'findings'
               ? 'border-b-2 border-blue-500 text-zinc-300'
               : 'text-zinc-600 hover:text-zinc-400'}"
-          onclick={() => (activeTab = 'findings')}
+          onclick={() => (leftPane = 'findings')}
         >
           {#if reviewState && reviewState.findings.length > 0}
             {@const active = reviewState.findings.filter((f) => !reviewState.dismissed.has(f.id))}
@@ -342,35 +331,11 @@
             Findings
           {/if}
         </button>
-        <button
-          class="flex-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-colors
-            {activeTab === 'tour'
-              ? 'border-b-2 border-blue-500 text-zinc-300'
-              : 'text-zinc-600 hover:text-zinc-400'}"
-          onclick={() => (activeTab = 'tour')}
-        >
-          Tour
-          {#if tourState && tourState.topics.length > 0}
-            <span class="ml-1 text-zinc-500">({tourState.topics.length})</span>
-          {/if}
-        </button>
-        <button
-          class="flex-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-colors
-            {activeTab === 'plan'
-              ? 'border-b-2 border-blue-500 text-zinc-300'
-              : 'text-zinc-600 hover:text-zinc-400'}"
-          onclick={() => (activeTab = 'plan')}
-        >
-          Plan
-          {#if pState && pState.tasks.length > 0}
-            <span class="ml-1 text-zinc-500">({pState.tasks.length})</span>
-          {/if}
-        </button>
       </div>
 
-      <!-- Tab content -->
+      <!-- Left-pane content -->
       <div class="min-h-0 flex-1 overflow-y-auto">
-        {#if activeTab === 'files'}
+        {#if leftPane === 'files'}
           {#if loading}
             <p class="px-2 py-2 text-xs text-zinc-500">Loading…</p>
           {:else}
@@ -431,5 +396,4 @@
       {/if}
     </div>
   </div>
-  {/if}
 </div>

@@ -27,8 +27,6 @@ export interface PaletteProvider {
 
 export type PaletteAction =
   | { type: 'open-file'; worktreePath: string; filePath: string }
-  | { type: 'start-review'; worktreePath: string; hash: string | null; message: string }
-  | { type: 'tour-branch'; worktreePath: string }
 
 export type PalettePrefix = '>' | '@' | '#' | null
 

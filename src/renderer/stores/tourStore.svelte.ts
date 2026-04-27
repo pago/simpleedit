@@ -20,6 +20,16 @@ export const tourStore = {
     return _tours.get(key)
   },
 
+  /**
+   * True iff a tour with at least some content exists for the given commit
+   * in the given worktree. Used by the GitLog tour icon to render a
+   * persistent-highlighted state for commits that already have a tour.
+   */
+  hasTourForCommit(worktreePath: string, commitHash: string | null): boolean {
+    const state = _tours.get(tourKey(worktreePath, commitHash))
+    return state !== undefined && state.topics.length > 0
+  },
+
   setStatus(key: string, status: TourStatus, error?: string): void {
     const existing = _tours.get(key)
     const next = new Map(_tours)
