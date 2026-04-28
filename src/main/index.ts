@@ -30,7 +30,8 @@ import { startPlan, startPlanFromDescription, revisePlan, cancelPlan, cancelAllP
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan } from './mcp-bridge'
 import { saveDroppedBlob } from './dropped-files'
-import type { JsonRpcMessage } from '../shared/ipc-types'
+import { saveSession, loadSession, clearSession } from './session-store'
+import type { JsonRpcMessage, SerializedSession } from '../shared/ipc-types'
 
 // ── Per-window repo tracking ──────────────────────────────
 const windowRepoMap = new Map<number, string>()
@@ -386,6 +387,23 @@ function registerAllHandlers(): void {
 
   ipcMain.on('lsp:send', (_event, { serverId, message }: { serverId: string; message: JsonRpcMessage }) => {
     sendToServer(serverId, message)
+  })
+
+  // ── Session save/restore ────────────────────────────────
+  ipcMain.handle('session:save', (_event, payload: SerializedSession) => {
+    try {
+      saveSession(payload)
+    } catch (err) {
+      console.error('[SimpleEdit] session:save failed:', err)
+    }
+  })
+
+  ipcMain.handle('session:load', (_event, repoPath: string) => {
+    return loadSession(repoPath)
+  })
+
+  ipcMain.handle('session:clear', (_event, repoPath: string) => {
+    clearSession(repoPath)
   })
 }
 

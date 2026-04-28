@@ -12,6 +12,12 @@ interface TerminalAttachment {
  */
 const attachments = new Map<string, TerminalAttachment>()
 
+/** Captured session_id per terminal (extracted from claude's stream-json init event). */
+const sessionIds = new Map<string, string>()
+
+/** Per-terminal line buffer for incremental JSON parsing. */
+const jsonBuffers = new Map<string, string>()
+
 /**
  * Callback registry: pty.ts will call these when data arrives.
  * We use this instead of IPC listeners to avoid coupling with the renderer's
@@ -100,6 +106,61 @@ function sendStatus(
 }
 
 /**
+ * Strip ANSI control sequences so JSON line scans aren't confused by terminal
+ * escape codes interleaved with stream-json output.
+ */
+function stripAnsi(s: string): string {
+  // CSI (\x1b[...) sequences and OSC (\x1b]...) sequences terminated by BEL or ESC \
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+}
+
+/**
+ * Look for a `session_id` field in the first complete JSON line on the
+ * stream-json output. Calls `onFound` once, then becomes a no-op for that
+ * terminal. Buffers partial lines across PTY chunks.
+ */
+function tryExtractSessionId(
+  terminalId: string,
+  data: string,
+  onFound: (sessionId: string) => void
+): void {
+  if (sessionIds.has(terminalId)) return
+
+  const prev = jsonBuffers.get(terminalId) ?? ''
+  const combined = prev + stripAnsi(data)
+  const lines = combined.split(/\r?\n/)
+  // Last element is incomplete — keep it for next chunk. Cap buffer to avoid
+  // unbounded growth if claude never emits a newline (shouldn't happen with
+  // stream-json, but defensive).
+  const tail = lines.pop() ?? ''
+  jsonBuffers.set(terminalId, tail.length > 64 * 1024 ? tail.slice(-32 * 1024) : tail)
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const obj = JSON.parse(trimmed) as unknown
+      if (obj && typeof obj === 'object' && 'session_id' in obj) {
+        const sid = (obj as { session_id: unknown }).session_id
+        if (typeof sid === 'string' && sid.length > 0) {
+          sessionIds.set(terminalId, sid)
+          jsonBuffers.delete(terminalId)
+          onFound(sid)
+          return
+        }
+      }
+    } catch { /* not a complete/valid JSON line — keep scanning */ }
+  }
+}
+
+/** Returns the session_id captured for a terminal, or null if none observed yet. */
+export function getSessionId(terminalId: string): string | null {
+  return sessionIds.get(terminalId) ?? null
+}
+
+/**
  * Look up the worktree path for a terminal by its ID.
  * Returns null if the terminal is not attached.
  */
@@ -125,6 +186,12 @@ export function attachToTerminal(
         sendStatus(webContents, terminalId, worktreePath, status)
       }
     }
+
+    tryExtractSessionId(terminalId, data, (sessionId) => {
+      if (!webContents.isDestroyed()) {
+        webContents.send('claude:session-id', { terminalId, sessionId })
+      }
+    })
   })
 
   attachments.set(terminalId, { worktreePath, webContents, removeListener })
@@ -139,6 +206,8 @@ export function detachFromTerminal(terminalId: string): void {
     attachment.removeListener()
     attachments.delete(terminalId)
   }
+  jsonBuffers.delete(terminalId)
+  sessionIds.delete(terminalId)
 }
 
 /**
@@ -149,4 +218,6 @@ export function detachAll(): void {
     attachment.removeListener()
     attachments.delete(id)
   }
+  jsonBuffers.clear()
+  sessionIds.clear()
 }
