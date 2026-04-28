@@ -185,17 +185,22 @@ export const tabsStore = {
     const s = getState(worktreePath)
 
     const existingIdx = s.tabs.findIndex((t) => t.id === tab.id)
+    // When peek=true and a different peek tab is already open, the new tab
+    // *replaces* the old one in place. The old id then has to be pruned from
+    // mru/unread/activeId; otherwise close-focus and the paneIdle heuristic
+    // both trip over a ghost id that no longer maps to a tab.
+    let replacedPeekId: string | null = null
     let tabs: Tab[]
     if (existingIdx >= 0) {
       tabs = s.tabs.slice()
       tabs[existingIdx] = { ...s.tabs[existingIdx], ...tab }
     } else {
-      if (peek && s.peekId) {
-        // Replace the existing peek tab in place (so positions stay stable).
+      if (peek && s.peekId && s.peekId !== tab.id) {
         const replaceIdx = s.tabs.findIndex((t) => t.id === s.peekId)
         if (replaceIdx >= 0) {
           tabs = s.tabs.slice()
           tabs[replaceIdx] = tab
+          replacedPeekId = s.peekId
         } else {
           tabs = [...s.tabs, tab]
         }
@@ -218,12 +223,24 @@ export const tabsStore = {
     }
 
     let activeId = s.activeId
-    let mru = s.mru
+    let mru = replacedPeekId ? dropFromMru(s.mru, replacedPeekId) : s.mru
     let unread = s.unread
+    if (replacedPeekId && unread.has(replacedPeekId)) {
+      unread = new Set(unread)
+      unread.delete(replacedPeekId)
+    }
+    // If the replaced peek was the focused tab, hand focus to the replacement
+    // — that's the "in-place" semantics: the slot stays focused, its content
+    // changes. (focus='active' below would do this anyway; focus='background'
+    // would otherwise leak a ghost activeId.)
+    if (replacedPeekId && activeId === replacedPeekId) {
+      activeId = tab.id
+      mru = pushMru(mru, tab.id)
+    }
 
     if (focus === 'active') {
       activeId = tab.id
-      mru = pushMru(s.mru, tab.id)
+      mru = pushMru(mru, tab.id)
       if (unread.has(tab.id)) {
         unread = new Set(unread)
         unread.delete(tab.id)
@@ -237,7 +254,7 @@ export const tabsStore = {
       // First tab in an otherwise-empty pane still focuses — idle auto-focus.
       if (activeId === null) {
         activeId = tab.id
-        mru = pushMru(s.mru, tab.id)
+        mru = pushMru(mru, tab.id)
         unread = new Set(unread)
         unread.delete(tab.id)
       }

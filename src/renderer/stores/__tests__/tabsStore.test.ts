@@ -205,6 +205,44 @@ describe('peek mode', () => {
     expect(tabsStore.peekId(W)).toBe(peek.id)
   })
 
+  it('replacing the active peek prunes the old id from MRU so close-focus does not point to a ghost', () => {
+    // Repro for the leak: when peek B replaces peek A, A's id used to linger in
+    // MRU. Closing B then promoted A's ghost id to activeId, breaking the
+    // paneIdle heuristic in WorktreePane.
+    const a = diffTab('aaa')
+    const b = diffTab('bbb')
+    const c = diffTab('ccc')
+    tabsStore.open(W, a, { peek: true })
+    tabsStore.open(W, b, { peek: true })
+    tabsStore.open(W, c, { peek: true })
+    tabsStore.close(W, c.id)
+    expect(tabsStore.list(W)).toHaveLength(0)
+    expect(tabsStore.activeId(W)).toBeNull()
+  })
+
+  it('replacing a peek transfers active focus to the replacement', () => {
+    // Active focus was on the peek being replaced. The slot stays focused.
+    const a = diffTab('aaa')
+    const b = diffTab('bbb')
+    tabsStore.open(W, a, { peek: true })
+    tabsStore.open(W, b, { peek: true, focus: 'background' })
+    expect(tabsStore.activeId(W)).toBe(b.id)
+  })
+
+  it('replacing an unread peek alongside a sticky tab clears the unread for the gone id', () => {
+    const sticky = fileTab('/w/a.ts')
+    const d1 = diffTab('aaa')
+    const d2 = diffTab('bbb')
+    tabsStore.open(W, sticky)
+    tabsStore.open(W, d1, { peek: true, focus: 'background' })
+    expect(tabsStore.isUnread(W, d1.id)).toBe(true)
+    tabsStore.open(W, d2, { peek: true, focus: 'background' })
+    // d1 is gone — its unread flag should not persist.
+    expect(tabsStore.isUnread(W, d1.id)).toBe(false)
+    expect(tabsStore.isUnread(W, d2.id)).toBe(true)
+    expect(tabsStore.activeId(W)).toBe(sticky.id)
+  })
+
   it('combining { peek: true, focus: "background" } opens a new peek tab unread, without focus', () => {
     // Pane is non-empty (an already-focused file), so background open should
     // not steal focus. The tab still participates in peek — subsequent peek
