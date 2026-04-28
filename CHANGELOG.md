@@ -1,5 +1,19 @@
 # simpleedit
 
+## 0.12.1
+
+### Patch Changes
+
+- [#71](https://github.com/pago/simpleedit/pull/71) [`1877762`](https://github.com/pago/simpleedit/commit/1877762665aba619f2b0fde20160cc854d28e782) Thanks [@pago](https://github.com/pago)! - Fix three bugs in the v0.11 tab/file-tree code:
+
+  - **tabsStore peek-replace leaked stale ids.** When peek B replaced peek A, A's id stayed in the MRU and unread sets and (in the background-replace case) as `activeId`. After a peek-peek-close sequence the pane's `activeId` could point at a tab that no longer existed, defeating the `paneIdle` heuristic — agent plans/tours/panels then opened in the background unread instead of focusing into a visibly empty pane. The replaced peek's id is now pruned, and active focus transfers to the replacement when the slot was the focused one.
+  - **Agent panel updates were silent in the background.** `tabsStore.open` only adds the unread marker for _new_ tabs. When `show_panel` updated a panel the user already had open in the background, no marker appeared. `WorktreePane` now adds the marker explicitly when an existing, unfocused panel gets refreshed.
+  - **FileNode `loadChildren` race.** `toggle()` and the "Select opened file" reveal effect can each kick off a `loadChildren()` for the same node. If the later call resolved first, an older response could overwrite `children` with stale data. Added a sequence counter so only the most recent call wins.
+
+  Also drops a dead `openDiffTab` import from `WorktreePane.svelte`.
+
+- [#69](https://github.com/pago/simpleedit/pull/69) [`dcc696a`](https://github.com/pago/simpleedit/commit/dcc696a9aabbd96ed9b64ad25d76361ebae095f6) Thanks [@pago](https://github.com/pago)! - Fix critical startup crash where opening any repo threw `ReferenceError: activeFilePath is not defined` from `WorktreePane`'s `<FileTree>` call. The reference was added by the "Select opened file" feature against pre-tabs-refactor code; after the unified tab model landed, `activeFilePath` is no longer a local — derive it from the active tab instead. The render error cascaded into git log not loading and worktree clicks appearing inert because Svelte aborted the reactive batch.
+
 ## 0.12.0
 
 ### Minor Changes
