@@ -23,8 +23,16 @@
   let children = $state<FileEntry[]>([])
   let nodeEl = $state<HTMLDivElement | null>(null)
 
+  // toggle() and the reveal effect can both fire loadChildren() before the
+  // first response arrives. If a later call resolves before the earlier one,
+  // the earlier (now stale) result would otherwise overwrite children. Drop
+  // results from any call but the most recent.
+  let loadSeq = 0
+
   async function loadChildren(): Promise<void> {
-    children = await window.api.invoke('fs:list', entry.path)
+    const seq = ++loadSeq
+    const next = await window.api.invoke('fs:list', entry.path)
+    if (seq === loadSeq) children = next
   }
 
   async function toggle(): Promise<void> {

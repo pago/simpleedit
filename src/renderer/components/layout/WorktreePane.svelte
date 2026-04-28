@@ -4,7 +4,7 @@
   import AgentPopover from '../editor/AgentPopover.svelte'
   import PaneTabBar from './PaneTabBar.svelte'
   import TabContainer from './TabContainer.svelte'
-  import { openDiffTab, openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
+  import { openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
   import { planStore } from '../../stores/planStore.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
@@ -88,15 +88,23 @@
       if (data.worktreePath !== wt) return
 
       const composedId = `panel-${data.sourceTerminalId}`
+      const tabId = tabIdFor({ kind: 'composed', id: composedId })
       const tab: ComposedTab = {
         kind: 'composed',
-        id: tabIdFor({ kind: 'composed', id: composedId }),
+        id: tabId,
         title: data.title,
         spec: data.spec,
         terminalId: data.sourceTerminalId,
       }
-      const paneIdle = tabsStore.activeId(wt) === null
+      const activeBefore = tabsStore.activeId(wt)
+      const paneIdle = activeBefore === null
+      const wasOpenAndUnfocused =
+        !paneIdle && activeBefore !== tabId && tabsStore.list(wt).some((t) => t.id === tabId)
       tabsStore.open(wt, tab, { focus: paneIdle ? 'active' : 'background' })
+      // open() only adds the unread marker for *new* tabs. When the agent
+      // updates a panel the user already has open in the background, that path
+      // is silent — surface the update with an unread marker explicitly.
+      if (wasOpenAndUnfocused) tabsStore.markUnread(wt, tabId)
     })
     return unsub
   })
