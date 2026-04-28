@@ -14,6 +14,7 @@ test.describe('IDE layout', () => {
 
   let app: ElectronApplication
   let window: Page
+  let pageErrors: string[]
 
   test.beforeEach(async () => {
     app = await electron.launch({
@@ -21,6 +22,8 @@ test.describe('IDE layout', () => {
       env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
     })
     window = await app.firstWindow()
+    pageErrors = []
+    window.on('pageerror', (err) => { pageErrors.push(`${err.name}: ${err.message}`) })
     await window.waitForLoadState('domcontentloaded')
   })
 
@@ -35,6 +38,18 @@ test.describe('IDE layout', () => {
 
   test('shows the sidebar', async () => {
     await expect(window.getByRole('complementary')).toBeVisible()
+  })
+
+  // Regression guard: a render-time ReferenceError in WorktreePane (e.g. the
+  // dangling `{activeFilePath}` introduced when the tabs refactor and the
+  // "select opened file" PR collided) aborts Svelte's reactive batch and
+  // leaves the git log effect stuck. The visible symptom — sidebar mounts but
+  // commits never appear — used to slip past the bare 'shows the sidebar'
+  // check above.
+  test('git log loads and the renderer does not throw on startup', async () => {
+    await expect(window.getByRole('listbox', { name: 'Worktrees' })).toBeVisible()
+    await expect(window.getByRole('listbox', { name: 'Commits' })).toBeVisible({ timeout: 5000 })
+    expect(pageErrors).toEqual([])
   })
 })
 

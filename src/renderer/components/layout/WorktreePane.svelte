@@ -29,6 +29,7 @@
   let activeId = $derived(tabsStore.activeId(worktreePath))
   let peekId = $derived(tabsStore.peekId(worktreePath))
   let unreadIds = $derived(new Set(tabs.filter((t) => tabsStore.isUnread(worktreePath, t.id)).map((t) => t.id)))
+  let activeFilePath = $derived(activeTab?.kind === 'file' ? activeTab.path : null)
 
   // Consume palette actions targeting this pane's worktree
   $effect(() => {
