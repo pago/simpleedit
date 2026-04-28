@@ -1,5 +1,16 @@
 # simpleedit
 
+## 0.12.0
+
+### Minor Changes
+
+- [#67](https://github.com/pago/simpleedit/pull/67) [`001ff55`](https://github.com/pago/simpleedit/commit/001ff55ad9d13b24de0c7baf5d6ce3a3a0d32d87) Thanks [@pago](https://github.com/pago)! - Save and restore per-repo session on quit/launch. SimpleEdit now remembers
+  which worktrees were open in which panes, what tabs were active in each, and
+  which Claude Code sessions were running. On relaunch, the layout and tabs
+  come back automatically; Claude sessions appear as click-to-resume placeholder
+  tabs so launching the app doesn't fan out N concurrent `claude --resume`
+  processes across worktrees.
+
 ## 0.11.0
 
 ### Minor Changes
