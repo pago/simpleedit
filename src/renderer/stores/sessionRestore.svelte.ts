@@ -11,6 +11,7 @@
  *   - `layout`: PaneManager's local split + visited-pane state, mirrored here
  *     so the serializer can read it without prop-drilling.
  */
+import { untrack } from 'svelte'
 import type { SerializedClaudeSession } from '../../shared/ipc-types'
 
 export type PaneRole = 'primary' | 'secondary'
@@ -35,18 +36,26 @@ let _visitedSecondaryPaths = $state<string[]>([])
 
 export const sessionRestoreStore = {
   // ── live capture (called from a global IPC listener) ────────────────────
+  // NOTE: every writer below reads its own state to clone-then-assign. Wrap
+  // the read in `untrack` so callers that live inside an `$effect` (e.g.
+  // TerminalTabs.publishClaude) don't end up depending on the state they're
+  // about to write — that pattern infinite-loops in Svelte 5.
   setSessionIdForTerminal(terminalId: string, sessionId: string): void {
-    if (_sessionIdsByTerminal.get(terminalId) === sessionId) return
-    const next = new Map(_sessionIdsByTerminal)
-    next.set(terminalId, sessionId)
-    _sessionIdsByTerminal = next
+    untrack(() => {
+      if (_sessionIdsByTerminal.get(terminalId) === sessionId) return
+      const next = new Map(_sessionIdsByTerminal)
+      next.set(terminalId, sessionId)
+      _sessionIdsByTerminal = next
+    })
   },
 
   clearSessionIdForTerminal(terminalId: string): void {
-    if (!_sessionIdsByTerminal.has(terminalId)) return
-    const next = new Map(_sessionIdsByTerminal)
-    next.delete(terminalId)
-    _sessionIdsByTerminal = next
+    untrack(() => {
+      if (!_sessionIdsByTerminal.has(terminalId)) return
+      const next = new Map(_sessionIdsByTerminal)
+      next.delete(terminalId)
+      _sessionIdsByTerminal = next
+    })
   },
 
   sessionIdForTerminal(terminalId: string): string | undefined {
@@ -56,14 +65,16 @@ export const sessionRestoreStore = {
   // ── per-pane Claude tab list (published by each TerminalTabs) ───────────
   publishClaudeTabs(role: PaneRole, worktreePath: string, tabs: ClaudeTabInfo[]): void {
     const key = paneKey(role, worktreePath)
-    const next = new Map(_claudeTabsByPane)
-    if (tabs.length === 0) {
-      if (!next.has(key)) return
-      next.delete(key)
-    } else {
-      next.set(key, tabs)
-    }
-    _claudeTabsByPane = next
+    untrack(() => {
+      const next = new Map(_claudeTabsByPane)
+      if (tabs.length === 0) {
+        if (!next.has(key)) return
+        next.delete(key)
+      } else {
+        next.set(key, tabs)
+      }
+      _claudeTabsByPane = next
+    })
   },
 
   claudeTabsForPane(role: PaneRole, worktreePath: string): ClaudeTabInfo[] {
@@ -77,24 +88,28 @@ export const sessionRestoreStore = {
   // ── pending restore placeholders ────────────────────────────────────────
   setPendingResume(role: PaneRole, worktreePath: string, sessions: SerializedClaudeSession[]): void {
     const key = paneKey(role, worktreePath)
-    const next = new Map(_pendingResumeByPane)
-    if (sessions.length === 0) {
-      next.delete(key)
-    } else {
-      next.set(key, sessions)
-    }
-    _pendingResumeByPane = next
+    untrack(() => {
+      const next = new Map(_pendingResumeByPane)
+      if (sessions.length === 0) {
+        next.delete(key)
+      } else {
+        next.set(key, sessions)
+      }
+      _pendingResumeByPane = next
+    })
   },
 
   /** Drain pending resumes for a pane — returns and clears in one shot. */
   drainPendingResume(role: PaneRole, worktreePath: string): SerializedClaudeSession[] {
     const key = paneKey(role, worktreePath)
-    const sessions = _pendingResumeByPane.get(key)
-    if (!sessions || sessions.length === 0) return []
-    const next = new Map(_pendingResumeByPane)
-    next.delete(key)
-    _pendingResumeByPane = next
-    return sessions
+    return untrack(() => {
+      const sessions = _pendingResumeByPane.get(key)
+      if (!sessions || sessions.length === 0) return []
+      const next = new Map(_pendingResumeByPane)
+      next.delete(key)
+      _pendingResumeByPane = next
+      return sessions
+    })
   },
 
   // ── layout ──────────────────────────────────────────────────────────────
