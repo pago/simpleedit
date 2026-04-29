@@ -133,8 +133,11 @@ export function serializeSession(repoPath: string): SerializedSession {
       secondaryWorktreePath: secondPaneWorktree()?.path ?? null,
       focusedPane: focusedPane(),
       splitRatio: sessionRestoreStore.splitRatio(),
-      visitedPrimary,
-      visitedSecondary,
+      // Copy out of the Svelte 5 reactive proxy arrays — structuredClone
+      // (used by Electron IPC) errors on proxies, which would otherwise
+      // throw on every save once any worktree has been visited.
+      visitedPrimary: [...visitedPrimary],
+      visitedSecondary: [...visitedSecondary],
     },
     worktreeStates,
   }
@@ -201,6 +204,27 @@ export function hydrateSession(session: SerializedSession): {
   const layout = session.layout
   const visitedPrimary = layout.visitedPrimary.filter((p) => knownPaths.has(p))
   const visitedSecondary = layout.visitedSecondary.filter((p) => knownPaths.has(p))
+  // The active worktree must be in `visitedPrimary` for PaneManager to render
+  // its WorktreePane — otherwise the {#each visitedPrimaryPaths} body skips it
+  // and the pane is invisible. PaneManager's add-on-change effect only fires
+  // when primaryPath transitions, so once hydrate runs after refreshWorktrees
+  // (which already set the active path), clearing visited here would silently
+  // strand the user with no editor pane. The first save after this regression
+  // freezes `visitedPrimary: []`, so every subsequent launch reproduces it.
+  if (
+    layout.primaryWorktreePath &&
+    knownPaths.has(layout.primaryWorktreePath) &&
+    !visitedPrimary.includes(layout.primaryWorktreePath)
+  ) {
+    visitedPrimary.push(layout.primaryWorktreePath)
+  }
+  if (
+    layout.secondaryWorktreePath &&
+    knownPaths.has(layout.secondaryWorktreePath) &&
+    !visitedSecondary.includes(layout.secondaryWorktreePath)
+  ) {
+    visitedSecondary.push(layout.secondaryWorktreePath)
+  }
   sessionRestoreStore.setVisitedPrimaryPaths(visitedPrimary)
   sessionRestoreStore.setVisitedSecondaryPaths(visitedSecondary)
   sessionRestoreStore.setSplitRatio(layout.splitRatio)
