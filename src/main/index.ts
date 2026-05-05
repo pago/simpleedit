@@ -14,7 +14,10 @@ import {
   getActiveTerminalIds
 } from './pty'
 import type { PtySpawnOptions } from '../shared/ipc-types'
-import { listDirectory, listAllFiles, readFile, writeFile } from './file-watcher'
+import {
+  listDirectory, listAllFiles, readFile, writeFile,
+  createFile, createDirectory, renamePath, deletePath,
+} from './file-watcher'
 import { listWorktrees, createWorktree, checkoutWorktree, listAvailableBranches, removeWorktree, cloneBareRepo } from './worktree'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
@@ -203,6 +206,22 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('fs:write', (_event, filePath: string, content: string) => {
     writeFile(filePath, content)
+  })
+
+  ipcMain.handle('fs:create-file', (_event, filePath: string) => {
+    createFile(filePath)
+  })
+
+  ipcMain.handle('fs:create-dir', (_event, dirPath: string) => {
+    createDirectory(dirPath)
+  })
+
+  ipcMain.handle('fs:rename', (_event, oldPath: string, newPath: string) => {
+    renamePath(oldPath, newPath)
+  })
+
+  ipcMain.handle('fs:delete', async (_event, filePath: string) => {
+    await deletePath(filePath)
   })
 
   // ── Editor ──────────────────────────────────────────────

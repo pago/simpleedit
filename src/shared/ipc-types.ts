@@ -63,6 +63,10 @@ export interface FsInvokeMap {
   'fs:list-all': { args: [worktreePath: string]; result: string[] }
   'fs:read': { args: [filePath: string]; result: string }
   'fs:write': { args: [filePath: string, content: string]; result: void }
+  'fs:create-file': { args: [filePath: string]; result: void }
+  'fs:create-dir': { args: [dirPath: string]; result: void }
+  'fs:rename': { args: [oldPath: string, newPath: string]; result: void }
+  'fs:delete': { args: [filePath: string]; result: void }
 }
 
 // ── Editor ────────────────────────────────────────────────
