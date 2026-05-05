@@ -31,6 +31,7 @@ import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-man
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan } from './mcp-bridge'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
+import { inheritShellPath } from './shell-path'
 import type { JsonRpcMessage, SerializedSession } from '../shared/ipc-types'
 
 // ── Per-window repo tracking ──────────────────────────────
@@ -410,6 +411,7 @@ function registerAllHandlers(): void {
 // ── App lifecycle ─────────────────────────────────────────
 
 app.whenReady().then(() => {
+  inheritShellPath()
   electronApp.setAppUserModelId('com.simpleedit')
 
   app.on('browser-window-created', (_, window) => {
