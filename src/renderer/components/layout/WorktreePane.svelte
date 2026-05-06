@@ -278,9 +278,10 @@
         onmousedown={onFileTreeResizeStart}
       ></div>
 
-      <!-- File tree (right side, resizable) -->
+      <!-- File tree (right side, resizable). Top padding lives on the
+           FileTree's sticky header so it sits flush when pinned. -->
       <div
-        class="flex-none overflow-y-auto border-l border-zinc-800 p-2"
+        class="flex-none overflow-y-auto border-l border-zinc-800 px-2 pb-2"
         style:width="{fileTreeWidth}px"
       >
         <FileTree

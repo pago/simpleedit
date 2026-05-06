@@ -41,7 +41,7 @@
 </script>
 
 <div class="flex flex-col">
-  <div class="flex items-center justify-between px-1 pb-1">
+  <div class="sticky top-0 z-10 -mx-2 flex items-center justify-between bg-zinc-950 px-3 pb-1 pt-2">
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Files</span>
     <div class="flex items-center gap-0.5">
       <button
