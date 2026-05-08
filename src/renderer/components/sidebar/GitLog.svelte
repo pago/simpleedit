@@ -160,7 +160,7 @@
 </script>
 
 <div class="flex flex-col gap-1">
-  <div class="flex items-center justify-between px-1">
+  <div class="sticky top-0 z-10 -mx-3 flex items-center justify-between bg-zinc-900 px-4 pb-1 pt-2">
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Git Log</span>
     <div class="flex items-center gap-1">
       {#if worktreePath}
