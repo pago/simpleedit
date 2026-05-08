@@ -34,6 +34,16 @@ function ensureOpenerRegistered(): void {
   openerRegistered = true
   monaco.editor.registerEditorOpener({
     openCodeEditor(source, resource, selectionOrPosition) {
+      // Same-file navigation must fall through to Monaco's default standalone
+      // handler — it sets the cursor on the existing model. If we returned
+      // true here, the host would receive a redundant openFile request that
+      // resolves to the already-active tab, no `filePath` prop change fires,
+      // and `consumePendingReveal` never runs — the cursor would stay put.
+      const sourceModel = source.getModel()
+      if (sourceModel && sourceModel.uri.toString() === resource.toString()) {
+        return false
+      }
+
       const handler = handlersByEditor.get(source)
       if (!handler) return false
       if (resource.scheme !== 'file') return false

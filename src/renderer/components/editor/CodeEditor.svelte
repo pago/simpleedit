@@ -139,7 +139,18 @@
       lineNumbers: 'on',
       scrollBeyondLastLine: false,
       renderWhitespace: 'selection',
-      tabSize: 2
+      tabSize: 2,
+      // Monaco's default is 'peek' for these, which short-circuits before our
+      // editor opener can run when the LSP returns multiple locations (very
+      // common for imports). 'goto' jumps to the first result; references stay
+      // on peek because there's usually no single "right" reference to land on.
+      gotoLocation: {
+        multipleDefinitions: 'goto',
+        multipleDeclarations: 'goto',
+        multipleTypeDefinitions: 'goto',
+        multipleImplementations: 'goto',
+        multipleReferences: 'peek',
+      },
     })
 
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
