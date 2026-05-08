@@ -90,8 +90,9 @@
       onModified?.(path, false)
 
       if (worktreeRoot) {
-        lspClientManager.openDocument(path, language, content, worktreeRoot).catch(() => {
-          // LSP unavailable for this language — editor still works
+        lspClientManager.openDocument(path, language, content, worktreeRoot).catch((err) => {
+          // Editor still works without LSP, but log so the failure is diagnosable.
+          console.warn(`[LSP] ${language} unavailable:`, err instanceof Error ? err.message : err)
         })
       }
     } catch (err: unknown) {
