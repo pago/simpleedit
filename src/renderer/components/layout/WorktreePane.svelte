@@ -250,6 +250,7 @@
           onFileModified={markModified}
           ondiscusswithagent={openAgentPopover}
           onsendtoagent={sendToAgent}
+          onOpenFile={openFile}
         />
       {:else}
         <div class="flex flex-1 items-center justify-center">
