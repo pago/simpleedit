@@ -2,6 +2,7 @@
   import type { FileEntry } from '../../../shared/ipc-types'
   import { tick } from 'svelte'
   import FileNode from './FileNode.svelte'
+  import { fsNonceFor } from '../../stores/fsRefresh.svelte'
 
   interface Props {
     entry: FileEntry
@@ -9,6 +10,7 @@
     highlightedFiles?: Set<string>
     revealRequest?: { path: string; nonce: number } | null
     onselect?: (path: string) => void
+    oncontextmenu?: (entry: FileEntry, x: number, y: number) => void
   }
 
   let {
@@ -17,6 +19,7 @@
     highlightedFiles,
     revealRequest = null,
     onselect,
+    oncontextmenu,
   }: Props = $props()
 
   let expanded = $state(false)
@@ -34,6 +37,15 @@
     const next = await window.api.invoke('fs:list', entry.path)
     if (seq === loadSeq) children = next
   }
+
+  // Reload children whenever this directory's fs nonce bumps (created/renamed/
+  // deleted via the context menu). Skipped when the node is collapsed —
+  // expansion will load fresh data on demand.
+  $effect(() => {
+    if (!entry.isDirectory) return
+    void fsNonceFor(entry.path)
+    if (expanded) void loadChildren()
+  })
 
   async function toggle(): Promise<void> {
     if (!entry.isDirectory) {
@@ -53,6 +65,13 @@
       e.preventDefault()
       toggle()
     }
+  }
+
+  function handleContextMenu(e: MouseEvent): void {
+    if (!oncontextmenu) return
+    e.preventDefault()
+    e.stopPropagation()
+    oncontextmenu(entry, e.clientX, e.clientY)
   }
 
   function isAncestorOf(target: string): boolean {
@@ -97,6 +116,7 @@
   tabindex="0"
   onclick={toggle}
   onkeydown={handleKeyDown}
+  oncontextmenu={handleContextMenu}
 >
   {#if entry.isDirectory}
     <span class="w-4 text-center text-xs text-zinc-500">{expanded ? '▼' : '▶'}</span>
@@ -116,6 +136,7 @@
       {highlightedFiles}
       {revealRequest}
       {onselect}
+      {oncontextmenu}
     />
   {/each}
 {/if}
