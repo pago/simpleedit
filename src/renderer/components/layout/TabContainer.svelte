@@ -16,6 +16,7 @@
     onFileModified: (path: string, modified: boolean) => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
+    onOpenFile?: (path: string) => void
   }
 
   let {
@@ -26,6 +27,7 @@
     onFileModified,
     ondiscusswithagent,
     onsendtoagent,
+    onOpenFile,
   }: Props = $props()
 </script>
 
@@ -36,6 +38,7 @@
       worktreeRoot={worktreePath}
       onModified={onFileModified}
       {ondiscusswithagent}
+      {onOpenFile}
     />
   </div>
 {:else if tab.kind === 'diff'}

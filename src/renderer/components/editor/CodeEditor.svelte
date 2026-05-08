@@ -2,15 +2,27 @@
   import * as monaco from 'monaco-editor'
   import type { AgentContext } from '../../lib/agent-message'
   import { lspClientManager } from '../../lsp/client-manager'
+  import { applyReveal, bindEditorOpener, consumePendingReveal } from '../../lsp/editor-opener'
 
   interface Props {
     filePath: string | null
     worktreeRoot: string | null
     onModified?: (path: string, modified: boolean) => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
+    /**
+     * Called when a Monaco navigation request (Go to Definition, peek →
+     * navigate, Ctrl-click) targets a different file. The host should open
+     * `path` as a tab in this pane; cursor positioning is handled here.
+     */
+    onOpenFile?: (path: string) => void
   }
 
-  let { filePath, worktreeRoot, onModified, ondiscusswithagent }: Props = $props()
+  let { filePath, worktreeRoot, onModified, ondiscusswithagent, onOpenFile }: Props = $props()
+
+  // Reads through this ref so the opener handler — registered once at editor
+  // creation — sees the current onOpenFile prop without re-binding.
+  let latestOnOpenFile = onOpenFile
+  $effect(() => { latestOnOpenFile = onOpenFile })
 
   // Mutable refs so action closures always read the latest prop values
   let latestFilePath = filePath
@@ -89,6 +101,9 @@
       currentFilePath = path
       onModified?.(path, false)
 
+      const reveal = consumePendingReveal(path)
+      if (reveal) applyReveal(editor, reveal)
+
       if (worktreeRoot) {
         lspClientManager.openDocument(path, language, content, worktreeRoot).catch((err) => {
           // Editor still works without LSP, but log so the failure is diagnosable.
@@ -129,6 +144,10 @@
 
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       saveFile()
+    })
+
+    const unbindOpener = bindEditorOpener(editor, (target) => {
+      latestOnOpenFile?.(target)
     })
 
     editor.addAction({
@@ -172,6 +191,7 @@
     })
 
     return () => {
+      unbindOpener()
       if (currentFilePath && worktreeRoot) {
         const language = getLanguage(currentFilePath)
         lspClientManager.closeDocument(currentFilePath, language, worktreeRoot)
