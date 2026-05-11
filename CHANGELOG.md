@@ -1,5 +1,32 @@
 # simpleedit
 
+## 0.13.0
+
+### Minor Changes
+
+- [#76](https://github.com/pago/simpleedit/pull/76) [`91f3f4b`](https://github.com/pago/simpleedit/commit/91f3f4b4e66633586bf8054ef8de8379022a60c8) Thanks [@pago](https://github.com/pago)! - Add a right-click context menu to the file tree with **New File**, **New Folder**, **Rename**, and **Delete** actions. New File/Folder accept nested names like `foo/bar.ts` to create intermediate directories. Delete moves to the OS trash via `shell.trashItem` so items are recoverable. The affected portion of the tree refreshes automatically after each operation.
+
+### Patch Changes
+
+- [#84](https://github.com/pago/simpleedit/pull/84) [`7214f89`](https://github.com/pago/simpleedit/commit/7214f892ae63c0e0d565c666e033709cc00af792) Thanks [@pago](https://github.com/pago)! - Stop the editor-opener browser test from leaking unhandled Monaco TypeScript-worker rejections that were failing CI even though every assertion passed.
+
+- [#82](https://github.com/pago/simpleedit/pull/82) [`0b98745`](https://github.com/pago/simpleedit/commit/0b98745cdf7769a296c2f3f5780ac4e2136dfe3f) Thanks [@pago](https://github.com/pago)! - Fix typing wiping out the user's input. When the user typed a character, the resulting modified-flag flip caused the parent to re-render, the load-file `$effect` re-fired even though `filePath` was unchanged, and `loadFile` then reset the model to the disk contents — erasing the typed character and dropping the cursor at (1, 1). The effect now skips when the path matches what's already loaded.
+
+- [#81](https://github.com/pago/simpleedit/pull/81) [`3c77f17`](https://github.com/pago/simpleedit/commit/3c77f17baa51ecdfab6ce6c5f3160bd843a3c554) Thanks [@pago](https://github.com/pago)! - Two follow-up fixes to Go to Definition that the previous wiring missed:
+
+  - **Multiple definitions:** Monaco's default for `gotoLocation.multipleDefinitions` is `'peek'`, which short-circuits before our editor opener can run. Imports very commonly resolve to 2+ locations, so the peek widget kept appearing instead of navigation. The editor now opts into `'goto'` for definitions, declarations, type definitions, and implementations (references stay on peek).
+  - **Same-file definitions:** the opener was intercepting in-file navigation and routing it through the host's `openFile`, which dedupes to the already-active tab without re-running the file load — so the cursor never moved. The opener now defers to Monaco's default standalone handler when the source editor's model URI matches the requested resource.
+
+  Covered by new browser-mode tests in `src/renderer/lsp/__tests__/editor-opener.test.ts`.
+
+- [#79](https://github.com/pago/simpleedit/pull/79) [`d40991a`](https://github.com/pago/simpleedit/commit/d40991aded2edc6dfd342220681e2ade87b2b12d) Thanks [@pago](https://github.com/pago)! - Make Go to Definition (and Ctrl/Cmd-click) actually open the target file when it lives in another module. Previously Monaco fell back to the peek widget because the standalone editor's URI opener doesn't know about our tab system; now we register a Monaco editor opener that routes the request through the active pane's `openFile`, and the loaded editor scrolls/selects the LSP-resolved position automatically.
+
+- [#75](https://github.com/pago/simpleedit/pull/75) [`d5e2a14`](https://github.com/pago/simpleedit/commit/d5e2a14a1a7ee77d8a505dd255fff590ed419549) Thanks [@pago](https://github.com/pago)! - Inherit the user's shell PATH on macOS/Linux when launched from Finder/Spotlight, so language servers (and other binaries on PATH like `asdf` shims, homebrew, nvm) can be found. LSP startup failures are also now logged to the renderer console instead of being silently swallowed.
+
+- [#83](https://github.com/pago/simpleedit/pull/83) [`73a4829`](https://github.com/pago/simpleedit/commit/73a48292d66a667e8e3c6f1e6cb4c2abf6888914) Thanks [@pago](https://github.com/pago)! - Middle-click on a tab now closes it, matching VS Code and browser tab behavior.
+
+- [#77](https://github.com/pago/simpleedit/pull/77) [`050e388`](https://github.com/pago/simpleedit/commit/050e38834b12ae9d9dac0eef575aa667df26b9c3) Thanks [@pago](https://github.com/pago)! - Pin the **WORKTREES**, **GIT LOG**, and **FILES** section headers so they stay visible when their lists scroll. The headers stick to the top of each scroll container with a solid background, so action buttons (refresh, + New, ✦ Plan, etc.) remain reachable without scrolling back up.
+
 ## 0.12.2
 
 ### Patch Changes
