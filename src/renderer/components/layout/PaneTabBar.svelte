@@ -58,6 +58,21 @@
     onclose(tabId)
   }
 
+  function handleAuxClick(e: MouseEvent, tabId: string): void {
+    // Middle-click closes the tab (matches VS Code / browsers).
+    if (e.button !== 1) return
+    e.preventDefault()
+    e.stopPropagation()
+    onclose(tabId)
+  }
+
+  function handleMouseDown(e: MouseEvent): void {
+    // Suppress the platform auto-scroll cursor that some browsers show on a
+    // middle-button mousedown. Left-button drags must still work, so only
+    // intercept button 1.
+    if (e.button === 1) e.preventDefault()
+  }
+
   function handleDblClick(tabId: string): void {
     if (peekId === tabId) onpin?.(tabId)
   }
@@ -116,6 +131,8 @@
           {dragIndex !== null && dropIndex === i && dragIndex !== i ? 'border-l-2 border-l-blue-500' : ''}"
         onclick={() => onselect(tab.id)}
         ondblclick={() => handleDblClick(tab.id)}
+        onauxclick={(e) => handleAuxClick(e, tab.id)}
+        onmousedown={handleMouseDown}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
