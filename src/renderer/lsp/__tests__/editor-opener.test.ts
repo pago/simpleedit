@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { bindEditorOpener, consumePendingReveal } from '../editor-opener'
 
+// We use `plaintext` (not `typescript`) for the test model so Monaco doesn't
+// spin up the bundled TS language worker. The worker loads asynchronously
+// via dynamic import and, when the editor is disposed before it finishes,
+// throws unhandled `Canceled` / `toUrl` rejections — Vitest's browser
+// runner flags those as test-suite failures even though every assertion
+// passes. The opener wiring under test is language-agnostic.
+
 /**
  * These tests exercise the *actual* Monaco "Go to Definition" code path —
  * `editor.action.revealDefinition` runs the same flow that F12 / Ctrl-click
@@ -61,7 +68,7 @@ function setSourceModel(
 ): monaco.editor.ITextModel {
   const existing = monaco.editor.getModel(uri)
   if (existing) existing.dispose()
-  const model = monaco.editor.createModel(contents, 'typescript', uri)
+  const model = monaco.editor.createModel(contents, 'plaintext', uri)
   editor.setModel(model)
   return model
 }
@@ -89,7 +96,7 @@ describe('editor-opener', () => {
     const targetUri = monaco.Uri.file('/test/target.ts')
     setSourceModel(editor, sourceUri, 'foo()\n')
 
-    providerDisposable = monaco.languages.registerDefinitionProvider('typescript', {
+    providerDisposable = monaco.languages.registerDefinitionProvider('plaintext', {
       provideDefinition: () => [
         { uri: targetUri, range: new monaco.Range(3, 5, 3, 8) },
       ],
@@ -119,7 +126,7 @@ describe('editor-opener', () => {
     const targetB = monaco.Uri.file('/test/multi-b.ts')
     setSourceModel(editor, sourceUri, 'foo()\n')
 
-    providerDisposable = monaco.languages.registerDefinitionProvider('typescript', {
+    providerDisposable = monaco.languages.registerDefinitionProvider('plaintext', {
       provideDefinition: () => [
         { uri: targetA, range: new monaco.Range(1, 1, 1, 4) },
         { uri: targetB, range: new monaco.Range(2, 1, 2, 4) },
@@ -147,7 +154,7 @@ describe('editor-opener', () => {
     const sameFile = monaco.Uri.file('/test/local.ts')
     setSourceModel(editor, sameFile, 'function bar() {}\nbar()\n')
 
-    providerDisposable = monaco.languages.registerDefinitionProvider('typescript', {
+    providerDisposable = monaco.languages.registerDefinitionProvider('plaintext', {
       provideDefinition: () => [
         { uri: sameFile, range: new monaco.Range(1, 10, 1, 13) },
       ],
@@ -172,7 +179,7 @@ describe('editor-opener', () => {
     setSourceModel(editor, monaco.Uri.file('/test/once-source.ts'), 'foo()\n')
     const target = monaco.Uri.file('/test/once-target.ts')
 
-    providerDisposable = monaco.languages.registerDefinitionProvider('typescript', {
+    providerDisposable = monaco.languages.registerDefinitionProvider('plaintext', {
       provideDefinition: () => [
         { uri: target, range: new monaco.Range(7, 1, 7, 5) },
       ],
@@ -193,7 +200,7 @@ describe('editor-opener', () => {
 
     setSourceModel(editor, monaco.Uri.file('/test/unbound.ts'), 'foo()\n')
 
-    providerDisposable = monaco.languages.registerDefinitionProvider('typescript', {
+    providerDisposable = monaco.languages.registerDefinitionProvider('plaintext', {
       provideDefinition: () => [
         { uri: monaco.Uri.file('/test/elsewhere.ts'), range: new monaco.Range(1, 1, 1, 4) },
       ],
