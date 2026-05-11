@@ -214,8 +214,12 @@
     }
   })
 
+  // Only reload when the path actually changes. The effect can re-fire on
+  // unrelated reactive updates (e.g. parent re-renders because another tab's
+  // modified flag flipped); calling loadFile again would reset the model to
+  // disk content and erase whatever the user just typed.
   $effect(() => {
-    if (filePath && editor) {
+    if (filePath && editor && filePath !== currentFilePath) {
       loadFile(filePath)
     }
   })
