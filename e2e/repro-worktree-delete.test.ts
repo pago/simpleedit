@@ -150,6 +150,44 @@ test.describe('Delete worktree', () => {
     await expect(listbox.getByRole('option', { selected: true })).toBeVisible()
   })
 
+  // ── optimistic delete ──────────────────────────────────────────────────────
+
+  test('deleting one worktree does not block deleting another', async () => {
+    // Regression guard: handleRemove used to set a `busy` flag and await the
+    // worktree:remove IPC before re-enabling further actions. The result was
+    // that queuing a second delete required waiting for `git worktree remove`
+    // to finish — visually indistinguishable from the UI being frozen. The
+    // fix drops the row optimistically (with a rollback on failure), so the
+    // user can fire off the next confirmation immediately.
+    const branchA = `test-fast-a-${Date.now()}`
+    const branchB = `test-fast-b-${Date.now()}`
+    const listbox = window.getByRole('listbox', { name: 'Worktrees' })
+
+    // Create both worktrees up-front.
+    for (const name of [branchA, branchB]) {
+      await window.getByRole('button', { name: '+ New' }).click()
+      await window.getByPlaceholder('branch-name').fill(name)
+      await window.getByRole('button', { name: 'Create' }).click()
+      await waitForWorktreeItem(window, name)
+    }
+
+    // Open the confirmation on A, confirm — then *immediately* (no wait)
+    // confirm B. Both rows should vanish from the list within the standard
+    // timeout. If `busy` ever gated the second click, this would time out.
+    const a = listbox.getByRole('option', { name: new RegExp(branchA) })
+    await a.hover()
+    await a.getByRole('button', { name: 'Remove' }).click()
+    await a.getByRole('button', { name: 'Confirm' }).click()
+
+    const b = listbox.getByRole('option', { name: new RegExp(branchB) })
+    await b.hover()
+    await b.getByRole('button', { name: 'Remove' }).click()
+    await b.getByRole('button', { name: 'Confirm' }).click()
+
+    await waitForWorktreeGone(window, branchA)
+    await waitForWorktreeGone(window, branchB)
+  })
+
   // ── main worktree protection ───────────────────────────────────────────────
 
   test('main worktree does not expose a Remove button', async () => {

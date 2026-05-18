@@ -61,3 +61,43 @@ export async function refreshWorktrees(): Promise<void> {
     _focusedPane = 'primary'
   }
 }
+
+/**
+ * Optimistically drop a worktree from the list — the UI updates immediately
+ * so the user can fire off more deletes without waiting on `git worktree
+ * remove`. The returned `rollback` undoes the change in-place (preserving the
+ * original list position) for the caller to invoke if the IPC fails. Returns
+ * `null` when the path isn't in the list.
+ */
+export function optimisticRemoveWorktree(path: string): { rollback: () => void } | null {
+  const idx = _worktreeList.findIndex((w) => w.path === path)
+  if (idx < 0) return null
+  const removed = _worktreeList[idx]
+  const wasActive = _activeWorktree?.path === path
+  const wasSecondary = _secondPaneWorktree?.path === path
+  const prevFocused = _focusedPane
+
+  _worktreeList = [..._worktreeList.slice(0, idx), ..._worktreeList.slice(idx + 1)]
+
+  if (wasActive) {
+    _activeWorktree = _worktreeList[0] ?? null
+  }
+  if (wasSecondary) {
+    _secondPaneWorktree = null
+    _focusedPane = 'primary'
+  }
+
+  return {
+    rollback(): void {
+      // Re-insert at the original index. If concurrent deletes have shifted
+      // the list, the index is clamped to keep the entry visible.
+      const insertAt = Math.min(idx, _worktreeList.length)
+      _worktreeList = [..._worktreeList.slice(0, insertAt), removed, ..._worktreeList.slice(insertAt)]
+      if (wasActive) _activeWorktree = removed
+      if (wasSecondary) {
+        _secondPaneWorktree = removed
+        _focusedPane = prevFocused
+      }
+    },
+  }
+}
