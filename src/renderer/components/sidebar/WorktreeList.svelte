@@ -8,7 +8,8 @@
     refreshWorktrees,
     focusedPane,
     secondPaneWorktree,
-    setSecondaryWorktree
+    setSecondaryWorktree,
+    optimisticRemoveWorktree,
   } from '../../stores/worktrees.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
 
@@ -104,17 +105,21 @@
   }
 
   async function handleRemove(worktreePath: string): Promise<void> {
-    busy = true
+    // Optimistic: drop the row immediately so the user can queue up more
+    // deletes without waiting on `git worktree remove`. The IPC runs in the
+    // background; on failure we put the row back and surface the error.
     errorMsg = ''
+    removing = null
+    const snapshot = optimisticRemoveWorktree(worktreePath)
+    if (!snapshot) return
     try {
       await window.api.invoke('worktree:remove', worktreePath)
-      removing = null
+      // Refresh against the canonical list — the server may have side effects
+      // we didn't predict (e.g. pruned branches, status changes).
       await refreshWorktrees()
     } catch (err) {
+      snapshot.rollback()
       errorMsg = err instanceof Error ? err.message : 'Failed to remove worktree'
-      removing = null
-    } finally {
-      busy = false
     }
   }
 
@@ -289,14 +294,13 @@
         {#if !worktree.isMain}
           {#if removing === worktree.path}
             <button
-              class="shrink-0 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-red-500 disabled:opacity-50"
+              class="shrink-0 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-red-500"
               onclick={(e) => {
                 e.stopPropagation()
                 handleRemove(worktree.path)
               }}
-              disabled={busy}
             >
-              {busy ? '…' : 'Confirm'}
+              Confirm
             </button>
             <button
               class="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
