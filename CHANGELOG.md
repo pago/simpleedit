@@ -1,5 +1,16 @@
 # simpleedit
 
+## 0.13.1
+
+### Patch Changes
+
+- [#85](https://github.com/pago/simpleedit/pull/85) [`88ac99a`](https://github.com/pago/simpleedit/commit/88ac99a471de9ee78563991ade1f95d5d70210b5) Thanks [@pago](https://github.com/pago)! - Make worktree deletion feel instantaneous. Clicking Confirm in the
+  Remove dialog now drops the row from the sidebar immediately while
+  `git worktree remove` runs in the background — you can queue up the
+  next delete without waiting on the previous one to finish. If the
+  backend call fails, the row pops back in at its original position and
+  the error surfaces above the list, so nothing is lost.
+
 ## 0.13.0
 
 ### Minor Changes
