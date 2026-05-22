@@ -2,7 +2,7 @@
   import type { FileEntry } from '../../../shared/ipc-types'
   import FileNode from './FileNode.svelte'
   import FileTreeContextMenu, { type ContextMenuAction } from './FileTreeContextMenu.svelte'
-  import PromptModal from './PromptModal.svelte'
+  import PromptModal from '../PromptModal.svelte'
   import { bumpFsNonce, fsNonceFor } from '../../stores/fsRefresh.svelte'
 
   interface Props {

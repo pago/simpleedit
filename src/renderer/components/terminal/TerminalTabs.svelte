@@ -1,6 +1,7 @@
 <script lang="ts">
   import Terminal from './Terminal.svelte'
   import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
+  import PromptModal from '../PromptModal.svelte'
   import type { AgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { sessionRestoreStore } from '../../stores/sessionRestore.svelte'
 
@@ -18,6 +19,9 @@
     isClaude: boolean
     /** True for `claude agents` (Agent View) tabs. Implies isClaude is true. */
     isAgentView?: boolean
+    /** True when the user explicitly renamed the tab. handleTitleChange skips
+     * updates for these so the OSC title from the PTY can't overwrite it. */
+    customLabel?: boolean
     /** When set, this is a placeholder for a Claude session that was running
      * before the last quit. The Terminal is not mounted; the tab renders a
      * "Resume" button that, on click, spawns claude --resume <id>. */
@@ -32,6 +36,13 @@
 
   let claudeMenu: { x: number; y: number } | null = $state(null)
   let claudeButtonEl: HTMLButtonElement | undefined = $state()
+
+  /** Per-tab context menu state. Anchored at click position; null = closed. */
+  let tabMenu: { tabId: string; x: number; y: number } | null = $state(null)
+  /** References to each tab's ⋯ button so we can restore focus on menu close. */
+  let tabMenuButtonEls: Map<string, HTMLElement> = $state(new Map())
+  /** Tab being renamed (null when no rename modal is open). */
+  let renameTarget: { id: string; currentLabel: string } | null = $state(null)
 
   let dragIndex: number | null = $state(null)
   let dropIndex: number | null = $state(null)
@@ -187,12 +198,93 @@
   function handleTitleChange(tabId: string, rawTitle: string): void {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
+    // User-renamed tabs are sticky — never overwritten by the PTY's OSC title.
+    if (tab.customLabel) return
     // Strip Claude Code's status prefix character (✳ U+2733 or braille spinner U+2800–U+28FF)
     // which is always followed by a space, e.g. "✳ Claude Code" → "Claude Code"
     const firstCp = rawTitle.codePointAt(0) ?? 0
     const hasPrefix =
       firstCp === 0x2733 || (firstCp >= 0x2800 && firstCp <= 0x28FF)
     tab.label = hasPrefix ? rawTitle.slice(String.fromCodePoint(firstCp).length).trimStart() : rawTitle
+  }
+
+  // ── Tab context menu ─────────────────────────────────────────────────────
+  // PR1 (#87): Rename is the only enabled action. Fork + Close session are
+  // stubbed disabled until later PRs land.
+
+  const tabMenuItems: ContextMenuItem[] = [
+    {
+      id: 'fork',
+      label: 'Fork into worktree…',
+      disabled: true,
+      disabledTooltip: 'Coming soon',
+    },
+    { id: 'rename', label: 'Rename…' },
+    {
+      id: 'close',
+      label: 'Close session',
+      tone: 'danger',
+      separatorBefore: true,
+      disabled: true,
+      disabledTooltip: 'Coming soon',
+    },
+  ]
+
+  function openTabMenuAtPointer(e: MouseEvent, tab: TabInfo): void {
+    if (!tab.isClaude) return // menu is Claude/Agent View tabs only
+    e.preventDefault()
+    e.stopPropagation()
+    tabMenu = { tabId: tab.id, x: e.clientX, y: e.clientY }
+  }
+
+  function openTabMenuAtButton(tab: TabInfo): void {
+    const btn = tabMenuButtonEls.get(tab.id)
+    if (!btn) return
+    const r = btn.getBoundingClientRect()
+    tabMenu = { tabId: tab.id, x: r.left, y: r.bottom }
+  }
+
+  function handleTabKeydown(e: KeyboardEvent, tab: TabInfo): void {
+    if (!tab.isClaude) return
+    if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+      e.preventDefault()
+      openTabMenuAtButton(tab)
+    }
+  }
+
+  function closeTabMenu(): void {
+    const targetId = tabMenu?.tabId
+    tabMenu = null
+    // Restore focus to the invoking ⋯ button so keyboard users keep their place.
+    if (targetId) {
+      tabMenuButtonEls.get(targetId)?.focus()
+    }
+  }
+
+  function pickTabMenuItem(id: string): void {
+    const tab = tabs.find((t) => t.id === tabMenu?.tabId)
+    if (!tab) return
+    if (id === 'rename') {
+      renameTarget = { id: tab.id, currentLabel: tab.label }
+    }
+    // fork/close handled in PR2/PR3.
+  }
+
+  function submitRename(value: string): void {
+    if (!renameTarget) return
+    const tab = tabs.find((t) => t.id === renameTarget!.id)
+    if (tab) {
+      tab.label = value.trim()
+      tab.customLabel = true
+    }
+    renameTarget = null
+  }
+
+  function validateRename(value: string): string | null {
+    const trimmed = value.trim()
+    if (trimmed.length === 0) return 'Label cannot be empty'
+    if (trimmed.length > 64) return 'Label must be 64 characters or fewer'
+    return null
   }
 
   // Register callbacks and sync Claude tab list into agentStore
@@ -237,7 +329,13 @@
         const id = `agents-${Date.now()}-${nextAgentsIndex}`
         const label = session.label || (nextAgentsIndex === 1 ? 'Agents' : `Agents ${nextAgentsIndex}`)
         nextAgentsIndex++
-        tabs.push({ id, label, isClaude: true, isAgentView: true })
+        tabs.push({
+          id,
+          label,
+          isClaude: true,
+          isAgentView: true,
+          ...(session.customLabel ? { customLabel: true as const } : {}),
+        })
         window.api.invoke('claude:spawn-agents', { id, worktreePath: path })
         continue
       }
@@ -250,6 +348,7 @@
         id,
         label,
         isClaude: true,
+        ...(session.customLabel ? { customLabel: true as const } : {}),
         pendingResume: { sessionId: session.sessionId },
       })
     }
@@ -272,6 +371,7 @@
         terminalId: t.id,
         label: t.label,
         ...(t.isAgentView ? { isAgentView: true as const } : {}),
+        ...(t.customLabel ? { customLabel: true as const } : {}),
       }))
     sessionRestoreStore.publishClaudeTabs(paneRole, worktreePath, claudeTabs)
   })
@@ -311,17 +411,49 @@
           {tab.pendingResume ? 'italic opacity-70' : ''}
           {dragIndex !== null && dropIndex === i && dragIndex !== i ? 'border-l-2 border-l-blue-500' : ''}"
         onclick={() => tab.pendingResume ? resumePlaceholder(tab.id) : selectTab(tab.id)}
+        oncontextmenu={(e) => openTabMenuAtPointer(e, tab)}
+        onkeydown={(e) => handleTabKeydown(e, tab)}
         draggable="true"
         ondragstart={(e) => handleDragStart(e, i)}
         ondragover={(e) => handleDragOver(e, i)}
         ondrop={(e) => handleDrop(e, i)}
         ondragend={handleDragEnd}
         title={tab.pendingResume ? 'Click to resume this Claude session' : tab.label}
+        aria-haspopup={tab.isClaude && !tab.pendingResume ? 'menu' : undefined}
       >
         {#if tab.isClaude}
           <span class="text-[10px]">&#x2726;</span>
         {/if}
         <span>{tab.label}{tab.pendingResume ? ' (resume)' : ''}</span>
+        {#if tab.isClaude && !tab.pendingResume}
+          <span
+            bind:this={
+              () => tabMenuButtonEls.get(tab.id),
+              (el) => {
+                if (el) tabMenuButtonEls.set(tab.id, el)
+                else tabMenuButtonEls.delete(tab.id)
+              }
+            }
+            class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-zinc-600 opacity-0 hover:bg-zinc-700 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
+            role="button"
+            tabindex="0"
+            aria-label="Tab options"
+            aria-haspopup="menu"
+            onclick={(e: MouseEvent) => {
+              e.stopPropagation()
+              openTabMenuAtButton(tab)
+            }}
+            onkeydown={(e: KeyboardEvent) => {
+              e.stopPropagation()
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                openTabMenuAtButton(tab)
+              }
+            }}
+          >
+            ⋯
+          </span>
+        {/if}
         <span
           class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-zinc-600 hover:bg-zinc-700 hover:text-zinc-300"
           role="button"
@@ -336,6 +468,16 @@
         </span>
       </button>
     {/each}
+
+    {#if tabMenu}
+      <ContextMenu
+        x={tabMenu.x}
+        y={tabMenu.y}
+        items={tabMenuItems}
+        onpick={pickTabMenuItem}
+        onclose={closeTabMenu}
+      />
+    {/if}
 
     <!-- Drop zone after last tab -->
     {#if dragIndex !== null}
@@ -392,3 +534,15 @@
     {/if}
   </div>
 </div>
+
+{#if renameTarget}
+  <PromptModal
+    title="Rename tab"
+    label="New label"
+    defaultValue={renameTarget.currentLabel}
+    confirmLabel="Rename"
+    validate={validateRename}
+    onsubmit={submitRename}
+    oncancel={() => (renameTarget = null)}
+  />
+{/if}

@@ -27,6 +27,8 @@ export interface ClaudeTabInfo {
   /** True for `claude agents` (Agent View) tabs — they restore via respawn,
    * not --resume, because the TUI doesn't emit a session-id. */
   isAgentView?: boolean
+  /** True when the user explicitly renamed the tab — label is sticky. */
+  customLabel?: boolean
 }
 
 let _sessionIdsByTerminal = $state<Map<string, string>>(new Map())
