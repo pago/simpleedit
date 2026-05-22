@@ -209,8 +209,8 @@
   }
 
   // ── Tab context menu ─────────────────────────────────────────────────────
-  // PR1 (#87): Rename is the only enabled action. Fork + Close session are
-  // stubbed disabled until later PRs land.
+  // Rename + Close session are enabled. Fork is still a disabled placeholder
+  // until PR3 lands.
 
   const tabMenuItems: ContextMenuItem[] = [
     {
@@ -225,8 +225,6 @@
       label: 'Close session',
       tone: 'danger',
       separatorBefore: true,
-      disabled: true,
-      disabledTooltip: 'Coming soon',
     },
   ]
 
@@ -266,8 +264,10 @@
     if (!tab) return
     if (id === 'rename') {
       renameTarget = { id: tab.id, currentLabel: tab.label }
+    } else if (id === 'close') {
+      closeTab(tab.id)
     }
-    // fork/close handled in PR2/PR3.
+    // fork handled in PR3.
   }
 
   function submitRename(value: string): void {

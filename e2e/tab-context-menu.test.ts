@@ -74,7 +74,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await expect(window.locator('button:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
 
-  test('right-click a Claude tab opens menu with Rename enabled; Fork and Close are disabled', async () => {
+  test('right-click a Claude tab opens menu with Rename and Close enabled; Fork is disabled', async () => {
     await spawnClaudeTab()
 
     const claudeTab = window.locator('button:has-text("Claude")').first()
@@ -83,19 +83,20 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     const menu = window.getByRole('menu').first()
     await expect(menu).toBeVisible()
 
-    // Rename is the only enabled item.
+    // Rename is enabled.
     const rename = menu.getByRole('menuitem', { name: 'Rename…' })
     await expect(rename).toBeVisible()
     await expect(rename).not.toBeDisabled()
 
-    // Fork + Close session are disabled placeholders for PR2/PR3.
+    // Close session is now enabled (PR2).
+    const close = menu.getByRole('menuitem', { name: 'Close session' })
+    await expect(close).toBeVisible()
+    await expect(close).not.toBeDisabled()
+
+    // Fork is still a disabled placeholder for PR3.
     const fork = menu.getByRole('menuitem', { name: 'Fork into worktree…' })
     await expect(fork).toBeDisabled()
     await expect(fork).toHaveAttribute('title', 'Coming soon')
-
-    const close = menu.getByRole('menuitem', { name: 'Close session' })
-    await expect(close).toBeDisabled()
-    await expect(close).toHaveAttribute('title', 'Coming soon')
 
     // Esc dismisses without action.
     await window.keyboard.press('Escape')
@@ -322,5 +323,61 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
       .filter({ hasText: /^Claude(\s+\d+)?$/ })
       .count()
     expect(claudeNumberedTabs).toBe(0)
+  })
+
+  // ────────────────────────────────────────────────────────────────────────
+  // PR2: Close session menu item
+  // ────────────────────────────────────────────────────────────────────────
+
+  test('Close session menu item closes the tab', async () => {
+    // Spawn two Claude tabs so closing one leaves something behind.
+    await spawnClaudeTab()
+    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    await claudeButton.click()
+    await expect(window.locator('button:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+
+    // Right-click the second Claude tab → Close session.
+    const claude2 = window.locator('button:has-text("Claude 2")').first()
+    await claude2.click({ button: 'right' })
+    await window.getByRole('menuitem', { name: 'Close session' }).click()
+
+    // The Claude 2 tab disappears; the first Claude tab survives.
+    await expect(window.locator('button:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
+    await expect(window.locator('button:has-text("Claude")').first()).toBeVisible()
+  })
+
+  test('Close session keyboard activation (Enter) closes the tab', async () => {
+    await spawnClaudeTab()
+    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    await claudeButton.click()
+    await expect(window.locator('button:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+
+    const claude2 = window.locator('button:has-text("Claude 2")').first()
+    await claude2.focus()
+    await window.keyboard.press('Shift+F10')
+
+    const menu = window.getByRole('menu').first()
+    await expect(menu).toBeVisible()
+
+    // Initial focus lands on Rename (first enabled, since Fork is disabled).
+    // ArrowDown → Close (next enabled). Enter activates.
+    await window.keyboard.press('ArrowDown')
+    await window.keyboard.press('Enter')
+
+    await expect(window.locator('button:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
+  })
+
+  test('Close session on Agent View tab closes it without trying to detach a stream parser', async () => {
+    // Open an Agent View tab via the ✦ button context menu, then close it.
+    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    await claudeButton.click({ button: 'right' })
+    await window.getByRole('menuitem', { name: 'New Agent View session' }).click()
+    await expect(window.locator('button:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
+
+    const agents = window.locator('button:has-text("Agents")').first()
+    await agents.click({ button: 'right' })
+    await window.getByRole('menuitem', { name: 'Close session' }).click()
+
+    await expect(window.locator('button:has-text("Agents")')).toHaveCount(0, { timeout: 5_000 })
   })
 })
