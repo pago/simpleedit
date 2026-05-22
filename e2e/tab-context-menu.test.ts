@@ -74,7 +74,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
 
-  test('right-click a Claude tab opens menu with Rename and Close enabled; Fork is hidden (gate off)', async () => {
+  test('right-click a Claude tab opens menu with Rename, Close, and Fork items', async () => {
     await spawnClaudeTab()
 
     const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
@@ -93,8 +93,8 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await expect(close).toBeVisible()
     await expect(close).not.toBeDisabled()
 
-    // Without SIMPLEEDIT_EXPERIMENTAL_FORK=1 the Fork item is hidden entirely.
-    await expect(menu.getByRole('menuitem', { name: 'Fork into worktree…' })).toHaveCount(0)
+    // Fork is always visible; disabled state depends on per-tab session-id capture.
+    await expect(menu.getByRole('menuitem', { name: 'Fork into worktree…' })).toBeVisible()
 
     // Esc dismisses without action.
     await window.keyboard.press('Escape')
@@ -357,10 +357,11 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     const menu = window.getByRole('menu').first()
     await expect(menu).toBeVisible()
 
-    // Initial focus lands on Rename (first enabled, since Fork is disabled).
-    // ArrowDown → Close (next enabled). Enter activates.
-    // NOTE for PR3: when Fork becomes enabled, initial focus moves to Fork
-    // and this needs two ArrowDowns to reach Close.
+    // Menu order: Fork, Rename, Close. Post-#102 Fork is enabled (session-id
+    // captured synchronously at spawn) and post-gate-removal it's always
+    // visible, so initial focus lands on Fork. ArrowDown → Rename. ArrowDown
+    // → Close. Enter activates Close.
+    await window.keyboard.press('ArrowDown')
     await window.keyboard.press('ArrowDown')
     await window.keyboard.press('Enter')
 
@@ -442,19 +443,22 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 })
 
 // ────────────────────────────────────────────────────────────────────────────
-// PR3 (#87 fork gate): with SIMPLEEDIT_EXPERIMENTAL_FORK=1 the Fork item
-// appears in the menu, disabled today with a tooltip pointing at task #10 /
-// issue #95. Execution will follow once session-id capture lands.
+// Fork item disable behavior — in the Playwright environment without a real
+// claude binary, the session-id is never captured, so the Fork item lands in
+// the "waiting" disable state and clicking it is a no-op. (Originally PR3
+// gate tests; the SIMPLEEDIT_EXPERIMENTAL_FORK gate was removed — Fork is now
+// always visible, and these assertions describe the standard disabled-when-
+// no-session-id behavior.)
 // ────────────────────────────────────────────────────────────────────────────
 
-test.describe('Issue #87 PR3: experimental-fork gate', () => {
+test.describe('Fork item disable behavior', () => {
   let testRoot: string
   let bareRepoPath: string
   let app: ElectronApplication
   let window: Page
 
   test.beforeAll(() => {
-    testRoot = mkdtempSync(join(tmpdir(), 'simpleedit-issue87-pr3-'))
+    testRoot = mkdtempSync(join(tmpdir(), 'simpleedit-issue87-fork-disable-'))
     const seedPath = join(testRoot, 'seed')
     mkdirSync(seedPath, { recursive: true })
     const sh = (cwd: string, cmd: string): void => {
@@ -483,7 +487,6 @@ test.describe('Issue #87 PR3: experimental-fork gate', () => {
       env: {
         ...process.env,
         SIMPLEEDIT_REPO: bareRepoPath,
-        SIMPLEEDIT_EXPERIMENTAL_FORK: '1',
       },
     })
     window = await app.firstWindow()
@@ -505,18 +508,6 @@ test.describe('Issue #87 PR3: experimental-fork gate', () => {
     await claudeButton.click()
     await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
-
-  test('Fork item appears in the menu when SIMPLEEDIT_EXPERIMENTAL_FORK=1', async () => {
-    await spawnClaudeTab()
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
-    await claudeTab.click({ button: 'right' })
-
-    const menu = window.getByRole('menu').first()
-    await expect(menu).toBeVisible()
-
-    const fork = menu.getByRole('menuitem', { name: 'Fork into worktree…' })
-    await expect(fork).toBeVisible()
-  })
 
   test('Fork item is enabled on a Claude tab once session-id is captured', async () => {
     // Post-#102, `claude:session-id` is minted synchronously in main on PTY
@@ -542,27 +533,18 @@ test.describe('Issue #87 PR3: experimental-fork gate', () => {
 
     // No "Forking…" placeholder tab should appear (the future success-state UI).
     await expect(window.locator('[role="tab"]:has-text("Forking")')).toHaveCount(0)
-    // No menu transitioning to a worktree picker (a feature PR4 will add).
+    // No menu transitioning to a worktree picker.
     await expect(window.locator('text=Select worktree')).toHaveCount(0)
-  })
-
-  test('the gate does not affect Rename or Close session', async () => {
-    await spawnClaudeTab()
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
-    await claudeTab.click({ button: 'right' })
-
-    const menu = window.getByRole('menu').first()
-    await expect(menu.getByRole('menuitem', { name: 'Rename…' })).not.toBeDisabled()
-    await expect(menu.getByRole('menuitem', { name: 'Close session' })).not.toBeDisabled()
   })
 })
 
 // ────────────────────────────────────────────────────────────────────────────
-// PR3 QA additions: gate edge cases that need per-test launch env control
-// (multi-relaunch, alternate env values, Agent View tab parity).
+// Fork item parity / persistence: Agent View tab disable-tooltip, keyboard
+// nav skipping the disabled Fork, and isAgentView round-trip through
+// session:save/session:load.
 // ────────────────────────────────────────────────────────────────────────────
 
-test.describe('Issue #87 PR3 QA — gate edge cases', () => {
+test.describe('Fork item parity and persistence', () => {
   let testRoot: string
   let bareRepoPath: string
   let app: ElectronApplication | undefined
@@ -592,10 +574,10 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
     rmSync(testRoot, { recursive: true, force: true })
   })
 
-  async function launch(envExtras: Record<string, string | undefined>): Promise<void> {
+  async function launch(): Promise<void> {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: bareRepoPath, ...envExtras },
+      env: { ...process.env, SIMPLEEDIT_REPO: bareRepoPath },
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -621,8 +603,8 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
     await expect(w.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
 
-  test('Fork item also appears (disabled) on Agent View tabs when gate is ON', async () => {
-    await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: '1' })
+  test('Agent View tabs show Fork disabled with the dedicated tooltip', async () => {
+    await launch()
     const w = window!
 
     const claudeButton = w.getByRole('button', { name: 'Run Claude Code' }).first()
@@ -639,49 +621,14 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
     const fork = menu.getByRole('menuitem', { name: 'Fork into worktree…' })
     await expect(fork).toBeVisible()
     await expect(fork).toBeDisabled()
-    // PR4: Agent View tabs get a dedicated tooltip so users understand the
-    // disable is structural (the TUI emits no session id) rather than
-    // transient (waiting for Claude to initialize).
+    // Agent View tabs get a dedicated tooltip so users understand the disable
+    // is structural (the TUI emits no session id) rather than transient
+    // (waiting for Claude to initialize).
     await expect(fork).toHaveAttribute('title', 'Agent View sessions cannot be forked')
   })
 
-  test('app:experimental-fork IPC returns true when env=1 and false otherwise', async () => {
-    interface ApiOnly { api: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> } }
-
-    await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: '1' })
-    const onResult = await window!.evaluate(
-      () => (window as unknown as ApiOnly).api.invoke('app:experimental-fork'),
-    )
-    expect(onResult).toBe(true)
-
-    await app!.close()
-    app = undefined
-    window = undefined
-
-    await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: undefined })
-    const offResult = await window!.evaluate(
-      () => (window as unknown as ApiOnly).api.invoke('app:experimental-fork'),
-    )
-    expect(offResult).toBe(false)
-  })
-
-  test('non-"1" gate values keep the Fork item hidden', async () => {
-    // "true" is the obvious mistaken value users might try. Strict === '1' check rejects it.
-    await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: 'true' })
-    const w = window!
-    await spawnClaudeTab(w)
-
-    const claudeTab = w.locator('[role="tab"]:has-text("Claude")').first()
-    await claudeTab.click({ button: 'right' })
-    const menu = w.getByRole('menu').first()
-    await expect(menu).toBeVisible()
-    await expect(menu.getByRole('menuitem', { name: 'Fork into worktree…' })).toHaveCount(0)
-    await expect(menu.getByRole('menuitem', { name: 'Rename…' })).toBeVisible()
-    await expect(menu.getByRole('menuitem', { name: 'Close session' })).toBeVisible()
-  })
-
   test('Shift+F10 + ArrowDown + Enter activates Rename via keyboard nav', async () => {
-    await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: '1' })
+    await launch()
     const w = window!
     await spawnClaudeTab(w)
 
@@ -714,15 +661,15 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
   // ──────────────────────────────────────────────────────────────────────
 
   test('Agent View entries round-trip through session:save/session:load with isAgentView preserved', async () => {
-    // Storage-layer test: critic's task #17 follow-up was concerned that
-    // isAgentView gets dropped on serialize. This test pins the IPC contract:
-    // a SerializedSession containing an Agent View entry round-trips through
-    // disk with the flag intact. Once #10 lands and the IDE's session-restore
-    // race is sorted, a follow-up test should walk the full UI-side restore
-    // chain. That race is pre-existing and out of PR4 scope.
+    // Storage-layer test for the persistence chain (originally raised as a
+    // concern in critic's task #17 follow-up on PR4): a SerializedSession
+    // containing an Agent View entry round-trips through disk with the
+    // isAgentView flag intact, so the restored tab keeps its Fork-disabled
+    // tooltip behavior. The full UI-side restore chain has a pre-existing
+    // mount-vs-hydrate race that's out of scope for this stack.
     interface ApiOnly { api: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> } }
 
-    await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: '1' })
+    await launch()
     const liveWorktrees = (await window!.evaluate(() =>
       (window as unknown as ApiOnly).api.invoke('worktree:list'),
     )) as Array<{ path: string; branch: string }>

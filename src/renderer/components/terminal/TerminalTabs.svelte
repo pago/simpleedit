@@ -62,12 +62,6 @@
    * cancels the timer instead of letting it fire stale.
    */
   const forkErrorDismissTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  /**
-   * Fork-into-worktree is gated behind SIMPLEEDIT_EXPERIMENTAL_FORK=1. When
-   * the gate is off the menu item is hidden entirely. Read once on mount —
-   * toggling the env var mid-app would yield inconsistent menus across panes.
-   */
-  let experimentalFork: boolean = $state(false)
 
   let dragIndex: number | null = $state(null)
   let dropIndex: number | null = $state(null)
@@ -244,8 +238,7 @@
   }
 
   // ── Tab context menu ─────────────────────────────────────────────────────
-  // Rename + Close are wired. Fork appears only when SIMPLEEDIT_EXPERIMENTAL_FORK=1.
-  // Disable logic (PR4):
+  // Disable logic for the Fork item:
   //   - Agent View tabs: always disabled, dedicated tooltip
   //   - Claude tabs with no captured session_id: disabled with "waiting…" tooltip
   //   - Claude tabs with a session_id: enabled
@@ -258,29 +251,27 @@
    */
   function buildTabMenuItems(tab: TabInfo | undefined): ContextMenuItem[] {
     const items: ContextMenuItem[] = []
-    if (experimentalFork) {
-      const sessionId = tab ? sessionRestoreStore.sessionIdForTerminal(tab.id) : undefined
-      let forkDisabled = false
-      let forkTooltip: string | undefined
-      if (!tab) {
-        forkDisabled = true
-      } else if (tab.isAgentView) {
-        forkDisabled = true
-        forkTooltip = 'Agent View sessions cannot be forked'
-      } else if (sessionId == null) {
-        // Race window: claude:session-id is emitted synchronously from main
-        // for fresh tabs (post-#10), so this branch is normally not visible.
-        // Kept as a defensive disable in case capture is ever delayed.
-        forkDisabled = true
-        forkTooltip = 'Waiting for Claude to initialize…'
-      }
-      items.push({
-        id: 'fork',
-        label: 'Fork into worktree…',
-        disabled: forkDisabled,
-        disabledTooltip: forkTooltip,
-      })
+    const sessionId = tab ? sessionRestoreStore.sessionIdForTerminal(tab.id) : undefined
+    let forkDisabled = false
+    let forkTooltip: string | undefined
+    if (!tab) {
+      forkDisabled = true
+    } else if (tab.isAgentView) {
+      forkDisabled = true
+      forkTooltip = 'Agent View sessions cannot be forked'
+    } else if (sessionId == null) {
+      // Race window: claude:session-id is emitted synchronously from main
+      // for fresh tabs, so this branch is normally not visible. Kept as a
+      // defensive disable in case capture is ever delayed.
+      forkDisabled = true
+      forkTooltip = 'Waiting for Claude to initialize…'
     }
+    items.push({
+      id: 'fork',
+      label: 'Fork into worktree…',
+      disabled: forkDisabled,
+      disabledTooltip: forkTooltip,
+    })
     items.push({ id: 'rename', label: 'Rename…' })
     items.push({
       id: 'close',
@@ -438,14 +429,6 @@
     if (trimmed.length > 64) return 'Label must be 64 characters or fewer'
     return null
   }
-
-  // Fetch the experimental-fork gate once on mount. Result is stable for the
-  // app's lifetime — the main process reads the env var at startup.
-  $effect(() => {
-    window.api.invoke('app:experimental-fork').then((on) => {
-      experimentalFork = on
-    })
-  })
 
   // Register callbacks and sync Claude tab list into agentStore
   $effect(() => {
