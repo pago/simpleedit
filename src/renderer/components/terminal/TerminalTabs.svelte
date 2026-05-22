@@ -43,6 +43,12 @@
   let tabMenuButtonEls: Map<string, HTMLElement> = $state(new Map())
   /** Tab being renamed (null when no rename modal is open). */
   let renameTarget: { id: string; currentLabel: string } | null = $state(null)
+  /**
+   * Fork-into-worktree is gated behind SIMPLEEDIT_EXPERIMENTAL_FORK=1. When
+   * the gate is off the menu item is hidden entirely. Read once on mount —
+   * toggling the env var mid-app would yield inconsistent menus across panes.
+   */
+  let experimentalFork: boolean = $state(false)
 
   let dragIndex: number | null = $state(null)
   let dropIndex: number | null = $state(null)
@@ -212,16 +218,21 @@
   }
 
   // ── Tab context menu ─────────────────────────────────────────────────────
-  // Rename + Close session are enabled. Fork is still a disabled placeholder
-  // until PR3 lands.
+  // Rename + Close are wired. Fork appears only when SIMPLEEDIT_EXPERIMENTAL_FORK=1
+  // and is always disabled today — execution waits on session_id capture
+  // (see issue #95, task #10).
 
-  const tabMenuItems: ContextMenuItem[] = [
-    {
-      id: 'fork',
-      label: 'Fork into worktree…',
-      disabled: true,
-      disabledTooltip: 'Coming soon',
-    },
+  const tabMenuItems: ContextMenuItem[] = $derived([
+    ...(experimentalFork
+      ? [
+          {
+            id: 'fork',
+            label: 'Fork into worktree…',
+            disabled: true,
+            disabledTooltip: 'Fork requires Claude session-id capture (see issue #95 / task #10)',
+          } as ContextMenuItem,
+        ]
+      : []),
     { id: 'rename', label: 'Rename…' },
     {
       id: 'close',
@@ -229,7 +240,7 @@
       tone: 'danger',
       separatorBefore: true,
     },
-  ]
+  ])
 
   function openTabMenuAtPointer(e: MouseEvent, tab: TabInfo): void {
     if (!tab.isClaude) return // menu is Claude/Agent View tabs only
@@ -297,6 +308,14 @@
     if (trimmed.length > 64) return 'Label must be 64 characters or fewer'
     return null
   }
+
+  // Fetch the experimental-fork gate once on mount. Result is stable for the
+  // app's lifetime — the main process reads the env var at startup.
+  $effect(() => {
+    window.api.invoke('app:experimental-fork').then((on) => {
+      experimentalFork = on
+    })
+  })
 
   // Register callbacks and sync Claude tab list into agentStore
   $effect(() => {
