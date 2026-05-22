@@ -109,7 +109,10 @@ export function spawnClaudeTerminal(
     return
   }
 
-  let claudeCmd = 'claude --output-format stream-json'
+  // No `--output-format stream-json`: the flag is silently ignored when stdin
+  // is a TTY (which node-pty always provides) on CLI 2.1.148+. Session id
+  // capture now flows through `--session-id <uuid>` below; see #95.
+  let claudeCmd = 'claude'
 
   if (bridgePort != null && bridgeToken != null) {
     const configPath = writeMcpConfig(id, bridgePort, bridgeToken)
