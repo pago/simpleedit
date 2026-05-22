@@ -89,17 +89,38 @@ describe('listWorktrees isMain resolution (issue #89)', () => {
   })
 
   it('caches the resolved default branch per bareRepoPath', async () => {
-    // Resolve once (populates cache), then break origin/HEAD AND delete the
-    // "main" local branch. If the resolver were called fresh, it would fall
-    // through to "aaa-feature" (first branch). Cache must shield us.
-    await listWorktrees(bareRepoPath) // primes the cache
+    // Prime the cache while origin/HEAD → origin/main. Then re-point
+    // origin/HEAD at origin/aaa-feature: if the cache were bypassed, the
+    // resolver would now return "aaa-feature" and that worktree would get
+    // isMain=true. The cache must keep "main" pinned across the change.
+    //
+    // (The earlier shape of this test deleted origin/HEAD only, which left
+    // the literal-name "main" fallback returning the same answer cache or
+    // no-cache — see PR #91 reviewer feedback.)
+    await listWorktrees(bareRepoPath) // primes the cache with "main"
 
     const bare = simpleGit(bareRepoPath)
-    await bare.raw(['symbolic-ref', '--delete', 'refs/remotes/origin/HEAD']).catch(() => {})
+    await bare.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/aaa-feature'])
 
     const worktrees = await listWorktrees(bareRepoPath)
     expect(worktrees.find((w) => w.branch === 'main')?.isMain).toBe(true)
     expect(worktrees.find((w) => w.branch === 'aaa-feature')?.isMain).toBe(false)
+
+    // Restore for any later assertions in this run.
+    await bare.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  })
+
+  it('without cache priming, picks up a changed origin/HEAD', async () => {
+    // Companion to the cache test: confirms the resolver *would* see a
+    // re-pointed origin/HEAD if not for the cache. This validates that the
+    // previous test's pinning is real cache behaviour and not coincidence.
+    const bare = simpleGit(bareRepoPath)
+    await bare.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/aaa-feature'])
+    _resetDefaultBranchCacheForTests()
+
+    const worktrees = await listWorktrees(bareRepoPath)
+    expect(worktrees.find((w) => w.branch === 'aaa-feature')?.isMain).toBe(true)
+    expect(worktrees.find((w) => w.branch === 'main')?.isMain).toBe(false)
 
     await bare.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
   })
