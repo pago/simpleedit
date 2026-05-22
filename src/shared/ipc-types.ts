@@ -277,6 +277,12 @@ export interface SerializedClaudeSession {
    * trying to resume — best-effort restoration, position + label only.
    */
   isAgentView?: boolean
+  /**
+   * True when the user explicitly renamed the tab via the context menu. The
+   * label then becomes sticky — `handleTitleChange` early-returns, so a
+   * subsequent xterm OSC title from Claude won't overwrite the user's choice.
+   */
+  customLabel?: boolean
 }
 
 export interface SerializedWorktreeState {
