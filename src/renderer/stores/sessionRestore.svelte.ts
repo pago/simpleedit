@@ -2,8 +2,10 @@
  * Cross-cutting state that the session save/restore feature needs but that
  * doesn't naturally live in any single component or store.
  *
- *   - `sessionIdsByTerminal`: live capture of `session_id` values from claude's
- *     stream-json init event, used to serialize Claude sessions on quit.
+ *   - `sessionIdsByTerminal`: `session_id` values for live Claude PTYs,
+ *     emitted by the main process via `claude:session-id` and used to
+ *     serialize Claude sessions on quit. (Main pins the id at spawn time
+ *     via `claude --session-id <uuid>`; see #95 and pty.ts.)
  *   - `claudeTabsByPane`: each `TerminalTabs` publishes its current Claude
  *     tabs here so a global serializer can read them.
  *   - `pendingResumeByPane`: hydrated from disk on launch; each `TerminalTabs`
