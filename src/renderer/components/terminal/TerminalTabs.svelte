@@ -1,6 +1,7 @@
 <script lang="ts">
   import Terminal from './Terminal.svelte'
   import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
+  import ForkWorktreePicker from './ForkWorktreePicker.svelte'
   import PromptModal from '../PromptModal.svelte'
   import type { AgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { sessionRestoreStore } from '../../stores/sessionRestore.svelte'
@@ -26,6 +27,10 @@
      * before the last quit. The Terminal is not mounted; the tab renders a
      * "Resume" button that, on click, spawns claude --resume <id>. */
     pendingResume?: { sessionId: string }
+    /** Fork-in-flight: italic-dimmed placeholder until claude:fork-result. */
+    forking?: { sourceLabel: string }
+    /** Fork failed: short-lived error chip; auto-cleared after ~6s. */
+    forkError?: string
   }
 
   let tabs: TabInfo[] = $state([])
@@ -43,6 +48,20 @@
   let tabMenuButtonEls: Map<string, HTMLElement> = $state(new Map())
   /** Tab being renamed (null when no rename modal is open). */
   let renameTarget: { id: string; currentLabel: string } | null = $state(null)
+  /**
+   * Worktree-picker state for the Fork flow. When set, the tab context menu
+   * is hidden in favor of an inline picker anchored at the same point. Esc
+   * goes back to the action menu (designer's "Esc-once pops" UX).
+   */
+  let forkPicker:
+    | { tabId: string; sourceLabel: string; sourceSessionId: string; x: number; y: number }
+    | null = $state(null)
+  /**
+   * Pending fork-error auto-dismiss timers, keyed by placeholder tab id. We
+   * track these so closing the tab manually (or unmounting the component)
+   * cancels the timer instead of letting it fire stale.
+   */
+  const forkErrorDismissTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /**
    * Fork-into-worktree is gated behind SIMPLEEDIT_EXPERIMENTAL_FORK=1. When
    * the gate is off the menu item is hidden entirely. Read once on mount —
@@ -131,6 +150,13 @@
   }
 
   function closeTab(id: string): void {
+    // Cancel any pending fork-error auto-dismiss so the timer doesn't fire
+    // after this tab is already gone.
+    const pendingDismiss = forkErrorDismissTimers.get(id)
+    if (pendingDismiss !== undefined) {
+      clearTimeout(pendingDismiss)
+      forkErrorDismissTimers.delete(id)
+    }
     const tab = tabs.find((t) => t.id === id)
     // Placeholder tabs have no live PTY — just drop them from the list.
     if (tab && !tab.pendingResume) {
@@ -218,29 +244,57 @@
   }
 
   // ── Tab context menu ─────────────────────────────────────────────────────
-  // Rename + Close are wired. Fork appears only when SIMPLEEDIT_EXPERIMENTAL_FORK=1
-  // and is always disabled today — execution waits on session_id capture
-  // (see issue #95, task #10).
+  // Rename + Close are wired. Fork appears only when SIMPLEEDIT_EXPERIMENTAL_FORK=1.
+  // Disable logic (PR4):
+  //   - Agent View tabs: always disabled, dedicated tooltip
+  //   - Claude tabs with no captured session_id: disabled with "waiting…" tooltip
+  //   - Claude tabs with a session_id: enabled
 
-  const tabMenuItems: ContextMenuItem[] = $derived([
-    ...(experimentalFork
-      ? [
-          {
-            id: 'fork',
-            label: 'Fork into worktree…',
-            disabled: true,
-            disabledTooltip: 'Fork requires Claude session-id capture (see issue #95 / task #10)',
-          } as ContextMenuItem,
-        ]
-      : []),
-    { id: 'rename', label: 'Rename…' },
-    {
+  /**
+   * Build the menu item list for a specific tab. The Fork item's disabled
+   * state depends on the tab's `isAgentView` flag and whether the source
+   * session_id has been captured yet, which is per-tab — so the items can't
+   * be a single static array shared across all menu invocations.
+   */
+  function buildTabMenuItems(tab: TabInfo | undefined): ContextMenuItem[] {
+    const items: ContextMenuItem[] = []
+    if (experimentalFork) {
+      const sessionId = tab ? sessionRestoreStore.sessionIdForTerminal(tab.id) : undefined
+      let forkDisabled = false
+      let forkTooltip: string | undefined
+      if (!tab) {
+        forkDisabled = true
+      } else if (tab.isAgentView) {
+        forkDisabled = true
+        forkTooltip = 'Agent View sessions cannot be forked'
+      } else if (sessionId == null) {
+        // Race window: claude:session-id is emitted synchronously from main
+        // for fresh tabs (post-#10), so this branch is normally not visible.
+        // Kept as a defensive disable in case capture is ever delayed.
+        forkDisabled = true
+        forkTooltip = 'Waiting for Claude to initialize…'
+      }
+      items.push({
+        id: 'fork',
+        label: 'Fork into worktree…',
+        disabled: forkDisabled,
+        disabledTooltip: forkTooltip,
+      })
+    }
+    items.push({ id: 'rename', label: 'Rename…' })
+    items.push({
       id: 'close',
       label: 'Close session',
       tone: 'danger',
       separatorBefore: true,
-    },
-  ])
+    })
+    return items
+  }
+
+  let tabMenuItems: ContextMenuItem[] = $derived.by(() => {
+    const tab = tabs.find((t) => t.id === tabMenu?.tabId)
+    return buildTabMenuItems(tab)
+  })
 
   function openTabMenuAtPointer(e: MouseEvent, tab: TabInfo): void {
     if (!tab.isClaude) return // menu is Claude/Agent View tabs only
@@ -288,8 +342,84 @@
       renameTarget = { id: tab.id, currentLabel: tab.label }
     } else if (id === 'close') {
       closeTab(tab.id)
+    } else if (id === 'fork') {
+      const sessionId = sessionRestoreStore.sessionIdForTerminal(tab.id)
+      if (!sessionId) return // shouldn't happen — Fork is disabled when missing
+      // Transition from action menu to worktree picker, anchored at the same
+      // point so the panel doesn't jump.
+      const anchor = tabMenu
+      if (!anchor) return
+      forkPicker = {
+        tabId: tab.id,
+        sourceLabel: tab.label,
+        sourceSessionId: sessionId,
+        x: anchor.x,
+        y: anchor.y,
+      }
+      // ContextMenu's onpick fires before onclose; null tabMenu here so the
+      // picker isn't drawn under a still-open menu in the next paint.
+      tabMenu = null
     }
-    // fork handled in PR3.
+  }
+
+  function forkPickerBack(): void {
+    // Restore the action menu at the same anchor, then drop the picker.
+    if (!forkPicker) return
+    tabMenu = { tabId: forkPicker.tabId, x: forkPicker.x, y: forkPicker.y }
+    forkPicker = null
+  }
+
+  function forkPickerClose(): void {
+    const targetId = forkPicker?.tabId
+    forkPicker = null
+    if (targetId) {
+      tabMenuButtonEls.get(targetId)?.focus()
+    }
+  }
+
+  function forkPickerPick(targetWorktreePath: string): void {
+    if (!forkPicker) return
+    const { tabId, sourceLabel, sourceSessionId } = forkPicker
+    forkPicker = null
+
+    // Pre-mint the fork's session-id (critic's audit §4: passing this at
+    // spawn time eliminates the race vs scraping claude's init line).
+    const forkUuid = crypto.randomUUID()
+    const placeholderTabId = `claude-fork-${Date.now()}-${nextClaudeIndex}`
+    const placeholderLabel =
+      nextClaudeIndex === 1 ? 'Claude' : `Claude ${nextClaudeIndex}`
+    nextClaudeIndex++
+
+    // The placeholder lives in THIS pane's tab list; the renderer doesn't
+    // route forks to the secondary pane (that's a future enhancement). The
+    // placeholder is rendered italic-dimmed until the fork resolves.
+    tabs.unshift({
+      id: placeholderTabId,
+      label: placeholderLabel,
+      isClaude: true,
+      forking: { sourceLabel },
+    })
+    activeTabId = placeholderTabId
+
+    window.api
+      .invoke('claude:fork', {
+        sourceTerminalId: tabId,
+        sourceSessionId,
+        sourceWorktreePath: worktreePath,
+        targetWorktreePath,
+        forkUuid,
+        placeholderTabId,
+      })
+      .catch(() => {
+        // The IPC handler emits claude:fork-result on its own error path; if
+        // the invoke itself rejects (e.g. main crashed), surface a generic
+        // error so the placeholder doesn't hang.
+        const t = tabs.find((x) => x.id === placeholderTabId)
+        if (t) {
+          t.forking = undefined
+          t.forkError = 'fork IPC failed'
+        }
+      })
   }
 
   function submitRename(value: string): void {
@@ -341,6 +471,57 @@
     return window.api.on('pty:exit', ({ id }) => {
       if (tabs.some((t) => t.id === id)) {
         closeTab(id)
+      }
+    })
+  })
+
+  // Listen for claude:fork-result. The placeholder tab's forking state is
+  // cleared when the new PTY emits its first byte (see pty:data handler).
+  // On error we surface a brief error chip that auto-dismisses after ~6s.
+  $effect(() => {
+    return window.api.on('claude:fork-result', (payload) => {
+      const tab = tabs.find((t) => t.id === payload.placeholderTabId)
+      if (!tab) return
+      if (payload.ok) {
+        // Success path is handled by the pty:data listener below — once
+        // Claude emits anything the placeholder transitions to a live tab.
+        return
+      }
+      tab.forking = undefined
+      tab.forkError = payload.error
+      // Auto-dismiss the error after a short window so the user can read it
+      // but the tab doesn't stay broken-looking forever. The timer is tracked
+      // in forkErrorDismissTimers so manual close or component unmount cancels
+      // it cleanly instead of firing stale.
+      const errId = tab.id
+      const t = setTimeout(() => {
+        forkErrorDismissTimers.delete(errId)
+        const stillTab = tabs.find((x) => x.id === errId)
+        if (stillTab && stillTab.forkError) {
+          closeTab(errId)
+        }
+      }, 6_000)
+      forkErrorDismissTimers.set(errId, t)
+    })
+  })
+
+  // Cancel any outstanding fork-error timers on component unmount so they
+  // can't fire after this TerminalTabs instance is gone.
+  $effect(() => {
+    return () => {
+      for (const t of forkErrorDismissTimers.values()) clearTimeout(t)
+      forkErrorDismissTimers.clear()
+    }
+  })
+
+  // Drop the `forking` placeholder state as soon as the new PTY emits any
+  // data — that's the signal the fork actually started running. The Terminal
+  // component then mounts and renders the live session as usual.
+  $effect(() => {
+    return window.api.on('pty:data', ({ id }) => {
+      const tab = tabs.find((t) => t.id === id)
+      if (tab?.forking) {
+        tab.forking = undefined
       }
     })
   })
@@ -439,7 +620,8 @@
         class="group flex items-center gap-1 px-3 py-1 text-xs transition-colors {tab.id === activeTabId
           ? tab.isClaude ? 'bg-zinc-900 text-orange-300' : 'bg-zinc-900 text-zinc-200'
           : tab.isClaude ? 'text-orange-400/60 hover:text-orange-300' : 'text-zinc-500 hover:text-zinc-300'}
-          {tab.pendingResume ? 'italic opacity-70' : ''}
+          {tab.pendingResume || tab.forking ? 'italic opacity-70' : ''}
+          {tab.forkError ? 'text-red-400' : ''}
           {dragIndex !== null && dropIndex === i && dragIndex !== i ? 'border-l-2 border-l-blue-500' : ''}"
         role="tab"
         tabindex={tab.id === activeTabId ? 0 : -1}
@@ -453,14 +635,22 @@
         ondragover={(e) => handleDragOver(e, i)}
         ondrop={(e) => handleDrop(e, i)}
         ondragend={handleDragEnd}
-        title={tab.pendingResume ? 'Click to resume this Claude session' : tab.label}
-        aria-haspopup={tab.isClaude && !tab.pendingResume ? 'menu' : undefined}
+        title={
+          tab.forkError
+            ? `Fork failed: ${tab.forkError}`
+            : tab.forking
+              ? `Forking… (from ${tab.forking.sourceLabel})`
+              : tab.pendingResume
+                ? 'Click to resume this Claude session'
+                : tab.label
+        }
+        aria-haspopup={tab.isClaude && !tab.pendingResume && !tab.forking ? 'menu' : undefined}
       >
         {#if tab.isClaude}
           <span class="text-[10px]">&#x2726;</span>
         {/if}
-        <span>{tab.label}{tab.pendingResume ? ' (resume)' : ''}</span>
-        {#if tab.isClaude && !tab.pendingResume}
+        <span>{tab.label}{tab.pendingResume ? ' (resume)' : ''}{tab.forking ? '…' : ''}{tab.forkError ? ' (failed)' : ''}</span>
+        {#if tab.isClaude && !tab.pendingResume && !tab.forking && !tab.forkError}
           <button
             type="button"
             bind:this={
@@ -506,6 +696,17 @@
       />
     {/if}
 
+    {#if forkPicker}
+      <ForkWorktreePicker
+        x={forkPicker.x}
+        y={forkPicker.y}
+        sourceWorktreePath={worktreePath}
+        onpick={forkPickerPick}
+        onback={forkPickerBack}
+        onclose={forkPickerClose}
+      />
+    {/if}
+
     <!-- Drop zone after last tab -->
     {#if dragIndex !== null}
       <div
@@ -543,6 +744,16 @@
               Resume {tab.label}
             </button>
             <p class="text-[10px] text-zinc-600">session id {tab.pendingResume.sessionId.slice(0, 8)}…</p>
+          </div>
+        {:else if tab.forking}
+          <div class="flex h-full flex-col items-center justify-center gap-2 text-zinc-400">
+            <p class="text-xs italic">Forking from {tab.forking.sourceLabel}…</p>
+            <p class="text-[10px] text-zinc-600">Copying session transcript and starting Claude</p>
+          </div>
+        {:else if tab.forkError}
+          <div class="flex h-full flex-col items-center justify-center gap-2 text-red-400">
+            <p class="text-xs">Fork failed</p>
+            <p class="max-w-md text-[10px] text-zinc-500">{tab.forkError}</p>
           </div>
         {:else}
           <Terminal

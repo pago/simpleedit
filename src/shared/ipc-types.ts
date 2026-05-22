@@ -126,11 +126,45 @@ export interface ClaudeInvokeMap {
   'claude:spawn-agents': { args: [options: PtySpawnOptions]; result: void }
   'claude:attach': { args: [terminalId: string, worktreePath: string]; result: void }
   'claude:detach': { args: [terminalId: string]; result: void }
+  /**
+   * Fork a Claude session into another worktree of the same repo. Copies the
+   * source session's JSONL (and any subagent subdir) into the target's project
+   * dir, then spawns a new PTY there with --resume + --fork-session + a
+   * pre-minted forkUuid. Caller pre-creates a placeholder tab and listens on
+   * `claude:fork-result` for success/failure.
+   */
+  'claude:fork': {
+    args: [options: ClaudeForkOptions]
+    result: void
+  }
+}
+
+export interface ClaudeForkOptions {
+  /** Terminal id of the source Claude tab being forked from. */
+  sourceTerminalId: string
+  /** Source session id, used as the --resume arg. */
+  sourceSessionId: string
+  /** Source worktree path (where the source JSONL lives). */
+  sourceWorktreePath: string
+  /** Target worktree path where the new PTY will run. */
+  targetWorktreePath: string
+  /** SimpleEdit-minted UUID for the new (forked) session. */
+  forkUuid: string
+  /** Terminal id the placeholder tab is using; the new PTY uses this id. */
+  placeholderTabId: string
 }
 
 export interface ClaudeEventMap {
   'claude:status': { worktreePath: string; status: ClaudeStatus; terminalId: string }
   'claude:session-id': { terminalId: string; sessionId: string }
+  /**
+   * Fork operation outcome. `placeholderTabId` matches the id the renderer
+   * used in `claude:fork`, so it can locate the placeholder tab to transition
+   * (success) or mark errored (failure).
+   */
+  'claude:fork-result':
+    | { placeholderTabId: string; ok: true }
+    | { placeholderTabId: string; ok: false; error: string }
 }
 
 // ── Review ────────────────────────────────────────────────
