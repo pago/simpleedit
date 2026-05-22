@@ -335,6 +335,12 @@ export interface AppInvokeMap {
   'app:open-window': { args: [repoPath?: string]; result: void }
   'app:open-external': { args: [url: string]; result: void }
   'app:save-dropped-blob': { args: [filename: string, bytes: Uint8Array]; result: string }
+  /**
+   * True when SimpleEdit was launched with `SIMPLEEDIT_EXPERIMENTAL_FORK=1`.
+   * Gates the "Fork into worktree…" menu item on agent tabs. Read once at
+   * startup; toggling the env var requires an app restart.
+   */
+  'app:experimental-fork': { args: []; result: boolean }
 }
 
 // ── LSP ───────────────────────────────────────────────────

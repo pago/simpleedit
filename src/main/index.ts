@@ -172,6 +172,11 @@ function registerAllHandlers(): void {
     return saveDroppedBlob(filename, bytes)
   })
 
+  // Read once at module init — toggling the env var mid-session would yield
+  // inconsistent menu state across windows; an app restart is required.
+  const experimentalFork = process.env.SIMPLEEDIT_EXPERIMENTAL_FORK === '1'
+  ipcMain.handle('app:experimental-fork', () => experimentalFork)
+
   // ── PTY ─────────────────────────────────────────────────
   ipcMain.handle('pty:spawn', (event, options: PtySpawnOptions) => {
     spawnTerminal(options, event.sender)
