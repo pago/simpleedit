@@ -518,17 +518,17 @@ test.describe('Issue #87 PR3: experimental-fork gate', () => {
     await expect(fork).toBeVisible()
   })
 
-  test('Fork item is disabled with a tooltip pointing at issue #95 / task #10', async () => {
+  test('Fork item is disabled until session-id is captured, with a clarifying tooltip', async () => {
+    // In a Playwright environment without ANTHROPIC_API_KEY the Claude PTY
+    // exits before emitting any session-id, so `sessionIdForTerminal(...)`
+    // stays undefined and the Fork item lands in the "waiting" disable state.
     await spawnClaudeTab()
     const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
     const fork = window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork into worktree…' })
     await expect(fork).toBeDisabled()
-    await expect(fork).toHaveAttribute(
-      'title',
-      'Fork requires Claude session-id capture (see issue #95 / task #10)',
-    )
+    await expect(fork).toHaveAttribute('title', 'Waiting for Claude to initialize…')
   })
 
   test('clicking the disabled Fork item is a no-op', async () => {
@@ -638,11 +638,10 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
     const fork = menu.getByRole('menuitem', { name: 'Fork into worktree…' })
     await expect(fork).toBeVisible()
     await expect(fork).toBeDisabled()
-    // Same generic tooltip in PR3; PR4 may differentiate for Agent View.
-    await expect(fork).toHaveAttribute(
-      'title',
-      'Fork requires Claude session-id capture (see issue #95 / task #10)',
-    )
+    // PR4: Agent View tabs get a dedicated tooltip so users understand the
+    // disable is structural (the TUI emits no session id) rather than
+    // transient (waiting for Claude to initialize).
+    await expect(fork).toHaveAttribute('title', 'Agent View sessions cannot be forked')
   })
 
   test('app:experimental-fork IPC returns true when env=1 and false otherwise', async () => {
@@ -701,5 +700,82 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
     // Tidy up so afterEach can close cleanly.
     await w.keyboard.press('Escape')
     await expect(dialog).not.toBeVisible()
+  })
+
+  // ──────────────────────────────────────────────────────────────────────
+  // PR4 regression guard (critic task #17 follow-up): a restored Agent View
+  // tab must keep its isAgentView flag through save/load, so the Fork item
+  // stays disabled with the dedicated tooltip — not the generic "waiting…"
+  // one. This is the cross-restart half of the live-tab parity test above.
+  // ──────────────────────────────────────────────────────────────────────
+
+  test('Agent View entries round-trip through session:save/session:load with isAgentView preserved', async () => {
+    // Storage-layer test: critic's task #17 follow-up was concerned that
+    // isAgentView gets dropped on serialize. This test pins the IPC contract:
+    // a SerializedSession containing an Agent View entry round-trips through
+    // disk with the flag intact. Once #10 lands and the IDE's session-restore
+    // race is sorted, a follow-up test should walk the full UI-side restore
+    // chain. That race is pre-existing and out of PR4 scope.
+    interface ApiOnly { api: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> } }
+
+    await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: '1' })
+    const liveWorktrees = (await window!.evaluate(() =>
+      (window as unknown as ApiOnly).api.invoke('worktree:list'),
+    )) as Array<{ path: string; branch: string }>
+    const mainWorktree = liveWorktrees.find((w) => w.branch === 'main')
+    expect(mainWorktree).toBeDefined()
+    const worktreeMainPath = mainWorktree!.path
+
+    const payload = {
+      version: 1,
+      repoPath: bareRepoPath,
+      savedAt: new Date().toISOString(),
+      layout: {
+        primaryWorktreePath: worktreeMainPath,
+        secondaryWorktreePath: null,
+        focusedPane: 'primary' as const,
+        splitRatio: 50,
+        visitedPrimary: [worktreeMainPath],
+        visitedSecondary: [],
+      },
+      worktreeStates: [
+        {
+          worktreePath: worktreeMainPath,
+          tabs: [],
+          activeTabId: null,
+          mru: [],
+          unread: [],
+          primaryClaudeSessions: [
+            { label: 'Agents', isAgentView: true },
+            { label: 'Claude', sessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+          ],
+          secondaryClaudeSessions: [],
+        },
+      ],
+    }
+
+    await window!.evaluate(
+      async (p) => (window as unknown as ApiOnly).api.invoke('session:save', p),
+      payload,
+    )
+
+    const loaded = (await window!.evaluate(
+      async (r) => (window as unknown as ApiOnly).api.invoke('session:load', r),
+      bareRepoPath,
+    )) as typeof payload | null
+
+    expect(loaded).not.toBeNull()
+    const sessions = loaded!.worktreeStates[0].primaryClaudeSessions
+    const agents = sessions.find((s) => s.label === 'Agents')!
+    expect(agents.isAgentView).toBe(true)
+    // The Claude entry should NOT have isAgentView leaked onto it.
+    const claude = sessions.find((s) => s.label === 'Claude')!
+    expect((claude as { isAgentView?: boolean }).isAgentView).toBeUndefined()
+
+    // Cleanup so we don't leave the saved session for later tests.
+    await window!.evaluate(
+      async (r) => (window as unknown as ApiOnly).api.invoke('session:clear', r),
+      bareRepoPath,
+    )
   })
 })

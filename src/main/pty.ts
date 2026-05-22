@@ -162,7 +162,81 @@ export function spawnClaudeTerminal(
     cleanupMcpConfig(id)
     terminals.delete(id)
     if (!webContents.isDestroyed()) {
+      // Clear the worktree's Claude status so the worktree picker (#87) and
+      // sidebar badges don't show stale 'running' for an exited tab. The
+      // status is per-worktreePath, so this only fires when the LAST Claude
+      // tab for this worktree exits — earlier exits leave the status as
+      // whichever still-alive tab last reported. Acceptable: the indicator
+      // tracks "is *any* Claude active here", not "is this specific tab".
+      webContents.send('claude:status', { worktreePath, status: 'idle', terminalId: id })
       webContents.send('pty:exit', { id, exitCode })
+    }
+  })
+}
+
+/**
+ * Spawn a forked Claude session in `targetWorktreePath`, resuming from
+ * `sourceSessionId` and pinning the new session to `forkUuid`.
+ *
+ * The CLI silently no-ops (just appends to the source) if forkUuid ===
+ * sourceSessionId — the caller (handler in index.ts) MUST verify they differ
+ * before invoking us. We assert defensively here too.
+ *
+ * No MCP bridge / stream-json parser attachment — the fork's session id is
+ * already known (it's `forkUuid`), so the renderer can populate
+ * sessionRestoreStore directly and skip the broken-on-2.1.148 stream-json
+ * scrape entirely.
+ */
+export function spawnForkedClaudeTerminal(
+  args: {
+    placeholderTabId: string
+    sourceSessionId: string
+    targetWorktreePath: string
+    forkUuid: string
+  },
+  webContents: WebContents,
+): void {
+  const { placeholderTabId, sourceSessionId, targetWorktreePath, forkUuid } = args
+
+  if (forkUuid === sourceSessionId) {
+    // Programmer error — would silently append to the source instead of
+    // forking. Caller has primary responsibility, but defending here too.
+    throw new Error(
+      `spawnForkedClaudeTerminal: forkUuid must differ from sourceSessionId (${forkUuid})`,
+    )
+  }
+  if (terminals.has(placeholderTabId)) return
+
+  // Flag order verified empirically on CLI 2.1.148 (critic's pre-PR4 audit §4):
+  // all three orderings of --session-id / --resume / --fork-session work.
+  // Using the form that reads "fork the source session as a new id".
+  const claudeCmd =
+    `claude --output-format stream-json` +
+    ` --session-id ${forkUuid}` +
+    ` --resume ${sourceSessionId}` +
+    ` --fork-session`
+
+  const shell = defaultShell()
+  const term = pty.spawn(shell, ['-i', '-l', '-c', claudeCmd], getPtyOptions(targetWorktreePath))
+
+  terminals.set(placeholderTabId, term)
+
+  term.onData((data: string) => {
+    emitPtyData(placeholderTabId, data)
+    if (!webContents.isDestroyed()) {
+      webContents.send('pty:data', { id: placeholderTabId, data })
+    }
+  })
+
+  term.onExit(({ exitCode }: { exitCode: number }) => {
+    terminals.delete(placeholderTabId)
+    if (!webContents.isDestroyed()) {
+      webContents.send('claude:status', {
+        worktreePath: targetWorktreePath,
+        status: 'idle',
+        terminalId: placeholderTabId,
+      })
+      webContents.send('pty:exit', { id: placeholderTabId, exitCode })
     }
   })
 }
