@@ -382,4 +382,72 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
     await expect(window.locator('button:has-text("Agents")')).toHaveCount(0, { timeout: 5_000 })
   })
+
+  // ────────────────────────────────────────────────────────────────────────
+  // PR2 QA additions: Close-menu edge cases (Esc, last-tab cleanup, legacy ×).
+  // ────────────────────────────────────────────────────────────────────────
+
+  test('Esc on the menu does not close the tab', async () => {
+    await spawnClaudeTab()
+
+    const claudeTab = window.locator('button:has-text("Claude")').first()
+    await claudeTab.click({ button: 'right' })
+
+    const menu = window.getByRole('menu').first()
+    await expect(menu).toBeVisible()
+
+    await window.keyboard.press('Escape')
+    await expect(menu).not.toBeVisible()
+
+    // Tab survives.
+    await expect(window.locator('button:has-text("Claude")').first()).toBeVisible()
+  })
+
+  test('closing the only Claude tab leaves the plain terminal tab and ✦ still works', async () => {
+    await spawnClaudeTab()
+
+    const claudeTab = window.locator('button:has-text("Claude")').first()
+    await claudeTab.click({ button: 'right' })
+    await window.getByRole('menuitem', { name: 'Close session' }).click()
+
+    // Claude tab disappears (excluding the "Run Claude Code" ✦ button).
+    await expect(
+      window.locator('button:has-text("Claude")').filter({ hasNotText: 'Run Claude Code' })
+    ).toHaveCount(0, { timeout: 5_000 })
+
+    // The plain "Terminal 1" tab (created on mount) is still there.
+    await expect(window.locator('button:has-text("Terminal 1")').first()).toBeVisible()
+
+    // ✦ button still works — spawn another Claude session.
+    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    await claudeButton.click()
+    await expect(
+      window
+        .locator('button:has-text("Claude")')
+        .filter({ hasNotText: 'Run Claude Code' })
+        .first()
+    ).toBeVisible({ timeout: 5_000 })
+  })
+
+  test('legacy × close button on a Claude tab still works after Close session is wired', async () => {
+    await spawnClaudeTab()
+    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    await claudeButton.click()
+    await expect(window.locator('button:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+
+    // Click the × inside Claude 2 (legacy close affordance, sibling of ⋯ inside the tab button).
+    const claude2 = window.locator('button:has-text("Claude 2")').first()
+    await claude2.hover()
+    const closeX = claude2.locator('span[role="button"]').filter({ hasText: /^x$/ }).first()
+    await closeX.click()
+
+    await expect(window.locator('button:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
+    // The first Claude tab survives.
+    await expect(
+      window
+        .locator('button:has-text("Claude")')
+        .filter({ hasNotText: 'Run Claude Code' })
+        .first()
+    ).toBeVisible()
+  })
 })
