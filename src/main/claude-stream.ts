@@ -120,6 +120,13 @@ function stripAnsi(s: string): string {
  * Look for a `session_id` field in the first complete JSON line on the
  * stream-json output. Calls `onFound` once, then becomes a no-op for that
  * terminal. Buffers partial lines across PTY chunks.
+ *
+ * Note: as of Claude CLI 2.1.148, `--output-format stream-json` is silently
+ * ignored when stdin is a TTY (which node-pty always provides), so this
+ * function parses zero JSON lines in practice. The session id is instead
+ * pinned at spawn time via `--session-id <uuid>` in `pty.ts`. This parser
+ * is kept as defense-in-depth in case a future CLI version reverses that
+ * behavior.
  */
 function tryExtractSessionId(
   terminalId: string,
