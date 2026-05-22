@@ -143,6 +143,43 @@ export function spawnClaudeTerminal(
   })
 }
 
+/**
+ * Spawn `claude agents` — the interactive TUI for inspecting / managing
+ * Claude Code agents. Unlike `spawnClaudeTerminal`, this does NOT use
+ * `--output-format stream-json`, attach the stream parser, or wire up the
+ * MCP bridge: agents is purely TUI-driven and emits no machine-readable
+ * stream. The PTY is otherwise spawned identically (login shell, same env).
+ */
+export function spawnAgentsTerminal(
+  options: PtySpawnOptions,
+  webContents: WebContents
+): void {
+  const { id, worktreePath } = options
+
+  if (terminals.has(id)) {
+    return
+  }
+
+  const shell = defaultShell()
+  const term = pty.spawn(shell, ['-i', '-l', '-c', 'claude agents'], getPtyOptions(worktreePath))
+
+  terminals.set(id, term)
+
+  term.onData((data: string) => {
+    emitPtyData(id, data)
+    if (!webContents.isDestroyed()) {
+      webContents.send('pty:data', { id, data })
+    }
+  })
+
+  term.onExit(({ exitCode }: { exitCode: number }) => {
+    terminals.delete(id)
+    if (!webContents.isDestroyed()) {
+      webContents.send('pty:exit', { id, exitCode })
+    }
+  })
+}
+
 export function writeToTerminal(id: string, data: string): void {
   const term = terminals.get(id)
   if (term) {
