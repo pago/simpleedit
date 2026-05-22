@@ -361,6 +361,8 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
     // Initial focus lands on Rename (first enabled, since Fork is disabled).
     // ArrowDown → Close (next enabled). Enter activates.
+    // NOTE for PR3: when Fork becomes enabled, initial focus moves to Fork
+    // and this needs two ArrowDowns to reach Close.
     await window.keyboard.press('ArrowDown')
     await window.keyboard.press('Enter')
 
