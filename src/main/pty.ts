@@ -1,6 +1,7 @@
 import * as pty from 'node-pty'
 import { app, type WebContents } from 'electron'
 import { writeFileSync, unlinkSync } from 'fs'
+import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { ClaudeSpawnOptions as ClaudeSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
@@ -116,8 +117,24 @@ export function spawnClaudeTerminal(
     claudeCmd += ` --mcp-config ${configPath}`
   }
 
+  // Pin the session id we want claude to use. For fresh tabs we generate a
+  // UUID and tell claude to use it via `--session-id` (CLI flag added in
+  // 2.x); for resumed tabs the id is already known from the resume arg.
+  // Either way the session id is known to SimpleEdit *before* claude has
+  // written anything — we're not discovering it from stdout or the JSONL,
+  // we generated it. The `claude:session-id` IPC fires immediately below
+  // and downstream consumers (rename-restore for #93, Fork-into-worktree
+  // for #87) get the mapping with no race.
+  // Note: claude rejects `--session-id <new>` alongside `--resume <existing>`
+  // unless `--fork-session` is also passed; the resume path therefore does
+  // not set `--session-id` and reuses the resumed id directly.
+  let sessionId: string
   if (resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)) {
+    sessionId = resumeSessionId
     claudeCmd += ` --resume ${resumeSessionId}`
+  } else {
+    sessionId = randomUUID()
+    claudeCmd += ` --session-id ${sessionId}`
   }
 
   const shell = defaultShell()
@@ -126,6 +143,10 @@ export function spawnClaudeTerminal(
   const term = pty.spawn(shell, ['-i', '-l', '-c', claudeCmd], getPtyOptions(worktreePath))
 
   terminals.set(id, term)
+
+  if (!webContents.isDestroyed()) {
+    webContents.send('claude:session-id', { terminalId: id, sessionId })
+  }
 
   term.onData((data: string) => {
     emitPtyData(id, data)
