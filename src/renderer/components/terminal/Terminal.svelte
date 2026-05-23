@@ -45,8 +45,28 @@
     }
   }
 
+  // Regression guard for issue #88: more than one setup event per terminalId
+  // means two Terminal components attached to the same PTY (id-mint collision
+  // across simultaneously-mounting TerminalTabs). Zero cost in prod (sink
+  // isn't set).
+  function recordLifecycle(event: 'setup' | 'cleanup', id: string): void {
+    const sink = (
+      window as unknown as {
+        __simpleeditTerminalLifecycle__?: Array<{
+          event: 'setup' | 'cleanup'
+          id: string
+          t: number
+        }>
+      }
+    ).__simpleeditTerminalLifecycle__
+    if (Array.isArray(sink)) {
+      sink.push({ event, id, t: Date.now() })
+    }
+  }
+
   function setup(el: HTMLDivElement, id: string): void {
     cleanup()
+    recordLifecycle('setup', id)
 
     term = new Terminal({
       cursorBlink: true,
@@ -133,6 +153,7 @@
   }
 
   function cleanup(): void {
+    recordLifecycle('cleanup', terminalId)
     resizeObserver?.disconnect()
     resizeObserver = undefined
     cleanupDataListener?.()

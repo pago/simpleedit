@@ -29,8 +29,13 @@
   let dragIndex: number | null = $state(null)
   let dropIndex: number | null = $state(null)
 
+  // crypto.randomUUID() instead of `${Date.now()}-${nextIndex}`: when several
+  // TerminalTabs instances mount in the same tick (e.g. PaneManager rendering
+  // multiple visited worktrees after session restore), Date.now() returns the
+  // same ms and each instance starts with nextIndex=1 — producing collisions
+  // that wedge multiple xterm renderers onto a single PTY. See #88.
   function createTab(): void {
-    const id = `term-${Date.now()}-${nextIndex}`
+    const id = `term-${crypto.randomUUID()}`
     const label = `Terminal ${nextIndex}`
     nextIndex++
     tabs.push({ id, label, isClaude: false })
@@ -40,7 +45,7 @@
   }
 
   function createClaudeTab(): string {
-    const id = `claude-${Date.now()}-${nextClaudeIndex}`
+    const id = `claude-${crypto.randomUUID()}`
     const label = nextClaudeIndex === 1 ? 'Claude' : `Claude ${nextClaudeIndex}`
     nextClaudeIndex++
     tabs.unshift({ id, label, isClaude: true })
@@ -168,7 +173,7 @@
     for (const session of pending) {
       // Sessions without a captured id can't be resumed — skip.
       if (!session.sessionId) continue
-      const id = `claude-${Date.now()}-${nextClaudeIndex}`
+      const id = `claude-${crypto.randomUUID()}`
       const label = session.label || (nextClaudeIndex === 1 ? 'Claude' : `Claude ${nextClaudeIndex}`)
       nextClaudeIndex++
       tabs.push({
