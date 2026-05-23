@@ -14,7 +14,7 @@ import type { WorktreeInfo, BranchInfo } from '../shared/ipc-types'
  *
  * Bare repos show "bare" instead of a branch line.
  */
-function parsePorcelain(raw: string): WorktreeInfo[] {
+function parsePorcelain(raw: string, defaultBranch: string | null): WorktreeInfo[] {
   const results: WorktreeInfo[] = []
   const blocks = raw.trim().split('\n\n')
 
@@ -43,7 +43,7 @@ function parsePorcelain(raw: string): WorktreeInfo[] {
     results.push({
       path,
       branch,
-      isMain: results.length === 0, // first entry from git worktree list is always the main worktree
+      isMain: defaultBranch !== null && branch === defaultBranch,
       isCurrent: false
     })
   }
@@ -51,10 +51,72 @@ function parsePorcelain(raw: string): WorktreeInfo[] {
   return results
 }
 
+/**
+ * Per-process cache of resolved default branch, keyed by bare repo path.
+ *
+ * The default branch only changes via deliberate `git symbolic-ref HEAD ...`,
+ * which SimpleEdit doesn't trigger — so resolving once per repo per process
+ * is safe and avoids shelling out on every worktree list refresh.
+ */
+const defaultBranchCache = new Map<string, string | null>()
+
+/**
+ * Resolve the repository's default branch (e.g. "main" or "master").
+ *
+ * Fallback chain, mirrored from cloneBareRepo:
+ *   1. `git symbolic-ref refs/remotes/origin/HEAD` (e.g. → "origin/main")
+ *   2. literal "main" if it exists as a local branch
+ *   3. literal "master" if it exists as a local branch
+ *   4. first branch reported by `git branch`
+ *   5. null — leave every worktree's isMain false
+ */
+async function resolveDefaultBranchUncached(bareRepoPath: string): Promise<string | null> {
+  const git = simpleGit(bareRepoPath)
+
+  try {
+    const resolved = (await git.raw(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])).trim()
+    if (resolved) {
+      return resolved.replace(/^origin\//, '')
+    }
+  } catch {
+    // origin/HEAD not set — fall through to literal-name lookups
+  }
+
+  try {
+    const raw = await git.raw(['branch', '--list', '--format=%(refname:short)'])
+    const branches = raw.split('\n').map((b) => b.trim()).filter(Boolean)
+    if (branches.includes('main')) return 'main'
+    if (branches.includes('master')) return 'master'
+    return branches[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+async function resolveDefaultBranch(bareRepoPath: string): Promise<string | null> {
+  const cached = defaultBranchCache.get(bareRepoPath)
+  if (cached !== undefined) return cached
+  const resolved = await resolveDefaultBranchUncached(bareRepoPath)
+  defaultBranchCache.set(bareRepoPath, resolved)
+  return resolved
+}
+
+/**
+ * Test-only: clear the default-branch cache. Production code should never need
+ * to call this — the default branch is effectively immutable in SimpleEdit's
+ * workflow.
+ */
+export function _resetDefaultBranchCacheForTests(): void {
+  defaultBranchCache.clear()
+}
+
 export async function listWorktrees(bareRepoPath: string): Promise<WorktreeInfo[]> {
   const git = simpleGit(bareRepoPath)
-  const raw = await git.raw(['worktree', 'list', '--porcelain'])
-  return parsePorcelain(raw)
+  const [raw, defaultBranch] = await Promise.all([
+    git.raw(['worktree', 'list', '--porcelain']),
+    resolveDefaultBranch(bareRepoPath)
+  ])
+  return parsePorcelain(raw, defaultBranch)
 }
 
 export async function createWorktree(
