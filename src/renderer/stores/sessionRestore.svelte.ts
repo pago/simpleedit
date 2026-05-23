@@ -24,6 +24,9 @@ export interface ClaudeTabInfo {
   /** Terminal id used by the PTY in main. */
   terminalId: string
   label: string
+  /** True for `claude agents` (Agent View) tabs — they restore via respawn,
+   * not --resume, because the TUI doesn't emit a session-id. */
+  isAgentView?: boolean
 }
 
 let _sessionIdsByTerminal = $state<Map<string, string>>(new Map())

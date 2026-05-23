@@ -7,6 +7,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   spawnTerminal,
   spawnClaudeTerminal,
+  spawnAgentsTerminal,
   writeToTerminal,
   resizeTerminal,
   killTerminal,
@@ -276,6 +277,10 @@ function registerAllHandlers(): void {
       event.sender
     )
     attachToTerminal(options.id, options.worktreePath, event.sender)
+  })
+
+  ipcMain.handle('claude:spawn-agents', (event, options: PtySpawnOptions) => {
+    spawnAgentsTerminal(options, event.sender)
   })
 
   ipcMain.handle('claude:attach', (event, terminalId: string, worktreePath: string) => {

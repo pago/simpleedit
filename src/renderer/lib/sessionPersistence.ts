@@ -62,6 +62,10 @@ function serializeTab(tab: Tab): SerializedTab | null {
 function claudeSessionsForPane(role: 'primary' | 'secondary', worktreePath: string): SerializedClaudeSession[] {
   const tabs = sessionRestoreStore.claudeTabsForPane(role, worktreePath)
   return tabs.map((t) => {
+    if (t.isAgentView) {
+      // Agent View tabs have no session-id by design; restore is respawn-based.
+      return { label: t.label, isAgentView: true }
+    }
     const sessionId = sessionRestoreStore.sessionIdForTerminal(t.terminalId)
     return sessionId
       ? { label: t.label, sessionId }

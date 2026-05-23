@@ -118,6 +118,12 @@ export interface ClaudeSpawnOptions extends PtySpawnOptions {
 
 export interface ClaudeInvokeMap {
   'claude:spawn': { args: [options: ClaudeSpawnOptions]; result: void }
+  /**
+   * Spawn `claude agents` (the interactive TUI) without stream-json parsing.
+   * Used by the Agent View menu entry on the new-Claude button. No session-id
+   * capture, no MCP bridge config — those only make sense for stream-json mode.
+   */
+  'claude:spawn-agents': { args: [options: PtySpawnOptions]; result: void }
   'claude:attach': { args: [terminalId: string, worktreePath: string]; result: void }
   'claude:detach': { args: [terminalId: string]; result: void }
 }
@@ -265,6 +271,12 @@ export interface SerializedClaudeSession {
   label: string
   /** Captured from claude's stream-json init event. Required to `--resume`. */
   sessionId?: string
+  /**
+   * True for `claude agents` (Agent View) tabs. Those tabs don't emit a
+   * session-id, so on restore we respawn a fresh `claude agents` instead of
+   * trying to resume — best-effort restoration, position + label only.
+   */
+  isAgentView?: boolean
 }
 
 export interface SerializedWorktreeState {

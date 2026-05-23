@@ -1,5 +1,6 @@
 <script lang="ts">
   import Terminal from './Terminal.svelte'
+  import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
   import type { AgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { sessionRestoreStore } from '../../stores/sessionRestore.svelte'
 
@@ -15,6 +16,8 @@
     id: string
     label: string
     isClaude: boolean
+    /** True for `claude agents` (Agent View) tabs. Implies isClaude is true. */
+    isAgentView?: boolean
     /** When set, this is a placeholder for a Claude session that was running
      * before the last quit. The Terminal is not mounted; the tab renders a
      * "Resume" button that, on click, spawns claude --resume <id>. */
@@ -25,6 +28,10 @@
   let activeTabId: string | undefined = $state(undefined)
   let nextIndex = $state(1)
   let nextClaudeIndex = $state(1)
+  let nextAgentsIndex = $state(1)
+
+  let claudeMenu: { x: number; y: number } | null = $state(null)
+  let claudeButtonEl: HTMLButtonElement | undefined = $state()
 
   let dragIndex: number | null = $state(null)
   let dropIndex: number | null = $state(null)
@@ -55,11 +62,61 @@
     return id
   }
 
+  function createAgentViewTab(): string {
+    const id = `agents-${Date.now()}-${nextAgentsIndex}`
+    const label = nextAgentsIndex === 1 ? 'Agents' : `Agents ${nextAgentsIndex}`
+    nextAgentsIndex++
+    tabs.unshift({ id, label, isClaude: true, isAgentView: true })
+    activeTabId = id
+
+    window.api.invoke('claude:spawn-agents', { id, worktreePath })
+    return id
+  }
+
+  const claudeMenuItems: ContextMenuItem[] = [
+    { id: 'new-claude', label: 'New Claude session' },
+    { id: 'new-agents', label: 'New Agent View session' },
+  ]
+
+  function pickClaudeMenuItem(id: string): void {
+    if (id === 'new-claude') {
+      createClaudeTab()
+    } else if (id === 'new-agents') {
+      createAgentViewTab()
+    }
+  }
+
+  function openClaudeMenuAtPointer(e: MouseEvent): void {
+    e.preventDefault()
+    claudeMenu = { x: e.clientX, y: e.clientY }
+  }
+
+  function openClaudeMenuAtButton(): void {
+    if (!claudeButtonEl) return
+    const r = claudeButtonEl.getBoundingClientRect()
+    claudeMenu = { x: r.left, y: r.bottom }
+  }
+
+  function handleClaudeButtonKeydown(e: KeyboardEvent): void {
+    if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+      e.preventDefault()
+      openClaudeMenuAtButton()
+    }
+  }
+
+  function closeClaudeMenu(): void {
+    claudeMenu = null
+    // Restore focus to the invoking button so keyboard users keep their place.
+    claudeButtonEl?.focus()
+  }
+
   function closeTab(id: string): void {
     const tab = tabs.find((t) => t.id === id)
     // Placeholder tabs have no live PTY — just drop them from the list.
     if (tab && !tab.pendingResume) {
-      if (tab.isClaude) {
+      // Agent View tabs (`claude agents` TUI) never had the stream parser
+      // attached, so detach would be a no-op.
+      if (tab.isClaude && !tab.isAgentView) {
         window.api.invoke('claude:detach', id)
       }
       window.api.invoke('pty:kill', id)
@@ -149,7 +206,10 @@
   $effect(() => {
     agentStore.syncTabs(
       tabs
-        .filter((t) => t.isClaude && !t.pendingResume)
+        // Exclude Agent View tabs — they're a `claude agents` TUI, not a
+        // stream-json Claude Code session, so "Ask Claude" / spawn-and-send
+        // can't target them.
+        .filter((t) => t.isClaude && !t.isAgentView && !t.pendingResume)
         .map((t) => ({ id: t.id, label: t.label })),
     )
   })
@@ -171,6 +231,16 @@
     const pending = sessionRestoreStore.drainPendingResume(role, path)
     if (pending.length === 0) return
     for (const session of pending) {
+      if (session.isAgentView) {
+        // Agent View tabs don't expose a session-id, so we can't resume.
+        // Best-effort: respawn a fresh `claude agents` tab in the same slot.
+        const id = `agents-${Date.now()}-${nextAgentsIndex}`
+        const label = session.label || (nextAgentsIndex === 1 ? 'Agents' : `Agents ${nextAgentsIndex}`)
+        nextAgentsIndex++
+        tabs.push({ id, label, isClaude: true, isAgentView: true })
+        window.api.invoke('claude:spawn-agents', { id, worktreePath: path })
+        continue
+      }
       // Sessions without a captured id can't be resumed — skip.
       if (!session.sessionId) continue
       const id = `claude-${crypto.randomUUID()}`
@@ -193,12 +263,16 @@
     }
   })
 
-  // Publish live Claude tabs to the session restore store so the serializer
-  // can read them on save.
+  // Publish live Claude tabs (including Agent View) to the session restore
+  // store so the serializer can read them on save.
   $effect(() => {
     const claudeTabs = tabs
       .filter((t) => t.isClaude && !t.pendingResume)
-      .map((t) => ({ terminalId: t.id, label: t.label }))
+      .map((t) => ({
+        terminalId: t.id,
+        label: t.label,
+        ...(t.isAgentView ? { isAgentView: true as const } : {}),
+      }))
     sessionRestoreStore.publishClaudeTabs(paneRole, worktreePath, claudeTabs)
   })
 </script>
@@ -207,12 +281,27 @@
   <!-- Tab bar -->
   <div class="flex items-center border-b border-zinc-800 bg-zinc-950 px-1">
     <button
+      bind:this={claudeButtonEl}
       class="flex h-5 items-center gap-1 rounded px-1.5 text-[10px] text-orange-400/60 hover:bg-zinc-800 hover:text-orange-300"
       onclick={createClaudeTab}
-      title="Run Claude Code"
+      oncontextmenu={openClaudeMenuAtPointer}
+      onkeydown={handleClaudeButtonKeydown}
+      aria-label="Run Claude Code"
+      aria-haspopup="menu"
+      title="Run Claude Code (right-click for Agent View)"
     >
       <span>&#x2726;</span>
     </button>
+
+    {#if claudeMenu}
+      <ContextMenu
+        x={claudeMenu.x}
+        y={claudeMenu.y}
+        items={claudeMenuItems}
+        onpick={pickClaudeMenuItem}
+        onclose={closeClaudeMenu}
+      />
+    {/if}
 
     {#each tabs as tab, i (tab.id)}
       <button
