@@ -77,7 +77,10 @@
     const id = `agents-${Date.now()}-${nextAgentsIndex}`
     const label = nextAgentsIndex === 1 ? 'Agents' : `Agents ${nextAgentsIndex}`
     nextAgentsIndex++
-    tabs.unshift({ id, label, isClaude: true, isAgentView: true })
+    // Agent View runs the `claude agents` TUI, which sets noisy OSC titles
+    // we don't want to surface. Mark the tab as customLabel:true so
+    // handleTitleChange ignores those updates and "Agents N" stays sticky.
+    tabs.unshift({ id, label, isClaude: true, isAgentView: true, customLabel: true })
     activeTabId = id
 
     window.api.invoke('claude:spawn-agents', { id, worktreePath })
