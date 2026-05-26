@@ -3,11 +3,12 @@
 # the PTY would otherwise exit immediately with "command not found", triggering
 # auto-close-on-pty:exit and removing the tab before Playwright can observe it.
 #
-# This script just blocks long enough for the test to assert tab state, then
-# exits cleanly. It ignores all arguments (--output-format, --session-id,
-# --resume, agents subcommand, etc.) — the tests don't exercise Claude's
-# protocol, they exercise SimpleEdit's tab UI.
+# This script emits a startup line (some tests wait on pty:data to detect the
+# terminal id), then blocks long enough for assertions to run. It ignores all
+# arguments — the tests don't exercise Claude's protocol, they exercise
+# SimpleEdit's tab UI.
 #
 # `exec sleep 3600` ensures Ctrl-C / SIGTERM from the test teardown propagates
 # through to sleep instead of being swallowed by an extra shell frame.
+echo "fake claude ready"
 exec sleep 3600
