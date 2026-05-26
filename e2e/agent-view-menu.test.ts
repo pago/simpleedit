@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
@@ -57,7 +57,7 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
   test.beforeEach(async () => {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: bareRepoPath }
+      env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
