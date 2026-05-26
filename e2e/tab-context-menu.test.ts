@@ -518,17 +518,18 @@ test.describe('Issue #87 PR3: experimental-fork gate', () => {
     await expect(fork).toBeVisible()
   })
 
-  test('Fork item is disabled until session-id is captured, with a clarifying tooltip', async () => {
-    // In a Playwright environment without ANTHROPIC_API_KEY the Claude PTY
-    // exits before emitting any session-id, so `sessionIdForTerminal(...)`
-    // stays undefined and the Fork item lands in the "waiting" disable state.
+  test('Fork item is enabled on a Claude tab once session-id is captured', async () => {
+    // Post-#102, `claude:session-id` is minted synchronously in main on PTY
+    // spawn (no need to scrape stream-json output), so a freshly-spawned
+    // Claude tab has its session-id captured by the time the user can open
+    // the context menu. Fork should therefore be enabled, not disabled.
     await spawnClaudeTab()
     const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
     const fork = window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork into worktree…' })
-    await expect(fork).toBeDisabled()
-    await expect(fork).toHaveAttribute('title', 'Waiting for Claude to initialize…')
+    await expect(fork).toBeVisible()
+    await expect(fork).not.toBeDisabled()
   })
 
   test('clicking the disabled Fork item is a no-op', async () => {
@@ -679,7 +680,7 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
     await expect(menu.getByRole('menuitem', { name: 'Close session' })).toBeVisible()
   })
 
-  test('Shift+F10 + Enter activates Rename (first ENABLED item), not the disabled Fork', async () => {
+  test('Shift+F10 + ArrowDown + Enter activates Rename via keyboard nav', async () => {
     await launch({ SIMPLEEDIT_EXPERIMENTAL_FORK: '1' })
     const w = window!
     await spawnClaudeTab(w)
@@ -691,7 +692,10 @@ test.describe('Issue #87 PR3 QA — gate edge cases', () => {
     const menu = w.getByRole('menu').first()
     await expect(menu).toBeVisible()
 
-    // Initial focus lands on Rename (first ENABLED — Fork is disabled). Enter opens the modal.
+    // Menu order: Fork, Rename, Close. Post-#102 Fork is enabled (session-id
+    // captured synchronously at spawn), so initial focus lands on Fork.
+    // ArrowDown moves to Rename; Enter opens the modal.
+    await w.keyboard.press('ArrowDown')
     await w.keyboard.press('Enter')
 
     const dialog = w.getByRole('dialog', { name: 'Rename tab' })
