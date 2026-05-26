@@ -248,6 +248,14 @@
   }
 
   function handleTabKeydown(e: KeyboardEvent, tab: TabInfo): void {
+    // Enter / Space on a focused tab activate it (the outer is now a
+    // role="tab" div, not a <button>, so the browser doesn't do this for us).
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      if (tab.pendingResume) resumePlaceholder(tab.id)
+      else selectTab(tab.id)
+      return
+    }
     if (!tab.isClaude) return
     if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
       e.preventDefault()
@@ -407,12 +415,17 @@
     {/if}
 
     {#each tabs as tab, i (tab.id)}
-      <button
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
         class="group flex items-center gap-1 px-3 py-1 text-xs transition-colors {tab.id === activeTabId
           ? tab.isClaude ? 'bg-zinc-900 text-orange-300' : 'bg-zinc-900 text-zinc-200'
           : tab.isClaude ? 'text-orange-400/60 hover:text-orange-300' : 'text-zinc-500 hover:text-zinc-300'}
           {tab.pendingResume ? 'italic opacity-70' : ''}
           {dragIndex !== null && dropIndex === i && dragIndex !== i ? 'border-l-2 border-l-blue-500' : ''}"
+        role="tab"
+        tabindex={tab.id === activeTabId ? 0 : -1}
+        aria-selected={tab.id === activeTabId}
+        aria-label={tab.label}
         onclick={() => tab.pendingResume ? resumePlaceholder(tab.id) : selectTab(tab.id)}
         oncontextmenu={(e) => openTabMenuAtPointer(e, tab)}
         onkeydown={(e) => handleTabKeydown(e, tab)}
@@ -429,7 +442,8 @@
         {/if}
         <span>{tab.label}{tab.pendingResume ? ' (resume)' : ''}</span>
         {#if tab.isClaude && !tab.pendingResume}
-          <span
+          <button
+            type="button"
             bind:this={
               () => tabMenuButtonEls.get(tab.id),
               (el) => {
@@ -438,8 +452,6 @@
               }
             }
             class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-zinc-600 opacity-0 hover:bg-zinc-700 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
-            role="button"
-            tabindex="0"
             aria-label="Tab options"
             aria-haspopup="menu"
             onclick={(e: MouseEvent) => {
@@ -448,28 +460,21 @@
             }}
             onkeydown={(e: KeyboardEvent) => {
               e.stopPropagation()
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                openTabMenuAtButton(tab)
-              }
             }}
           >
             ⋯
-          </span>
+          </button>
         {/if}
-        <span
+        <button
+          type="button"
           class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-zinc-600 hover:bg-zinc-700 hover:text-zinc-300"
-          role="button"
-          tabindex="0"
+          aria-label="Close tab"
           onclick={(e: MouseEvent) => { e.stopPropagation(); closeTab(tab.id) }}
-          onkeydown={(e: KeyboardEvent) => {
-            e.stopPropagation()
-            if (e.key === 'Enter' || e.key === ' ') closeTab(tab.id)
-          }}
+          onkeydown={(e: KeyboardEvent) => { e.stopPropagation() }}
         >
           x
-        </span>
-      </button>
+        </button>
+      </div>
     {/each}
 
     {#if tabMenu}

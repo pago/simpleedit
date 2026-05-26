@@ -71,13 +71,13 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
-    await expect(window.locator('button:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
 
   test('right-click a Claude tab opens menu with Rename enabled; Fork and Close are disabled', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
     const menu = window.getByRole('menu').first()
@@ -105,7 +105,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Rename… opens a PromptModal; submitting changes the tab label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
@@ -118,7 +118,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await dialog.getByRole('button', { name: 'Rename' }).click()
 
     await expect(dialog).not.toBeVisible()
-    await expect(window.locator('button:has-text("My experiment")').first()).toBeVisible()
+    await expect(window.locator('[role="tab"]:has-text("My experiment")').first()).toBeVisible()
   })
 
   test('user-set label survives a session save/load round-trip via customLabel', async () => {
@@ -187,7 +187,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Shift+F10 on a focused Claude tab opens the menu', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.focus()
     await window.keyboard.press('Shift+F10')
 
@@ -204,7 +204,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('rename validation rejects empty / whitespace-only labels', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
@@ -219,13 +219,13 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
     await window.keyboard.press('Escape')
     await expect(dialog).not.toBeVisible()
-    await expect(window.locator('button:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
   })
 
   test('Cancel on the rename modal does not change the label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
@@ -236,14 +236,14 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await dialog.getByRole('button', { name: 'Cancel' }).click()
     await expect(dialog).not.toBeVisible()
 
-    await expect(window.locator('button:has-text("Will Not Stick")')).toHaveCount(0)
-    await expect(window.locator('button:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="tab"]:has-text("Will Not Stick")')).toHaveCount(0)
+    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
   })
 
   test('Esc on the rename modal does not change the label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
@@ -254,14 +254,14 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await window.keyboard.press('Escape')
     await expect(dialog).not.toBeVisible()
 
-    await expect(window.locator('button:has-text("Also Will Not Stick")')).toHaveCount(0)
-    await expect(window.locator('button:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="tab"]:has-text("Also Will Not Stick")')).toHaveCount(0)
+    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
   })
 
   test('⋯ button on a Claude tab opens the same menu', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     // Hover the tab to reveal the ⋯ button (it's opacity-0 by default).
     await claudeTab.hover()
 
@@ -277,7 +277,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Esc from menu opened via ⋯ returns focus to the ⋯ button', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.hover()
     const overflowBtn = claudeTab.getByRole('button', { name: 'Tab options' })
     await overflowBtn.click()
@@ -297,7 +297,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('after a rename, the OSC title-change handler does not overwrite the custom label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('button:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
@@ -307,18 +307,18 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await dialog.getByRole('button', { name: 'Rename' }).click()
     await expect(dialog).not.toBeVisible()
 
-    await expect(window.locator('button:has-text("My Project")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="tab"]:has-text("My Project")').first()).toBeVisible({ timeout: 5_000 })
 
     // Wait long enough for any OSC title emission from the PTY's startup
     // (shell prompt, etc.) to fire. The sticky-label guard must hold.
     await window.waitForTimeout(2_000)
 
-    await expect(window.locator('button:has-text("My Project")').first()).toBeVisible()
+    await expect(window.locator('[role="tab"]:has-text("My Project")').first()).toBeVisible()
 
-    // Strict assertion: no tab button (draggable=true) shows a "Claude" or
-    // "Claude N" label — the renamed tab is the only Claude-kind tab.
+    // Strict assertion: no tab (role="tab", draggable=true) shows a "Claude"
+    // or "Claude N" label — the renamed tab is the only Claude-kind tab.
     const claudeNumberedTabs = await window
-      .locator('button[draggable="true"] span')
+      .locator('[role="tab"][draggable="true"] span')
       .filter({ hasText: /^Claude(\s+\d+)?$/ })
       .count()
     expect(claudeNumberedTabs).toBe(0)

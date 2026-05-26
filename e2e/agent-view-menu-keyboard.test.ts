@@ -77,7 +77,7 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     await window.keyboard.press('ArrowDown')
     await window.keyboard.press('Enter')
     await expect(menu).not.toBeVisible()
-    await expect(window.locator('button:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="tab"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
   })
 
   test('Escape returns focus to the ✦ button after dismissing the menu', async () => {
@@ -113,8 +113,8 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     // behavior (TerminalTabs.svelte:182), not a #90 regression. So we verify the
     // SPAWN-TIME labels by checking that "Agents 3" (most recent) and "Agents 2"
     // are both present, which proves the counter increments per spawn.
-    await expect(window.locator('button:has-text("Agents 3")').first()).toBeVisible({ timeout: 5_000 })
-    await expect(window.locator('button:has-text("Agents 2")').first()).toBeVisible()
+    await expect(window.locator('[role="tab"]:has-text("Agents 3")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="tab"]:has-text("Agents 2")').first()).toBeVisible()
   })
 
   test('Claude and Agents tab labels increment independently', async () => {
@@ -134,7 +134,7 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     await window.waitForTimeout(150)
 
     // Expect: "Claude", "Claude 2", "Agents", "Agents 2".
-    await expect(window.locator('button:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
-    await expect(window.locator('button:has-text("Agents 2")').first()).toBeVisible()
+    await expect(window.locator('[role="tab"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="tab"]:has-text("Agents 2")').first()).toBeVisible()
   })
 })

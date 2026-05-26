@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
+
   interface Props {
     title: string
     label?: string
@@ -25,7 +27,10 @@
     oncancel,
   }: Props = $props()
 
-  let value = $state(defaultValue)
+  // Seed the input from defaultValue once at mount; later prop changes
+  // shouldn't clobber what the user has typed. untrack makes the
+  // initial-only read explicit (silences state_referenced_locally).
+  let value = $state(untrack(() => defaultValue))
   let inputEl: HTMLInputElement | undefined = $state()
 
   let validationError = $derived(validate ? validate(value) : null)
@@ -69,6 +74,7 @@
     role="dialog"
     aria-modal="true"
     aria-label={title}
+    tabindex="-1"
   >
     <h2 class="mb-3 text-sm font-medium text-zinc-100">{title}</h2>
     {#if label}

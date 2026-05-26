@@ -89,7 +89,7 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     // A new tab labelled "Agents" appears in the tab strip.
     // The tab button title is the label (per TerminalTabs.svelte). Use a tab
     // button with the visible "Agents" text.
-    await expect(window.locator('button:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="tab"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
   })
 
   test('left-click on ✦ button still creates a Claude tab (unchanged)', async () => {
@@ -98,7 +98,7 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     await claudeButton.click()
 
     // The new Claude tab is labelled "Claude" (no number on first one).
-    await expect(window.locator('button:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
     // No menu should be open.
     await expect(window.getByRole('menu')).not.toBeVisible()
   })
@@ -115,7 +115,7 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     await expect(menu).not.toBeVisible()
 
     // No Agents tab should have appeared.
-    await expect(window.locator('button:has-text("Agents")')).toHaveCount(0)
+    await expect(window.locator('[role="tab"]:has-text("Agents")')).toHaveCount(0)
   })
 
   test('Agent View tabs survive a session save/load round-trip', async () => {
