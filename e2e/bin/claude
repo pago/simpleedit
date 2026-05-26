@@ -8,7 +8,7 @@
 # arguments — the tests don't exercise Claude's protocol, they exercise
 # SimpleEdit's tab UI.
 #
-# `exec sleep 3600` ensures Ctrl-C / SIGTERM from the test teardown propagates
-# through to sleep instead of being swallowed by an extra shell frame.
+# 60 seconds is enough for any single test; node-pty SIGHUP on app shutdown
+# kills the sleep immediately, so the bound shouldn't normally be reached.
 echo "fake claude ready"
-exec sleep 3600
+exec sleep 60
