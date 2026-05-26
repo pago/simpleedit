@@ -80,7 +80,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     await window.getByRole('menuitem', { name: 'New Agent View session' }).click()
 
     // Tab labeled "Agents" appears.
-    const agentsTab = window.locator('button:has-text("Agents")').first()
+    const agentsTab = window.locator('[role="tab"]:has-text("Agents")').first()
     await expect(agentsTab).toBeVisible({ timeout: 5_000 })
 
     // Wait until pty:data has been observed at least once — that tells us the
@@ -119,7 +119,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     await expect(agentsTab).toBeVisible()
     await expect(agentsTab).toHaveAttribute('title', 'Agents')
     await expect(
-      window.locator('button:has-text("claude agents — pretty overwrite")')
+      window.locator('[role="tab"]:has-text("claude agents — pretty overwrite")')
     ).toHaveCount(0)
   })
 })
