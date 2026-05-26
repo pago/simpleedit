@@ -29,16 +29,26 @@ vi.mock('../pty', () => ({
   spawnForkedClaudeTerminal: vi.fn(),
 }))
 
+// Mock claude-stream so we can assert attachToTerminal is wired up for forks
+// (#103) without depending on its OSC parsing internals here.
+vi.mock('../claude-stream', () => ({
+  attachToTerminal: vi.fn(),
+}))
+
 let performFork: typeof import('../claude-fork').performFork
 let spawnForkedClaudeTerminal: ReturnType<typeof vi.fn>
+let attachToTerminal: ReturnType<typeof vi.fn>
 
 beforeEach(async () => {
   vi.resetModules()
   const fork = await import('../claude-fork')
   const pty = await import('../pty')
+  const stream = await import('../claude-stream')
   performFork = fork.performFork
   spawnForkedClaudeTerminal = pty.spawnForkedClaudeTerminal as ReturnType<typeof vi.fn>
+  attachToTerminal = stream.attachToTerminal as ReturnType<typeof vi.fn>
   spawnForkedClaudeTerminal.mockReset()
+  attachToTerminal.mockReset()
 })
 
 interface SpyWebContents {
@@ -106,6 +116,16 @@ describe('performFork', () => {
       forkUuid,
     })
 
+    // #103: stream parser is attached after the spawn so OSC-title status
+    // events (✳ / braille spinner) drive the worktree's Claude status the
+    // same way they do for regular `claude:spawn` tabs.
+    expect(attachToTerminal).toHaveBeenCalledOnce()
+    expect(attachToTerminal).toHaveBeenCalledWith(
+      'fork-placeholder',
+      targetWorktreePath,
+      wc,
+    )
+
     // claude:session-id was emitted synchronously with the pre-minted forkUuid.
     const sid = wc.sent.find((e) => e.channel === 'claude:session-id')
     expect(sid).toBeDefined()
@@ -169,6 +189,7 @@ describe('performFork', () => {
     )
 
     expect(spawnForkedClaudeTerminal).not.toHaveBeenCalled()
+    expect(attachToTerminal).not.toHaveBeenCalled()
 
     const result = wc.sent.find((e) => e.channel === 'claude:fork-result')
     expect(result?.payload).toMatchObject({
@@ -206,6 +227,7 @@ describe('performFork', () => {
     )
 
     expect(spawnForkedClaudeTerminal).not.toHaveBeenCalled()
+    expect(attachToTerminal).not.toHaveBeenCalled()
     const result = wc.sent.find((e) => e.channel === 'claude:fork-result')
     expect(result?.payload).toMatchObject({
       placeholderTabId: 'p',
@@ -243,6 +265,10 @@ describe('performFork', () => {
     // so rollback should unlink it.
     const tgtJsonl = join(claudeProjectsDir(targetWorktreePath), `${sourceSessionId}.jsonl`)
     expect(existsSync(tgtJsonl)).toBe(false)
+
+    // Spawn threw before the attach call could run — no parser should be
+    // attached for a fork that never started.
+    expect(attachToTerminal).not.toHaveBeenCalled()
 
     const result = wc.sent.find((e) => e.channel === 'claude:fork-result')
     expect(result?.payload).toMatchObject({ ok: false })

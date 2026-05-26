@@ -20,6 +20,7 @@ import { join } from 'path'
 import type { WebContents } from 'electron'
 import type { ClaudeForkOptions } from '../shared/ipc-types'
 import { claudeProjectsDir } from './claude-paths'
+import { attachToTerminal } from './claude-stream'
 import { spawnForkedClaudeTerminal } from './pty'
 
 /**
@@ -149,6 +150,14 @@ export async function performFork(
       },
       webContents,
     )
+
+    // Attach the stream parser so OSC-title-driven Claude status events (✳ /
+    // ⠂ braille spinner) flow into claude-status.svelte.ts the same way they
+    // do for regular `claude:spawn` tabs — see `claude:spawn` handler in
+    // src/main/index.ts. Mirrors the `spawnClaudeTerminal` + `attachToTerminal`
+    // pair. Detach is renderer-driven via `claude:detach` on tab close (see
+    // TerminalTabs.svelte:closeTab) — same lifecycle as regular tabs.
+    attachToTerminal(placeholderTabId, targetWorktreePath, webContents)
 
     // Tell the renderer the fork's session id synchronously — we already
     // know it (we generated it), no need to scrape the init line.

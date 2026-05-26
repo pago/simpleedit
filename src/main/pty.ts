@@ -182,10 +182,12 @@ export function spawnClaudeTerminal(
  * sourceSessionId — the caller (handler in index.ts) MUST verify they differ
  * before invoking us. We assert defensively here too.
  *
- * No MCP bridge / stream-json parser attachment — the fork's session id is
- * already known (it's `forkUuid`), so the renderer can populate
- * sessionRestoreStore directly and skip the broken-on-2.1.148 stream-json
- * scrape entirely.
+ * No MCP bridge is wired up: the fork's session id is already known (it's
+ * `forkUuid`), so the renderer skips the broken-on-2.1.148 stream-json
+ * session-id scrape entirely and populates sessionRestoreStore directly.
+ * The stream parser IS attached by the caller (claude-fork.ts:performFork
+ * via attachToTerminal) so OSC-title status events still drive the
+ * worktree's Claude status indicator — see #103.
  */
 export function spawnForkedClaudeTerminal(
   args: {
