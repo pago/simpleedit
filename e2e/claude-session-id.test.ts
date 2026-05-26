@@ -69,4 +69,41 @@ test.describe('Claude session_id capture', () => {
     expect(captured!.terminalId).toMatch(/^claude-/)
     expect(captured!.sessionId).toMatch(UUID_RE)
   })
+
+  // End-to-end coverage of the OSC-title → claude:status path that drives the
+  // worktree-sidebar's Claude activity badge. Unit tests in
+  // claude-stream.test.ts only exercise the OSC parser + status mapper in
+  // isolation — they don't cover the spawn→onData→IPC→renderer wiring.
+  // Promoted here from a one-off repro after the dead-stream-json cleanup
+  // touched attachToTerminal's data callback.
+  test('claude:status badge events flow after a Claude tab is spawned', async () => {
+    await window.evaluate(() => {
+      ;(window as unknown as { __statusEvents: Array<{ worktreePath: string; status: string; terminalId: string }> })
+        .__statusEvents = []
+      window.api.on('claude:status', (payload) => {
+        ;(window as unknown as { __statusEvents: Array<{ worktreePath: string; status: string; terminalId: string }> })
+          .__statusEvents.push(payload)
+      })
+    })
+
+    await window.getByTitle('Run Claude Code').first().click()
+
+    // Claude emits OSC title sequences ("✳ Claude Code" idle, braille spinner
+    // running) as soon as the TUI starts rendering — typically within 1–2s of
+    // spawn on a warm box. 15s gives generous headroom for cold-start.
+    const status = await window.evaluate(async () => {
+      const start = Date.now()
+      while (Date.now() - start < 15_000) {
+        const arr = (window as unknown as { __statusEvents: Array<{ worktreePath: string; status: string; terminalId: string }> })
+          .__statusEvents
+        if (arr.length > 0) return arr[0]
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      return null
+    })
+
+    expect(status, 'no claude:status event arrived within 15s — OSC parser path may be broken').not.toBeNull()
+    expect(status!.terminalId).toMatch(/^claude-/)
+    expect(['idle', 'running']).toContain(status!.status)
+  })
 })

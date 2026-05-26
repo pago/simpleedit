@@ -269,7 +269,7 @@ export type SerializedTab =
 export interface SerializedClaudeSession {
   /** UI label as last observed (e.g. "Claude" or a session-derived title). */
   label: string
-  /** Captured from claude's stream-json init event. Required to `--resume`. */
+  /** Pinned at spawn via `claude --session-id <uuid>`. Required to `--resume`. */
   sessionId?: string
   /**
    * True for `claude agents` (Agent View) tabs. Those tabs don't emit a
