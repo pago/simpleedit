@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
@@ -49,7 +49,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test.beforeEach(async () => {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: bareRepoPath }
+      env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
