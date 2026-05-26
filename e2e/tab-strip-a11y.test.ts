@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
@@ -52,7 +52,7 @@ test.describe('Issue #97: tab strip a11y / DOM validity', () => {
   test.beforeEach(async () => {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: bareRepoPath }
+      env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -97,7 +97,7 @@ test.describe('Issue #97: tab strip a11y / DOM validity', () => {
     expect(closeTag).toBe('button')
   })
 
-  test('PromptModal dialog has tabindex="-1" so focus management works', async () => {
+  test('PromptModal dialog has tabindex="-1" so it can receive programmatic focus', async () => {
     // Spawn a Claude tab and open Rename… to surface the PromptModal.
     const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
