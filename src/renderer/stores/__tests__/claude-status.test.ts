@@ -29,15 +29,20 @@ beforeEach(() => {
   dispose = initClaudeStatusListeners()
 })
 
+// Track every terminalId a test registers so afterEach can prune them all —
+// module state (byTerminal) persists across tests, and hard-coding ids would
+// silently rot if a future test adds another.
+const registeredIds = new Set<string>()
+
 afterEach(() => {
-  // Module state (byTerminal) persists across tests; prune every terminal a
-  // test might have registered so each test starts clean.
-  for (const id of ['t1', 't2']) clearClaudeStatusForTerminal(id)
+  for (const id of registeredIds) clearClaudeStatusForTerminal(id)
+  registeredIds.clear()
   dispose()
   vi.unstubAllGlobals()
 })
 
 function status(worktreePath: string, s: string, terminalId: string): void {
+  registeredIds.add(terminalId)
   handlers['claude:status']?.({ worktreePath, status: s as never, terminalId })
 }
 function exit(id: string): void {
@@ -60,7 +65,8 @@ describe('claude-status store (#114 per-terminal aggregation)', () => {
   it('drops back to idle when the only running terminal exits (the #114 fix)', () => {
     status(W, 'running', 't1')
     expect(getClaudeStatus(W)).toBe('running')
-    // pty:exit on that terminal prunes it — no main-side idle emit needed.
+    // pty:exit prunes the terminal outright, so the worktree can't stay stuck
+    // on a stale 'running' even if it was the last status writer.
     exit('t1')
     expect(getClaudeStatus(W)).toBe('idle')
   })

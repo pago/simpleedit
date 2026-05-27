@@ -9,8 +9,11 @@ import type { ClaudeStatus } from '../../shared/ipc-types'
  * two problems with the old last-writer-wins record:
  *  - #114: when a Claude tab closes mid-run, its terminal is pruned on
  *    pty:exit, so the worktree correctly drops back to idle instead of
- *    sticking at "running" forever. Post-#106 the main process no longer
- *    emits an idle status on PTY exit, so this prune is what clears it.
+ *    sticking at "running" forever. (main does send a final claude:status
+ *    'idle' before pty:exit, but under the old worktree-keyed record a
+ *    *different* still-running tab could have been the last writer, leaving
+ *    the worktree stuck. Pruning on pty:exit removes the dead terminal
+ *    outright so the derived status can't be wrong.)
  *  - two Claude tabs in the same worktree no longer clobber each other's
  *    status — the worktree stays "running" until the LAST one goes idle.
  */
