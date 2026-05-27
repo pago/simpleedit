@@ -1,10 +1,11 @@
 <script lang="ts">
   import Terminal from './Terminal.svelte'
   import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
-  import ForkWorktreePicker from './ForkWorktreePicker.svelte'
+  import ForkWorktreePicker, { type ForkTarget } from './ForkWorktreePicker.svelte'
   import PromptModal from '../PromptModal.svelte'
   import type { AgentTerminalStore } from '../../stores/agentTerminals.svelte'
   import { sessionRestoreStore } from '../../stores/sessionRestore.svelte'
+  import { refreshWorktrees } from '../../stores/worktrees.svelte'
 
   interface Props {
     worktreePath: string
@@ -368,7 +369,7 @@
     }
   }
 
-  function forkPickerPick(targetWorktreePath: string): void {
+  function forkPickerPick(target: ForkTarget): void {
     if (!forkPicker) return
     const { tabId, sourceLabel, sourceSessionId } = forkPicker
     forkPicker = null
@@ -392,24 +393,50 @@
     })
     activeTabId = placeholderTabId
 
+    function markForkError(message: string): void {
+      const t = tabs.find((x) => x.id === placeholderTabId)
+      if (t) {
+        t.forking = undefined
+        t.forkError = message
+      }
+    }
+
+    function runFork(targetWorktreePath: string): void {
+      window.api
+        .invoke('claude:fork', {
+          sourceTerminalId: tabId,
+          sourceSessionId,
+          sourceWorktreePath: worktreePath,
+          targetWorktreePath,
+          forkUuid,
+          placeholderTabId,
+        })
+        .catch(() => {
+          // The IPC handler emits claude:fork-result on its own error path; if
+          // the invoke itself rejects (e.g. main crashed), surface a generic
+          // error so the placeholder doesn't hang.
+          markForkError('fork IPC failed')
+        })
+    }
+
+    if (target.kind === 'existing') {
+      runFork(target.worktreePath)
+      return
+    }
+
+    // Create the worktree first, then fork into its path. The picker only
+    // offers this row when the typed name doesn't match an existing worktree,
+    // so a name collision here means the branch already exists on disk —
+    // surface that as a fork error rather than silently reusing it.
     window.api
-      .invoke('claude:fork', {
-        sourceTerminalId: tabId,
-        sourceSessionId,
-        sourceWorktreePath: worktreePath,
-        targetWorktreePath,
-        forkUuid,
-        placeholderTabId,
+      .invoke('worktree:create', target.name)
+      .then((created) => {
+        void refreshWorktrees()
+        runFork(created.path)
       })
-      .catch(() => {
-        // The IPC handler emits claude:fork-result on its own error path; if
-        // the invoke itself rejects (e.g. main crashed), surface a generic
-        // error so the placeholder doesn't hang.
-        const t = tabs.find((x) => x.id === placeholderTabId)
-        if (t) {
-          t.forking = undefined
-          t.forkError = 'fork IPC failed'
-        }
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        markForkError(`could not create worktree: ${message}`)
       })
   }
 
