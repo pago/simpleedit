@@ -250,4 +250,44 @@ describe('ForkWorktreePicker', () => {
     await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' })
     expect(onpick).toHaveBeenCalledWith({ kind: 'create', name: 'fresh-branch' })
   })
+
+  it('live-sanitizes illegal git-ref chars as the user types', async () => {
+    const onpick = vi.fn()
+    render(ForkWorktreePicker, {
+      x: 0, y: 0,
+      sourceWorktreePath: '/repo/main',
+      onpick,
+      onback: vi.fn(),
+      onclose: vi.fn(),
+    })
+    await tick()
+
+    const filter = screen.getByPlaceholderText('filter worktrees…') as HTMLInputElement
+    // Spaces and ~ are illegal in branch names; stripped on type, mirroring
+    // the sidebar's new-worktree form (shared sanitizeBranchName).
+    await fireEvent.input(filter, { target: { value: 'my new ~branch' } })
+    expect(filter.value).toBe('mynewbranch')
+
+    await fireEvent.click(screen.getByRole('button', { name: /Create new worktree/ }))
+    expect(onpick).toHaveBeenCalledWith({ kind: 'create', name: 'mynewbranch' })
+  })
+
+  it('existing worktree branches remain findable after sanitize-on-type', async () => {
+    render(ForkWorktreePicker, {
+      x: 0, y: 0,
+      sourceWorktreePath: '/repo/main',
+      onpick: vi.fn(),
+      onback: vi.fn(),
+      onclose: vi.fn(),
+    })
+    await tick()
+
+    // 'feature-a' is a clean name; sanitizes to itself and still matches the
+    // existing worktree (so no spurious create row).
+    const filter = screen.getByPlaceholderText('filter worktrees…')
+    await fireEvent.input(filter, { target: { value: 'feature-a' } })
+
+    expect(screen.getByRole('button', { name: /feature-a/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Create new worktree/ })).toBeNull()
+  })
 })

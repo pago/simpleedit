@@ -3,6 +3,7 @@
   import type { WorktreeInfo } from '../../../shared/ipc-types'
   import { worktreeList } from '../../stores/worktrees.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
+  import { sanitizeBranchName } from '../../lib/branchName'
 
   /**
    * What the user selected in the picker:
@@ -32,6 +33,20 @@
   let filter: string = $state('')
   let focusedIndex: number = $state(0)
   let itemEls: (HTMLButtonElement | null)[] = $state([])
+
+  // The filter field does double duty: it narrows the existing-worktree list
+  // AND names a new worktree for the "Create new worktree" row. Sanitize on
+  // type with the same rules the sidebar's new-worktree form uses, so the
+  // create name is always a legal git ref. Existing worktree branches are
+  // themselves already sanitized, so filtering still matches them.
+  function handleFilterInput(e: Event): void {
+    const input = e.target as HTMLInputElement
+    const sanitized = sanitizeBranchName(input.value)
+    if (sanitized !== input.value) {
+      input.value = sanitized
+    }
+    filter = sanitized
+  }
 
   let posX = $state(untrack(() => x))
   let posY = $state(untrack(() => y))
@@ -213,7 +228,8 @@
 
   <input
     bind:this={filterInput}
-    bind:value={filter}
+    value={filter}
+    oninput={handleFilterInput}
     type="text"
     placeholder="filter worktrees…"
     class="border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 outline-none placeholder:text-zinc-600"

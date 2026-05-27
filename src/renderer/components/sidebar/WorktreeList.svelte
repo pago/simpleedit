@@ -12,6 +12,7 @@
     optimisticRemoveWorktree,
   } from '../../stores/worktrees.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
+  import { sanitizeBranchName, isValidBranchName } from '../../lib/branchName'
 
   type CreateMode = 'new' | 'checkout'
 
@@ -26,16 +27,6 @@
   let busy = $state(false)
   let errorMsg = $state('')
 
-  /** Strip characters illegal in git branch names (see git-check-ref-format). */
-  function sanitizeBranchName(input: string): string {
-    return input
-      .replace(/[\s~^:?*[\]\\@{]/g, '') // illegal characters
-      .replace(/\.\./g, '.')             // no consecutive dots
-      .replace(/\/\//g, '/')             // no consecutive slashes
-      .replace(/\.lock(\/|$)/g, '$1')    // no .lock component
-      .replace(/^[./]/, '')              // cannot start with . or /
-  }
-
   function handleNameInput(e: Event): void {
     const input = e.target as HTMLInputElement
     const sanitized = sanitizeBranchName(input.value)
@@ -45,7 +36,7 @@
     newName = sanitized
   }
 
-  let isValidName = $derived(newName.trim().length > 0 && !newName.endsWith('.') && !newName.endsWith('/'))
+  let isValidName = $derived(isValidBranchName(newName))
 
   let filteredBranches = $derived(
     branchFilter

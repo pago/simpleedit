@@ -64,6 +64,29 @@
    */
   const forkErrorDismissTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+  /**
+   * Single entry point for every fork failure (worktree-create error, IPC
+   * reject, or claude:fork-result error). Marks the placeholder tab with the
+   * error chip and schedules a ~6s auto-dismiss so a failed fork doesn't leave
+   * a broken-looking tab lingering. The timer is tracked in
+   * forkErrorDismissTimers so manual close / unmount cancels it cleanly.
+   */
+  function failFork(placeholderTabId: string, message: string): void {
+    const tab = tabs.find((t) => t.id === placeholderTabId)
+    if (!tab) return
+    tab.forking = undefined
+    tab.forkError = message
+    // Replace any existing timer for this tab (shouldn't happen, but cheap).
+    const existing = forkErrorDismissTimers.get(placeholderTabId)
+    if (existing !== undefined) clearTimeout(existing)
+    const t = setTimeout(() => {
+      forkErrorDismissTimers.delete(placeholderTabId)
+      const stillTab = tabs.find((x) => x.id === placeholderTabId)
+      if (stillTab && stillTab.forkError) closeTab(placeholderTabId)
+    }, 6_000)
+    forkErrorDismissTimers.set(placeholderTabId, t)
+  }
+
   let dragIndex: number | null = $state(null)
   let dropIndex: number | null = $state(null)
 
@@ -393,14 +416,6 @@
     })
     activeTabId = placeholderTabId
 
-    function markForkError(message: string): void {
-      const t = tabs.find((x) => x.id === placeholderTabId)
-      if (t) {
-        t.forking = undefined
-        t.forkError = message
-      }
-    }
-
     function runFork(targetWorktreePath: string): void {
       window.api
         .invoke('claude:fork', {
@@ -415,7 +430,7 @@
           // The IPC handler emits claude:fork-result on its own error path; if
           // the invoke itself rejects (e.g. main crashed), surface a generic
           // error so the placeholder doesn't hang.
-          markForkError('fork IPC failed')
+          failFork(placeholderTabId, 'fork IPC failed')
         })
     }
 
@@ -436,7 +451,7 @@
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
-        markForkError(`could not create worktree: ${message}`)
+        failFork(placeholderTabId, `could not create worktree: ${message}`)
       })
   }
 
@@ -487,31 +502,17 @@
 
   // Listen for claude:fork-result. The placeholder tab's forking state is
   // cleared when the new PTY emits its first byte (see pty:data handler).
-  // On error we surface a brief error chip that auto-dismisses after ~6s.
+  // On error we route through failFork, which surfaces the error chip and
+  // schedules the ~6s auto-dismiss — same path as the create-worktree and
+  // IPC-reject failures.
   $effect(() => {
     return window.api.on('claude:fork-result', (payload) => {
-      const tab = tabs.find((t) => t.id === payload.placeholderTabId)
-      if (!tab) return
       if (payload.ok) {
         // Success path is handled by the pty:data listener below — once
         // Claude emits anything the placeholder transitions to a live tab.
         return
       }
-      tab.forking = undefined
-      tab.forkError = payload.error
-      // Auto-dismiss the error after a short window so the user can read it
-      // but the tab doesn't stay broken-looking forever. The timer is tracked
-      // in forkErrorDismissTimers so manual close or component unmount cancels
-      // it cleanly instead of firing stale.
-      const errId = tab.id
-      const t = setTimeout(() => {
-        forkErrorDismissTimers.delete(errId)
-        const stillTab = tabs.find((x) => x.id === errId)
-        if (stillTab && stillTab.forkError) {
-          closeTab(errId)
-        }
-      }, 6_000)
-      forkErrorDismissTimers.set(errId, t)
+      failFork(payload.placeholderTabId, payload.error)
     })
   })
 
