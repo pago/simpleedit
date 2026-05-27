@@ -212,9 +212,11 @@ export function spawnForkedClaudeTerminal(
   // Flag order verified empirically on CLI 2.1.148 (critic's pre-PR4 audit §4):
   // all three orderings of --session-id / --resume / --fork-session work.
   // Using the form that reads "fork the source session as a new id".
+  // No `--output-format stream-json`: it's silently ignored under a TTY on
+  // 2.1.148+ (see #95/#106), and session-id is pinned via --session-id below,
+  // so the flag was dead weight. (#107)
   const claudeCmd =
-    `claude --output-format stream-json` +
-    ` --session-id ${forkUuid}` +
+    `claude --session-id ${forkUuid}` +
     ` --resume ${sourceSessionId}` +
     ` --fork-session`
 

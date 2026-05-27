@@ -106,6 +106,18 @@ export const sessionRestoreStore = {
     })
   },
 
+  /**
+   * Reactively peek at how many pending resumes are staged for a pane WITHOUT
+   * clearing them. Reads `_pendingResumeByPane` tracked, so an `$effect` that
+   * calls this re-runs when hydrateSession stages resumes after the effect
+   * first ran — closing the mount-vs-hydrate race where a TerminalTabs that
+   * mounted before hydration would drain nothing and lose the placeholders.
+   */
+  pendingResumeCount(role: PaneRole, worktreePath: string): number {
+    const key = paneKey(role, worktreePath)
+    return _pendingResumeByPane.get(key)?.length ?? 0
+  },
+
   /** Drain pending resumes for a pane — returns and clears in one shot. */
   drainPendingResume(role: PaneRole, worktreePath: string): SerializedClaudeSession[] {
     const key = paneKey(role, worktreePath)
