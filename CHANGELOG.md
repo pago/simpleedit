@@ -1,5 +1,79 @@
 # simpleedit
 
+## 0.14.0
+
+### Minor Changes
+
+- [#116](https://github.com/pago/simpleedit/pull/116) [`d30733c`](https://github.com/pago/simpleedit/commit/d30733ce91776d1c697f64dd5cfe7494e914a1b5) Thanks [@pago](https://github.com/pago)! - The Fork-into-worktree picker can now create a new worktree on the fly: type a name that doesn't match an existing worktree and the first row becomes "Create new worktree '<name>'". Selecting it creates the worktree/branch with that name, then forks the session into it.
+
+- [#98](https://github.com/pago/simpleedit/pull/98) [`f30399b`](https://github.com/pago/simpleedit/commit/f30399b20eb540b1ca22ed64dd887eab9f970891) Thanks [@pago](https://github.com/pago)! - Refs [#87](https://github.com/pago/simpleedit/issues/87) (PR2 of 3): wire up the "Close session" item in the agent tab context menu. Picking it calls the existing `closeTab` flow (which detaches any stream parser and kills the PTY). Works for both Claude and Agent View tabs.
+
+  Stacked on [#93](https://github.com/pago/simpleedit/issues/93). Fork item remains a disabled placeholder until PR3.
+
+- [#101](https://github.com/pago/simpleedit/pull/101) [`c8d30c0`](https://github.com/pago/simpleedit/commit/c8d30c0731e922afa996e4255a3e917a65eacdd8) Thanks [@pago](https://github.com/pago)! - Fixes [#87](https://github.com/pago/simpleedit/issues/87): enable Fork-into-worktree execution behind `SIMPLEEDIT_EXPERIMENTAL_FORK=1`.
+
+  Right-clicking a Claude tab now offers a real "Fork into worktree…" entry (gated by the experimental env var introduced in PR3). Picking it opens an inline worktree picker; choosing a target worktree forks the source Claude session into it: SimpleEdit pre-mints the fork's session-id, copies the source transcript (and any subagent subdir) into the target's `~/.claude/projects/...`, then spawns `claude --session-id <new> --resume <src> --fork-session` in the target cwd. The new tab appears as an italic-dimmed placeholder until Claude emits its first byte, at which point it transitions to a live Terminal. Fork failures auto-clear after ~6s.
+
+  Agent View tabs cannot be forked (the TUI emits no session id); the menu item is disabled with a dedicated tooltip. The auto-memory dir (`~/.claude/projects/<cwd>/memory/`) is intentionally NOT copied — it's project-scoped, not session-scoped, and copying would pollute the target worktree's existing memory.
+
+  Stacked on [#101](https://github.com/pago/simpleedit/issues/101).
+
+- [#109](https://github.com/pago/simpleedit/pull/109) [`97f87b4`](https://github.com/pago/simpleedit/commit/97f87b4bb1f9c42b3c9b28cec7ce91362b034523) Thanks [@pago](https://github.com/pago)! - Fixes [#87](https://github.com/pago/simpleedit/issues/87) (rename + menu skeleton; fork and close in follow-up PRs).
+
+  Adds a context menu to agent terminal tabs (Claude and Agent View). The menu surfaces "Rename…" today; "Fork into worktree…" and "Close session" appear as disabled placeholders that future PRs will wire up.
+
+  - The menu opens on right-click, click of the new `⋯` overflow button (visible on hover/focus), Shift+F10, or the ContextMenu key.
+  - Rename uses the existing `PromptModal` (moved to `src/renderer/components/` since it now spans features).
+  - User-renamed tabs are sticky — `handleTitleChange` early-returns so the PTY's OSC title can't overwrite the chosen label. The `customLabel` flag persists across session save/load, including for Agent View tabs.
+
+  Stacked on [#92](https://github.com/pago/simpleedit/issues/92).
+
+- [#92](https://github.com/pago/simpleedit/pull/92) [`8819854`](https://github.com/pago/simpleedit/commit/88198546bf84297da200158f7bf9c82fcd9bc075) Thanks [@pago](https://github.com/pago)! - Fixes [#90](https://github.com/pago/simpleedit/issues/90): right-clicking the new-Claude (✦) button in the terminal tab strip opens a context menu offering "New Claude session" (existing behavior) or "New Agent View session" (`claude agents` — interactive TUI). Shift+F10 and the ContextMenu key also open the menu for keyboard users. Agent View tabs are labelled `Agents` / `Agents N` and spawn through a new `claude:spawn-agents` IPC channel that intentionally skips stream-json parsing and the MCP bridge. Known limitation: Agent View tabs cannot be true session-restored (claude agents emits no session-id), so on app restart they respawn fresh as a new Agent View tab in the original position — position and label persist, in-tab state does not.
+
+  Also extracts a reusable `ContextMenu.svelte` with arrow-key navigation, disabled-item skipping, danger tone, separators, and focus restoration. `FileTreeContextMenu` is unchanged in this PR and will be migrated to the shared component later.
+
+### Patch Changes
+
+- [#106](https://github.com/pago/simpleedit/pull/106) [`873ee3e`](https://github.com/pago/simpleedit/commit/873ee3e2f77316c0f8528a6a90b204379fcdaf2c) Thanks [@pago](https://github.com/pago)! - Remove dead --output-format stream-json codepath. The flag is silently ignored by Claude CLI 2.1.148 in TTY mode (see [#95](https://github.com/pago/simpleedit/issues/95)); session capture now uses --session-id via [#102](https://github.com/pago/simpleedit/issues/102).
+
+- [#102](https://github.com/pago/simpleedit/pull/102) [`1f1dcfa`](https://github.com/pago/simpleedit/commit/1f1dcfa6bf786648ff9056bc00d229f0d90b76e8) Thanks [@pago](https://github.com/pago)! - Fix Claude session_id capture for fresh tabs. The CLI's `--output-format
+stream-json` is silently ignored when stdin is a TTY (which `node-pty`
+  always provides), so the existing stream-json parser in `claude-stream.ts`
+  captured nothing for any fresh Claude tab — breaking the rename-restore
+  feature and blocking the Fork-into-worktree precursor.
+
+  Replaced the broken path with `--session-id <uuid>`: mint a UUID with
+  `crypto.randomUUID()` at spawn time, pass it on the claude CLI, and emit
+  `claude:session-id` synchronously to the renderer. No filesystem watcher
+  or first-message race involved.
+
+- [#111](https://github.com/pago/simpleedit/pull/111) [`3c94627`](https://github.com/pago/simpleedit/commit/3c946278541c203f030146f13907bff6029419a1) Thanks [@pago](https://github.com/pago)! - Add a fake claude binary fixture for e2e tests, eliminating CI flakes when the real claude binary is absent.
+
+- [#113](https://github.com/pago/simpleedit/pull/113) [`ec43468`](https://github.com/pago/simpleedit/commit/ec4346816cb8f06e3576246cc46b1a2eff9a8665) Thanks [@pago](https://github.com/pago)! - The fake claude binary used by e2e tests now emits a startup line. Tests that wait on `pty:data` to discover the terminal id (e.g. agent-view-sticky-label) need at least one event from the PTY; without output, they timed out at 10s.
+
+- [#101](https://github.com/pago/simpleedit/pull/101) [`c277861`](https://github.com/pago/simpleedit/commit/c27786152c272b5a3242eddc9927e276b274a1bd) Thanks [@pago](https://github.com/pago)! - Fork-into-worktree tabs now drive the worktree's Claude status indicator the same way regular Claude tabs do — the stream parser is attached at fork time so OSC-title status events (✳ idle / ⠂ braille spinner) flow into the sidebar badge. Fixes [#103](https://github.com/pago/simpleedit/issues/103).
+
+- [#101](https://github.com/pago/simpleedit/pull/101) [`5c676c4`](https://github.com/pago/simpleedit/commit/5c676c4c3e0773f264211880e058fa9bef474aa1) Thanks [@pago](https://github.com/pago)! - Fork-into-worktree menu item is now available without an experimental gate. The execution path (PR [#104](https://github.com/pago/simpleedit/issues/104)) has comprehensive safety nets — env var gating was originally introduced for caution but proved redundant given the per-tab disable logic.
+
+- [#91](https://github.com/pago/simpleedit/pull/91) [`2f6fdaa`](https://github.com/pago/simpleedit/commit/2f6fdaa7f834754ba0af13979df348f95c6eb9a9) Thanks [@pago](https://github.com/pago)! - Fixes [#89](https://github.com/pago/simpleedit/issues/89): resolve the "main" worktree by reading the bare repo's default branch instead of trusting the porcelain list order. With a bare repo, `git worktree list --porcelain` could return a non-default branch first (alphabetically), causing SimpleEdit to suppress the delete button on the wrong worktree.
+
+- [#110](https://github.com/pago/simpleedit/pull/110) [`a4091d6`](https://github.com/pago/simpleedit/commit/a4091d696e45815ce7a9167ab345f5a4e165a658) Thanks [@pago](https://github.com/pago)! - Agent View tab labels (`Agents`, `Agents 2`, …) now stay sticky and aren't overwritten by the TUI's xterm OSC title. Fixes [#94](https://github.com/pago/simpleedit/issues/94).
+
+- [#112](https://github.com/pago/simpleedit/pull/112) [`3b56222`](https://github.com/pago/simpleedit/commit/3b56222293256cf726359332893b5c86c1dff1bb) Thanks [@pago](https://github.com/pago)! - Tab strip and rename modal a11y polish: the outer tab is now a `<div role="tab">` instead of a `<button>` with nested `<button>`-ish spans, the ⋯ overflow + close icons are real `<button>` siblings, and `PromptModal`'s dialog div gains `tabindex="-1"` (plus an `untrack`-seeded initial value so Svelte stops warning about `state_referenced_locally`). Fixes [#97](https://github.com/pago/simpleedit/issues/97).
+
+- [#117](https://github.com/pago/simpleedit/pull/117) [`b73e0d7`](https://github.com/pago/simpleedit/commit/b73e0d7942c0ea60bde3ed8cdad6fc337a16e8d5) Thanks [@pago](https://github.com/pago)! - Three pre-release fixes in the terminal/status area:
+
+  - The worktree Claude status indicator no longer sticks on "running" after a Claude tab is closed mid-run ([#114](https://github.com/pago/simpleedit/issues/114)). Status is now tracked per-terminal and pruned on PTY exit, so a worktree drops back to idle when its last active Claude terminal goes away — and two Claude tabs in the same worktree no longer clobber each other's status.
+  - A renamed Claude tab's custom label now reliably survives a quit/relaunch ([#100](https://github.com/pago/simpleedit/issues/100)). The session-restore drain now reacts to late-staged resumes, fixing a mount-vs-hydrate race that could drop the restored tab.
+  - Removed the dead `--output-format stream-json` flag from the forked-Claude spawn ([#107](https://github.com/pago/simpleedit/issues/107)); it's ignored under a TTY on recent CLI versions.
+
+- [#99](https://github.com/pago/simpleedit/pull/99) [`8f4f1a3`](https://github.com/pago/simpleedit/commit/8f4f1a34cd804a30eef3977830f8cb73dee95b9f) Thanks [@pago](https://github.com/pago)! - Fix long-running terminal sessions (tmux, Claude agent teams) disappearing on
+  worktree switch. Terminal ids were minted as `term-${Date.now()}-${nextIndex}`,
+  which collided whenever PaneManager mounted several WorktreePanes in the same
+  tick — common during session restore. Multiple Terminal components then attached
+  to the same PTY id, wedging their xterm renderers. Switched to `crypto.randomUUID()`.
+  Fixes [#88](https://github.com/pago/simpleedit/issues/88).
+
 ## 0.13.1
 
 ### Patch Changes
