@@ -536,6 +536,26 @@ test.describe('Fork item disable behavior', () => {
     // No menu transitioning to a worktree picker.
     await expect(window.locator('text=Select worktree')).toHaveCount(0)
   })
+
+  test('typing a new name in the picker surfaces a "Create new worktree" row (#27)', async () => {
+    await spawnClaudeTab()
+    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    await claudeTab.click({ button: 'right' })
+
+    // Open the worktree picker from the (enabled) Fork item.
+    await window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork into worktree…' }).click()
+
+    const picker = window.getByRole('dialog', { name: 'Fork into worktree' })
+    await expect(picker).toBeVisible({ timeout: 5_000 })
+
+    // A name that doesn't match any existing worktree branch.
+    await picker.getByPlaceholder('filter worktrees…').fill('totally-new-branch')
+
+    const createRow = picker.getByRole('button', { name: /Create new worktree/ })
+    await expect(createRow).toBeVisible()
+    await expect(createRow).toContainText('totally-new-branch')
+    await expect(createRow).toBeEnabled()
+  })
 })
 
 // ────────────────────────────────────────────────────────────────────────────

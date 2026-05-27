@@ -89,7 +89,7 @@ describe('ForkWorktreePicker', () => {
     await tick()
 
     await fireEvent.click(screen.getByRole('button', { name: /feature-a/ }))
-    expect(onpick).toHaveBeenCalledWith('/repo/feature-a')
+    expect(onpick).toHaveBeenCalledWith({ kind: 'existing', worktreePath: '/repo/feature-a' })
   })
 
   it('clicking the disabled source row does not call onpick', async () => {
@@ -156,7 +156,7 @@ describe('ForkWorktreePicker', () => {
     // first non-source worktree). ArrowDown advances to feature-b. Enter picks.
     await fireEvent.keyDown(dialog, { key: 'ArrowDown' })
     await fireEvent.keyDown(dialog, { key: 'Enter' })
-    expect(onpick).toHaveBeenCalledWith('/repo/feature-b')
+    expect(onpick).toHaveBeenCalledWith({ kind: 'existing', worktreePath: '/repo/feature-b' })
   })
 
   it('the filter input is auto-focused on mount', async () => {
@@ -169,5 +169,85 @@ describe('ForkWorktreePicker', () => {
     })
     await tick()
     expect(screen.getByPlaceholderText('filter worktrees…')).toHaveFocus()
+  })
+
+  it('typing a name with no exact match offers a "Create new worktree" row first', async () => {
+    render(ForkWorktreePicker, {
+      x: 0, y: 0,
+      sourceWorktreePath: '/repo/main',
+      onpick: vi.fn(),
+      onback: vi.fn(),
+      onclose: vi.fn(),
+    })
+    await tick()
+
+    const filter = screen.getByPlaceholderText('filter worktrees…')
+    await fireEvent.input(filter, { target: { value: 'brand-new-thing' } })
+
+    const createRow = screen.getByRole('button', { name: /Create new worktree/ })
+    expect(createRow).toBeInTheDocument()
+    expect(createRow).not.toBeDisabled()
+    // It is the FIRST row (no existing worktree matches the filter).
+    const rows = screen.getAllByRole('button').filter((b) =>
+      /Create new worktree|feature-|main/.test(b.textContent ?? ''),
+    )
+    expect(rows[0]).toBe(createRow)
+  })
+
+  it('clicking the create row calls onpick with the trimmed typed name', async () => {
+    const onpick = vi.fn()
+    render(ForkWorktreePicker, {
+      x: 0, y: 0,
+      sourceWorktreePath: '/repo/main',
+      onpick,
+      onback: vi.fn(),
+      onclose: vi.fn(),
+    })
+    await tick()
+
+    const filter = screen.getByPlaceholderText('filter worktrees…')
+    await fireEvent.input(filter, { target: { value: '  my-fork  ' } })
+    await fireEvent.click(screen.getByRole('button', { name: /Create new worktree/ }))
+
+    expect(onpick).toHaveBeenCalledWith({ kind: 'create', name: 'my-fork' })
+  })
+
+  it('does not offer a create row when the typed name exactly matches an existing worktree', async () => {
+    render(ForkWorktreePicker, {
+      x: 0, y: 0,
+      sourceWorktreePath: '/repo/main',
+      onpick: vi.fn(),
+      onback: vi.fn(),
+      onclose: vi.fn(),
+    })
+    await tick()
+
+    const filter = screen.getByPlaceholderText('filter worktrees…')
+    // Case-insensitive exact match on an existing branch suppresses the row.
+    await fireEvent.input(filter, { target: { value: 'Feature-A' } })
+
+    expect(screen.queryByRole('button', { name: /Create new worktree/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /feature-a/ })).toBeInTheDocument()
+  })
+
+  it('Enter on the create row (first, auto-focused) picks it', async () => {
+    const onpick = vi.fn()
+    render(ForkWorktreePicker, {
+      x: 0, y: 0,
+      sourceWorktreePath: '/repo/main',
+      onpick,
+      onback: vi.fn(),
+      onclose: vi.fn(),
+    })
+    await tick()
+
+    const filter = screen.getByPlaceholderText('filter worktrees…')
+    await fireEvent.input(filter, { target: { value: 'fresh-branch' } })
+    await tick()
+
+    // focusedIndex re-homes onto the first pickable row, which is the create
+    // row. Enter on the dialog activates it.
+    await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' })
+    expect(onpick).toHaveBeenCalledWith({ kind: 'create', name: 'fresh-branch' })
   })
 })
