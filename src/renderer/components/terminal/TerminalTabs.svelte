@@ -537,11 +537,15 @@
     })
   })
 
-  // Drain Claude resume placeholders staged by session restore. Runs once per
-  // (paneRole, worktreePath) pair — drainPendingResume clears the entry.
+  // Drain Claude resume placeholders staged by session restore. Reactively
+  // tracks the staged count so this re-runs if hydrateSession stages resumes
+  // AFTER this TerminalTabs mounted (the mount-vs-hydrate race, #100) — then
+  // drains. drainPendingResume clears the entry, so the re-run is idempotent.
   $effect(() => {
     const role = paneRole
     const path = worktreePath
+    // Tracked read: subscribes the effect to late-arriving staged resumes.
+    if (sessionRestoreStore.pendingResumeCount(role, path) === 0) return
     const pending = sessionRestoreStore.drainPendingResume(role, path)
     if (pending.length === 0) return
     for (const session of pending) {

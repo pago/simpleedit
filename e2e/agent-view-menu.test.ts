@@ -29,7 +29,12 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
   let app: ElectronApplication
   let window: Page
 
-  test.beforeAll(() => {
+  // Fresh repo per test. These tests spawn Claude / Agent View tabs that the
+  // app auto-saves; restore is now reliable (#28 fixed the mount-vs-hydrate
+  // race), so a shared repo would leak persisted tabs across tests (a test
+  // asserting "0 Agents tabs" would see a restored one). A unique repo per
+  // test gives complete session isolation.
+  test.beforeEach(async () => {
     testRoot = mkdtempSync(join(tmpdir(), 'simpleedit-issue90-'))
 
     const seedPath = join(testRoot, 'seed')
@@ -48,13 +53,7 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     sh(testRoot, `git clone --bare ${seedPath} ${bareRepoPath}`)
     sh(bareRepoPath, 'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*')
     sh(bareRepoPath, `git worktree add ${join(testRoot, 'main')} main`)
-  })
 
-  test.afterAll(() => {
-    rmSync(testRoot, { recursive: true, force: true })
-  })
-
-  test.beforeEach(async () => {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath })
@@ -65,6 +64,7 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
 
   test.afterEach(async () => {
     await app.close()
+    rmSync(testRoot, { recursive: true, force: true })
   })
 
   test('right-click opens menu; selecting Agent View spawns an Agents tab', async () => {
