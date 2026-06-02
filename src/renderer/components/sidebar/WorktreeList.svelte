@@ -13,6 +13,7 @@
   } from '../../stores/worktrees.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
   import { sanitizeBranchName, isValidBranchName } from '../../lib/branchName'
+  import { worktreeLabel } from '../../lib/worktreeLabel'
 
   type CreateMode = 'new' | 'checkout'
 
@@ -271,7 +272,7 @@
         <span
           class="h-2 w-2 shrink-0 rounded-full {isActive ? 'bg-green-400' : 'bg-zinc-600'}"
         ></span>
-        <span class="flex-1 truncate">{worktree.branch}</span>
+        <span class="flex-1 truncate" title={worktree.path}>{worktreeLabel(worktree)}</span>
         <span
           class="text-[10px] {getClaudeStatus(worktree.path) === 'running'
             ? 'text-yellow-400'
