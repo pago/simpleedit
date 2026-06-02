@@ -48,13 +48,23 @@
 
     diffEditor.setModel({ original: originalModel, modified: modifiedModel })
 
-    // Scroll to the relevant line range after the editor renders
-    requestAnimationFrame(() => {
-      const modifiedEditor = diffEditor.getModifiedEditor()
-      modifiedEditor.revealLineInCenter(lineRange[0], monaco.editor.ScrollType.Immediate)
-    })
+    // Scroll to the change once — but only after Monaco has computed the diff
+    // and laid out the viewport. Revealing earlier (e.g. in requestAnimationFrame)
+    // lands before the diff is ready and Monaco resets the scroll to line 1 when
+    // the computation finishes. `onDidUpdateDiff` fires at the right moment; a
+    // timer fallback covers the rare case where it never fires (identical sides).
+    let didReveal = false
+    const revealTarget = (): void => {
+      if (didReveal) return
+      didReveal = true
+      diffEditor.getModifiedEditor().revealLineInCenter(lineRange[0], monaco.editor.ScrollType.Immediate)
+    }
+    const diffSub = diffEditor.onDidUpdateDiff(revealTarget)
+    const fallback = setTimeout(revealTarget, 250)
 
     return () => {
+      clearTimeout(fallback)
+      diffSub.dispose()
       originalModel.dispose()
       modifiedModel.dispose()
       diffEditor.dispose()

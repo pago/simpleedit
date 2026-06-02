@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import CompactDiffEditor from './CompactDiffEditor.svelte'
   import { tourStore, tourKey, triggerTour, loadCachedTour } from '../../stores/tourStore.svelte'
 
@@ -28,10 +29,7 @@
       if (data.key === currentKey) tourStore.setOverview(currentKey, data.overview)
     })
     const unsubTopic = window.api.on('tour:topic', (data) => {
-      if (data.key === currentKey) {
-        tourStore.addTopic(currentKey, data.topic)
-        loadFileContentsForTopic(data.topic)
-      }
+      if (data.key === currentKey) tourStore.addTopic(currentKey, data.topic)
     })
     const unsubStatus = window.api.on('tour:status', (data) => {
       if (data.key === currentKey) tourStore.setStatus(currentKey, data.status, data.error)
@@ -44,17 +42,23 @@
     const currentKey = key
     const state = tourStore.get(currentKey)
     if (!state || state.status === 'idle') {
-      loadCachedTour(worktreePath, commitHash).then((loaded) => {
-        if (loaded) {
-          const cached = tourStore.get(currentKey)
-          if (cached) {
-            for (const topic of cached.topics) {
-              loadFileContentsForTopic(topic)
-            }
-          }
-        }
-      })
+      void loadCachedTour(worktreePath, commitHash)
     }
+  })
+
+  // Backfill code snippets for every topic in the current tour, regardless of
+  // how it arrived (#119). Streaming tours add topics over IPC; cached and
+  // MCP-delivered (`tour:from-claude`) tours land in the store fully-formed —
+  // this single path gives all three the same collapsible diffs. The load
+  // itself is untracked so reading `fileContents` inside it doesn't re-trigger
+  // this effect; it re-runs only when the tour's topics change.
+  $effect(() => {
+    const state = tourStore.get(key)
+    if (!state) return
+    const topics = state.topics
+    untrack(() => {
+      for (const topic of topics) void loadFileContentsForTopic(topic)
+    })
   })
 
   async function loadFileContentsForTopic(topic: { segments: Array<{ file: string }> }): Promise<void> {
