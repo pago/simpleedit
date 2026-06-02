@@ -78,6 +78,22 @@
     void window.api.invoke('session:save', payload)
   }
 
+  // Watch for worktrees added/removed/moved outside SimpleEdit and refresh the
+  // sidebar list when they change (#120). The main process watches the project
+  // root per-window; we just react to its push event.
+  $effect(() => {
+    const repo = repoPath
+    if (!repo) return
+    void window.api.invoke('worktree:watch')
+    const unsub = window.api.on('worktree:list-changed', () => {
+      void refreshWorktrees()
+    })
+    return () => {
+      unsub()
+      void window.api.invoke('worktree:unwatch')
+    }
+  })
+
   // Reactive snapshot — touching every field we serialize triggers re-runs.
   $effect(() => {
     if (!sessionReady || !repoPath) return

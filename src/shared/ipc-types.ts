@@ -20,10 +20,19 @@ export interface WorktreeInvokeMap {
   'worktree:checkout': { args: [branch: string]; result: WorktreeInfo }
   'worktree:branches': { args: []; result: BranchInfo[] }
   'worktree:remove': { args: [path: string]; result: void }
+  /** Start/stop watching the project root for externally-created/removed worktrees (#120). */
+  'worktree:watch': { args: []; result: void }
+  'worktree:unwatch': { args: []; result: void }
 }
 
 export interface WorktreeEventMap {
   'worktree:changed': WorktreeInfo[]
+  /**
+   * Fired when a worktree is added/removed/moved outside SimpleEdit. Carries
+   * the bare repo path of the affected window; the renderer responds by
+   * re-running `refreshWorktrees()`.
+   */
+  'worktree:list-changed': { repoPath: string }
 }
 
 // ── PTY / Terminal ────────────────────────────────────────
