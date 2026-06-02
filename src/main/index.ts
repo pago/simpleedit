@@ -20,6 +20,7 @@ import {
   createFile, createDirectory, renamePath, deletePath,
 } from './file-watcher'
 import { listWorktrees, createWorktree, checkoutWorktree, listAvailableBranches, removeWorktree, cloneBareRepo } from './worktree'
+import { watchWorktreeList, unwatchWorktreeList, unwatchAllWorktreeLists } from './worktree-watcher'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
@@ -87,6 +88,7 @@ function createWindow(repoPath?: string): BrowserWindow {
 
   win.on('closed', () => {
     stopBridge(webContentsId)
+    unwatchWorktreeList(webContentsId)
     windowRepoMap.delete(webContentsId)
   })
 
@@ -265,6 +267,15 @@ function registerAllHandlers(): void {
   ipcMain.handle('worktree:remove', async (event, worktreePath: string) => {
     const repoPath = getRepoForSenderOrThrow(event.sender.id)
     return removeWorktree(repoPath, worktreePath)
+  })
+
+  ipcMain.handle('worktree:watch', (event) => {
+    const repoPath = getRepoForSenderOrThrow(event.sender.id)
+    watchWorktreeList(event.sender.id, repoPath, event.sender)
+  })
+
+  ipcMain.handle('worktree:unwatch', (event) => {
+    unwatchWorktreeList(event.sender.id)
   })
 
   // ── Claude stream ───────────────────────────────────────
@@ -488,6 +499,7 @@ app.on('before-quit', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
+  try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllPlans() } catch { /* ignore */ }
@@ -499,6 +511,7 @@ app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
+  try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllPlans() } catch { /* ignore */ }
