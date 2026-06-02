@@ -1,5 +1,15 @@
 # simpleedit
 
+## 0.14.1
+
+### Patch Changes
+
+- [#122](https://github.com/pago/simpleedit/pull/122) [`2aa11db`](https://github.com/pago/simpleedit/commit/2aa11db5b77fdf447019a14d0ded4805975ba454) Thanks [@pago](https://github.com/pago)! - Tours delivered by an agent over MCP now render their code diffs (collapsed by default) instead of narration text only — the same view the normal tour uses. Expanding a tour snippet now scrolls to the referenced change instead of showing the file at line 1.
+
+- [#122](https://github.com/pago/simpleedit/pull/122) [`e7a1a01`](https://github.com/pago/simpleedit/commit/e7a1a01e3ee158ad33622831d626f19aa74a9cbd) Thanks [@pago](https://github.com/pago)! - Worktrees panel now surfaces the on-disk directory name when it differs from the checked-out branch (e.g. a directory `improvements/` holding branch `main` shows as `improvements (main)`), so the path is no longer hidden. When the directory and branch match, only the single name is shown.
+
+- [#122](https://github.com/pago/simpleedit/pull/122) [`e93a2d3`](https://github.com/pago/simpleedit/commit/e93a2d3b73703ce5a129b2c4503877eccf4c180e) Thanks [@pago](https://github.com/pago)! - Worktrees panel now refreshes automatically when worktrees are added, removed, or moved outside SimpleEdit (e.g. `git worktree add/remove/move` from a terminal). Previously the sidebar showed a stale list until an in-app action or restart triggered a refresh.
+
 ## 0.14.0
 
 ### Minor Changes
