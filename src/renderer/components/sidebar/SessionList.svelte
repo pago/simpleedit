@@ -275,12 +275,13 @@
     <div class="flex items-center gap-1">
       <button
         bind:this={newButtonEl}
-        class="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-orange-400/70 hover:bg-zinc-700 hover:text-orange-300"
+        class="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-orange-400/70 hover:bg-zinc-700 hover:text-orange-300 disabled:opacity-50"
         onclick={() => {
           const path = launchPath()
           if (path) sessionsStore.createClaude(path)
         }}
         oncontextmenu={openNewMenuAtPointer}
+        disabled={worktreeList().length === 0}
         aria-label="New Claude session"
         aria-haspopup="menu"
         title="New Claude session (right-click for Agent View)"
@@ -288,11 +289,12 @@
         ✦ Agent
       </button>
       <button
-        class="flex h-5 items-center rounded px-1.5 text-[11px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300"
+        class="flex h-5 items-center rounded px-1.5 text-[11px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
         onclick={() => {
           const path = launchPath()
           if (path) sessionsStore.createTerminal(path)
         }}
+        disabled={worktreeList().length === 0}
         title="New terminal"
       >
         + Term
