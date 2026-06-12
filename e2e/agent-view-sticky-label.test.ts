@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN, launchEnv } from './fixtures'
+import { MAIN, launchEnv, waitForWorktreesReady } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
@@ -54,6 +54,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
+    await waitForWorktreesReady(window)
   })
 
   test.afterEach(async () => {
@@ -73,14 +74,14 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
       })
     })
 
-    // Spawn an Agent View tab via the context menu.
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    // Spawn an Agent View session via the new-session context menu.
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'New Agent View session' }).click()
 
-    // Tab labeled "Agents" appears.
-    const agentsTab = window.locator('[role="tab"]:has-text("Agents")').first()
+    // Session entry labeled "Agents" appears.
+    const agentsTab = window.locator('[role="option"]:has-text("Agents")').first()
     await expect(agentsTab).toBeVisible({ timeout: 5_000 })
 
     // Wait until pty:data has been observed at least once — that tells us the
@@ -113,13 +114,13 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     await window.waitForTimeout(150)
 
     // Label is still "Agents" — not "claude agents — pretty overwrite". The
-    // tab's button text contains decorative glyphs (✦ before, ⋯ × after);
-    // check the button's `title` attribute which mirrors the label exactly,
-    // and assert the overwrite string never landed anywhere.
+    // session option's visible text contains decorative glyphs (status dot, ✦,
+    // worktree branch, ⋯ ×); the option's aria-label mirrors the label exactly
+    // (SessionList sets aria-label={session.label}; title is the status string).
     await expect(agentsTab).toBeVisible()
-    await expect(agentsTab).toHaveAttribute('title', 'Agents')
+    await expect(agentsTab).toHaveAttribute('aria-label', 'Agents')
     await expect(
-      window.locator('[role="tab"]:has-text("claude agents — pretty overwrite")')
+      window.locator('[role="option"]:has-text("claude agents — pretty overwrite")')
     ).toHaveCount(0)
   })
 })

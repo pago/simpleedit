@@ -5,16 +5,24 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN, launchEnv } from './fixtures'
+import { MAIN, launchEnv, waitForWorktreesReady } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
 /**
- * Issue #90 QA additions — covers cases not in agent-view-menu.test.ts:
- *  1. Keyboard activation via Shift+F10 opens the menu
- *  2. Esc dismisses the menu AND returns focus to the ✦ button
- *  3. Multiple Agent View tabs are labelled `Agents`, `Agents 2`, `Agents 3` (label increments)
- *  4. Claude tab labels increment independently of Agents tab labels
+ * Issue #90 QA additions (ported to agent-first UI) — covers cases not in
+ * agent-view-menu.test.ts:
+ *  1. Keyboard nav within the new-session menu (ArrowDown + Enter) picks Agent View
+ *  2. Esc dismisses the menu AND returns focus to the ✦ Agent button
+ *  3. Multiple Agent View sessions are labelled `Agents`, `Agents 2`, `Agents 3`
+ *  4. Claude session labels increment independently of Agents session labels
+ *
+ * In the agent-first UI the ✦ Agent button (aria-label "New Claude session")
+ * lives in the SessionList sidebar; right-click opens its new-session menu.
+ * Sessions are role="option" entries (was role="tab"). The button itself no
+ * longer wires Shift+F10 to open the menu (that was the old terminal tab strip),
+ * so the keyboard case below opens the menu via right-click then drives it with
+ * the arrow keys.
  */
 test.describe('Issue #90 QA — keyboard menu, focus return, label increments', () => {
   let testRoot: string
@@ -54,19 +62,20 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
+    await waitForWorktreesReady(window)
   })
 
   test.afterEach(async () => {
     await app.close()
   })
 
-  test('Shift+F10 on focused ✦ button opens the menu', async () => {
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+  test('keyboard nav in the new-session menu (ArrowDown + Enter) picks Agent View', async () => {
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
-    // Focus the button programmatically (mirrors keyboard nav landing on it).
-    await claudeButton.focus()
-    await window.keyboard.press('Shift+F10')
+    // Open the new-session menu (right-click; the button does not wire a
+    // keyboard menu-open in the agent-first UI).
+    await claudeButton.click({ button: 'right' })
 
     const menu = window.getByRole('menu').first()
     await expect(menu).toBeVisible()
@@ -77,11 +86,11 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     await window.keyboard.press('ArrowDown')
     await window.keyboard.press('Enter')
     await expect(menu).not.toBeVisible()
-    await expect(window.locator('[role="tab"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
   })
 
-  test('Escape returns focus to the ✦ button after dismissing the menu', async () => {
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+  test('Escape returns focus to the ✦ Agent button after dismissing the menu', async () => {
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
     await claudeButton.click({ button: 'right' })
@@ -91,34 +100,32 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     await window.keyboard.press('Escape')
     await expect(menu).not.toBeVisible()
 
-    // Focus should be on the ✦ button after dismissal.
+    // Focus should be on the ✦ Agent button after dismissal.
     const focused = await window.evaluate(() => document.activeElement?.getAttribute('aria-label'))
-    expect(focused).toBe('Run Claude Code')
+    expect(focused).toBe('New Claude session')
   })
 
   test('Agent View labels increment as Agents, Agents 2, Agents 3 at spawn time', async () => {
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
-    // Spawn three Agent View tabs.
+    // Spawn three Agent View sessions.
     for (let i = 0; i < 3; i++) {
       await claudeButton.click({ button: 'right' })
       await window.getByRole('menuitem', { name: 'New Agent View session' }).click()
-      // Tiny pause for the tab to be inserted in the DOM.
+      // Tiny pause for the entry to be inserted in the DOM.
       await window.waitForTimeout(120)
     }
 
-    // The TUI's PTY title eventually overrides the "Agents" label on tabs whose
-    // terminal has fully initialized — that's an existing handleTitleChange
-    // behavior (TerminalTabs.svelte:182), not a #90 regression. So we verify the
-    // SPAWN-TIME labels by checking that "Agents 3" (most recent) and "Agents 2"
-    // are both present, which proves the counter increments per spawn.
-    await expect(window.locator('[role="tab"]:has-text("Agents 3")').first()).toBeVisible({ timeout: 5_000 })
-    await expect(window.locator('[role="tab"]:has-text("Agents 2")').first()).toBeVisible()
+    // Agent View sessions are created with customLabel:true (sessions store), so
+    // the "Agents N" labels stay sticky against the TUI's OSC titles. Verify the
+    // counter increments per spawn.
+    await expect(window.locator('[role="option"]:has-text("Agents 3")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Agents 2")').first()).toBeVisible()
   })
 
-  test('Claude and Agents tab labels increment independently', async () => {
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+  test('Claude and Agents session labels increment independently', async () => {
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
     // 1 Claude (left-click), 1 Agents (right-click → menu), 1 Claude, 1 Agents.
@@ -134,7 +141,7 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     await window.waitForTimeout(150)
 
     // Expect: "Claude", "Claude 2", "Agents", "Agents 2".
-    await expect(window.locator('[role="tab"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
-    await expect(window.locator('[role="tab"]:has-text("Agents 2")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Agents 2")').first()).toBeVisible()
   })
 })
