@@ -1,4 +1,4 @@
-import { test as base } from '@playwright/test'
+import { test as base, expect } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
 import path from 'path'
@@ -29,12 +29,28 @@ const PATH_SEP = process.platform === 'win32' ? ';' : ':'
 export function launchEnv(extra: Record<string, string> = {}): Record<string, string> {
   const base = { ...process.env } as Record<string, string>
   base[PATH_KEY] = `${E2E_BIN}${PATH_SEP}${base[PATH_KEY] ?? ''}`
+  // Render test windows without stealing OS focus (macOS accessory policy +
+  // showInactive()), so a local test run isn't disruptive. Handled in main.
+  base.SIMPLEEDIT_E2E = '1'
   return { ...base, ...extra }
 }
 
 type AppFixtures = {
   app: ElectronApplication
   window: Page
+}
+
+/**
+ * Wait until the renderer has loaded the worktree list. New sessions launch in
+ * `worktreeList()[0]` (the Claude memory home), so the ✦ Agent / + Term spawn
+ * buttons are clickable-but-inert until that list arrives — a click before then
+ * silently no-ops (launchPath() returns null). Tests that spawn a session right
+ * after launch must await this first or they race the worktree IPC.
+ */
+export async function waitForWorktreesReady(window: Page): Promise<void> {
+  await expect(
+    window.getByRole('listbox', { name: 'Worktrees' }).getByRole('option').first()
+  ).toBeVisible({ timeout: 15_000 })
 }
 
 function assertBuilt(): void {
@@ -80,4 +96,4 @@ export function makeRepoTest(repoPath: string) {
   })
 }
 
-export { expect } from '@playwright/test'
+export { expect }

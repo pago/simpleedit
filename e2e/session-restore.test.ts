@@ -44,30 +44,23 @@ base.describe('session save/restore — IPC round-trip', () => {
   base('session:save then session:load returns the same payload', async () => {
     const repo = `/tmp/session-roundtrip-${Date.now()}.git`
     const payload = {
-      version: 1,
+      version: 2,
       repoPath: repo,
       savedAt: new Date().toISOString(),
-      layout: {
-        primaryWorktreePath: '/tmp/session-roundtrip-wt',
-        secondaryWorktreePath: null,
-        focusedPane: 'primary',
-        splitRatio: 60,
-        visitedPrimary: ['/tmp/session-roundtrip-wt'],
-        visitedSecondary: []
-      },
-      worktreeStates: [
+      sessions: [
         {
+          kind: 'claude',
+          label: 'Claude',
+          sessionId: 'roundtrip-sid',
           worktreePath: '/tmp/session-roundtrip-wt',
           tabs: [
             { kind: 'file', id: 'file:/tmp/foo.ts', path: '/tmp/foo.ts' }
           ],
           activeTabId: 'file:/tmp/foo.ts',
-          mru: ['file:/tmp/foo.ts'],
-          unread: [],
-          primaryClaudeSessions: [{ label: 'Claude', sessionId: 'roundtrip-sid' }],
-          secondaryClaudeSessions: []
+          unread: []
         }
-      ]
+      ],
+      activeIndex: 0
     }
 
     await window.evaluate(
@@ -128,10 +121,10 @@ base.describe('session save/restore — file tab survives relaunch', () => {
     const loaded = (await window.evaluate(
       async (r) => (window as unknown as ApiOnly).api.invoke('session:load', r),
       repoPath!
-    )) as { worktreeStates: Array<{ tabs: Array<{ kind: string; path?: string }> }> } | null
+    )) as { sessions: Array<{ tabs: Array<{ kind: string; path?: string }> }> } | null
 
     expect(loaded).not.toBeNull()
-    const allTabs = loaded!.worktreeStates.flatMap((ws) => ws.tabs)
+    const allTabs = loaded!.sessions.flatMap((s) => s.tabs)
     const fileTabs = allTabs.filter((t) => t.kind === 'file')
     expect(fileTabs.length).toBeGreaterThan(0)
     if (fileLabel) {

@@ -5,15 +5,20 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN, launchEnv } from './fixtures'
+import { MAIN, launchEnv, waitForWorktreesReady } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
 /**
- * Issue #87 (PR1): right-click a Claude tab → context menu with Rename
- * enabled (Fork + Close session disabled placeholders). Rename submits via
- * PromptModal; new label is sticky (not overwritten by xterm OSC titles)
- * and persists across session save/load.
+ * Issue #87 (PR1, ported to agent-first UI): right-click a Claude session in
+ * the SessionList → context menu with Rename / Fork / Close session. Rename
+ * submits via PromptModal; the new label is sticky (not overwritten by xterm
+ * OSC titles) and persists across session save/load.
+ *
+ * In the agent-first UI sessions are role="option" entries in the sidebar
+ * SessionList (was role="tab" in the old per-pane terminal strip); the spawn
+ * button is "New Claude session", the ⋯ menu button is "Session options", the
+ * × is "Close session", and the rename dialog is titled "Rename session".
  */
 test.describe('Issue #87 PR1: tab context menu + rename', () => {
   let testRoot: string
@@ -60,6 +65,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
       async (r) => (window as unknown as ApiOnly).api.invoke('session:clear', r),
       bareRepoPath,
     )
+    await waitForWorktreesReady(window)
   })
 
   test.afterEach(async () => {
@@ -68,16 +74,16 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
   // Helper: spawn a Claude tab via the ✦ button's left-click.
   async function spawnClaudeTab(): Promise<void> {
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
 
   test('right-click a Claude tab opens menu with Rename, Close, and Fork items', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
     const menu = window.getByRole('menu').first()
@@ -104,11 +110,11 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Rename… opens a PromptModal; submitting changes the tab label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
-    const dialog = window.getByRole('dialog', { name: 'Rename tab' })
+    const dialog = window.getByRole('dialog', { name: 'Rename session' })
     await expect(dialog).toBeVisible()
 
     const input = dialog.getByRole('textbox')
@@ -117,7 +123,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await dialog.getByRole('button', { name: 'Rename' }).click()
 
     await expect(dialog).not.toBeVisible()
-    await expect(window.locator('[role="tab"]:has-text("My experiment")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("My experiment")').first()).toBeVisible()
   })
 
   test('user-set label survives a session save/load round-trip via customLabel', async () => {
@@ -125,32 +131,15 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
     const worktreePath = join(testRoot, 'main')
     const payload = {
-      version: 1,
+      version: 2,
       repoPath: bareRepoPath,
       savedAt: new Date().toISOString(),
-      layout: {
-        primaryWorktreePath: worktreePath,
-        secondaryWorktreePath: null,
-        focusedPane: 'primary' as const,
-        splitRatio: 50,
-        visitedPrimary: [worktreePath],
-        visitedSecondary: [],
-      },
-      worktreeStates: [
-        {
-          worktreePath,
-          tabs: [],
-          activeTabId: null,
-          mru: [],
-          unread: [],
-          primaryClaudeSessions: [
-            { label: 'My experiment', sessionId: 'sid-1', customLabel: true },
-            { label: 'Agents', isAgentView: true, customLabel: true },
-            { label: 'untouched', sessionId: 'sid-2' },
-          ],
-          secondaryClaudeSessions: [],
-        },
+      sessions: [
+        { kind: 'claude', label: 'My experiment', sessionId: 'sid-1', customLabel: true, worktreePath, tabs: [], activeTabId: null, unread: [] },
+        { kind: 'agents', label: 'Agents', customLabel: true, worktreePath, tabs: [], activeTabId: null, unread: [] },
+        { kind: 'claude', label: 'untouched', sessionId: 'sid-2', worktreePath, tabs: [], activeTabId: null, unread: [] },
       ],
+      activeIndex: 0,
     }
 
     await window.evaluate(
@@ -163,7 +152,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     )) as typeof payload | null
 
     expect(loaded).not.toBeNull()
-    const sessions = loaded!.worktreeStates[0].primaryClaudeSessions
+    const sessions = loaded!.sessions
 
     const renamed = sessions.find((s) => s.label === 'My experiment')!
     expect(renamed.customLabel).toBe(true)
@@ -171,7 +160,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
     const agentsRenamed = sessions.find((s) => s.label === 'Agents')!
     expect(agentsRenamed.customLabel).toBe(true)
-    expect(agentsRenamed.isAgentView).toBe(true)
+    expect(agentsRenamed.kind).toBe('agents')
 
     // Non-renamed entries should NOT have customLabel set.
     const untouched = sessions.find((s) => s.label === 'untouched')!
@@ -186,7 +175,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Shift+F10 on a focused Claude tab opens the menu', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.focus()
     await window.keyboard.press('Shift+F10')
 
@@ -203,11 +192,11 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('rename validation rejects empty / whitespace-only labels', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
-    const dialog = window.getByRole('dialog', { name: 'Rename tab' })
+    const dialog = window.getByRole('dialog', { name: 'Rename session' })
     await expect(dialog).toBeVisible()
 
     const input = dialog.getByRole('textbox')
@@ -218,53 +207,53 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
     await window.keyboard.press('Escape')
     await expect(dialog).not.toBeVisible()
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible()
   })
 
   test('Cancel on the rename modal does not change the label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
-    const dialog = window.getByRole('dialog', { name: 'Rename tab' })
+    const dialog = window.getByRole('dialog', { name: 'Rename session' })
     await expect(dialog).toBeVisible()
     await dialog.getByRole('textbox').fill('Will Not Stick')
 
     await dialog.getByRole('button', { name: 'Cancel' }).click()
     await expect(dialog).not.toBeVisible()
 
-    await expect(window.locator('[role="tab"]:has-text("Will Not Stick")')).toHaveCount(0)
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("Will Not Stick")')).toHaveCount(0)
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible()
   })
 
   test('Esc on the rename modal does not change the label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
-    const dialog = window.getByRole('dialog', { name: 'Rename tab' })
+    const dialog = window.getByRole('dialog', { name: 'Rename session' })
     await expect(dialog).toBeVisible()
     await dialog.getByRole('textbox').fill('Also Will Not Stick')
 
     await window.keyboard.press('Escape')
     await expect(dialog).not.toBeVisible()
 
-    await expect(window.locator('[role="tab"]:has-text("Also Will Not Stick")')).toHaveCount(0)
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("Also Will Not Stick")')).toHaveCount(0)
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible()
   })
 
   test('⋯ button on a Claude tab opens the same menu', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     // Hover the tab to reveal the ⋯ button (it's opacity-0 by default).
     await claudeTab.hover()
 
-    const overflowBtn = claudeTab.getByRole('button', { name: 'Tab options' })
+    const overflowBtn = claudeTab.getByRole('button', { name: 'Session options' })
     await expect(overflowBtn).toBeVisible({ timeout: 5_000 })
     await overflowBtn.click()
 
@@ -276,9 +265,9 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Esc from menu opened via ⋯ returns focus to the ⋯ button', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.hover()
-    const overflowBtn = claudeTab.getByRole('button', { name: 'Tab options' })
+    const overflowBtn = claudeTab.getByRole('button', { name: 'Session options' })
     await overflowBtn.click()
 
     const menu = window.getByRole('menu').first()
@@ -290,34 +279,35 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     const focusedAriaLabel = await window.evaluate(
       () => document.activeElement?.getAttribute('aria-label')
     )
-    expect(focusedAriaLabel).toBe('Tab options')
+    expect(focusedAriaLabel).toBe('Session options')
   })
 
   test('after a rename, the OSC title-change handler does not overwrite the custom label', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
 
-    const dialog = window.getByRole('dialog', { name: 'Rename tab' })
+    const dialog = window.getByRole('dialog', { name: 'Rename session' })
     await expect(dialog).toBeVisible()
     await dialog.getByRole('textbox').fill('My Project')
     await dialog.getByRole('button', { name: 'Rename' }).click()
     await expect(dialog).not.toBeVisible()
 
-    await expect(window.locator('[role="tab"]:has-text("My Project")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("My Project")').first()).toBeVisible({ timeout: 5_000 })
 
     // Wait long enough for any OSC title emission from the PTY's startup
     // (shell prompt, etc.) to fire. The sticky-label guard must hold.
     await window.waitForTimeout(2_000)
 
-    await expect(window.locator('[role="tab"]:has-text("My Project")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("My Project")').first()).toBeVisible()
 
-    // Strict assertion: no tab (role="tab", draggable=true) shows a "Claude"
-    // or "Claude N" label — the renamed tab is the only Claude-kind tab.
+    // Strict assertion: no session entry shows a bare "Claude" / "Claude N"
+    // label — the renamed session is the only Claude-kind entry. Match the
+    // label span exactly (the option also renders a worktree-branch sub-line).
     const claudeNumberedTabs = await window
-      .locator('[role="tab"][draggable="true"] span')
+      .locator('[role="option"] span.truncate')
       .filter({ hasText: /^Claude(\s+\d+)?$/ })
       .count()
     expect(claudeNumberedTabs).toBe(0)
@@ -330,27 +320,27 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Close session menu item closes the tab', async () => {
     // Spawn two Claude tabs so closing one leaves something behind.
     await spawnClaudeTab()
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await claudeButton.click()
-    await expect(window.locator('[role="tab"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
 
     // Right-click the second Claude tab → Close session.
-    const claude2 = window.locator('[role="tab"]:has-text("Claude 2")').first()
+    const claude2 = window.locator('[role="option"]:has-text("Claude 2")').first()
     await claude2.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Close session' }).click()
 
     // The Claude 2 tab disappears; the first Claude tab survives.
-    await expect(window.locator('[role="tab"]:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible()
   })
 
   test('Close session keyboard activation (Enter) closes the tab', async () => {
     await spawnClaudeTab()
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await claudeButton.click()
-    await expect(window.locator('[role="tab"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
 
-    const claude2 = window.locator('[role="tab"]:has-text("Claude 2")').first()
+    const claude2 = window.locator('[role="option"]:has-text("Claude 2")').first()
     await claude2.focus()
     await window.keyboard.press('Shift+F10')
 
@@ -365,21 +355,21 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await window.keyboard.press('ArrowDown')
     await window.keyboard.press('Enter')
 
-    await expect(window.locator('[role="tab"]:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
   })
 
   test('Close session on Agent View tab closes it without trying to detach a stream parser', async () => {
     // Open an Agent View tab via the ✦ button context menu, then close it.
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await claudeButton.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'New Agent View session' }).click()
-    await expect(window.locator('[role="tab"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
 
-    const agents = window.locator('[role="tab"]:has-text("Agents")').first()
+    const agents = window.locator('[role="option"]:has-text("Agents")').first()
     await agents.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Close session' }).click()
 
-    await expect(window.locator('[role="tab"]:has-text("Agents")')).toHaveCount(0, { timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Agents")')).toHaveCount(0, { timeout: 5_000 })
   })
 
   // ────────────────────────────────────────────────────────────────────────
@@ -389,7 +379,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Esc on the menu does not close the tab', async () => {
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
     const menu = window.getByRole('menu').first()
@@ -399,46 +389,51 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await expect(menu).not.toBeVisible()
 
     // Tab survives.
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible()
   })
 
-  test('closing the only Claude tab leaves the plain terminal tab and ✦ still works', async () => {
+  test('closing the only Claude session leaves a terminal session and ✦ still works', async () => {
+    // The agent-first UI no longer auto-spawns a default terminal, so create
+    // one explicitly via the "+ Term" button (title="New terminal") before
+    // closing the Claude session.
+    await window.getByTitle('New terminal').first().click()
+    await expect(window.locator('[role="option"]:has-text("Terminal 1")').first()).toBeVisible({ timeout: 5_000 })
+
     await spawnClaudeTab()
 
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Close session' }).click()
 
-    // Claude tab disappears. ([role="tab"] excludes the ✦ "Run Claude Code"
-    // button, which is just a <button>.)
-    await expect(window.locator('[role="tab"]:has-text("Claude")')).toHaveCount(0, { timeout: 5_000 })
+    // Claude session disappears ([role="option"] excludes the ✦ Agent button).
+    await expect(window.locator('[role="option"]:has-text("Claude")')).toHaveCount(0, { timeout: 5_000 })
 
-    // The plain "Terminal 1" tab (created on mount) is still there.
-    await expect(window.locator('[role="tab"]:has-text("Terminal 1")').first()).toBeVisible()
+    // The terminal session survives.
+    await expect(window.locator('[role="option"]:has-text("Terminal 1")').first()).toBeVisible()
 
-    // ✦ button still works — spawn another Claude session.
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    // ✦ Agent button still works — spawn another Claude session.
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await claudeButton.click()
     await expect(
-      window.locator('[role="tab"]:has-text("Claude")').first()
+      window.locator('[role="option"]:has-text("Claude")').first()
     ).toBeVisible({ timeout: 5_000 })
   })
 
   test('legacy × close button on a Claude tab still works after Close session is wired', async () => {
     await spawnClaudeTab()
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await claudeButton.click()
-    await expect(window.locator('[role="tab"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
 
-    // Click the × inside Claude 2 (legacy close affordance, sibling of ⋯
-    // inside the tab. Post-#97 it's a real <button aria-label="Close tab">).
-    const claude2 = window.locator('[role="tab"]:has-text("Claude 2")').first()
+    // Click the × inside Claude 2 (close affordance, sibling of ⋯ inside the
+    // session entry. Post-#97 it's a real <button aria-label="Close session">).
+    const claude2 = window.locator('[role="option"]:has-text("Claude 2")').first()
     await claude2.hover()
-    await claude2.getByRole('button', { name: 'Close tab' }).click()
+    await claude2.getByRole('button', { name: 'Close session' }).click()
 
-    await expect(window.locator('[role="tab"]:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
     // The first Claude tab survives.
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible()
   })
 })
 
@@ -496,6 +491,7 @@ test.describe('Fork item disable behavior', () => {
       async (r) => (window as unknown as ApiOnly).api.invoke('session:clear', r),
       bareRepoPath,
     )
+    await waitForWorktreesReady(window)
   })
 
   test.afterEach(async () => {
@@ -503,10 +499,10 @@ test.describe('Fork item disable behavior', () => {
   })
 
   async function spawnClaudeTab(): Promise<void> {
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
-    await expect(window.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
 
   test('Fork item is enabled on a Claude tab once session-id is captured', async () => {
@@ -515,7 +511,7 @@ test.describe('Fork item disable behavior', () => {
     // Claude tab has its session-id captured by the time the user can open
     // the context menu. Fork should therefore be enabled, not disabled.
     await spawnClaudeTab()
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
     const fork = window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork into worktree…' })
@@ -523,23 +519,16 @@ test.describe('Fork item disable behavior', () => {
     await expect(fork).not.toBeDisabled()
   })
 
-  test('clicking the disabled Fork item is a no-op', async () => {
-    await spawnClaudeTab()
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
-    await claudeTab.click({ button: 'right' })
-
-    const fork = window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork into worktree…' })
-    await fork.click({ force: true }) // force = bypass disabled-guard so we exercise the click path
-
-    // No "Forking…" placeholder tab should appear (the future success-state UI).
-    await expect(window.locator('[role="tab"]:has-text("Forking")')).toHaveCount(0)
-    // No menu transitioning to a worktree picker.
-    await expect(window.locator('text=Select worktree')).toHaveCount(0)
-  })
+  // NOTE: the old test "clicking the disabled Fork item is a no-op" was deleted
+  // in the agent-first port. Its premise — Fork is disabled until a session-id
+  // is captured — no longer holds: claude:session-id is minted synchronously at
+  // PTY spawn (see claude-session-id.test.ts), so on a freshly-spawned Claude
+  // session Fork is already enabled (proven by the test above). There is no
+  // disabled-Fork state left to exercise for a Claude session.
 
   test('typing a new name in the picker surfaces a "Create new worktree" row (#27)', async () => {
     await spawnClaudeTab()
-    const claudeTab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
     // Open the worktree picker from the (enabled) Fork item.
@@ -559,9 +548,9 @@ test.describe('Fork item disable behavior', () => {
 })
 
 // ────────────────────────────────────────────────────────────────────────────
-// Fork item parity / persistence: Agent View tab disable-tooltip, keyboard
-// nav skipping the disabled Fork, and isAgentView round-trip through
-// session:save/session:load.
+// Fork item parity / persistence: Agent View session disable-tooltip, keyboard
+// nav past the Fork item, and Agent View entry round-trip through
+// session:save/session:load (kind 'agents' preserved).
 // ────────────────────────────────────────────────────────────────────────────
 
 test.describe('Fork item parity and persistence', () => {
@@ -606,6 +595,7 @@ test.describe('Fork item parity and persistence', () => {
       async (r) => (window as unknown as ApiOnly).api.invoke('session:clear', r),
       bareRepoPath,
     )
+    await waitForWorktreesReady(window)
   }
 
   test.afterEach(async () => {
@@ -617,21 +607,21 @@ test.describe('Fork item parity and persistence', () => {
   })
 
   async function spawnClaudeTab(w: Page): Promise<void> {
-    const claudeButton = w.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = w.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
-    await expect(w.locator('[role="tab"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(w.locator('[role="option"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
   }
 
   test('Agent View tabs show Fork disabled with the dedicated tooltip', async () => {
     await launch()
     const w = window!
 
-    const claudeButton = w.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = w.getByRole('button', { name: 'New Claude session' }).first()
     await claudeButton.click({ button: 'right' })
     await w.getByRole('menuitem', { name: 'New Agent View session' }).click()
 
-    const agentsTab = w.locator('[role="tab"]:has-text("Agents")').first()
+    const agentsTab = w.locator('[role="option"]:has-text("Agents")').first()
     await expect(agentsTab).toBeVisible({ timeout: 5_000 })
 
     await agentsTab.click({ button: 'right' })
@@ -652,7 +642,7 @@ test.describe('Fork item parity and persistence', () => {
     const w = window!
     await spawnClaudeTab(w)
 
-    const claudeTab = w.locator('[role="tab"]:has-text("Claude")').first()
+    const claudeTab = w.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.focus()
     await w.keyboard.press('Shift+F10')
 
@@ -665,7 +655,7 @@ test.describe('Fork item parity and persistence', () => {
     await w.keyboard.press('ArrowDown')
     await w.keyboard.press('Enter')
 
-    const dialog = w.getByRole('dialog', { name: 'Rename tab' })
+    const dialog = w.getByRole('dialog', { name: 'Rename session' })
     await expect(dialog).toBeVisible()
 
     // Tidy up so afterEach can close cleanly.
@@ -674,19 +664,15 @@ test.describe('Fork item parity and persistence', () => {
   })
 
   // ──────────────────────────────────────────────────────────────────────
-  // PR4 regression guard (critic task #17 follow-up): a restored Agent View
-  // tab must keep its isAgentView flag through save/load, so the Fork item
-  // stays disabled with the dedicated tooltip — not the generic "waiting…"
-  // one. This is the cross-restart half of the live-tab parity test above.
+  // A restored Agent View session must keep kind 'agents' through save/load,
+  // so the Fork item stays disabled with the dedicated tooltip — not the
+  // generic "waiting…" one. Cross-restart half of the live parity test above.
   // ──────────────────────────────────────────────────────────────────────
 
-  test('Agent View entries round-trip through session:save/session:load with isAgentView preserved', async () => {
-    // Storage-layer test for the persistence chain (originally raised as a
-    // concern in critic's task #17 follow-up on PR4): a SerializedSession
-    // containing an Agent View entry round-trips through disk with the
-    // isAgentView flag intact, so the restored tab keeps its Fork-disabled
-    // tooltip behavior. The full UI-side restore chain has a pre-existing
-    // mount-vs-hydrate race that's out of scope for this stack.
+  test('Agent View entries round-trip through session:save/session:load with kind preserved', async () => {
+    // Storage-layer test: a SerializedSession (version 2) containing an Agent
+    // View entry round-trips through disk with kind 'agents' intact (and no
+    // sessionId), so the restored session keeps its Fork-disabled tooltip.
     interface ApiOnly { api: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> } }
 
     await launch()
@@ -698,31 +684,14 @@ test.describe('Fork item parity and persistence', () => {
     const worktreeMainPath = mainWorktree!.path
 
     const payload = {
-      version: 1,
+      version: 2,
       repoPath: bareRepoPath,
       savedAt: new Date().toISOString(),
-      layout: {
-        primaryWorktreePath: worktreeMainPath,
-        secondaryWorktreePath: null,
-        focusedPane: 'primary' as const,
-        splitRatio: 50,
-        visitedPrimary: [worktreeMainPath],
-        visitedSecondary: [],
-      },
-      worktreeStates: [
-        {
-          worktreePath: worktreeMainPath,
-          tabs: [],
-          activeTabId: null,
-          mru: [],
-          unread: [],
-          primaryClaudeSessions: [
-            { label: 'Agents', isAgentView: true },
-            { label: 'Claude', sessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
-          ],
-          secondaryClaudeSessions: [],
-        },
+      sessions: [
+        { kind: 'agents', label: 'Agents', customLabel: true, worktreePath: worktreeMainPath, tabs: [], activeTabId: null, unread: [] },
+        { kind: 'claude', label: 'Claude', sessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', worktreePath: worktreeMainPath, tabs: [], activeTabId: null, unread: [] },
       ],
+      activeIndex: 1,
     }
 
     await window!.evaluate(
@@ -736,12 +705,14 @@ test.describe('Fork item parity and persistence', () => {
     )) as typeof payload | null
 
     expect(loaded).not.toBeNull()
-    const sessions = loaded!.worktreeStates[0].primaryClaudeSessions
+    const sessions = loaded!.sessions
     const agents = sessions.find((s) => s.label === 'Agents')!
-    expect(agents.isAgentView).toBe(true)
-    // The Claude entry should NOT have isAgentView leaked onto it.
+    expect(agents.kind).toBe('agents')
+    expect(agents.sessionId).toBeUndefined()
+    // The Claude entry keeps kind 'claude' + its sessionId.
     const claude = sessions.find((s) => s.label === 'Claude')!
-    expect((claude as { isAgentView?: boolean }).isAgentView).toBeUndefined()
+    expect(claude.kind).toBe('claude')
+    expect(claude.sessionId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
 
     // Cleanup so we don't leave the saved session for later tests.
     await window!.evaluate(

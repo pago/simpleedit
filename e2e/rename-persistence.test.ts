@@ -5,20 +5,18 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN, launchEnv } from './fixtures'
+import { MAIN, launchEnv, waitForWorktreesReady } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
 /**
- * Issue #100: a renamed Claude tab's custom label must survive a quit/relaunch.
+ * Issue #100 (ported to agent-first UI): a renamed Claude session's custom
+ * label must survive a quit/relaunch.
  *
- * Two halves had to be right:
- *  - Save (#102): session-id is minted synchronously at PTY spawn, so the
- *    renamed session is serialized WITH a sessionId + customLabel + label.
- *  - Restore (#28): TerminalTabs' drain effect now reactively tracks the
- *    staged-resume count, so it re-runs when hydrateSession stages resumes
- *    after the pane already mounted (the mount-vs-hydrate race). Before this,
- *    a pane that mounted first drained nothing and the placeholder was lost.
+ * Save: session-id is minted synchronously at PTY spawn, so the renamed
+ * session is serialized WITH a sessionId + customLabel + label (SerializedSession
+ * version 2). Restore: hydrateSession stages it as a click-to-resume placeholder
+ * in the SessionList carrying the custom label.
  */
 test.describe('Issue #100: rename persists across restart', () => {
   let testRoot: string
@@ -52,23 +50,24 @@ test.describe('Issue #100: rename persists across restart', () => {
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
+    await waitForWorktreesReady(window)
   }
 
   test('a renamed Claude tab label comes back after relaunch', async () => {
     await launch()
 
-    const claudeButton = window.getByRole('button', { name: 'Run Claude Code' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
-    const tab = window.locator('[role="tab"]:has-text("Claude")').first()
+    const tab = window.locator('[role="option"]:has-text("Claude")').first()
     await expect(tab).toBeVisible({ timeout: 5_000 })
 
     await tab.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'Rename…' }).click()
-    const dialog = window.getByRole('dialog', { name: 'Rename tab' })
+    const dialog = window.getByRole('dialog', { name: 'Rename session' })
     await dialog.getByRole('textbox').fill('My Renamed Session')
     await dialog.getByRole('button', { name: 'Rename' }).click()
-    await expect(window.locator('[role="tab"]:has-text("My Renamed Session")').first()).toBeVisible()
+    await expect(window.locator('[role="option"]:has-text("My Renamed Session")').first()).toBeVisible()
 
     // The app auto-saves session state on change with a 500ms debounce; wait
     // past it so the renamed label is persisted, then relaunch.
@@ -78,7 +77,7 @@ test.describe('Issue #100: rename persists across restart', () => {
     await launch()
     // The renamed session returns as a resume placeholder carrying the label.
     await expect(
-      window.locator('[role="tab"]:has-text("My Renamed Session")').first(),
+      window.locator('[role="option"]:has-text("My Renamed Session")').first(),
     ).toBeVisible({ timeout: 10_000 })
   })
 })
