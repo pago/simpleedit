@@ -37,20 +37,23 @@
       <p class="text-sm text-zinc-500">Start a session to get going</p>
       <div class="flex items-center gap-2">
         <button
-          class="rounded border border-orange-500/40 bg-orange-500/10 px-4 py-1.5 text-sm text-orange-300 hover:bg-orange-500/20"
+          class="rounded border border-orange-500/40 bg-orange-500/10 px-4 py-1.5 text-sm text-orange-300 hover:bg-orange-500/20 disabled:opacity-50"
           onclick={startClaude}
+          disabled={worktreeList().length === 0}
         >
           ✦ New Claude session
         </button>
         <button
-          class="rounded border border-orange-500/20 bg-orange-500/5 px-4 py-1.5 text-sm text-orange-300/80 hover:bg-orange-500/15"
+          class="rounded border border-orange-500/20 bg-orange-500/5 px-4 py-1.5 text-sm text-orange-300/80 hover:bg-orange-500/15 disabled:opacity-50"
           onclick={startAgents}
+          disabled={worktreeList().length === 0}
         >
           ✦ Agent View
         </button>
         <button
-          class="rounded border border-zinc-700 px-4 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          class="rounded border border-zinc-700 px-4 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50"
           onclick={startTerminal}
+          disabled={worktreeList().length === 0}
         >
           $ Terminal
         </button>
