@@ -45,11 +45,20 @@
     refreshWorktrees()
   })
 
+  interface Props {
+    /** Notified after a worktree is picked or created — lets the hosting
+     * popover close itself. */
+    onselected?: (worktree: WorktreeInfo) => void
+  }
+
+  let { onselected }: Props = $props()
+
   // Clicking a worktree repoints the ACTIVE session's workspace at it —
   // worktrees are an isolation mechanism sessions use, not a navigation
   // entity of their own anymore.
   function handleSelect(worktree: WorktreeInfo): void {
     sessionsStore.setActiveSessionWorktree(worktree.path)
+    onselected?.(worktree)
   }
 
   async function startCreate(mode: CreateMode): Promise<void> {
@@ -84,6 +93,7 @@
       cancelCreate()
       await refreshWorktrees()
       sessionsStore.setActiveSessionWorktree(created.path)
+      onselected?.(created)
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : 'Operation failed'
     } finally {
