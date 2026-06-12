@@ -26,7 +26,7 @@ export function loadSession(repoPath: string): SerializedSession | null {
   try {
     const raw = readFileSync(fileFor(repoPath), 'utf-8')
     const parsed = JSON.parse(raw) as SerializedSession
-    if (parsed.version !== 1) return null
+    if (parsed.version !== 2) return null
     if (parsed.repoPath !== repoPath) return null
     return parsed
   } catch {

@@ -1,7 +1,8 @@
 import type { PaletteProvider, PaletteItem, PaletteContext } from '../types'
 import type { WorktreeInfo } from '../../../../shared/ipc-types'
 import { fuzzyMatch } from '../fuzzy-match'
-import { worktreeList, setActiveWorktree, setSecondaryWorktree } from '../../../stores/worktrees.svelte'
+import { worktreeList } from '../../../stores/worktrees.svelte'
+import { sessionsStore } from '../../../stores/sessions.svelte'
 
 export const worktreeProvider: PaletteProvider = {
   category: 'worktree',
@@ -36,13 +37,10 @@ export const worktreeProvider: PaletteProvider = {
       .map((r) => r.item)
   },
 
-  execute(item: PaletteItem, context: PaletteContext): void {
+  execute(item: PaletteItem, _context: PaletteContext): void {
     const wt = item.data as WorktreeInfo
-    if (context.focusedPane === 'secondary') {
-      setSecondaryWorktree(wt)
-    } else {
-      setActiveWorktree(wt)
-    }
+    // Repoint the active session's workspace at the picked worktree.
+    sessionsStore.setActiveSessionWorktree(wt.path)
   }
 }
 

@@ -1,9 +1,11 @@
 /**
- * Helpers for opening diff, plan, and tour tabs. The historical
- * `diffReviewStore` with its hash sentinel and save-and-restore dance is gone
- * — every first-class view is now a tab on {@link tabsStore}, and call sites
- * reach for these helpers to avoid re-deriving the `tabIdFor(...)` + `open(...)`
- * shape everywhere.
+ * Helpers for opening diff, plan, and tour tabs. Every first-class view is a
+ * tab on {@link tabsStore}; call sites reach for these helpers to avoid
+ * re-deriving the `tabIdFor(...)` + `open(...)` shape everywhere.
+ *
+ * Tabs live in per-SESSION lists (`workspaceKey` = session id) while their
+ * git context (`worktreePath`) travels inside the tab — one session can
+ * review several worktrees without its tabs dangling.
  */
 
 import { tabsStore, tabIdFor, type DiffTab, type PlanTab, type TourTab, type OpenOptions } from './tabsStore.svelte'
@@ -14,6 +16,7 @@ export interface OpenDiffOptions extends OpenOptions {
 }
 
 export function openDiffTab(
+  workspaceKey: string,
   worktreePath: string,
   commitHash: string | null,
   commitMessage: string,
@@ -22,15 +25,17 @@ export function openDiffTab(
   const { showFindings, ...openOpts } = opts
   const tab: DiffTab = {
     kind: 'diff',
-    id: tabIdFor({ kind: 'diff', commitHash }),
+    id: tabIdFor({ kind: 'diff', worktreePath, commitHash }),
+    worktreePath,
     commitHash,
     commitMessage,
     initialTab: showFindings ? 'findings' : undefined,
   }
-  return tabsStore.open(worktreePath, tab, openOpts) as DiffTab
+  return tabsStore.open(workspaceKey, tab, openOpts) as DiffTab
 }
 
 export function openTourTab(
+  workspaceKey: string,
   worktreePath: string,
   commitHash: string | null,
   commitMessage: string,
@@ -38,11 +43,12 @@ export function openTourTab(
 ): TourTab {
   const tab: TourTab = {
     kind: 'tour',
-    id: tabIdFor({ kind: 'tour', commitHash }),
+    id: tabIdFor({ kind: 'tour', worktreePath, commitHash }),
+    worktreePath,
     commitHash,
     commitMessage,
   }
-  return tabsStore.open(worktreePath, tab, opts) as TourTab
+  return tabsStore.open(workspaceKey, tab, opts) as TourTab
 }
 
 export interface OpenPlanOptions extends OpenOptions {
@@ -51,6 +57,7 @@ export interface OpenPlanOptions extends OpenOptions {
 }
 
 export function openPlanTab(
+  workspaceKey: string,
   worktreePath: string,
   planHash: string,
   label: string,
@@ -60,16 +67,21 @@ export function openPlanTab(
   const tab: PlanTab = {
     kind: 'plan',
     id: tabIdFor({ kind: 'plan', planHash }),
+    worktreePath,
     planHash,
     label,
     claudeTerminalId: claudeTerminalId ?? null,
   }
-  return tabsStore.open(worktreePath, tab, openOpts) as PlanTab
+  return tabsStore.open(workspaceKey, tab, openOpts) as PlanTab
 }
 
-/** The hash of the currently-active diff tab for a worktree, if any. */
-export function activeDiffHash(worktreePath: string): string | null | undefined {
-  const active = tabsStore.active(worktreePath)
+/**
+ * The hash of the currently-active diff tab in a workspace, scoped to one
+ * worktree — a diff for another worktree shouldn't light up this one's log.
+ */
+export function activeDiffHash(workspaceKey: string, worktreePath: string): string | null | undefined {
+  const active = tabsStore.active(workspaceKey)
   if (!active || active.kind !== 'diff') return undefined
+  if (active.worktreePath !== worktreePath) return undefined
   return active.commitHash
 }

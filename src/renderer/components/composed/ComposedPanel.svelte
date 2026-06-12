@@ -11,12 +11,14 @@
      * the originating Claude session and as the panel's identity for rate
      * limiting. Phase-2 always provides this; absent only in dev demos. */
     terminalId?: string
-    /** Active worktree this panel belongs to. Used to scope file/diff opens. */
+    /** tabsStore key of the owning session — where file/diff opens land. */
+    workspaceKey: string
+    /** The session's selected worktree. Used as git context for diff opens. */
     worktreePath: string
     onclose?: () => void
   }
 
-  let { spec, terminalId, worktreePath, onclose }: Props = $props()
+  let { spec, terminalId, workspaceKey, worktreePath, onclose }: Props = $props()
 
   // -- send_to_agent rate limiting -------------------------------------------
   // Spec-driven feedback loops (an action button that writes back to the same
@@ -62,13 +64,13 @@
       path,
       modified: false,
     }
-    tabsStore.open(worktreePath, tab)
+    tabsStore.open(workspaceKey, tab)
   }
 
   async function handleShowDiff(params: Record<string, unknown>): Promise<void> {
     const commitHash = typeof params['commitHash'] === 'string' ? params['commitHash'] : ''
     if (!commitHash) return
-    openDiffTab(worktreePath, commitHash, `Commit ${commitHash.slice(0, 7)}`)
+    openDiffTab(workspaceKey, worktreePath, commitHash, `Commit ${commitHash.slice(0, 7)}`)
   }
 
   function handleDismiss(): void {

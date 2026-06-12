@@ -6,10 +6,7 @@ const cache = new Map<string, { files: string[]; timestamp: number }>()
 const CACHE_TTL = 30_000
 
 function getWorktreePath(context: PaletteContext): string | null {
-  if (context.focusedPane === 'secondary' && context.secondaryWorktree) {
-    return context.secondaryWorktree.path
-  }
-  return context.activeWorktree?.path ?? null
+  return context.worktreePath
 }
 
 async function getFiles(worktreePath: string): Promise<string[]> {
@@ -79,10 +76,10 @@ export const fileProvider: PaletteProvider = {
   execute(item: PaletteItem, context: PaletteContext): void {
     const relativePath = item.data as string
     const worktreePath = getWorktreePath(context)
-    if (!worktreePath) return
+    if (!worktreePath || !context.activeSessionId) return
     dispatchPaletteAction({
       type: 'open-file',
-      worktreePath,
+      workspaceKey: context.activeSessionId,
       filePath: `${worktreePath}/${relativePath}`
     })
   }

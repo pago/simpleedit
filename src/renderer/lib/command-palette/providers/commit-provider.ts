@@ -7,10 +7,7 @@ const cache = new Map<string, { files: GitCommitInfo[]; timestamp: number }>()
 const CACHE_TTL = 30_000
 
 function getWorktreePath(context: PaletteContext): string | null {
-  if (context.focusedPane === 'secondary' && context.secondaryWorktree) {
-    return context.secondaryWorktree.path
-  }
-  return context.activeWorktree?.path ?? null
+  return context.worktreePath
 }
 
 async function getCommits(worktreePath: string): Promise<GitCommitInfo[]> {
@@ -69,8 +66,8 @@ export const commitProvider: PaletteProvider = {
   execute(item: PaletteItem, context: PaletteContext): void {
     const commit = item.data as GitCommitInfo
     const worktreePath = getWorktreePath(context)
-    if (!worktreePath) return
-    openDiffTab(worktreePath, commit.hash, commit.message)
+    if (!worktreePath || !context.activeSessionId) return
+    openDiffTab(context.activeSessionId, worktreePath, commit.hash, commit.message)
   }
 }
 

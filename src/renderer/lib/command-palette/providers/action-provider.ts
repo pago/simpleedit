@@ -1,10 +1,7 @@
 import type { PaletteProvider, PaletteItem, PaletteContext } from '../types'
 import type { GitCommitInfo } from '../../../../shared/ipc-types'
 import { fuzzyMatch } from '../fuzzy-match'
-import {
-  refreshWorktrees, setSecondaryWorktree,
-  secondPaneWorktree, worktreeList
-} from '../../../stores/worktrees.svelte'
+import { refreshWorktrees } from '../../../stores/worktrees.svelte'
 import { openDiffTab, openTourTab } from '../../../stores/diffReview.svelte'
 import { triggerTour, loadCachedTour, tourStore } from '../../../stores/tourStore.svelte'
 
@@ -42,8 +39,8 @@ function buildTourCommitActions(worktreePath: string, commits: GitCommitInfo[]):
       keywords: `tour commit ${commit.hash.slice(0, 7)} ${commit.message} ${commit.author}`,
       execute(context) {
         const path = getWorktreePath(context)
-        if (!path) return
-        openTourTab(path, commit.hash, label)
+        if (!path || !context.activeSessionId) return
+        openTourTab(context.activeSessionId, path, commit.hash, label)
         if (!tourStore.hasTourForCommit(path, commit.hash)) {
           loadCachedTour(path, commit.hash).catch(() => undefined)
         }
@@ -53,10 +50,7 @@ function buildTourCommitActions(worktreePath: string, commits: GitCommitInfo[]):
 }
 
 function getWorktreePath(context: PaletteContext): string | null {
-  if (context.focusedPane === 'secondary' && context.secondaryWorktree) {
-    return context.secondaryWorktree.path
-  }
-  return context.activeWorktree?.path ?? null
+  return context.worktreePath
 }
 
 const actions: ActionDef[] = [
@@ -66,8 +60,8 @@ const actions: ActionDef[] = [
     keywords: 'tour branch guided walkthrough',
     execute(context) {
       const path = getWorktreePath(context)
-      if (!path) return
-      openTourTab(path, 'branch', 'Branch tour')
+      if (!path || !context.activeSessionId) return
+      openTourTab(context.activeSessionId, path, 'branch', 'Branch tour')
       triggerTour(path, 'branch')
     }
   },
@@ -77,8 +71,8 @@ const actions: ActionDef[] = [
     keywords: 'review staging uncommitted changes diff',
     execute(context) {
       const path = getWorktreePath(context)
-      if (!path) return
-      openDiffTab(path, null, 'Uncommitted changes')
+      if (!path || !context.activeSessionId) return
+      openDiffTab(context.activeSessionId, path, null, 'Uncommitted changes')
     }
   },
   {
@@ -87,29 +81,8 @@ const actions: ActionDef[] = [
     keywords: 'review branch diff changes',
     execute(context) {
       const path = getWorktreePath(context)
-      if (!path) return
-      openDiffTab(path, 'branch', 'Branch changes')
-    }
-  },
-  {
-    id: 'action:split-pane',
-    label: 'Split Pane',
-    keywords: 'split view dual two pane side by side',
-    execute() {
-      const available = worktreeList().filter(
-        (w) => w.path !== secondPaneWorktree()?.path
-      )
-      if (available.length > 0 && !secondPaneWorktree()) {
-        setSecondaryWorktree(available[0])
-      }
-    }
-  },
-  {
-    id: 'action:close-split',
-    label: 'Close Split Pane',
-    keywords: 'close split pane single view',
-    execute() {
-      setSecondaryWorktree(null)
+      if (!path || !context.activeSessionId) return
+      openDiffTab(context.activeSessionId, path, 'branch', 'Branch changes')
     }
   },
   {

@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Sidebar from './components/sidebar/Sidebar.svelte'
-  import PaneManager from './components/layout/PaneManager.svelte'
+  import WorkspaceManager from './components/layout/WorkspaceManager.svelte'
   import Welcome from './components/Welcome.svelte'
   import CommandPalette from './components/command-palette/CommandPalette.svelte'
   import { refreshWorktrees } from './stores/worktrees.svelte'
   import { initClaudeStatusListeners } from './stores/claude-status.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
-  import { initClaudeSessionIdListener, sessionRestoreStore } from './stores/sessionRestore.svelte'
+  import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
   import { hydrateSession, serializeSession } from './lib/sessionPersistence'
 
   let sidebarWidth = $state(260)
@@ -22,12 +22,12 @@
 
   onMount(() => {
     const unsubStatus = initClaudeStatusListeners()
-    const unsubSessionId = initClaudeSessionIdListener()
+    const unsubSessions = initSessionListeners()
     void initRepoFromMain()
     window.addEventListener('beforeunload', flushSessionSave)
     return () => {
       unsubStatus()
-      unsubSessionId()
+      unsubSessions()
       window.removeEventListener('beforeunload', flushSessionSave)
     }
   })
@@ -44,7 +44,7 @@
       await window.api.invoke('app:set-repo', path)
     }
     repoPath = path
-    sessionRestoreStore.reset()
+    sessionsStore.reset()
     await refreshWorktrees()
     const saved = await window.api.invoke('session:load', path)
     if (saved) {
@@ -162,7 +162,7 @@
       ></div>
 
       <main class="flex-1 overflow-hidden bg-zinc-950">
-        <PaneManager />
+        <WorkspaceManager />
       </main>
     </div>
   </div>

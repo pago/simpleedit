@@ -3,14 +3,10 @@
   import type { WorktreeInfo, BranchInfo } from '../../../shared/ipc-types'
   import {
     worktreeList,
-    activeWorktree,
-    setActiveWorktree,
     refreshWorktrees,
-    focusedPane,
-    secondPaneWorktree,
-    setSecondaryWorktree,
     optimisticRemoveWorktree,
   } from '../../stores/worktrees.svelte'
+  import { sessionsStore } from '../../stores/sessions.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
   import { sanitizeBranchName, isValidBranchName } from '../../lib/branchName'
   import { worktreeLabel } from '../../lib/worktreeLabel'
@@ -49,12 +45,11 @@
     refreshWorktrees()
   })
 
+  // Clicking a worktree repoints the ACTIVE session's workspace at it —
+  // worktrees are an isolation mechanism sessions use, not a navigation
+  // entity of their own anymore.
   function handleSelect(worktree: WorktreeInfo): void {
-    if (focusedPane() === 'secondary' && secondPaneWorktree() !== null) {
-      setSecondaryWorktree(worktree)
-    } else {
-      setActiveWorktree(worktree)
-    }
+    sessionsStore.setActiveSessionWorktree(worktree.path)
   }
 
   async function startCreate(mode: CreateMode): Promise<void> {
@@ -88,7 +83,7 @@
         : await window.api.invoke('worktree:checkout', selectedBranch)
       cancelCreate()
       await refreshWorktrees()
-      setActiveWorktree(created)
+      sessionsStore.setActiveSessionWorktree(created.path)
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : 'Operation failed'
     } finally {
@@ -258,7 +253,7 @@
 
   <div class="flex flex-col" role="listbox" aria-label="Worktrees">
     {#each worktreeList() as worktree (worktree.path)}
-      {@const isActive = activeWorktree()?.path === worktree.path}
+      {@const isActive = sessionsStore.activeSession()?.worktreePath === worktree.path}
       <div
         class="group relative flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm {isActive
           ? 'bg-zinc-700 text-zinc-100'

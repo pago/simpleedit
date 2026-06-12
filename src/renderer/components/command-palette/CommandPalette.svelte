@@ -4,11 +4,7 @@
   import CategoryChips from './CategoryChips.svelte'
   import ResultList from './ResultList.svelte'
   import { closePalette } from '../../stores/commandPalette.svelte'
-  import {
-    activeWorktree,
-    secondPaneWorktree,
-    focusedPane
-  } from '../../stores/worktrees.svelte'
+  import { sessionsStore } from '../../stores/sessions.svelte'
   import { search, executeItem, type GroupedResults } from '../../lib/command-palette/palette-engine'
   import { parseQuery, type PalettePrefix } from '../../lib/command-palette/types'
 
@@ -20,9 +16,8 @@
   let currentPrefix = $derived<PalettePrefix>(parseQuery(query).prefix)
 
   let context = $derived({
-    focusedPane: focusedPane(),
-    activeWorktree: activeWorktree(),
-    secondaryWorktree: secondPaneWorktree()
+    activeSessionId: sessionsStore.activeSessionId(),
+    worktreePath: sessionsStore.activeSession()?.worktreePath ?? null
   })
 
   // Debounced search

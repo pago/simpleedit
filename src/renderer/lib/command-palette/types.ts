@@ -1,4 +1,4 @@
-import type { WorktreeInfo, GitCommitInfo } from '../../../shared/ipc-types'
+import type { GitCommitInfo } from '../../../shared/ipc-types'
 
 export type PaletteCategory = 'file' | 'worktree' | 'action' | 'commit'
 
@@ -14,9 +14,10 @@ export interface PaletteItem {
 }
 
 export interface PaletteContext {
-  focusedPane: 'primary' | 'secondary'
-  activeWorktree: WorktreeInfo | null
-  secondaryWorktree: WorktreeInfo | null
+  /** The active session's id — the tabsStore key all opens target. */
+  activeSessionId: string | null
+  /** The active session's selected worktree (git context for searches). */
+  worktreePath: string | null
 }
 
 export interface PaletteProvider {
@@ -26,7 +27,7 @@ export interface PaletteProvider {
 }
 
 export type PaletteAction =
-  | { type: 'open-file'; worktreePath: string; filePath: string }
+  | { type: 'open-file'; workspaceKey: string; filePath: string }
 
 export type PalettePrefix = '>' | '@' | '#' | null
 
