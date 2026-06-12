@@ -61,7 +61,10 @@ test.describe('IDE layout', () => {
   // slip past the bare 'shows the sidebar' check above. GitLog lives inside a
   // session workspace now, so spawn a session and open the viewer first.
   test('git log loads and the renderer does not throw on startup', async () => {
-    await expect(window.getByRole('listbox', { name: 'Worktrees' })).toBeVisible()
+    // The sidebar is sessions-only as of f1e6062 — no worktree list in it.
+    await expect(
+      window.getByRole('complementary').getByRole('listbox', { name: 'Worktrees' })
+    ).toHaveCount(0)
     await spawnTerminalSession(window)
     await openWorkspaceViewer(window)
     await expect(
