@@ -211,7 +211,6 @@ Use `patch` for bug fixes, `minor` for new features, `major` for breaking change
 
 ## What's deferred to v2
 - AI narration ("Narrate this changeset" via Anthropic API)
-- LSP / go-to-definition (text-search navigation is sufficient for v1)
 - Distribution via Homebrew (GitHub Releases for v1)
 - Keyboard shortcuts for pane navigation
 - Code signing and notarization
