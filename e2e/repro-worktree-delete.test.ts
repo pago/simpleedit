@@ -1,34 +1,27 @@
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
-import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN, launchEnv, spawnTerminalSession, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
+import type { ElectronApplication, Page, Locator } from '@playwright/test'
+import {
+  MAIN,
+  launchEnv,
+  spawnTerminalSession,
+  clearSavedSessionFile,
+  createTempRepo,
+  removeTempRepo,
+  openWorktreePopover,
+  headerWorktreeBranch
+} from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Wait for the worktree list to contain a specific branch name.
- * The list uses role="listbox" / role="option" from WorktreeList.svelte.
- */
-async function waitForWorktreeItem(window: Page, branchName: string): Promise<void> {
-  await expect(
-    window.getByRole('listbox', { name: 'Worktrees' }).getByRole('option', { name: new RegExp(branchName) })
-  ).toBeVisible({ timeout: 10_000 })
-}
-
-/**
- * Wait for a worktree item with the given branch name to disappear.
- */
-async function waitForWorktreeGone(window: Page, branchName: string): Promise<void> {
-  await expect(
-    window.getByRole('listbox', { name: 'Worktrees' }).getByRole('option', { name: new RegExp(branchName) })
-  ).not.toBeVisible({ timeout: 10_000 })
-}
-
 // ── suite ─────────────────────────────────────────────────────────────────────
 
+/**
+ * As of f1e6062 the WorktreeList (and its two-step remove flow) lives in the
+ * workspace header's worktree popover. Creating a worktree closes the popover
+ * (and repoints the active session); removing does not.
+ */
 test.describe('Delete worktree', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run worktree-delete tests')
 
@@ -51,33 +44,53 @@ test.describe('Delete worktree', () => {
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
+    // The worktree popover lives in a workspace header — a session must exist.
+    await spawnTerminalSession(window)
   })
 
   test.afterEach(async () => {
     await app.close()
   })
 
+  // ── helpers ────────────────────────────────────────────────────────────────
+
+  function worktreeOption(dialog: Locator, branchName: string): Locator {
+    return dialog
+      .getByRole('listbox', { name: 'Worktrees' })
+      .getByRole('option', { name: new RegExp(branchName) })
+  }
+
+  /**
+   * Create a worktree via the popover's "+ New" flow. Creating closes the
+   * popover, so reopen it and wait for the new row. Returns the open dialog.
+   */
+  async function createWorktree(branchName: string): Promise<Locator> {
+    let dialog = await openWorktreePopover(window)
+    await dialog.getByRole('button', { name: '+ New' }).click()
+    const nameInput = dialog.getByPlaceholder('branch-name')
+    await expect(nameInput).toBeVisible()
+    await nameInput.fill(branchName)
+    await dialog.getByRole('button', { name: 'Create' }).click()
+    await expect(dialog).not.toBeVisible({ timeout: 10_000 })
+
+    dialog = await openWorktreePopover(window)
+    await expect(worktreeOption(dialog, branchName)).toBeVisible({ timeout: 10_000 })
+    return dialog
+  }
+
+  async function waitForWorktreeGone(dialog: Locator, branchName: string): Promise<void> {
+    await expect(worktreeOption(dialog, branchName)).not.toBeVisible({ timeout: 10_000 })
+  }
+
   // ── happy path ─────────────────────────────────────────────────────────────
 
   test('creates a worktree, deletes it via confirmation, verifies it is gone', async () => {
     const branchName = `test-delete-${Date.now()}`
 
-    // --- CREATE ---
-    await window.getByRole('button', { name: '+ New' }).click()
-
-    const nameInput = window.getByPlaceholder('branch-name')
-    await expect(nameInput).toBeVisible()
-    await nameInput.fill(branchName)
-
-    await window.getByRole('button', { name: 'Create' }).click()
-
-    // Worktree should appear in the list
-    await waitForWorktreeItem(window, branchName)
+    const dialog = await createWorktree(branchName)
 
     // --- DELETE (two-step confirmation) ---
-    const worktreeItem = window
-      .getByRole('listbox', { name: 'Worktrees' })
-      .getByRole('option', { name: new RegExp(branchName) })
+    const worktreeItem = worktreeOption(dialog, branchName)
 
     // The "Remove" button is only visible on hover (opacity-0 → group-hover:opacity-100)
     await worktreeItem.hover()
@@ -93,8 +106,8 @@ test.describe('Delete worktree', () => {
 
     await confirmBtn.click()
 
-    // Worktree must disappear from the list
-    await waitForWorktreeGone(window, branchName)
+    // Worktree must disappear from the list (removal keeps the popover open)
+    await waitForWorktreeGone(dialog, branchName)
   })
 
   // ── cancel confirmation ────────────────────────────────────────────────────
@@ -102,18 +115,10 @@ test.describe('Delete worktree', () => {
   test('cancel during confirmation leaves worktree intact', async () => {
     const branchName = `test-nodelete-${Date.now()}`
 
-    // Create
-    await window.getByRole('button', { name: '+ New' }).click()
-    const nameInput = window.getByPlaceholder('branch-name')
-    await nameInput.fill(branchName)
-    await window.getByRole('button', { name: 'Create' }).click()
-    await waitForWorktreeItem(window, branchName)
+    const dialog = await createWorktree(branchName)
 
     // Initiate delete
-    const worktreeItem = window
-      .getByRole('listbox', { name: 'Worktrees' })
-      .getByRole('option', { name: new RegExp(branchName) })
-
+    const worktreeItem = worktreeOption(dialog, branchName)
     await worktreeItem.hover()
     await worktreeItem.getByRole('button', { name: 'Remove' }).click()
 
@@ -121,60 +126,49 @@ test.describe('Delete worktree', () => {
     await worktreeItem.getByRole('button', { name: 'Cancel' }).click()
 
     // "Remove" button should be back (confirmation dismissed), worktree still present
-    await expect(
-      window.getByRole('listbox', { name: 'Worktrees' }).getByRole('option', { name: new RegExp(branchName) })
-    ).toBeVisible()
+    await expect(worktreeOption(dialog, branchName)).toBeVisible()
 
     // Clean up: actually delete the worktree so the repo is left clean
     await worktreeItem.hover()
     await worktreeItem.getByRole('button', { name: 'Remove' }).click()
     await worktreeItem.getByRole('button', { name: 'Confirm' }).click()
-    await waitForWorktreeGone(window, branchName)
+    await waitForWorktreeGone(dialog, branchName)
   })
 
   // ── delete active worktree ────────────────────────────────────────────────
 
   test('deleting the worktree the active session points at keeps the app usable', async () => {
-    // Agent-first port: there is no auto-switch to another worktree anymore.
-    // Deleting the worktree an active session points at leaves the session
-    // alive with a detached path — the workspace header select deliberately
-    // keeps showing the now-deleted directory name (no other entry becomes
-    // selected). The guard is: the row disappears, nothing crashes, and the
-    // session's workspace stays functional.
-    await spawnTerminalSession(window)
-
+    // There is no auto-switch to another worktree. Deleting the worktree an
+    // active session points at leaves the session alive with a detached path —
+    // the workspace header button deliberately keeps showing the now-deleted
+    // directory name (no other entry becomes selected). The guard is: the row
+    // disappears, nothing crashes, and the workspace stays functional.
     const branchName = `test-active-delete-${Date.now()}`
-    const listbox = window.getByRole('listbox', { name: 'Worktrees' })
 
-    // Create a new worktree
-    await window.getByRole('button', { name: '+ New' }).click()
-    await window.getByPlaceholder('branch-name').fill(branchName)
-    await window.getByRole('button', { name: 'Create' }).click()
-    await waitForWorktreeItem(window, branchName)
+    const dialog = await createWorktree(branchName)
 
-    // The create handler repoints the active session at the new worktree
-    const newItem = listbox.getByRole('option', { name: new RegExp(branchName) })
+    // The create handler repointed the active session at the new worktree
+    const newItem = worktreeOption(dialog, branchName)
     await expect(newItem).toHaveAttribute('aria-selected', 'true')
 
     // Delete it while the session points at it
     await newItem.hover()
     await newItem.getByRole('button', { name: 'Remove' }).click()
     await newItem.getByRole('button', { name: 'Confirm' }).click()
-    await waitForWorktreeGone(window, branchName)
+    await waitForWorktreeGone(dialog, branchName)
 
     // No worktree is auto-selected in its place …
-    await expect(listbox.getByRole('option', { selected: true })).toHaveCount(0)
-    // … and the workspace header still shows the detached directory name, so
-    // the user can repoint manually.
-    const select = window
-      .getByTitle('Worktree this workspace is pointed at')
-      .filter({ visible: true })
-      .first()
-    await expect(select).toBeVisible()
-    const selectedText = await select.evaluate(
-      (el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent?.trim() ?? ''
-    )
-    expect(selectedText).toContain(branchName)
+    await expect(
+      dialog.getByRole('listbox', { name: 'Worktrees' }).getByRole('option', { selected: true })
+    ).toHaveCount(0)
+
+    // … and the workspace header button still shows the detached directory
+    // name, so the user can repoint manually.
+    await window.keyboard.press('Escape')
+    await expect(dialog).not.toBeVisible()
+    await expect
+      .poll(async () => await headerWorktreeBranch(window), { timeout: 5_000 })
+      .toContain(branchName)
   })
 
   // ── optimistic delete ──────────────────────────────────────────────────────
@@ -188,31 +182,31 @@ test.describe('Delete worktree', () => {
     // user can fire off the next confirmation immediately.
     const branchA = `test-fast-a-${Date.now()}`
     const branchB = `test-fast-b-${Date.now()}`
-    const listbox = window.getByRole('listbox', { name: 'Worktrees' })
 
     // Create both worktrees up-front.
-    for (const name of [branchA, branchB]) {
-      await window.getByRole('button', { name: '+ New' }).click()
-      await window.getByPlaceholder('branch-name').fill(name)
-      await window.getByRole('button', { name: 'Create' }).click()
-      await waitForWorktreeItem(window, name)
-    }
+    await createWorktree(branchA)
+    const dialog = await (async () => {
+      // createWorktree leaves the popover open; close it so the second create
+      // starts from the closed state its helper expects.
+      await window.keyboard.press('Escape')
+      return createWorktree(branchB)
+    })()
 
     // Open the confirmation on A, confirm — then *immediately* (no wait)
     // confirm B. Both rows should vanish from the list within the standard
     // timeout. If `busy` ever gated the second click, this would time out.
-    const a = listbox.getByRole('option', { name: new RegExp(branchA) })
+    const a = worktreeOption(dialog, branchA)
     await a.hover()
     await a.getByRole('button', { name: 'Remove' }).click()
     await a.getByRole('button', { name: 'Confirm' }).click()
 
-    const b = listbox.getByRole('option', { name: new RegExp(branchB) })
+    const b = worktreeOption(dialog, branchB)
     await b.hover()
     await b.getByRole('button', { name: 'Remove' }).click()
     await b.getByRole('button', { name: 'Confirm' }).click()
 
-    await waitForWorktreeGone(window, branchA)
-    await waitForWorktreeGone(window, branchB)
+    await waitForWorktreeGone(dialog, branchA)
+    await waitForWorktreeGone(dialog, branchB)
   })
 
   // ── main worktree protection ───────────────────────────────────────────────
@@ -221,10 +215,11 @@ test.describe('Delete worktree', () => {
     // The main worktree has isMain === true, so WorktreeList.svelte only renders
     // the Remove/Confirm/Cancel buttons inside {#if !worktree.isMain}. There
     // should be no Remove button for any main/master entry.
-    const listbox = window.getByRole('listbox', { name: 'Worktrees' })
-
-    // Collect all options whose name contains "main" or "master"
-    const mainOption = listbox.getByRole('option', { name: /\b(main|master)\b/ }).first()
+    const dialog = await openWorktreePopover(window)
+    const mainOption = dialog
+      .getByRole('listbox', { name: 'Worktrees' })
+      .getByRole('option', { name: /\b(main|master)\b/ })
+      .first()
     await mainOption.hover()
 
     // The Remove button must not exist inside the main worktree item at all

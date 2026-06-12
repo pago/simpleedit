@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv, spawnTerminalSession, openWorktreePopover } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
@@ -59,10 +59,12 @@ test.describe('Issue #89: isMain resolves by branch, not list order', () => {
   test.beforeEach(async () => {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: bareRepoPath }
+      env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
+    // The worktree list lives in the workspace header popover (f1e6062).
+    await spawnTerminalSession(window)
   })
 
   test.afterEach(async () => {
@@ -70,7 +72,8 @@ test.describe('Issue #89: isMain resolves by branch, not list order', () => {
   })
 
   test('alphabetically-first worktree exposes Remove; default-branch worktree does not', async () => {
-    const listbox = window.getByRole('listbox', { name: 'Worktrees' })
+    const dialog = await openWorktreePopover(window)
+    const listbox = dialog.getByRole('listbox', { name: 'Worktrees' })
 
     // Both worktrees should be present.
     const featureOption = listbox.getByRole('option', { name: /aaa-feature/ })

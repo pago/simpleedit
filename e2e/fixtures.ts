@@ -46,14 +46,48 @@ type AppFixtures = {
 /**
  * Wait until the renderer has loaded the worktree list. New sessions launch in
  * `worktreeList()[0]` (the Claude memory home), so the ✦ Agent / + Term spawn
- * buttons are clickable-but-inert until that list arrives — a click before then
- * silently no-ops (launchPath() returns null). Tests that spawn a session right
- * after launch must await this first or they race the worktree IPC.
+ * buttons are DISABLED until that list arrives (commit eea4fab). The sidebar
+ * no longer shows worktrees, so the enabled spawn button is the readiness
+ * signal.
  */
 export async function waitForWorktreesReady(window: Page): Promise<void> {
   await expect(
-    window.getByRole('listbox', { name: 'Worktrees' }).getByRole('option').first()
-  ).toBeVisible({ timeout: 15_000 })
+    window.getByRole('button', { name: 'New Claude session' }).first()
+  ).toBeEnabled({ timeout: 15_000 })
+}
+
+/**
+ * Open the ACTIVE workspace's worktree popover via the header branch button
+ * ("main ▾") and return the role="dialog" panel containing the WorktreeList
+ * (listbox "Worktrees", Checkout / + New buttons, remove flow).
+ *
+ * Note: selecting or creating a worktree CLOSES the popover — reopen before
+ * asserting on the list afterwards. A session must exist (the header lives in
+ * SessionWorkspace).
+ */
+export async function openWorktreePopover(window: Page) {
+  const trigger = window
+    .getByTitle(/Worktree this workspace is pointed at/)
+    .filter({ visible: true })
+    .first()
+  await expect(trigger).toBeVisible({ timeout: 10_000 })
+  await trigger.click()
+  const dialog = window
+    .getByRole('dialog', { name: 'Worktrees' })
+    .filter({ visible: true })
+    .first()
+  await expect(dialog).toBeVisible({ timeout: 5_000 })
+  return dialog
+}
+
+/** The branch label on the active workspace's worktree button ("main ▾" → "main"). */
+export async function headerWorktreeBranch(window: Page): Promise<string> {
+  const trigger = window
+    .getByTitle(/Worktree this workspace is pointed at/)
+    .filter({ visible: true })
+    .first()
+  const text = (await trigger.textContent()) ?? ''
+  return text.replace(/▾/g, '').trim()
 }
 
 async function activePtyIds(window: Page): Promise<string[]> {

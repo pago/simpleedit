@@ -26,7 +26,8 @@ import {
   openWorkspaceViewer,
   createTempRepo,
   removeTempRepo,
-  clearSavedSessionFile
+  clearSavedSessionFile,
+  openWorktreePopover
 } from './fixtures'
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO
@@ -104,16 +105,22 @@ test.describe('session save/restore — Claude session does not loop or break IP
   })
 
   test('switching worktrees still works after opening a Claude session', async () => {
-    const worktrees = window.getByRole('listbox', { name: 'Worktrees' }).getByRole('option')
-    if ((await worktrees.count()) < 2) test.skip()
-
-    // A second Claude session — the worktree click below repoints it.
+    // A second Claude session — the worktree selection below repoints it.
     await window.getByRole('button', { name: 'New Claude session' }).first().click()
     await window.waitForTimeout(1500)
 
-    const second = worktrees.nth(1)
-    await second.click()
-    await expect(second).toHaveAttribute('aria-selected', 'true', { timeout: 3000 })
+    // Worktrees live in the workspace header popover (f1e6062).
+    let dialog = await openWorktreePopover(window)
+    const worktrees = dialog.getByRole('listbox', { name: 'Worktrees' }).getByRole('option')
+    if ((await worktrees.count()) < 2) test.skip()
+
+    // Selecting closes the popover; reopen to verify the selection.
+    await worktrees.nth(1).click()
+    await expect(dialog).not.toBeVisible()
+    dialog = await openWorktreePopover(window)
+    await expect(
+      dialog.getByRole('listbox', { name: 'Worktrees' }).getByRole('option').nth(1)
+    ).toHaveAttribute('aria-selected', 'true', { timeout: 3000 })
 
     expect(pageErrors).toEqual([])
   })
