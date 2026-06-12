@@ -82,7 +82,11 @@ Empirical findings that re-shape Stage 2:
 - Tool-use paths are absolute but symlink-resolved (`/tmp` → `/private/tmp`
   on macOS) — normalize before comparing against worktree paths.
 
-## Stage 1 — Core pivot (supersedes #57)
+## Stage 1 — Core pivot (supersedes #57) ✓ done 2026-06-12
+
+Implemented as `feat(sessions)` plus follow-ups; E2E suite fully ported
+(109 passing). Stage 3 was absorbed here — the existing save/restore
+infrastructure only needed rekeying to sessions (format v2).
 
 The layout inversion, with a manual worktree chooser; works day one without
 Stages 2–4.
@@ -115,7 +119,7 @@ fallback. SimpleEdit runs a localhost server and installs hook config (via the
 - Externally started `claude` sessions get the same hooks via user-level
   settings — same endpoint, sessions matched by `session_id`.
 
-## Stage 3 — Session persistence + resume (supersedes #54)
+## Stage 3 — Session persistence + resume (supersedes #54) ✓ absorbed into Stage 1
 
 - Per-project session registry in userData (pattern: `recent-repos.ts`):
   `session_id`, title (incl. user renames), launch dir, last tracked
