@@ -60,19 +60,32 @@ function getWindowForContents(webContentsId: number): BrowserWindow | null {
 }
 
 // ── Window creation ───────────────────────────────────────
+/**
+ * E2E runs set SIMPLEEDIT_E2E=1 so test windows never steal focus from the
+ * engineer's foreground app: the window is shown inactive, and (on macOS)
+ * the app runs with the 'accessory' activation policy — no Dock icon, no
+ * activation on launch. True headless isn't an option: Electron has no
+ * headless mode and a hidden window pauses requestAnimationFrame, which the
+ * terminal's fit/scroll logic depends on. backgroundThrottling is disabled
+ * so rAF keeps running even when the inactive window ends up occluded.
+ */
+const isUnobtrusiveTest = process.env['SIMPLEEDIT_E2E'] === '1'
+
 function createWindow(repoPath?: string): BrowserWindow {
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
+    show: false,
     title: repoPath
       ? `SimpleEdit — ${basename(repoPath).replace('.git', '')}`
       : 'SimpleEdit',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
-      sandbox: false
+      sandbox: false,
+      ...(isUnobtrusiveTest ? { backgroundThrottling: false } : {})
     }
   })
 
@@ -93,7 +106,11 @@ function createWindow(repoPath?: string): BrowserWindow {
   })
 
   win.on('ready-to-show', () => {
-    win.show()
+    if (isUnobtrusiveTest) {
+      win.showInactive()
+    } else {
+      win.show()
+    }
     // Set peek/reference zone widget font to match the editor (13px).
     // insertCSS creates a user stylesheet which overrides Monaco's author styles.
     win.webContents.insertCSS(
@@ -453,6 +470,14 @@ function registerAllHandlers(): void {
 app.whenReady().then(() => {
   inheritShellPath()
   electronApp.setAppUserModelId('com.simpleedit')
+
+  if (isUnobtrusiveTest && process.platform === 'darwin') {
+    // Accessory apps never activate on launch and have no Dock presence —
+    // E2E windows render without yanking focus from whatever the engineer
+    // is doing.
+    app.setActivationPolicy('accessory')
+    app.dock?.hide()
+  }
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
