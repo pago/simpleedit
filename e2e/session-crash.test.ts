@@ -28,8 +28,9 @@ test('spawn-crash: session survives with banner and readable output', async () =
   await expect(entry).toBeVisible()
   await expect(entry).toContainText('(exited)', { timeout: 10_000 })
 
-  // Banner with the exit code…
-  await expect(window.getByText(/Process exited with code \d+/)).toBeVisible()
+  // Banner with the exit code… (xterm also renders its own "[Process exited]"
+  // line, so match the banner's full phrasing)
+  await expect(window.getByText(/Process exited with code \d+ — its last output is below/)).toBeVisible()
   // …and the crash output replayed into xterm despite the listener attaching late.
   await expect(
     window.locator('.xterm-rows').filter({ visible: true }).first()

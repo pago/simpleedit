@@ -9,9 +9,11 @@
   let sessions = $derived(sessionsStore.sessions())
   let activeId = $derived(sessionsStore.activeSessionId())
 
-  /** New sessions launch in the main worktree (Claude memory home). */
+  /** New sessions launch in the main-branch worktree (Claude memory home).
+   * List order is path-sorted, so [0] is NOT necessarily main. */
   function launchPath(): string | null {
-    return worktreeList()[0]?.path ?? null
+    const list = worktreeList()
+    return (list.find((w) => w.isMain) ?? list[0])?.path ?? null
   }
 
   // ── new-session menu (✦ button: claude vs agent view) ────────────────────

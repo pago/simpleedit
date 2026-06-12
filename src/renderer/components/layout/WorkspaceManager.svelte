@@ -8,10 +8,12 @@
   // sessions never loses editor tabs, scroll positions, or the xterm buffer.
   let visitedIds = $derived(sessionsStore.visitedIds())
 
-  /** New sessions launch in the main worktree — the project's home directory
-   * for Claude memory. The workspace dropdown repoints them afterwards. */
+  /** New sessions launch in the main-branch worktree — the project's home
+   * directory for Claude memory. List order is path-sorted, so [0] is NOT
+   * necessarily main. The workspace dropdown repoints them afterwards. */
   function launchPath(): string | null {
-    return worktreeList()[0]?.path ?? null
+    const list = worktreeList()
+    return (list.find((w) => w.isMain) ?? list[0])?.path ?? null
   }
 
   function startClaude(): void {
