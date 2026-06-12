@@ -62,6 +62,9 @@ export function serializeSession(repoPath: string): SerializedSession {
   for (const session of sessionsStore.sessions()) {
     if (session.kind === 'terminal') continue
     if (session.forking || session.forkError) continue
+    // Crash/spawn-failure entries are ephemeral error surfaces, not
+    // resumable work — a claude that never started has no transcript.
+    if (session.exited) continue
 
     // A not-yet-resumed placeholder keeps its resumability across another
     // quit — its uuid lives in pendingResume rather than claudeSessionId.

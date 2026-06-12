@@ -35,6 +35,12 @@ export interface Session {
   forking?: { sourceLabel: string }
   /** Fork failed: short-lived error chip; auto-cleared after ~6s. */
   forkError?: string
+  /**
+   * The PTY exited with a non-zero code (spawn failure or crash). The entry
+   * stays in the inbox with the terminal buffer intact so the user can read
+   * what happened; only zero-code (graceful) exits auto-close.
+   */
+  exited?: { exitCode: number }
 }
 
 let _sessions = $state<Session[]>([])
@@ -154,7 +160,8 @@ export const sessionsStore = {
       forkErrorDismissTimers.delete(id)
     }
 
-    const hasLivePty = !session.pendingResume && !session.forking && !opts.ptyAlreadyDead
+    const hasLivePty =
+      !session.pendingResume && !session.forking && !session.exited && !opts.ptyAlreadyDead
     if (hasLivePty) {
       if (session.kind === 'claude') {
         void window.api.invoke('claude:detach', id)
@@ -326,10 +333,18 @@ export const sessionsStore = {
  * app startup; returns an unsubscribe.
  */
 export function initSessionListeners(): () => void {
-  // A session whose PTY exits is gone — the tab auto-closes (no "exited"
-  // state lingers in the inbox; see PLAN.md design decisions).
-  const offExit = window.api.on('pty:exit', ({ id }) => {
-    if (sessionsStore.get(id)) sessionsStore.close(id, { ptyAlreadyDead: true })
+  // Graceful exit (code 0: `exit`, `/exit`) auto-closes the session — no
+  // "exited" state lingers in the inbox (PLAN.md design decision). A NON-zero
+  // exit means spawn failure or crash: keep the entry with the terminal
+  // buffer intact so the failure is readable instead of silently vanishing.
+  const offExit = window.api.on('pty:exit', ({ id, exitCode }) => {
+    const session = sessionsStore.get(id)
+    if (!session) return
+    if (exitCode === 0) {
+      sessionsStore.close(id, { ptyAlreadyDead: true })
+    } else {
+      sessionsStore.update(id, { exited: { exitCode } })
+    }
   })
 
   // Claude session uuid, pinned at spawn time by main (claude --session-id).

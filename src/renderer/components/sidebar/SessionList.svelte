@@ -228,6 +228,7 @@
 
   /** Status dot styling per session state. */
   function dotClass(session: Session): string {
+    if (session.exited) return 'bg-red-500'
     if (session.pendingResume) return 'bg-zinc-600'
     if (session.forkError) return 'bg-red-500'
     if (session.forking) return 'bg-zinc-500 animate-pulse'
@@ -246,6 +247,7 @@
   }
 
   function statusTitle(session: Session): string {
+    if (session.exited) return `Process exited with code ${session.exited.exitCode} — output preserved in the terminal`
     if (session.pendingResume) return 'Resumable — click to resume'
     if (session.forkError) return `Fork failed: ${session.forkError}`
     if (session.forking) return `Forking… (from ${session.forking.sourceLabel})`
@@ -344,7 +346,7 @@
           </span>
           <span class="min-w-0 flex-1">
             <span class="block truncate text-xs">
-              {session.label}{session.pendingResume ? ' (resume)' : ''}{session.forking ? '…' : ''}{session.forkError ? ' (failed)' : ''}
+              {session.label}{session.pendingResume ? ' (resume)' : ''}{session.forking ? '…' : ''}{session.forkError ? ' (failed)' : ''}{session.exited ? ' (exited)' : ''}
             </span>
             <span class="block truncate text-[10px] text-zinc-500">{worktreeBranch(session)}</span>
           </span>
