@@ -12,6 +12,46 @@ type IPty = pty.IPty
 const terminals = new Map<string, IPty>()
 const mcpConfigPaths = new Map<string, string>()
 
+/**
+ * Capped per-terminal output backlog. The renderer's xterm attaches only
+ * after its component mounts — output emitted before that (notably ALL
+ * output of a process that crashes at spawn) would otherwise be lost.
+ * pty:data events carry their chunk's absolute byte offset; the renderer
+ * replays the backlog on mount and dedups live chunks against it. The
+ * backlog deliberately survives process exit and is dropped on kill.
+ */
+const BACKLOG_CAP = 256 * 1024
+interface PtyBacklog {
+  data: string
+  /** Absolute offset of data[0] (> 0 once the cap has trimmed the front). */
+  start: number
+  end: number
+}
+const backlogs = new Map<string, PtyBacklog>()
+
+/** Append a chunk; returns the chunk's absolute offset. */
+function recordBacklog(id: string, data: string): number {
+  let b = backlogs.get(id)
+  if (!b) {
+    b = { data: '', start: 0, end: 0 }
+    backlogs.set(id, b)
+  }
+  const offset = b.end
+  b.data += data
+  b.end += data.length
+  if (b.data.length > BACKLOG_CAP) {
+    const excess = b.data.length - BACKLOG_CAP
+    b.data = b.data.slice(excess)
+    b.start += excess
+  }
+  return offset
+}
+
+export function getTerminalBacklog(id: string): PtyBacklog {
+  const b = backlogs.get(id)
+  return b ? { ...b } : { data: '', start: 0, end: 0 }
+}
+
 export interface ClaudeSpawnOptions extends ClaudeSpawnOptionsShared {
   bridgePort?: number
   bridgeToken?: string
@@ -86,8 +126,9 @@ export function spawnTerminal(
 
   term.onData((data: string) => {
     emitPtyData(id, data)
+    const offset = recordBacklog(id, data)
     if (!webContents.isDestroyed()) {
-      webContents.send('pty:data', { id, data })
+      webContents.send('pty:data', { id, data, offset })
     }
   })
 
@@ -153,8 +194,9 @@ export function spawnClaudeTerminal(
 
   term.onData((data: string) => {
     emitPtyData(id, data)
+    const offset = recordBacklog(id, data)
     if (!webContents.isDestroyed()) {
-      webContents.send('pty:data', { id, data })
+      webContents.send('pty:data', { id, data, offset })
     }
   })
 
@@ -227,8 +269,9 @@ export function spawnForkedClaudeTerminal(
 
   term.onData((data: string) => {
     emitPtyData(placeholderTabId, data)
+    const offset = recordBacklog(placeholderTabId, data)
     if (!webContents.isDestroyed()) {
-      webContents.send('pty:data', { id: placeholderTabId, data })
+      webContents.send('pty:data', { id: placeholderTabId, data, offset })
     }
   })
 
@@ -269,8 +312,9 @@ export function spawnAgentsTerminal(
 
   term.onData((data: string) => {
     emitPtyData(id, data)
+    const offset = recordBacklog(id, data)
     if (!webContents.isDestroyed()) {
-      webContents.send('pty:data', { id, data })
+      webContents.send('pty:data', { id, data, offset })
     }
   })
 
@@ -300,9 +344,12 @@ export function killTerminal(id: string): void {
   const term = terminals.get(id)
   if (term) {
     try { term.kill() } catch { /* process may already be dead */ }
-    cleanupMcpConfig(id)
     terminals.delete(id)
   }
+  // The PTY may already have exited on its own (terminals entry gone) —
+  // the config and backlog still need dropping when the session closes.
+  cleanupMcpConfig(id)
+  backlogs.delete(id)
 }
 
 export function getActiveTerminalIds(): string[] {
@@ -315,4 +362,5 @@ export function killAllTerminals(): void {
     cleanupMcpConfig(id)
     terminals.delete(id)
   }
+  backlogs.clear()
 }

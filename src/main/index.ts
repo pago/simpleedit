@@ -12,7 +12,8 @@ import {
   resizeTerminal,
   killTerminal,
   killAllTerminals,
-  getActiveTerminalIds
+  getActiveTerminalIds,
+  getTerminalBacklog
 } from './pty'
 import type { PtySpawnOptions } from '../shared/ipc-types'
 import {
@@ -211,6 +212,10 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('pty:active-ids', () => {
     return getActiveTerminalIds()
+  })
+
+  ipcMain.handle('pty:backlog', (_event, id: string) => {
+    return getTerminalBacklog(id)
   })
 
   // ── File system ─────────────────────────────────────────
