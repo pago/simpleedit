@@ -399,6 +399,21 @@
       ></div>
     {/if}
 
+    {#if session.exited}
+      <div class="flex flex-none items-center gap-2 border-b border-red-900/50 bg-red-950/40 px-3 py-1.5">
+        <span class="h-2 w-2 flex-none rounded-full bg-red-500"></span>
+        <p class="flex-1 text-xs text-red-300">
+          Process exited with code {session.exited.exitCode} — its last output is below.
+        </p>
+        <button
+          class="rounded border border-red-500/40 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-500/20"
+          onclick={() => sessionsStore.close(sessionId)}
+        >
+          Close session
+        </button>
+      </div>
+    {/if}
+
     <!-- Terminal: full-bleed until the viewer opens, bottom strip after -->
     <div class="min-h-0 flex-1 bg-black">
       {#if session.pendingResume}
