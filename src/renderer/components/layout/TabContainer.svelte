@@ -10,6 +10,10 @@
 
   interface Props {
     tab: Tab
+    /** tabsStore key — the owning session's id. */
+    workspaceKey: string
+    /** The session's currently selected worktree; fallback git context for
+     * tab kinds that don't carry their own (files, composed panels). */
     worktreePath: string
     terminals: AgentTabInfo[]
     onclose: () => void
@@ -21,6 +25,7 @@
 
   let {
     tab,
+    workspaceKey,
     worktreePath,
     terminals,
     onclose,
@@ -29,6 +34,9 @@
     onsendtoagent,
     onOpenFile,
   }: Props = $props()
+
+  /** Diff/tour/plan tabs pin their git context at open time. */
+  let tabWorktree = $derived('worktreePath' in tab ? tab.worktreePath : worktreePath)
 </script>
 
 {#if tab.kind === 'file'}
@@ -46,7 +54,8 @@
     commitHash={tab.commitHash}
     commitMessage={tab.commitMessage}
     initialTab={tab.initialTab}
-    {worktreePath}
+    {workspaceKey}
+    worktreePath={tabWorktree}
     {terminals}
     {onclose}
     {ondiscusswithagent}
@@ -54,7 +63,7 @@
   />
 {:else if tab.kind === 'plan'}
   <PlanView
-    {worktreePath}
+    worktreePath={tabWorktree}
     commitHash={tab.planHash}
     {terminals}
     {onclose}
@@ -62,7 +71,7 @@
   />
 {:else if tab.kind === 'tour'}
   <TourPanel
-    {worktreePath}
+    worktreePath={tabWorktree}
     commitHash={tab.commitHash}
     commitMessage={tab.commitMessage}
   />
@@ -70,6 +79,7 @@
   <ComposedPanel
     spec={tab.spec}
     terminalId={tab.terminalId}
+    {workspaceKey}
     {worktreePath}
     {onclose}
   />

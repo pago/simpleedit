@@ -13,6 +13,8 @@
     /** null means staging/uncommitted changes */
     commitHash: string | null
     commitMessage: string
+    /** tabsStore key of the owning session — where the tour tab opens. */
+    workspaceKey: string
     worktreePath: string
     terminals: AgentTabInfo[]
     /** Optional initial sub-view hint. */
@@ -22,7 +24,7 @@
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
   }
 
-  let { commitHash, commitMessage, worktreePath, terminals, initialTab, onclose, ondiscusswithagent, onsendtoagent }: Props = $props()
+  let { commitHash, commitMessage, workspaceKey, worktreePath, terminals, initialTab, onclose, ondiscusswithagent, onsendtoagent }: Props = $props()
 
   let files = $state<DiffFileEntry[]>([])
   let selectedFile = $state<string | null>(null)
@@ -59,7 +61,7 @@
       : commitHash === 'branch'
         ? 'Branch tour'
         : `Commit ${commitHash.slice(0, 7)}`
-    openTourTab(worktreePath, commitHash, label)
+    openTourTab(workspaceKey, worktreePath, commitHash, label)
   }
 
   function onSplitterMouseDown(e: MouseEvent) {

@@ -31,6 +31,10 @@ export interface FileTab {
 export interface DiffTab {
   kind: 'diff'
   id: string
+  /** Worktree the diff is computed against. The store key is the session id,
+   * so the git context must travel with the tab — it survives the workspace
+   * being repointed at another worktree. */
+  worktreePath: string
   /** null = staging/uncommitted, 'branch' = branch tour, otherwise commit SHA. */
   commitHash: string | null
   commitMessage: string
@@ -41,6 +45,7 @@ export interface DiffTab {
 export interface TourTab {
   kind: 'tour'
   id: string
+  worktreePath: string
   commitHash: string | null
   commitMessage: string
 }
@@ -48,6 +53,7 @@ export interface TourTab {
 export interface PlanTab {
   kind: 'plan'
   id: string
+  worktreePath: string
   /** 'user-plan' | 'plan-claude:<terminalId>' | commit SHA. */
   planHash: string
   label: string
@@ -103,12 +109,14 @@ function setState(worktreePath: string, next: WorktreeTabState): void {
   _byWorktree = m
 }
 
-/** Stable tab-id derivation keyed by kind + content identity. */
+/** Stable tab-id derivation keyed by kind + content identity. Diff/tour ids
+ * include the worktree because one session can hold diffs from several
+ * worktrees, and the same commit hash may exist in more than one. */
 export function tabIdFor(
   spec:
     | { kind: 'file'; path: string }
-    | { kind: 'diff'; commitHash: string | null }
-    | { kind: 'tour'; commitHash: string | null }
+    | { kind: 'diff'; worktreePath: string; commitHash: string | null }
+    | { kind: 'tour'; worktreePath: string; commitHash: string | null }
     | { kind: 'plan'; planHash: string }
     | { kind: 'composed'; id: string },
 ): string {
@@ -116,9 +124,9 @@ export function tabIdFor(
     case 'file':
       return `file:${spec.path}`
     case 'diff':
-      return `diff:${spec.commitHash ?? 'staging'}`
+      return `diff:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
     case 'tour':
-      return `tour:${spec.commitHash ?? 'staging'}`
+      return `tour:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
     case 'plan':
       return `plan:${spec.planHash}`
     case 'composed':

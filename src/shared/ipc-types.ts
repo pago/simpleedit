@@ -294,65 +294,44 @@ export interface PlanEventMap {
 // ── Session save/restore ─────────────────────────────────
 /**
  * Per-repo persisted snapshot of what was open last time the user quit.
- * Restored on next launch so engineers don't have to manually reopen tabs
- * or `/resume` Claude sessions across worktrees.
+ * Restored on next launch: agent sessions come back as click-to-resume
+ * entries in the sessions panel, each with its workspace tabs. Plain
+ * terminals are not persisted (a dead shell can't resume).
  */
 export type SerializedTab =
   | { kind: 'file'; id: string; path: string }
-  | { kind: 'diff'; id: string; commitHash: string | null; commitMessage: string }
-  | { kind: 'tour'; id: string; commitHash: string | null; commitMessage: string }
-  | { kind: 'plan'; id: string; planHash: string; label: string; claudeTerminalId: string | null }
+  | { kind: 'diff'; id: string; worktreePath: string; commitHash: string | null; commitMessage: string }
+  | { kind: 'tour'; id: string; worktreePath: string; commitHash: string | null; commitMessage: string }
+  | { kind: 'plan'; id: string; worktreePath: string; planHash: string; label: string; claudeTerminalId: string | null }
 
-/**
- * A Claude Code session that was running when SimpleEdit was last closed.
- * On restore, these come back as placeholder tabs the user clicks to resume
- * (avoids spawning N concurrent claude processes on launch). Plain terminals
- * are not persisted — each pane auto-spawns one on mount.
- */
-export interface SerializedClaudeSession {
-  /** UI label as last observed (e.g. "Claude" or a session-derived title). */
+/** One persisted agent session plus its workspace state. */
+export interface SerializedAgentSession {
+  kind: 'claude' | 'agents'
+  /** UI label as last observed (OSC title or user rename). */
   label: string
-  /** Pinned at spawn via `claude --session-id <uuid>`. Required to `--resume`. */
-  sessionId?: string
-  /**
-   * True for `claude agents` (Agent View) tabs. Those tabs don't emit a
-   * session-id, so on restore we respawn a fresh `claude agents` instead of
-   * trying to resume — best-effort restoration, position + label only.
-   */
-  isAgentView?: boolean
-  /**
-   * True when the user explicitly renamed the tab via the context menu. The
-   * label then becomes sticky — `handleTitleChange` early-returns, so a
-   * subsequent xterm OSC title from Claude won't overwrite the user's choice.
-   */
+  /** True when the user renamed the session — the label is sticky. */
   customLabel?: boolean
-}
-
-export interface SerializedWorktreeState {
+  /**
+   * Claude session uuid, pinned at spawn via `claude --session-id <uuid>`.
+   * Required to `--resume`. Absent for Agent View sessions (the TUI emits no
+   * session-id) — those respawn fresh instead.
+   */
+  sessionId?: string
+  /** The worktree the session's workspace was pointed at. */
   worktreePath: string
   tabs: SerializedTab[]
   activeTabId: string | null
-  mru: string[]
   unread: string[]
-  /** Claude sessions that lived in the primary pane's terminal list. */
-  primaryClaudeSessions: SerializedClaudeSession[]
-  /** Claude sessions that lived in the secondary pane's terminal list. */
-  secondaryClaudeSessions: SerializedClaudeSession[]
 }
 
 export interface SerializedSession {
-  version: 1
+  version: 2
   repoPath: string
   savedAt: string
-  layout: {
-    primaryWorktreePath: string | null
-    secondaryWorktreePath: string | null
-    focusedPane: 'primary' | 'secondary'
-    splitRatio: number
-    visitedPrimary: string[]
-    visitedSecondary: string[]
-  }
-  worktreeStates: SerializedWorktreeState[]
+  /** Sidebar order. */
+  sessions: SerializedAgentSession[]
+  /** Index into `sessions` of the entry that was active, if any. */
+  activeIndex: number | null
 }
 
 export interface SessionInvokeMap {

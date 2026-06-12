@@ -44,6 +44,11 @@ export function getClaudeStatus(worktreePath: string): ClaudeStatus {
   return sawError ? 'error' : 'idle'
 }
 
+/** Session-level status: the status of one terminal, idle until reported. */
+export function getClaudeStatusForTerminal(terminalId: string): ClaudeStatus {
+  return byTerminal[terminalId]?.status ?? 'idle'
+}
+
 /** Drop a terminal from status tracking (called when its tab/PTY goes away). */
 export function clearClaudeStatusForTerminal(terminalId: string): void {
   if (!(terminalId in byTerminal)) return

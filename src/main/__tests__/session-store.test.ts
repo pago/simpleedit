@@ -30,28 +30,21 @@ beforeEach(async () => {
 
 function fixture(repoPath = '/tmp/test-repo.git'): SerializedSession {
   return {
-    version: 1,
+    version: 2,
     repoPath,
     savedAt: '2026-04-27T00:00:00.000Z',
-    layout: {
-      primaryWorktreePath: '/tmp/test-repo/main',
-      secondaryWorktreePath: null,
-      focusedPane: 'primary',
-      splitRatio: 50,
-      visitedPrimary: ['/tmp/test-repo/main'],
-      visitedSecondary: []
-    },
-    worktreeStates: [
+    sessions: [
       {
+        kind: 'claude',
+        label: 'Claude',
+        sessionId: 'sid-1',
         worktreePath: '/tmp/test-repo/main',
         tabs: [{ kind: 'file', id: 'file:/tmp/x.ts', path: '/tmp/x.ts' }],
         activeTabId: 'file:/tmp/x.ts',
-        mru: ['file:/tmp/x.ts'],
-        unread: [],
-        primaryClaudeSessions: [{ label: 'Claude', sessionId: 'sid-1' }],
-        secondaryClaudeSessions: []
+        unread: []
       }
-    ]
+    ],
+    activeIndex: 0
   }
 }
 
@@ -71,7 +64,7 @@ describe('session-store', () => {
     const payload = fixture('/tmp/version-test.git')
     saveSession(payload)
     // Manually corrupt the version
-    const corrupted = { ...payload, version: 99 as 1 }
+    const corrupted = { ...payload, version: 99 as 2 }
     saveSession(corrupted)
     expect(loadSession(payload.repoPath)).toBeNull()
   })

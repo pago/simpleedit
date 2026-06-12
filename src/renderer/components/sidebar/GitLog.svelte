@@ -6,13 +6,15 @@
   import TabIcon from '../layout/TabIcon.svelte'
 
   interface Props {
+    /** tabsStore key of the owning session — where diff/tour/plan tabs open. */
+    workspaceKey: string
     worktreePath: string | null
   }
 
-  let { worktreePath }: Props = $props()
+  let { workspaceKey, worktreePath }: Props = $props()
 
   let selectedCommitHash = $derived(
-    worktreePath ? activeDiffHash(worktreePath) : undefined
+    worktreePath ? activeDiffHash(workspaceKey, worktreePath) : undefined
   )
 
   let commits = $state<GitCommitInfo[]>([])
@@ -59,9 +61,9 @@
       // If we were viewing staging but there are no more uncommitted changes,
       // auto-select the newest commit so the view stays useful
       if (isRefresh && path) {
-        const currentHash = activeDiffHash(path)
+        const currentHash = activeDiffHash(workspaceKey, path)
         if (currentHash === null && !hasStagingChanges && commits.length > 0) {
-          openDiffTab(path, commits[0].hash, commits[0].message)
+          openDiffTab(workspaceKey, path, commits[0].hash, commits[0].message)
         }
       }
     } catch (err: unknown) {
@@ -74,16 +76,16 @@
   }
 
   function selectStaging(): void {
-    if (worktreePath) openDiffTab(worktreePath, null, 'Uncommitted changes', { peek: true })
+    if (worktreePath) openDiffTab(workspaceKey, worktreePath, null, 'Uncommitted changes', { peek: true })
   }
 
   function selectCommit(commit: GitCommitInfo): void {
-    if (worktreePath) openDiffTab(worktreePath, commit.hash, commit.message, { peek: true })
+    if (worktreePath) openDiffTab(workspaceKey, worktreePath, commit.hash, commit.message, { peek: true })
   }
 
   function startBranchTour(): void {
     if (!worktreePath) return
-    openTourTab(worktreePath, 'branch', 'Branch tour')
+    openTourTab(workspaceKey, worktreePath, 'branch', 'Branch tour')
     triggerTour(worktreePath, 'branch')
   }
 
@@ -92,11 +94,11 @@
     // Prefer reopening the most recent Claude-originated plan if one exists (check disk too)
     const claudeTerminalId = await planStore.loadLatestClaudePlanTerminalId(worktreePath)
     if (claudeTerminalId) {
-      openPlanTab(worktreePath, `claude-${claudeTerminalId}`, 'Claude Plan', {
+      openPlanTab(workspaceKey, worktreePath, `claude-${claudeTerminalId}`, 'Claude Plan', {
         claudeTerminalId,
       })
     } else {
-      openPlanTab(worktreePath, 'user-plan', 'Plan')
+      openPlanTab(workspaceKey, worktreePath, 'user-plan', 'Plan')
     }
   }
 
@@ -105,7 +107,7 @@
     const label = commit.hash
       ? `Tour: ${commit.message.split('\n')[0] || commit.hash.slice(0, 7)}`
       : 'Tour: Uncommitted changes'
-    openTourTab(worktreePath, commit.hash, label)
+    openTourTab(workspaceKey, worktreePath, commit.hash, label)
     // Best-effort: warm the in-memory tourStore from disk so the user sees a
     // populated panel rather than an empty one.
     if (commit.hash !== null && !tourStore.hasTourForCommit(worktreePath, commit.hash)) {

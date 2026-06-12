@@ -18,7 +18,8 @@ function fileTab(path: string): FileTab {
 function diffTab(hash: string | null, message = 'x'): DiffTab {
   return {
     kind: 'diff',
-    id: tabIdFor({ kind: 'diff', commitHash: hash }),
+    id: tabIdFor({ kind: 'diff', worktreePath: W, commitHash: hash }),
+    worktreePath: W,
     commitHash: hash,
     commitMessage: message,
   }
@@ -27,7 +28,8 @@ function diffTab(hash: string | null, message = 'x'): DiffTab {
 function tourTab(hash: string | null, message = 'x'): TourTab {
   return {
     kind: 'tour',
-    id: tabIdFor({ kind: 'tour', commitHash: hash }),
+    id: tabIdFor({ kind: 'tour', worktreePath: W, commitHash: hash }),
+    worktreePath: W,
     commitHash: hash,
     commitMessage: message,
   }
@@ -37,6 +39,7 @@ function planTab(planHash: string, label = 'Plan'): PlanTab {
   return {
     kind: 'plan',
     id: tabIdFor({ kind: 'plan', planHash }),
+    worktreePath: W,
     planHash,
     label,
     claudeTerminalId: null,
@@ -51,16 +54,22 @@ beforeEach(() => {
 describe('tabIdFor', () => {
   it('derives stable ids per kind + content identity', () => {
     expect(tabIdFor({ kind: 'file', path: '/x/y.ts' })).toBe('file:/x/y.ts')
-    expect(tabIdFor({ kind: 'diff', commitHash: null })).toBe('diff:staging')
-    expect(tabIdFor({ kind: 'diff', commitHash: 'abc' })).toBe('diff:abc')
-    expect(tabIdFor({ kind: 'tour', commitHash: null })).toBe('tour:staging')
+    expect(tabIdFor({ kind: 'diff', worktreePath: W, commitHash: null })).toBe(`diff:${W}:staging`)
+    expect(tabIdFor({ kind: 'diff', worktreePath: W, commitHash: 'abc' })).toBe(`diff:${W}:abc`)
+    expect(tabIdFor({ kind: 'tour', worktreePath: W, commitHash: null })).toBe(`tour:${W}:staging`)
     expect(tabIdFor({ kind: 'plan', planHash: 'user-plan' })).toBe('plan:user-plan')
     expect(tabIdFor({ kind: 'composed', id: 'foo' })).toBe('composed:foo')
   })
 
   it('produces different ids for different kinds with the same key', () => {
-    expect(tabIdFor({ kind: 'diff', commitHash: 'abc' })).not.toBe(
-      tabIdFor({ kind: 'tour', commitHash: 'abc' }),
+    expect(tabIdFor({ kind: 'diff', worktreePath: W, commitHash: 'abc' })).not.toBe(
+      tabIdFor({ kind: 'tour', worktreePath: W, commitHash: 'abc' }),
+    )
+  })
+
+  it('produces different diff ids for the same commit in different worktrees', () => {
+    expect(tabIdFor({ kind: 'diff', worktreePath: W, commitHash: 'abc' })).not.toBe(
+      tabIdFor({ kind: 'diff', worktreePath: W2, commitHash: 'abc' }),
     )
   })
 })

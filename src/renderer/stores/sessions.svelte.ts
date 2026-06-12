@@ -1,0 +1,357 @@
+/**
+ * Global session registry — the primary navigation entity of the agent-first
+ * UI. A session is one PTY (Claude, Agent View, or plain terminal) plus the
+ * workspace state that hangs off it (tabs in tabsStore keyed by session id,
+ * worktree selection, editor layout in SessionWorkspace).
+ *
+ * The session id doubles as the PTY terminal id in main, so all existing
+ * `pty:*` / `claude:*` IPC routes work unchanged.
+ */
+import { untrack } from 'svelte'
+import { clearClaudeStatusForTerminal } from './claude-status.svelte'
+import { tabsStore } from './tabsStore.svelte'
+
+export type SessionKind = 'claude' | 'agents' | 'terminal'
+
+export interface Session {
+  /** PTY terminal id in main ('claude-…', 'agents-…', 'term-…'). */
+  id: string
+  kind: SessionKind
+  label: string
+  /** True when the user renamed the session — OSC titles no longer apply. */
+  customLabel?: boolean
+  /**
+   * The worktree this session's workspace is pointed at (file tree root,
+   * git log scope, diff targets). Starts at the launch dir; the user can
+   * repoint via the workspace dropdown, and Stage 2 will follow the agent's
+   * tracked cwd.
+   */
+  worktreePath: string
+  /** Claude session uuid (pinned at spawn) — required for fork/resume. */
+  claudeSessionId?: string
+  /** Restored-from-disk placeholder: no live PTY until the user clicks Resume. */
+  pendingResume?: { sessionId: string }
+  /** Fork-in-flight placeholder until the new PTY emits its first byte. */
+  forking?: { sourceLabel: string }
+  /** Fork failed: short-lived error chip; auto-cleared after ~6s. */
+  forkError?: string
+}
+
+let _sessions = $state<Session[]>([])
+let _activeId = $state<string | null>(null)
+/** Sessions whose workspace has been mounted — kept alive across switches. */
+let _visitedIds = $state<string[]>([])
+
+let nextClaudeIndex = 1
+let nextAgentsIndex = 1
+let nextTerminalIndex = 1
+
+const forkErrorDismissTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function defaultLabel(kind: SessionKind): string {
+  switch (kind) {
+    case 'claude':
+      return nextClaudeIndex++ === 1 ? 'Claude' : `Claude ${nextClaudeIndex - 1}`
+    case 'agents':
+      return nextAgentsIndex++ === 1 ? 'Agents' : `Agents ${nextAgentsIndex - 1}`
+    case 'terminal':
+      return `Terminal ${nextTerminalIndex++}`
+  }
+}
+
+function select(id: string | null): void {
+  _activeId = id
+  if (id && !_visitedIds.includes(id)) {
+    _visitedIds = [..._visitedIds, id]
+  }
+}
+
+function findSession(id: string): Session | undefined {
+  return _sessions.find((s) => s.id === id)
+}
+
+export const sessionsStore = {
+  sessions(): Session[] {
+    return _sessions
+  },
+
+  activeSessionId(): string | null {
+    return _activeId
+  },
+
+  activeSession(): Session | null {
+    return _activeId ? (findSession(_activeId) ?? null) : null
+  },
+
+  visitedIds(): string[] {
+    return _visitedIds
+  },
+
+  get(id: string): Session | undefined {
+    return findSession(id)
+  },
+
+  select(id: string): void {
+    if (!findSession(id)) return
+    select(id)
+  },
+
+  // ── creation ─────────────────────────────────────────────────────────────
+
+  createClaude(worktreePath: string, opts: { resumeSessionId?: string } = {}): string {
+    const id = `claude-${crypto.randomUUID()}`
+    _sessions = [
+      { id, kind: 'claude', label: defaultLabel('claude'), worktreePath },
+      ..._sessions,
+    ]
+    select(id)
+    void window.api.invoke('claude:spawn', {
+      id,
+      worktreePath,
+      ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
+    })
+    return id
+  },
+
+  createAgents(worktreePath: string): string {
+    const id = `agents-${crypto.randomUUID()}`
+    // The `claude agents` TUI sets noisy OSC titles — customLabel keeps
+    // "Agents N" sticky (same rule as the old TerminalTabs).
+    _sessions = [
+      { id, kind: 'agents', label: defaultLabel('agents'), customLabel: true, worktreePath },
+      ..._sessions,
+    ]
+    select(id)
+    void window.api.invoke('claude:spawn-agents', { id, worktreePath })
+    return id
+  },
+
+  createTerminal(worktreePath: string): string {
+    const id = `term-${crypto.randomUUID()}`
+    _sessions = [
+      ..._sessions,
+      { id, kind: 'terminal', label: defaultLabel('terminal'), worktreePath },
+    ]
+    select(id)
+    void window.api.invoke('pty:spawn', { id, worktreePath })
+    return id
+  },
+
+  // ── lifecycle ────────────────────────────────────────────────────────────
+
+  /**
+   * Close a session: kill its PTY (if live) and remove the entry plus all
+   * workspace state. Also the target of pty:exit auto-close, where the PTY is
+   * already gone.
+   */
+  close(id: string, opts: { ptyAlreadyDead?: boolean } = {}): void {
+    const session = findSession(id)
+    if (!session) return
+
+    const dismiss = forkErrorDismissTimers.get(id)
+    if (dismiss !== undefined) {
+      clearTimeout(dismiss)
+      forkErrorDismissTimers.delete(id)
+    }
+
+    const hasLivePty = !session.pendingResume && !session.forking && !opts.ptyAlreadyDead
+    if (hasLivePty) {
+      if (session.kind === 'claude') {
+        void window.api.invoke('claude:detach', id)
+      }
+      void window.api.invoke('pty:kill', id)
+    }
+
+    const idx = _sessions.findIndex((s) => s.id === id)
+    _sessions = _sessions.filter((s) => s.id !== id)
+    _visitedIds = _visitedIds.filter((v) => v !== id)
+    clearClaudeStatusForTerminal(id)
+    tabsStore.closeAll(id)
+
+    if (_activeId === id) {
+      const next = _sessions[Math.min(idx, _sessions.length - 1)]
+      select(next?.id ?? null)
+    }
+  },
+
+  resumePlaceholder(id: string): void {
+    const session = findSession(id)
+    if (!session?.pendingResume) return
+    const resumeSessionId = session.pendingResume.sessionId
+    this.update(id, { pendingResume: undefined })
+    select(id)
+    void window.api.invoke('claude:spawn', {
+      id,
+      worktreePath: session.worktreePath,
+      resumeSessionId,
+    })
+  },
+
+  rename(id: string, label: string): void {
+    this.update(id, { label: label.trim(), customLabel: true })
+  },
+
+  setWorktree(id: string, worktreePath: string): void {
+    this.update(id, { worktreePath })
+  },
+
+  /** Repoint the ACTIVE session's workspace (sidebar worktree clicks). */
+  setActiveSessionWorktree(worktreePath: string): void {
+    if (_activeId) this.update(_activeId, { worktreePath })
+  },
+
+  /**
+   * Apply an OSC title from the PTY. User-renamed sessions are sticky.
+   * Strips Claude Code's status prefix (✳ U+2733 or braille spinner
+   * U+2800–U+28FF), which is always followed by a space.
+   */
+  applyOscTitle(id: string, rawTitle: string): void {
+    const session = findSession(id)
+    if (!session || session.customLabel) return
+    const firstCp = rawTitle.codePointAt(0) ?? 0
+    const hasPrefix = firstCp === 0x2733 || (firstCp >= 0x2800 && firstCp <= 0x28ff)
+    const label = hasPrefix
+      ? rawTitle.slice(String.fromCodePoint(firstCp).length).trimStart()
+      : rawTitle
+    this.update(id, { label })
+  },
+
+  update(id: string, patch: Partial<Session>): void {
+    untrack(() => {
+      const idx = _sessions.findIndex((s) => s.id === id)
+      if (idx < 0) return
+      const next = _sessions.slice()
+      next[idx] = { ...next[idx], ...patch }
+      _sessions = next
+    })
+  },
+
+  // ── fork ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Insert a fork placeholder session. Returns the placeholder id the caller
+   * passes to `claude:fork` as placeholderTabId so fork-result routes back.
+   */
+  addForkPlaceholder(sourceLabel: string, targetWorktreePath: string): string {
+    const id = `claude-fork-${crypto.randomUUID()}`
+    _sessions = [
+      {
+        id,
+        kind: 'claude',
+        label: defaultLabel('claude'),
+        worktreePath: targetWorktreePath,
+        forking: { sourceLabel },
+      },
+      ..._sessions,
+    ]
+    select(id)
+    return id
+  },
+
+  /**
+   * Mark a fork as failed: error chip on the placeholder, auto-dismissed
+   * (session closed) after ~6s unless the user closes it first.
+   */
+  failFork(placeholderId: string, message: string): void {
+    const session = findSession(placeholderId)
+    if (!session) return
+    this.update(placeholderId, { forking: undefined, forkError: message })
+    const existing = forkErrorDismissTimers.get(placeholderId)
+    if (existing !== undefined) clearTimeout(existing)
+    const t = setTimeout(() => {
+      forkErrorDismissTimers.delete(placeholderId)
+      const still = findSession(placeholderId)
+      if (still?.forkError) this.close(placeholderId)
+    }, 6_000)
+    forkErrorDismissTimers.set(placeholderId, t)
+  },
+
+  // ── persistence hooks ────────────────────────────────────────────────────
+
+  /** Stage a restored session as a click-to-resume placeholder. */
+  addRestoredSession(input: {
+    kind: 'claude' | 'agents'
+    label: string
+    customLabel?: boolean
+    worktreePath: string
+    sessionId?: string
+  }): string | null {
+    if (input.kind === 'agents') {
+      // Agent View can't resume (no session-id) — respawn fresh, same slot.
+      const id = `agents-${crypto.randomUUID()}`
+      _sessions = [
+        ..._sessions,
+        {
+          id,
+          kind: 'agents',
+          label: input.label || defaultLabel('agents'),
+          customLabel: true,
+          worktreePath: input.worktreePath,
+        },
+      ]
+      void window.api.invoke('claude:spawn-agents', { id, worktreePath: input.worktreePath })
+      return id
+    }
+    if (!input.sessionId) return null
+    const id = `claude-${crypto.randomUUID()}`
+    _sessions = [
+      ..._sessions,
+      {
+        id,
+        kind: 'claude',
+        label: input.label || defaultLabel('claude'),
+        ...(input.customLabel ? { customLabel: true as const } : {}),
+        worktreePath: input.worktreePath,
+        pendingResume: { sessionId: input.sessionId },
+      },
+    ]
+    return id
+  },
+
+  /** Reset everything (switching repos). */
+  reset(): void {
+    for (const t of forkErrorDismissTimers.values()) clearTimeout(t)
+    forkErrorDismissTimers.clear()
+    _sessions = []
+    _activeId = null
+    _visitedIds = []
+    nextClaudeIndex = 1
+    nextAgentsIndex = 1
+    nextTerminalIndex = 1
+  },
+}
+
+/**
+ * Global listeners that keep the registry in sync with main. Call once at
+ * app startup; returns an unsubscribe.
+ */
+export function initSessionListeners(): () => void {
+  // A session whose PTY exits is gone — the tab auto-closes (no "exited"
+  // state lingers in the inbox; see PLAN.md design decisions).
+  const offExit = window.api.on('pty:exit', ({ id }) => {
+    if (sessionsStore.get(id)) sessionsStore.close(id, { ptyAlreadyDead: true })
+  })
+
+  // Claude session uuid, pinned at spawn time by main (claude --session-id).
+  const offSessionId = window.api.on('claude:session-id', (data) => {
+    sessionsStore.update(data.terminalId, { claudeSessionId: data.sessionId })
+  })
+
+  // Fork placeholder goes live on the new PTY's first byte.
+  const offData = window.api.on('pty:data', ({ id }) => {
+    const session = sessionsStore.get(id)
+    if (session?.forking) sessionsStore.update(id, { forking: undefined })
+  })
+
+  const offForkResult = window.api.on('claude:fork-result', (payload) => {
+    if (payload.ok) return // success surfaces via pty:data above
+    sessionsStore.failFork(payload.placeholderTabId, payload.error)
+  })
+
+  return () => {
+    offExit()
+    offSessionId()
+    offData()
+    offForkResult()
+  }
+}
