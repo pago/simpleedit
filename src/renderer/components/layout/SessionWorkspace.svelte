@@ -2,6 +2,7 @@
   import FileTree from '../filetree/FileTree.svelte'
   import Terminal from '../terminal/Terminal.svelte'
   import GitLog from '../sidebar/GitLog.svelte'
+  import WorktreeList from '../sidebar/WorktreeList.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
   import PaneTabBar from './PaneTabBar.svelte'
   import TabContainer from './TabContainer.svelte'
@@ -183,9 +184,31 @@
     tabsStore.setFileModified(sessionId, tabIdFor({ kind: 'file', path }), modified)
   }
 
-  function handleWorktreeChange(e: Event): void {
-    const path = (e.target as HTMLSelectElement).value
-    sessionsStore.setWorktree(sessionId, path)
+  // ── worktree popover ─────────────────────────────────────────────────────
+  // The header button opens the full worktree manager (select / create /
+  // checkout / delete) — the only home for worktree CRUD since the sidebar
+  // is sessions-only.
+  let worktreePopoverOpen = $state(false)
+  let worktreePopoverEl = $state<HTMLElement | null>(null)
+  let worktreeButtonEl = $state<HTMLButtonElement | undefined>()
+
+  let worktreeBranch = $derived.by(() => {
+    const wt = worktreeList().find((w) => w.path === worktreePath)
+    return wt?.branch ?? worktreePath.split('/').pop() ?? '—'
+  })
+
+  function handleWindowPointerDown(e: PointerEvent): void {
+    if (!worktreePopoverOpen) return
+    const target = e.target as Node
+    if (worktreePopoverEl?.contains(target) || worktreeButtonEl?.contains(target)) return
+    worktreePopoverOpen = false
+  }
+
+  function handleWindowKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape' && worktreePopoverOpen) {
+      worktreePopoverOpen = false
+      worktreeButtonEl?.focus()
+    }
   }
 
   const FILE_TREE_COLLAPSED_KEY = 'simpleedit:fileTreeCollapsed'
@@ -249,6 +272,8 @@
   }
 </script>
 
+<svelte:window onpointerdown={handleWindowPointerDown} onkeydown={handleWindowKeydown} />
+
 {#if session}
   <div
     id="workspace-{sessionId}"
@@ -258,20 +283,17 @@
     <!-- Workspace header: worktree selector + viewer toggle -->
     <div class="flex h-7 flex-none items-center justify-between border-b border-zinc-800 bg-zinc-900 px-2">
       <span class="truncate text-[11px] font-medium text-zinc-400">{session.label}</span>
-      <div class="flex items-center gap-1">
-        <select
-          class="max-w-[200px] truncate rounded border-none bg-transparent text-[11px] font-medium text-zinc-400 outline-none hover:text-zinc-200"
-          value={worktreePath}
-          onchange={handleWorktreeChange}
-          title="Worktree this workspace is pointed at"
+      <div class="relative flex items-center gap-1">
+        <button
+          bind:this={worktreeButtonEl}
+          class="max-w-[220px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+          onclick={() => (worktreePopoverOpen = !worktreePopoverOpen)}
+          aria-haspopup="dialog"
+          aria-expanded={worktreePopoverOpen}
+          title="Worktree this workspace is pointed at — click to switch or manage"
         >
-          {#if worktreePath && !worktreeList().some((w) => w.path === worktreePath)}
-            <option value={worktreePath} class="bg-zinc-800">{worktreePath.split('/').pop()}</option>
-          {/if}
-          {#each worktreeList() as wt (wt.path)}
-            <option value={wt.path} class="bg-zinc-800">{wt.branch}</option>
-          {/each}
-        </select>
+          {worktreeBranch} ▾
+        </button>
         <button
           class="rounded px-1.5 py-0.5 text-[10px] {viewerOpen ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
           onclick={() => (viewerOpen = !viewerOpen)}
@@ -279,6 +301,17 @@
         >
           Files
         </button>
+
+        {#if worktreePopoverOpen}
+          <div
+            bind:this={worktreePopoverEl}
+            class="absolute right-0 top-full z-30 mt-1 max-h-96 w-72 overflow-y-auto rounded border border-zinc-700 bg-zinc-900 px-3 pb-2 shadow-xl"
+            role="dialog"
+            aria-label="Worktrees"
+          >
+            <WorktreeList onselected={() => (worktreePopoverOpen = false)} />
+          </div>
+        {/if}
       </div>
     </div>
 
