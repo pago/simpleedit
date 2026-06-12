@@ -1,7 +1,21 @@
 import simpleGit from 'simple-git'
 import { join, dirname, basename } from 'path'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, realpathSync } from 'fs'
 import type { WorktreeInfo, BranchInfo } from '../shared/ipc-types'
+
+/**
+ * `git worktree list --porcelain` prints symlink-resolved paths (on macOS,
+ * /tmp/x becomes /private/tmp/x). Paths we hand back to the renderer must
+ * match that output exactly — they're compared against worktree:list results
+ * to select the new worktree in the UI.
+ */
+function canonicalize(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
 
 /**
  * Parse `git worktree list --porcelain` output into WorktreeInfo[].
@@ -145,7 +159,7 @@ export async function createWorktree(
   }
 
   return {
-    path: worktreePath,
+    path: canonicalize(worktreePath),
     branch: name,
     isMain: false,
     isCurrent: false
@@ -214,7 +228,7 @@ export async function checkoutWorktree(
   await git.raw(['worktree', 'add', worktreePath, branch])
 
   return {
-    path: worktreePath,
+    path: canonicalize(worktreePath),
     branch,
     isMain: false,
     isCurrent: false
