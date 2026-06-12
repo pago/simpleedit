@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv, spawnTerminalSession, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO
@@ -35,10 +35,19 @@ test.describe('Delete worktree', () => {
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -125,7 +134,15 @@ test.describe('Delete worktree', () => {
 
   // ── delete active worktree ────────────────────────────────────────────────
 
-  test('deleting the active worktree switches pane to another worktree', async () => {
+  test('deleting the worktree the active session points at keeps the app usable', async () => {
+    // Agent-first port: there is no auto-switch to another worktree anymore.
+    // Deleting the worktree an active session points at leaves the session
+    // alive with a detached path — the workspace header select deliberately
+    // keeps showing the now-deleted directory name (no other entry becomes
+    // selected). The guard is: the row disappears, nothing crashes, and the
+    // session's workspace stays functional.
+    await spawnTerminalSession(window)
+
     const branchName = `test-active-delete-${Date.now()}`
     const listbox = window.getByRole('listbox', { name: 'Worktrees' })
 
@@ -135,19 +152,29 @@ test.describe('Delete worktree', () => {
     await window.getByRole('button', { name: 'Create' }).click()
     await waitForWorktreeItem(window, branchName)
 
-    // Click the new worktree to make it active
+    // The create handler repoints the active session at the new worktree
     const newItem = listbox.getByRole('option', { name: new RegExp(branchName) })
-    await newItem.click()
     await expect(newItem).toHaveAttribute('aria-selected', 'true')
 
-    // Delete it while it is active
+    // Delete it while the session points at it
     await newItem.hover()
     await newItem.getByRole('button', { name: 'Remove' }).click()
     await newItem.getByRole('button', { name: 'Confirm' }).click()
     await waitForWorktreeGone(window, branchName)
 
-    // Some other worktree must now be selected — not null / no worktree
-    await expect(listbox.getByRole('option', { selected: true })).toBeVisible()
+    // No worktree is auto-selected in its place …
+    await expect(listbox.getByRole('option', { selected: true })).toHaveCount(0)
+    // … and the workspace header still shows the detached directory name, so
+    // the user can repoint manually.
+    const select = window
+      .getByTitle('Worktree this workspace is pointed at')
+      .filter({ visible: true })
+      .first()
+    await expect(select).toBeVisible()
+    const selectedText = await select.evaluate(
+      (el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent?.trim() ?? ''
+    )
+    expect(selectedText).toContain(branchName)
   })
 
   // ── optimistic delete ──────────────────────────────────────────────────────
