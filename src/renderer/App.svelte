@@ -4,7 +4,7 @@
   import WorkspaceManager from './components/layout/WorkspaceManager.svelte'
   import Welcome from './components/Welcome.svelte'
   import CommandPalette from './components/command-palette/CommandPalette.svelte'
-  import { refreshWorktrees } from './stores/worktrees.svelte'
+  import { refreshWorktrees, setProjectRoot } from './stores/worktrees.svelte'
   import { initClaudeStatusListeners } from './stores/claude-status.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
@@ -44,6 +44,7 @@
       await window.api.invoke('app:set-repo', path)
     }
     repoPath = path
+    setProjectRoot(path)
     sessionsStore.reset()
     await refreshWorktrees()
     const saved = await window.api.invoke('session:load', path)

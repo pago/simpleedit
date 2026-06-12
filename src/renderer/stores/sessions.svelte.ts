@@ -21,10 +21,16 @@ export interface Session {
   /** True when the user renamed the session — OSC titles no longer apply. */
   customLabel?: boolean
   /**
-   * The worktree this session's workspace is pointed at (file tree root,
-   * git log scope, diff targets). Starts at the launch dir; the user can
-   * repoint via the workspace dropdown, and Stage 2 will follow the agent's
-   * tracked cwd.
+   * Directory the PTY spawned in (and respawns in on resume). For Claude
+   * sessions this is the PROJECT ROOT (beside the bare repo) so all sessions
+   * share one Claude memory; for terminals it's a worktree.
+   */
+  launchDir: string
+  /**
+   * The worktree this session's WORKSPACE is pointed at (file tree root,
+   * git log scope, diff targets) — deliberately separate from launchDir.
+   * Defaults to the main worktree; the user repoints via the workspace
+   * dropdown, and Stage 2 will follow the agent's tracked cwd.
    */
   worktreePath: string
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
@@ -104,42 +110,46 @@ export const sessionsStore = {
 
   // ── creation ─────────────────────────────────────────────────────────────
 
-  createClaude(worktreePath: string, opts: { resumeSessionId?: string } = {}): string {
+  createClaude(
+    launchDir: string,
+    worktreePath: string,
+    opts: { resumeSessionId?: string } = {},
+  ): string {
     const id = `claude-${crypto.randomUUID()}`
     _sessions = [
-      { id, kind: 'claude', label: defaultLabel('claude'), worktreePath },
+      { id, kind: 'claude', label: defaultLabel('claude'), launchDir, worktreePath },
       ..._sessions,
     ]
     select(id)
     void window.api.invoke('claude:spawn', {
       id,
-      worktreePath,
+      worktreePath: launchDir,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
     })
     return id
   },
 
-  createAgents(worktreePath: string): string {
+  createAgents(launchDir: string, worktreePath: string): string {
     const id = `agents-${crypto.randomUUID()}`
     // The `claude agents` TUI sets noisy OSC titles — customLabel keeps
     // "Agents N" sticky (same rule as the old TerminalTabs).
     _sessions = [
-      { id, kind: 'agents', label: defaultLabel('agents'), customLabel: true, worktreePath },
+      { id, kind: 'agents', label: defaultLabel('agents'), customLabel: true, launchDir, worktreePath },
       ..._sessions,
     ]
     select(id)
-    void window.api.invoke('claude:spawn-agents', { id, worktreePath })
+    void window.api.invoke('claude:spawn-agents', { id, worktreePath: launchDir })
     return id
   },
 
-  createTerminal(worktreePath: string): string {
+  createTerminal(launchDir: string, worktreePath: string = launchDir): string {
     const id = `term-${crypto.randomUUID()}`
     _sessions = [
       ..._sessions,
-      { id, kind: 'terminal', label: defaultLabel('terminal'), worktreePath },
+      { id, kind: 'terminal', label: defaultLabel('terminal'), launchDir, worktreePath },
     ]
     select(id)
-    void window.api.invoke('pty:spawn', { id, worktreePath })
+    void window.api.invoke('pty:spawn', { id, worktreePath: launchDir })
     return id
   },
 
@@ -189,7 +199,7 @@ export const sessionsStore = {
     select(id)
     void window.api.invoke('claude:spawn', {
       id,
-      worktreePath: session.worktreePath,
+      worktreePath: session.launchDir,
       resumeSessionId,
     })
   },
@@ -246,6 +256,9 @@ export const sessionsStore = {
         id,
         kind: 'claude',
         label: defaultLabel('claude'),
+        // Forks are explicitly "into worktree": the fork lives there, so it
+        // launches there too (not at the project root).
+        launchDir: targetWorktreePath,
         worktreePath: targetWorktreePath,
         forking: { sourceLabel },
       },
@@ -280,6 +293,7 @@ export const sessionsStore = {
     kind: 'claude' | 'agents'
     label: string
     customLabel?: boolean
+    launchDir: string
     worktreePath: string
     sessionId?: string
   }): string | null {
@@ -293,10 +307,11 @@ export const sessionsStore = {
           kind: 'agents',
           label: input.label || defaultLabel('agents'),
           customLabel: true,
+          launchDir: input.launchDir,
           worktreePath: input.worktreePath,
         },
       ]
-      void window.api.invoke('claude:spawn-agents', { id, worktreePath: input.worktreePath })
+      void window.api.invoke('claude:spawn-agents', { id, worktreePath: input.launchDir })
       return id
     }
     if (!input.sessionId) return null
@@ -308,6 +323,7 @@ export const sessionsStore = {
         kind: 'claude',
         label: input.label || defaultLabel('claude'),
         ...(input.customLabel ? { customLabel: true as const } : {}),
+        launchDir: input.launchDir,
         worktreePath: input.worktreePath,
         pendingResume: { sessionId: input.sessionId },
       },

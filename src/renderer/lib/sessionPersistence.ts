@@ -11,7 +11,7 @@ import type {
   SerializedSession,
   SerializedTab,
 } from '../../shared/ipc-types'
-import { worktreeList } from '../stores/worktrees.svelte'
+import { worktreeList, projectRoot } from '../stores/worktrees.svelte'
 import { sessionsStore } from '../stores/sessions.svelte'
 import { tabsStore, type Tab } from '../stores/tabsStore.svelte'
 
@@ -84,6 +84,7 @@ export function serializeSession(repoPath: string): SerializedSession {
       label: session.label,
       ...(session.customLabel ? { customLabel: true as const } : {}),
       ...(sessionId ? { sessionId } : {}),
+      launchDir: session.launchDir,
       worktreePath: session.worktreePath,
       tabs,
       activeTabId: tabsStore.activeId(session.id),
@@ -158,6 +159,7 @@ export function hydrateSession(session: SerializedSession): {
       kind: s.kind,
       label: s.label,
       ...(s.customLabel ? { customLabel: true as const } : {}),
+      launchDir: s.launchDir ?? projectRoot() ?? worktreePath,
       worktreePath,
       ...(s.sessionId ? { sessionId: s.sessionId } : {}),
     })

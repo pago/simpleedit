@@ -1,34 +1,31 @@
 <script lang="ts">
   import SessionWorkspace from './SessionWorkspace.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
-  import { worktreeList } from '../../stores/worktrees.svelte'
+  import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
 
   let activeId = $derived(sessionsStore.activeSessionId())
   // Keep every visited workspace alive (hidden, not destroyed) so switching
   // sessions never loses editor tabs, scroll positions, or the xterm buffer.
   let visitedIds = $derived(sessionsStore.visitedIds())
 
-  /** New sessions launch in the main-branch worktree — the project's home
-   * directory for Claude memory. List order is path-sorted, so [0] is NOT
-   * necessarily main. The workspace dropdown repoints them afterwards. */
-  function launchPath(): string | null {
-    const list = worktreeList()
-    return (list.find((w) => w.isMain) ?? list[0])?.path ?? null
-  }
-
+  /** Claude sessions launch at the PROJECT ROOT (one Claude memory for all
+   * work); the workspace viewer defaults to the main worktree. Terminals are
+   * working-tree tools, so they launch in the main worktree itself. */
   function startClaude(): void {
-    const path = launchPath()
-    if (path) sessionsStore.createClaude(path)
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) sessionsStore.createClaude(root, wt.path)
   }
 
   function startAgents(): void {
-    const path = launchPath()
-    if (path) sessionsStore.createAgents(path)
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) sessionsStore.createAgents(root, wt.path)
   }
 
   function startTerminal(): void {
-    const path = launchPath()
-    if (path) sessionsStore.createTerminal(path)
+    const wt = mainWorktree()
+    if (wt) sessionsStore.createTerminal(wt.path)
   }
 </script>
 

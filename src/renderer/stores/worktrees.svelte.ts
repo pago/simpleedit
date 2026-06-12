@@ -1,6 +1,9 @@
 import type { WorktreeInfo } from '../../shared/ipc-types'
 
 let _worktreeList = $state<WorktreeInfo[]>([])
+/** Parent directory of the bare repo — the project's home. Claude sessions
+ * launch here so all work shares one Claude memory (keyed by cwd). */
+let _projectRoot = $state<string | null>(null)
 
 /**
  * Reactive accessors. In Svelte 5 .svelte.ts modules, exported functions
@@ -9,6 +12,24 @@ let _worktreeList = $state<WorktreeInfo[]>([])
  */
 export function worktreeList(): WorktreeInfo[] {
   return _worktreeList
+}
+
+export function projectRoot(): string | null {
+  return _projectRoot
+}
+
+export function setProjectRoot(bareRepoPath: string | null): void {
+  if (!bareRepoPath) {
+    _projectRoot = null
+    return
+  }
+  const idx = bareRepoPath.lastIndexOf('/')
+  _projectRoot = idx > 0 ? bareRepoPath.slice(0, idx) : bareRepoPath
+}
+
+/** The default-branch worktree, with a path-sorted fallback. */
+export function mainWorktree(): WorktreeInfo | null {
+  return _worktreeList.find((w) => w.isMain) ?? _worktreeList[0] ?? null
 }
 
 export async function refreshWorktrees(): Promise<void> {
