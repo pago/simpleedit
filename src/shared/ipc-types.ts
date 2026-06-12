@@ -323,6 +323,12 @@ export interface SerializedAgentSession {
    * session-id) — those respawn fresh instead.
    */
   sessionId?: string
+  /**
+   * Directory the PTY spawned in (project root for Claude sessions — the
+   * shared Claude memory home). Resume respawns here. Falls back to
+   * `worktreePath` when absent (blobs from before the field existed).
+   */
+  launchDir?: string
   /** The worktree the session's workspace was pointed at. */
   worktreePath: string
   tabs: SerializedTab[]

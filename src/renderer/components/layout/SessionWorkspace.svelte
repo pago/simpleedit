@@ -11,7 +11,7 @@
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
-  import { worktreeList } from '../../stores/worktrees.svelte'
+  import { worktreeList, projectRoot } from '../../stores/worktrees.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
@@ -142,7 +142,13 @@
 
   function sendToAgent(terminalId: string | 'new', message: string): string | undefined {
     if (terminalId === 'new') {
-      const id = sessionsStore.createClaude(worktreePath)
+      // Launch at the project root (Claude memory home) but inherit THIS
+      // workspace's worktree as the new session's viewer target — the
+      // question being asked is about this worktree's content.
+      const id = sessionsStore.createClaude(
+        projectRoot() ?? worktreePath,
+        worktreePath,
+      )
       // Give the fresh claude process a moment to boot before pasting.
       setTimeout(() => {
         void window.api.invoke('pty:write', id, message + '\r')

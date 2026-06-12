@@ -4,16 +4,29 @@
   import PromptModal from '../PromptModal.svelte'
   import { sessionsStore, type Session } from '../../stores/sessions.svelte'
   import { getClaudeStatusForTerminal } from '../../stores/claude-status.svelte'
-  import { worktreeList, refreshWorktrees } from '../../stores/worktrees.svelte'
+  import { worktreeList, refreshWorktrees, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
 
   let sessions = $derived(sessionsStore.sessions())
   let activeId = $derived(sessionsStore.activeSessionId())
 
-  /** New sessions launch in the main-branch worktree (Claude memory home).
-   * List order is path-sorted, so [0] is NOT necessarily main. */
-  function launchPath(): string | null {
-    const list = worktreeList()
-    return (list.find((w) => w.isMain) ?? list[0])?.path ?? null
+  /** Claude sessions launch at the PROJECT ROOT (one Claude memory for all
+   * work); their workspace viewer defaults to the main worktree. */
+  function startClaude(): void {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) sessionsStore.createClaude(root, wt.path)
+  }
+
+  function startAgents(): void {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) sessionsStore.createAgents(root, wt.path)
+  }
+
+  /** Terminals are working-tree tools — they launch in the main worktree. */
+  function startTerminal(): void {
+    const wt = mainWorktree()
+    if (wt) sessionsStore.createTerminal(wt.path)
   }
 
   // ── new-session menu (✦ button: claude vs agent view) ────────────────────
@@ -26,10 +39,8 @@
   ]
 
   function pickNewMenuItem(id: string): void {
-    const path = launchPath()
-    if (!path) return
-    if (id === 'new-claude') sessionsStore.createClaude(path)
-    else if (id === 'new-agents') sessionsStore.createAgents(path)
+    if (id === 'new-claude') startClaude()
+    else if (id === 'new-agents') startAgents()
   }
 
   function openNewMenuAtPointer(e: MouseEvent): void {
@@ -280,10 +291,7 @@
       <button
         bind:this={newButtonEl}
         class="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-orange-400/70 hover:bg-zinc-700 hover:text-orange-300 disabled:opacity-50"
-        onclick={() => {
-          const path = launchPath()
-          if (path) sessionsStore.createClaude(path)
-        }}
+        onclick={startClaude}
         oncontextmenu={openNewMenuAtPointer}
         disabled={worktreeList().length === 0}
         aria-label="New Claude session"
@@ -294,10 +302,7 @@
       </button>
       <button
         class="flex h-5 items-center rounded px-1.5 text-[11px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
-        onclick={() => {
-          const path = launchPath()
-          if (path) sessionsStore.createTerminal(path)
-        }}
+        onclick={startTerminal}
         disabled={worktreeList().length === 0}
         title="New terminal"
       >
