@@ -120,16 +120,55 @@
     // Receive data from the PTY.
     // When the user has scrolled up, preserve their viewport position so
     // incoming output doesn't yank them to the bottom (or top after a reflow).
-    cleanupDataListener = window.api.on('pty:data', (payload) => {
-      if (payload.id === id && term) {
-        const atBottom = isScrolledToBottom()
-        const prevViewportY = term.buffer.active.viewportY
-        term.write(payload.data)
-        if (!atBottom) {
-          term.scrollToLine(prevViewportY)
-        }
+    function writeChunk(data: string): void {
+      if (!term) return
+      const atBottom = isScrolledToBottom()
+      const prevViewportY = term.buffer.active.viewportY
+      term.write(data)
+      if (!atBottom) {
+        term.scrollToLine(prevViewportY)
       }
+    }
+
+    // The PTY spawns before this component mounts, so output emitted in that
+    // window (all of it, for a process that crashes at spawn) never reaches
+    // this listener. Replay main's backlog first; `written` tracks the
+    // absolute byte offset already rendered so live chunks that overlap the
+    // replay are deduped. Live chunks arriving before the replay resolves are
+    // queued to keep byte order.
+    let written = 0
+    let replayDone = false
+    const queued: Array<{ data: string; offset: number }> = []
+
+    function writeDeduped(chunk: { data: string; offset: number }): void {
+      const chunkEnd = chunk.offset + chunk.data.length
+      if (chunkEnd <= written) return
+      writeChunk(chunk.data.slice(Math.max(0, written - chunk.offset)))
+      written = chunkEnd
+    }
+
+    cleanupDataListener = window.api.on('pty:data', (payload) => {
+      if (payload.id !== id || !term) return
+      if (!replayDone) {
+        queued.push({ data: payload.data, offset: payload.offset })
+        return
+      }
+      writeDeduped(payload)
     })
+
+    void window.api
+      .invoke('pty:backlog', id)
+      .then((b) => {
+        if (term && b.end > written) {
+          writeDeduped({ data: b.data, offset: b.start })
+        }
+      })
+      .catch(() => { /* degrade to live-only output */ })
+      .finally(() => {
+        replayDone = true
+        for (const chunk of queued) writeDeduped(chunk)
+        queued.length = 0
+      })
 
     cleanupExitListener = window.api.on('pty:exit', (payload) => {
       if (payload.id === id && term) {

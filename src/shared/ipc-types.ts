@@ -52,10 +52,16 @@ export interface PtyInvokeMap {
   'pty:resize': { args: [id: string, cols: number, rows: number]; result: void }
   'pty:kill': { args: [id: string]; result: void }
   'pty:active-ids': { args: []; result: string[] }
+  /** Replay buffer for output emitted before the renderer's xterm attached
+   * (or before a fast-crashing process died). Offsets are absolute bytes
+   * since spawn; `data` covers [start, end). */
+  'pty:backlog': { args: [id: string]; result: { data: string; start: number; end: number } }
 }
 
 export interface PtyEventMap {
-  'pty:data': { id: string; data: string }
+  /** `offset`: absolute byte position of this chunk since spawn — lets the
+   * renderer dedup live chunks against the pty:backlog replay. */
+  'pty:data': { id: string; data: string; offset: number }
   'pty:exit': { id: string; exitCode: number }
 }
 
