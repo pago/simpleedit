@@ -4,6 +4,9 @@ import type { ElectronApplication, Page } from '@playwright/test'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
+import os from 'os'
+import { createHash } from 'crypto'
+import { execSync } from 'child_process'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..')
@@ -51,6 +54,172 @@ export async function waitForWorktreesReady(window: Page): Promise<void> {
   await expect(
     window.getByRole('listbox', { name: 'Worktrees' }).getByRole('option').first()
   ).toBeVisible({ timeout: 15_000 })
+}
+
+async function activePtyIds(window: Page): Promise<string[]> {
+  return window.evaluate(() =>
+    (window as unknown as { api: { invoke: (ch: string) => Promise<string[]> } }).api.invoke(
+      'pty:active-ids'
+    )
+  )
+}
+
+/**
+ * Spawn a session via a sidebar SessionList button and return its PTY id
+ * (which doubles as the session id). The agent-first UI has no auto-spawned
+ * terminal — every repo-gated test that needs a workspace creates one first.
+ */
+async function spawnSession(
+  window: Page,
+  button: 'claude' | 'terminal',
+  idPrefix: RegExp
+): Promise<string> {
+  await waitForWorktreesReady(window)
+  const before = new Set(await activePtyIds(window))
+  if (button === 'claude') {
+    await window.getByRole('button', { name: 'New Claude session' }).first().click()
+  } else {
+    await window.getByTitle('New terminal').first().click()
+  }
+  await expect
+    .poll(
+      async () => (await activePtyIds(window)).find((id) => !before.has(id) && idPrefix.test(id)),
+      { timeout: 10_000 }
+    )
+    .toBeDefined()
+  const after = await activePtyIds(window)
+  return after.find((id) => !before.has(id) && idPrefix.test(id))!
+}
+
+/** Spawn a Claude session via the ✦ Agent button; returns the claude- session id. */
+export async function spawnClaudeSession(window: Page): Promise<string> {
+  return spawnSession(window, 'claude', /^claude-/)
+}
+
+/** Spawn a plain terminal session via the + Term button; returns the term- id. */
+export async function spawnTerminalSession(window: Page): Promise<string> {
+  return spawnSession(window, 'terminal', /^term-/)
+}
+
+/**
+ * Open the active workspace's viewer (tab bar + file tree + git log) via the
+ * "Files" toggle in the workspace header. A fresh session is a full-bleed
+ * terminal — GitLog/FileTree only render after this.
+ *
+ * Locators are visible-filtered: WorkspaceManager keeps every visited
+ * workspace mounted (hidden), so unscoped queries can resolve to a hidden
+ * sibling workspace and trip Playwright's strict mode.
+ */
+export async function openWorkspaceViewer(window: Page): Promise<void> {
+  const toggle = window
+    .getByRole('button', { name: 'Files', exact: true })
+    .filter({ visible: true })
+    .first()
+  await expect(toggle).toBeVisible({ timeout: 10_000 })
+  await toggle.click()
+  await expect(
+    window.getByRole('listbox', { name: 'Commits' }).filter({ visible: true }).first()
+  ).toBeVisible({ timeout: 10_000 })
+}
+
+/**
+ * Delete the persisted session blob for a repo BEFORE launching the app.
+ *
+ * The app hydrates saved Claude sessions at startup as click-to-resume
+ * placeholders; the previously-active one is auto-selected, which mounts a
+ * (hidden) workspace complete with restored tabs, GitLog, header select etc.
+ * Tests that auto-save sessions (any Claude-session spawn) therefore pollute
+ * every later launch against the same repo — clear the file first.
+ *
+ * Mirrors main's session-store naming: sha1(repoPath) prefix under userData
+ * (`Electron` for Playwright's unsigned build).
+ */
+export function clearSavedSessionFile(repoPath: string): void {
+  const hash = createHash('sha1').update(repoPath).digest('hex').slice(0, 16)
+  const file = path.join(
+    os.homedir(),
+    'Library',
+    'Application Support',
+    'Electron',
+    'config',
+    'sessions',
+    `${hash}.json`
+  )
+  try {
+    fs.rmSync(file)
+  } catch {
+    /* not present */
+  }
+}
+
+/** Locator for a session entry in the sidebar Sessions listbox. */
+export function sessionOption(window: Page, label: string | RegExp) {
+  return window
+    .getByRole('listbox', { name: 'Sessions' })
+    .getByRole('option', { name: label })
+}
+
+export interface TempRepo {
+  root: string
+  bareRepoPath: string
+  mainWorktreePath: string
+}
+
+/**
+ * Create a private bare repo + `main` worktree for one suite.
+ *
+ * The suite-shared SIMPLEEDIT_TEST_REPO cannot be used by suites that mutate
+ * state: Playwright runs files in parallel workers against the same Electron
+ * userData dir, so worktree lists and the per-repo session blob (auto-saved on
+ * every Claude-session change, hydrated as placeholder sessions on the next
+ * launch) race across workers. A per-suite repo removes the shared state.
+ *
+ * The bare path is realpath-resolved — on macOS /tmp is a symlink, and a
+ * non-canonical SIMPLEEDIT_REPO makes worktree:create return paths that never
+ * match `git worktree list` output (so e.g. auto-activation misses).
+ *
+ * Three commits + two files so diff/peek/pin scenarios have material.
+ */
+export function createTempRepo(prefix: string): TempRepo {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  const seed = path.join(root, 'seed')
+  fs.mkdirSync(seed, { recursive: true })
+  const sh = (cwd: string, cmd: string): void => {
+    execSync(cmd, { cwd, stdio: 'pipe' })
+  }
+  sh(seed, 'git init --initial-branch=main')
+  sh(seed, 'git config user.email test@example.com')
+  sh(seed, 'git config user.name Test')
+  fs.writeFileSync(path.join(seed, 'README.md'), '# seed\n')
+  fs.mkdirSync(path.join(seed, 'src'), { recursive: true })
+  fs.writeFileSync(path.join(seed, 'src', 'a.ts'), 'export const a = 1\n')
+  sh(seed, 'git add .')
+  sh(seed, 'git commit -m "initial"')
+  fs.writeFileSync(path.join(seed, 'src', 'b.ts'), 'export const b = 2\n')
+  sh(seed, 'git add .')
+  sh(seed, 'git commit -m "second commit"')
+  fs.writeFileSync(path.join(seed, 'src', 'c.ts'), 'export const c = 3\n')
+  sh(seed, 'git add .')
+  sh(seed, 'git commit -m "third commit"')
+
+  const bare = path.join(root, 'repo.git')
+  sh(root, `git clone --bare seed ${bare}`)
+  sh(bare, 'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*')
+  const bareRepoPath = fs.realpathSync(bare)
+  const mainWorktreePath = path.join(path.dirname(bareRepoPath), 'main')
+  sh(bareRepoPath, `git worktree add ${mainWorktreePath} main`)
+  return { root, bareRepoPath, mainWorktreePath }
+}
+
+/** Delete a temp repo created by createTempRepo (plus its session blob). */
+export function removeTempRepo(repo: TempRepo | undefined): void {
+  if (!repo) return
+  clearSavedSessionFile(repo.bareRepoPath)
+  try {
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  } catch {
+    /* best effort */
+  }
 }
 
 function assertBuilt(): void {

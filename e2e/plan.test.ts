@@ -1,17 +1,28 @@
 /**
- * E2E tests for Plan Mode feature.
+ * E2E tests for Plan Mode, ported to the agent-first UI.
+ *
+ * Plan Mode changes vs the original suite:
+ *  - GitLog (and its "✦ Plan" entry point) lives in the per-session workspace's
+ *    right column, not the app sidebar. Tests spawn a Claude session and open
+ *    the viewer first.
+ *  - PlanView no longer replaces the pane; "✦ Plan" opens a PLAN TAB in the
+ *    workspace tab bar (sticky, non-peek). There is no "← Back" button — tabs
+ *    are closed/switched instead.
+ *  - The plan notification toast is gone. plan:from-claude routes by session id
+ *    and opens a tab directly (focused when the workspace is idle, background +
+ *    unread when busy — the busy path is covered in tabs.test.ts).
  */
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv, spawnClaudeSession, openWorkspaceViewer, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO
 
-/** Click the first commit in the git log sidebar and wait for diff review. */
+/** Click the first commit in the git log and wait for the diff tab. */
 async function openFirstCommit(window: Page): Promise<void> {
-  const commitList = window.locator('[role="listbox"][aria-label="Commits"]')
+  const commitList = window.locator('[role="listbox"][aria-label="Commits"]:visible')
   await expect(commitList).toBeVisible({ timeout: 10000 })
   const firstCommit = commitList.locator('[role="option"]').first()
   await expect(firstCommit).toBeVisible({ timeout: 5000 })
@@ -19,78 +30,94 @@ async function openFirstCommit(window: Page): Promise<void> {
   await window.waitForTimeout(1500)
 }
 
-/** Open PlanView via sidebar button. */
-async function openPlanView(window: Page): Promise<void> {
-  const planBtn = window.locator('aside button:has-text("Plan")').first()
+/** Open the plan tab via the GitLog "✦ Plan" button in the workspace. */
+async function openPlanTab(window: Page): Promise<void> {
+  const planBtn = window.getByRole('button', { name: '✦ Plan' }).first()
+  await expect(planBtn).toBeVisible({ timeout: 5000 })
   await planBtn.click()
   await window.waitForTimeout(500)
 }
 
-test.describe('Plan Mode — Sidebar entry point', () => {
+const planTabs = (window: Page) =>
+  window.locator('[data-testid="worktree-tab"][data-kind="plan"]:visible')
+
+const planTextarea = (window: Page) =>
+  window.locator('textarea[placeholder*="Add user authentication"]:visible')
+
+test.describe('Plan Mode — GitLog entry point', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run Plan Mode tests')
 
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
-    await window.waitForTimeout(2000)
+    await spawnClaudeSession(window)
+    await openWorkspaceViewer(window)
   })
 
   test.afterEach(async () => {
     await app.close()
   })
 
-  test('Plan button appears in Git Log sidebar', async () => {
-    const planBtn = window.locator('aside button:has-text("Plan")')
-    await expect(planBtn.first()).toBeVisible({ timeout: 5000 })
+  test('Plan button appears in the workspace GitLog', async () => {
+    await expect(window.getByRole('button', { name: '✦ Plan' }).first()).toBeVisible({
+      timeout: 5000
+    })
   })
 
-  test('clicking Plan button opens PlanView with text input', async () => {
-    await openPlanView(window)
+  test('clicking Plan button opens a plan tab with text input', async () => {
+    await openPlanTab(window)
 
-    // PlanView should show the description textarea (from PlanView header)
-    const textarea = window.locator('textarea').first()
-    await expect(textarea).toBeVisible({ timeout: 5000 })
+    await expect(planTabs(window)).toHaveCount(1, { timeout: 5000 })
+    await expect(planTabs(window).first()).toHaveAttribute('data-active', 'true')
+    await expect(planTextarea(window)).toBeVisible({ timeout: 5000 })
   })
 
-  test('PlanView has a Back button that closes it', async () => {
-    await openPlanView(window)
+  test('closing the plan tab removes the plan view', async () => {
+    // The old "← Back" button is gone — closing the tab is the way out.
+    await openPlanTab(window)
+    await expect(planTextarea(window)).toBeVisible({ timeout: 5000 })
 
-    const backBtn = window.locator('button:has-text("← Back")')
-    await expect(backBtn).toBeVisible({ timeout: 3000 })
-    await backBtn.click()
+    await planTabs(window).first().hover()
+    await planTabs(window).first().getByTestId('worktree-tab-close').click()
     await window.waitForTimeout(500)
 
-    // PlanView description input should no longer be visible
-    const planViewTextarea = window.locator('textarea[placeholder*="Add user authentication"]')
-    await expect(planViewTextarea).not.toBeVisible({ timeout: 2000 })
+    await expect(planTabs(window)).toHaveCount(0)
+    await expect(planTextarea(window)).not.toBeVisible({ timeout: 2000 })
   })
 
   test('Generate Plan button is disabled until text is entered', async () => {
-    await openPlanView(window)
+    await openPlanTab(window)
 
     const generateBtn = window.locator('button:has-text("Generate Plan")')
     await expect(generateBtn.first()).toBeVisible({ timeout: 3000 })
     await expect(generateBtn.first()).toBeDisabled()
 
     // Type something
-    const textarea = window.locator('textarea').first()
-    await textarea.fill('Add a new feature')
+    await planTextarea(window).fill('Add a new feature')
     await window.waitForTimeout(200)
 
     await expect(generateBtn.first()).toBeEnabled()
   })
 
-  test('PlanView shows description textarea', async () => {
-    await openPlanView(window)
-    const textarea = window.locator('textarea').first()
-    await expect(textarea).toBeVisible({ timeout: 3000 })
+  test('plan tab shows description textarea', async () => {
+    await openPlanTab(window)
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
   })
 })
 
@@ -100,58 +127,66 @@ test.describe('Plan Mode — Lifecycle', () => {
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
-    await window.waitForTimeout(2000)
+    await spawnClaudeSession(window)
+    await openWorkspaceViewer(window)
   })
 
   test.afterEach(async () => {
     await app.close()
   })
 
-  test('Plan reopens after Back and clicking Plan again', async () => {
+  test('Plan reopens after closing the tab and clicking Plan again', async () => {
     // Open plan
-    await openPlanView(window)
-    const textarea = window.locator('textarea').first()
-    await expect(textarea).toBeVisible({ timeout: 3000 })
+    await openPlanTab(window)
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
 
-    // Go back
-    const backBtn = window.locator('button:has-text("← Back")')
-    await backBtn.click()
+    // Close the plan tab
+    await planTabs(window).first().hover()
+    await planTabs(window).first().getByTestId('worktree-tab-close').click()
     await window.waitForTimeout(500)
+    await expect(planTabs(window)).toHaveCount(0)
 
     // Open plan again
-    await openPlanView(window)
-
-    // Should show the plan view again
-    const textarea2 = window.locator('textarea').first()
-    await expect(textarea2).toBeVisible({ timeout: 3000 })
+    await openPlanTab(window)
+    await expect(planTabs(window)).toHaveCount(1, { timeout: 3000 })
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
   })
 
-  test('Plan reopens after navigating to a commit and back', async () => {
+  test('Plan refocuses after navigating to a commit and clicking Plan again', async () => {
     // Open plan first
-    await openPlanView(window)
-    const textarea = window.locator('textarea').first()
-    await expect(textarea).toBeVisible({ timeout: 3000 })
+    await openPlanTab(window)
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
 
-    // Navigate to a commit (replaces PlanView with DiffReview)
+    // Navigate to a commit — opens a diff tab; the plan tab is sticky and stays.
     await openFirstCommit(window)
+    await expect(planTabs(window)).toHaveCount(1)
 
-    // Now open plan again
-    await openPlanView(window)
-
-    // Should show plan view
-    const textarea2 = window.locator('textarea').first()
-    await expect(textarea2).toBeVisible({ timeout: 3000 })
+    // Clicking Plan again refocuses the existing plan tab (no duplicate).
+    await openPlanTab(window)
+    await expect(planTabs(window)).toHaveCount(1)
+    await expect(planTabs(window).first()).toHaveAttribute('data-active', 'true')
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
   })
 
   test('multiple rapid Plan button clicks do not break the view', async () => {
-    const planBtn = window.locator('aside button:has-text("Plan")').first()
+    const planBtn = window.getByRole('button', { name: '✦ Plan' }).first()
+    await expect(planBtn).toBeVisible({ timeout: 5000 })
 
     // Click rapidly
     await planBtn.click()
@@ -159,9 +194,9 @@ test.describe('Plan Mode — Lifecycle', () => {
     await planBtn.click()
     await window.waitForTimeout(500)
 
-    // Should still show plan view properly
-    const textarea = window.locator('textarea').first()
-    await expect(textarea).toBeVisible({ timeout: 3000 })
+    // Should still show exactly one plan tab with the textarea
+    await expect(planTabs(window)).toHaveCount(1)
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
   })
 })
 
@@ -170,15 +205,26 @@ test.describe('Plan Mode — Claude-originated plan', () => {
 
   let app: ElectronApplication
   let window: Page
+  let sessionId: string
+
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
 
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
-    await window.waitForTimeout(2000)
+    // Claude-originated plans route by session id — the workspace must exist.
+    sessionId = await spawnClaudeSession(window)
   })
 
   test.afterEach(async () => {
@@ -193,8 +239,8 @@ test.describe('Plan Mode — Claude-originated plan', () => {
     )
   }
 
-  /** Send a plan:from-claude IPC event using the correct worktree path. */
-  async function sendPlan(terminalId: string, overview: string): Promise<void> {
+  /** Send a plan:from-claude IPC event addressed to the live session. */
+  async function sendPlan(overview: string): Promise<void> {
     const wt = await getWorktreePath()
     await app.evaluate(
       ({ BrowserWindow }, { wt: worktreePath, tid, overview: ov }) => {
@@ -211,118 +257,97 @@ test.describe('Plan Mode — Claude-originated plan', () => {
           }
         })
       },
-      { wt, tid: terminalId, overview }
+      { wt, tid: sessionId, overview }
     )
   }
 
-  test('plan notification toast appears when Claude sends a plan via bridge', async () => {
-    await sendPlan('test-terminal', 'E2E Test Plan')
-    await window.waitForTimeout(1000)
+  // NOTE: the old "plan notification toast appears" test was deleted in the
+  // agent-first port. Toasts no longer exist — a plan arriving while the
+  // workspace is busy opens a background tab with an unread marker instead
+  // (covered by tabs.test.ts "agent-initiated tab opens in background…").
 
-    const toast = window.locator('text=Claude generated a plan')
-    await expect(toast).toBeVisible({ timeout: 5000 })
-  })
+  test('Claude-originated plan auto-opens a focused plan tab when idle', async () => {
+    await sendPlan('Viewable Plan')
 
-  test('clicking View on toast opens PlanView', async () => {
-    await sendPlan('view-term', 'Viewable Plan')
-    await window.waitForTimeout(1000)
-
-    const toastContainer = window.locator('div:has(> span:text("Claude generated a plan"))')
-    const viewBtn = toastContainer.locator('button:has-text("View")')
-    await expect(viewBtn).toBeVisible({ timeout: 5000 })
-    await viewBtn.click()
-    await window.waitForTimeout(500)
+    await expect(planTabs(window)).toHaveCount(1, { timeout: 5000 })
+    await expect(planTabs(window).first()).toHaveAttribute('data-active', 'true')
 
     const indicator = window.locator('span:text-is("✦ From Claude session")')
     await expect(indicator).toBeVisible({ timeout: 5000 })
   })
 
   test('Send to Claude button appears for Claude-originated plans', async () => {
-    await sendPlan('feedback-term', 'Feedback Plan')
-    await window.waitForTimeout(1000)
+    await sendPlan('Feedback Plan')
 
-    const toastContainer = window.locator('div:has(> span:text("Claude generated a plan"))')
-    const viewBtn = toastContainer.locator('button:has-text("View")')
-    await expect(viewBtn).toBeVisible({ timeout: 5000 })
-    await viewBtn.click()
-    await window.waitForTimeout(500)
+    await expect(planTabs(window)).toHaveCount(1, { timeout: 5000 })
 
     const sendBtn = window.locator('button:has-text("Send to Claude")')
-    await expect(sendBtn).toBeVisible({ timeout: 5000 })
+    await expect(sendBtn.first()).toBeVisible({ timeout: 5000 })
   })
 
-  test('PlanView shows user-plan textarea when not from Claude', async () => {
-    await openPlanView(window)
-    await window.waitForTimeout(500)
+  test('plan tab shows user-plan textarea when not from Claude', async () => {
+    await openWorkspaceViewer(window)
+    await openPlanTab(window)
 
-    const textarea = window.locator('textarea').first()
-    await expect(textarea).toBeVisible({ timeout: 3000 })
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
   })
 })
 
-test.describe('Plan Mode — DiffReview tab', () => {
+test.describe('Plan Mode — DiffReview left pane', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run Plan Mode tests')
 
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
-    await window.waitForTimeout(2000)
+    await spawnClaudeSession(window)
+    await openWorkspaceViewer(window)
   })
 
   test.afterEach(async () => {
     await app.close()
   })
 
-  test('Plan tab exists in diff review alongside Files, Findings, Tour', async () => {
+  // NOTE: the old "Plan/Tour tabs inside DiffReview" tests were deleted in the
+  // agent-first port. Plan and Tour are workspace TABS now (data-kind plan /
+  // tour in the tab bar), not DiffReview panes — DiffReview's left pane only
+  // toggles Files/Findings.
+
+  test('diff review shows the Files / Findings toggle', async () => {
     await openFirstCommit(window)
 
     await expect(window.locator('button').filter({ hasText: /^Files/ }).first()).toBeVisible({ timeout: 5000 })
     await expect(window.locator('button').filter({ hasText: /^Findings/ }).first()).toBeVisible({ timeout: 5000 })
-    await expect(window.locator('button').filter({ hasText: /^Tour/ }).first()).toBeVisible({ timeout: 5000 })
-    await expect(window.locator('button').filter({ hasText: /^Plan/ }).first()).toBeVisible({ timeout: 5000 })
   })
 
-  test('Plan tab in diff review shows text input for plan description', async () => {
+  test('switching between a diff tab and the plan tab works', async () => {
     await openFirstCommit(window)
+    const diffTabs = window.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
+    await expect(diffTabs.first()).toHaveAttribute('data-active', 'true', { timeout: 5000 })
 
-    const planTab = window.locator('button').filter({ hasText: /^Plan/ }).last()
-    await planTab.click()
-    await window.waitForTimeout(500)
+    // Open the plan tab — it takes focus.
+    await openPlanTab(window)
+    await expect(planTabs(window).first()).toHaveAttribute('data-active', 'true', { timeout: 5000 })
+    await expect(planTextarea(window)).toBeVisible({ timeout: 3000 })
 
-    const textarea = window.locator('textarea[placeholder*="Describe what you want"]')
-    const generateBtn = window.locator('button:has-text("Generate Plan")')
-    await expect(textarea.or(generateBtn).first()).toBeVisible({ timeout: 5000 })
-  })
-
-  test('switching between Files and Plan tabs works', async () => {
-    await openFirstCommit(window)
-
-    // Switch to Plan tab
-    const planTab = window.locator('button').filter({ hasText: /^Plan/ }).last()
-    await planTab.click()
-    await window.waitForTimeout(500)
-
-    // Verify plan content visible
-    const textarea = window.locator('textarea[placeholder*="Describe what you want"]')
-    await expect(textarea).toBeVisible({ timeout: 3000 })
-
-    // Switch back to Files tab (the tab bar is hidden in plan view,
-    // but we can click Back to go to files)
-    // Actually in DiffReview, Plan is full-width so we'd need to
-    // use the sidebar to navigate. Let's verify switching via commit click.
-    await openFirstCommit(window)
-    await window.waitForTimeout(500)
-
-    // Should show file list (back in files tab)
-    const diffPrompt = window.locator('text=Select a file to view its diff')
-    const fileBtn = window.locator('button[title]').first()
-    await expect(diffPrompt.or(fileBtn).first()).toBeVisible({ timeout: 5000 })
+    // Switch back to the diff tab — diff content renders again.
+    await diffTabs.first().click()
+    await expect(diffTabs.first()).toHaveAttribute('data-active', 'true')
+    await expect(window.locator('button').filter({ hasText: /^Files/ }).first()).toBeVisible({ timeout: 5000 })
   })
 })

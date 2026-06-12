@@ -10,7 +10,7 @@
  */
 import { test as base, expect, _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv, spawnClaudeSession, openWorkspaceViewer, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO
@@ -20,7 +20,7 @@ interface ApiOnly { api: { invoke: (channel: string, ...args: unknown[]) => Prom
 async function launch(env: Record<string, string> = {}): Promise<{ app: ElectronApplication; window: Page }> {
   const app = await electron.launch({
     args: [MAIN, ...SANDBOX_ARGS],
-    env: { ...process.env, ...env }
+    env: launchEnv(env)
   })
   const window = await app.firstWindow()
   await window.waitForLoadState('domcontentloaded')
@@ -90,37 +90,50 @@ base.describe('session save/restore — file tab survives relaunch', () => {
   base.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run the relaunch scenario')
 
   base('opening a file then relaunching restores the tab', async () => {
-    // First launch — open a file via the file tree.
-    let { app, window } = await launch({ SIMPLEEDIT_REPO: repoPath! })
-    await window.waitForTimeout(2000)
+    // Private repo: the per-repo session blob must survive between the two
+    // launches below, and parallel suites clearing/writing the shared repo's
+    // blob would race us.
+    const repo = createTempRepo('simpleedit-restore-')
 
-    // Clear any previously saved session for this repo.
-    await window.evaluate(
-      async (r) => (window as unknown as ApiOnly).api.invoke('session:clear', r),
-      repoPath!
-    )
+    // First launch — spawn a Claude session (only claude/agents sessions are
+    // persisted; plain terminals are not), open its workspace viewer, and open
+    // a file via the file tree.
+    let { app, window } = await launch({ SIMPLEEDIT_REPO: repo.bareRepoPath })
+
+    await spawnClaudeSession(window)
+    await openWorkspaceViewer(window)
 
     // Click the first *file* (not directory) in the file tree to open a tab.
-    const fileNode = window.locator('[role="treeitem"]:not([aria-expanded])').first()
+    const fileNode = window.locator('[role="treeitem"]:not([aria-expanded]):visible').first()
     await expect(fileNode).toBeVisible({ timeout: 10_000 })
-    const fileLabel = (await fileNode.textContent())?.trim()
+    // The treeitem text includes the file-type glyph ("📄 README.md") — the
+    // file NAME is the last whitespace-separated token.
+    const fileLabel = (await fileNode.textContent())?.trim().split(/\s+/).pop()
     await fileNode.click()
-    await window.waitForTimeout(800) // let debounced save fire (500ms)
+    // The file tab must actually open before the save below can include it.
+    await expect(
+      window.locator('[data-testid="worktree-tab"][data-kind="file"]').first()
+    ).toBeVisible({ timeout: 5_000 })
+    await window.waitForTimeout(1_200) // let debounced save fire (500ms)
 
     await app.close()
 
-    // Second launch — same repo. Session should hydrate the tab.
-    const second = await launch({ SIMPLEEDIT_REPO: repoPath! })
+    // Second launch — same repo. The session should come back as a
+    // click-to-resume placeholder in the Sessions list…
+    const second = await launch({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     app = second.app
     window = second.window
-    await window.waitForTimeout(2000)
+    await expect(
+      window
+        .getByRole('listbox', { name: 'Sessions' })
+        .getByRole('option')
+        .first()
+    ).toBeVisible({ timeout: 10_000 })
 
-    // The restored session should yield a non-empty tab list. We can't reliably
-    // identify the exact tab without testid hooks, so we rely on the IPC view:
-    // session:load should round-trip the saved data and show the file path.
+    // …and the saved blob must contain the file tab for the hydrate path.
     const loaded = (await window.evaluate(
       async (r) => (window as unknown as ApiOnly).api.invoke('session:load', r),
-      repoPath!
+      repo.bareRepoPath
     )) as { sessions: Array<{ tabs: Array<{ kind: string; path?: string }> }> } | null
 
     expect(loaded).not.toBeNull()
@@ -131,11 +144,7 @@ base.describe('session save/restore — file tab survives relaunch', () => {
       expect(fileTabs.some((t) => (t.path ?? '').endsWith(fileLabel))).toBe(true)
     }
 
-    // Cleanup so the next run starts fresh.
-    await window.evaluate(
-      async (r) => (window as unknown as ApiOnly).api.invoke('session:clear', r),
-      repoPath!
-    )
     await app.close()
+    removeTempRepo(repo)
   })
 })

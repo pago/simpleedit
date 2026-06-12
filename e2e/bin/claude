@@ -4,11 +4,26 @@
 # auto-close-on-pty:exit and removing the tab before Playwright can observe it.
 #
 # This script emits a startup line (some tests wait on pty:data to detect the
-# terminal id), then blocks long enough for assertions to run. It ignores all
-# arguments — the tests don't exercise Claude's protocol, they exercise
-# SimpleEdit's tab UI.
+# terminal id), then idles. It ignores all arguments — the tests don't exercise
+# Claude's protocol, they exercise SimpleEdit's session UI.
 #
-# 60 seconds is enough for any single test; node-pty SIGHUP on app shutdown
-# kills the sleep immediately, so the bound shouldn't normally be reached.
+# Extras driven by tests:
+#  - SIMPLEEDIT_FAKE_CLAUDE_OSC=1: emit one OSC title with the real CLI's
+#    idle marker (✳ Claude Code) so the OSC→claude:status pipeline can be
+#    asserted deterministically (the real CLI's title behaviour depends on
+#    folder trust state, which a fresh temp repo never has).
+#  - Reading "/exit" on stdin exits 0, mirroring the real CLI's slash command,
+#    so pty:exit propagation can be tested without the real binary.
+#
+# The read timeout bounds idle lifetime at ~60s; node-pty SIGHUP on app
+# shutdown kills it immediately, so the bound shouldn't normally be hit.
 echo "fake claude ready"
-exec sleep 60
+if [ "${SIMPLEEDIT_FAKE_CLAUDE_OSC:-}" = "1" ]; then
+  printf '\033]0;\342\234\263 Claude Code\007'
+fi
+while read -t 60 line; do
+  case "$line" in
+    *"/exit"*) exit 0 ;;
+  esac
+done
+exit 0

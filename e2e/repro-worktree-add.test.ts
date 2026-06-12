@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv, spawnTerminalSession, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO
@@ -12,10 +12,19 @@ test.describe('Add new worktree', () => {
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -78,10 +87,9 @@ test.describe('Add new worktree', () => {
   test('creates a new worktree and it appears in the list', async () => {
     const branchName = `test-worktree-${Date.now()}`
 
-    // Wait for the initial worktree list to load before counting
+    // Wait for the initial worktree list to load
     const listbox = window.getByRole('listbox', { name: 'Worktrees' })
     await listbox.getByRole('option').first().waitFor()
-    const beforeCount = await listbox.getByRole('option').count()
 
     // Click "+ New" and type the branch name
     await window.getByRole('button', { name: '+ New' }).click()
@@ -97,14 +105,12 @@ test.describe('Add new worktree', () => {
     // The form should close
     await expect(input).not.toBeVisible()
 
-    // The new worktree should appear in the listbox
+    // The new worktree should appear in the listbox. (No exact before/after
+    // count assertion: suites in other workers create/remove worktrees in the
+    // same shared repo concurrently, so the total is not stable.)
     await expect(listbox.getByRole('option', { name: branchName })).toBeVisible({
       timeout: 10_000
     })
-
-    // The list should have grown by one entry
-    const afterCount = await listbox.getByRole('option').count()
-    expect(afterCount).toBe(beforeCount + 1)
   })
 
   test('creates a new worktree via Enter key', async () => {
@@ -126,7 +132,12 @@ test.describe('Add new worktree', () => {
     })
   })
 
-  test('newly created worktree is automatically activated', async () => {
+  test('newly created worktree repoints the active session (auto-activate)', async () => {
+    // aria-selected reflects the ACTIVE SESSION's worktree in the agent-first
+    // UI — with no session, nothing is ever selected. Spawn one first; the
+    // create handler then repoints it at the new worktree.
+    await spawnTerminalSession(window)
+
     const branchName = `test-autoselect-${Date.now()}`
     const listbox = window.getByRole('listbox', { name: 'Worktrees' })
 
@@ -146,8 +157,10 @@ test.describe('Add new worktree', () => {
     await window.getByRole('button', { name: '+ New' }).click()
     await expect(window.getByPlaceholder('branch-name')).toBeVisible()
 
-    // Click somewhere outside the form — the sidebar title is a safe target
-    await window.getByText('Worktrees').click()
+    // Click somewhere outside the form — the sidebar section title is a safe
+    // target. exact:true so the transient "No worktrees found" placeholder
+    // (visible until the list loads) can't make the locator ambiguous.
+    await window.getByText('Worktrees', { exact: true }).click()
 
     await expect(window.getByPlaceholder('branch-name')).not.toBeVisible()
   })

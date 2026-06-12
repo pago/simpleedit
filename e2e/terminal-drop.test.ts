@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN } from './fixtures'
+import { MAIN, launchEnv, spawnTerminalSession, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO
@@ -12,10 +12,19 @@ test.describe('Terminal drag-and-drop', () => {
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -26,6 +35,8 @@ test.describe('Terminal drag-and-drop', () => {
   })
 
   test('writes the dropped file path into the PTY', async () => {
+    // The agent-first UI has no auto-spawned terminal — create one first.
+    await spawnTerminalSession(window)
     await window.waitForSelector('[data-testid="terminal-drop-target"]')
     // Let the PTY spawn settle so the shell prompt is rendered.
     await window.waitForTimeout(1500)

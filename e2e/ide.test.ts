@@ -1,7 +1,13 @@
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN } from './fixtures'
+import {
+  MAIN,
+  launchEnv,
+  waitForWorktreesReady,
+  spawnTerminalSession,
+  openWorkspaceViewer,
+  clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
@@ -16,10 +22,19 @@ test.describe('IDE layout', () => {
   let window: Page
   let pageErrors: string[]
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     pageErrors = []
@@ -32,7 +47,7 @@ test.describe('IDE layout', () => {
   })
 
   test('shows the repo name in the title bar', async () => {
-    const repoName = repoPath!.split('/').pop()!.replace('.git', '')
+    const repoName = repo.bareRepoPath.split('/').pop()!.replace('.git', '')
     await expect(window.getByText(`SimpleEdit [${repoName}]`)).toBeVisible()
   })
 
@@ -40,15 +55,18 @@ test.describe('IDE layout', () => {
     await expect(window.getByRole('complementary')).toBeVisible()
   })
 
-  // Regression guard: a render-time ReferenceError in WorktreePane (e.g. the
-  // dangling `{activeFilePath}` introduced when the tabs refactor and the
-  // "select opened file" PR collided) aborts Svelte's reactive batch and
-  // leaves the git log effect stuck. The visible symptom — sidebar mounts but
-  // commits never appear — used to slip past the bare 'shows the sidebar'
-  // check above.
+  // Regression guard: a render-time ReferenceError in the workspace tree
+  // aborts Svelte's reactive batch and leaves the git log effect stuck. The
+  // visible symptom — the workspace mounts but commits never appear — used to
+  // slip past the bare 'shows the sidebar' check above. GitLog lives inside a
+  // session workspace now, so spawn a session and open the viewer first.
   test('git log loads and the renderer does not throw on startup', async () => {
     await expect(window.getByRole('listbox', { name: 'Worktrees' })).toBeVisible()
-    await expect(window.getByRole('listbox', { name: 'Commits' })).toBeVisible({ timeout: 5000 })
+    await spawnTerminalSession(window)
+    await openWorkspaceViewer(window)
+    await expect(
+      window.getByRole('listbox', { name: 'Commits' }).filter({ visible: true }).first()
+    ).toBeVisible({ timeout: 5000 })
     expect(pageErrors).toEqual([])
   })
 })
@@ -59,10 +77,19 @@ test.describe('Terminal links', () => {
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -93,30 +120,42 @@ test.describe('Terminal links', () => {
   })
 })
 
-test.describe('Claude terminal tabs', () => {
+test.describe('Claude sessions', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run IDE tests')
 
   let app: ElectronApplication
   let window: Page
 
+  let repo: ReturnType<typeof createTempRepo>
+  test.beforeAll(() => {
+    repo = createTempRepo('simpleedit-e2e-')
+  })
+  test.afterAll(() => {
+    removeTempRepo(repo)
+  })
+
   test.beforeEach(async () => {
+    clearSavedSessionFile(repo.bareRepoPath)
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: repoPath! }
+      // The e2e fake claude exits on "/exit" input, so the exit-propagation
+      // test below works without the real CLI.
+      env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
+    await waitForWorktreesReady(window)
   })
 
   test.afterEach(async () => {
     await app.close()
   })
 
-  test('each Claude button click creates exactly one terminal', async () => {
+  test('each ✦ Agent button click creates exactly one Claude PTY', async () => {
     const before: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
     const claudeBefore = before.filter((id) => id.startsWith('claude-'))
 
-    await window.getByTitle('Run Claude Code').first().click()
+    await window.getByRole('button', { name: 'New Claude session' }).first().click()
     await window.waitForTimeout(1000)
 
     const after: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
@@ -125,56 +164,33 @@ test.describe('Claude terminal tabs', () => {
     expect(claudeAfter.length).toBe(claudeBefore.length + 1)
   })
 
-  test('switching tabs does not collapse terminal columns to zero (#37)', async () => {
-    // Wait for the default terminal tab to stabilise
-    await window.waitForTimeout(1000)
-
-    // Create a second terminal tab and switch between them repeatedly
-    await window.getByTitle('New terminal').first().click()
+  test('switching sessions does not collapse terminal columns to zero (#37)', async () => {
+    // Two terminal sessions — switching between them hides one workspace and
+    // shows the other, which is exactly the hidden-container ResizeObserver
+    // case #37 was about.
+    await spawnTerminalSession(window)
+    await window.waitForTimeout(500)
+    const secondTermId = await spawnTerminalSession(window)
     await window.waitForTimeout(500)
 
-    const tabButtons = window.locator(
-      'div.flex.items-center.border-b.border-zinc-800 button'
-    )
-    const allButtons = await tabButtons.all()
+    const sessionOptions = window
+      .getByRole('listbox', { name: 'Sessions' })
+      .getByRole('option')
+    await expect(sessionOptions).toHaveCount(2)
 
-    // Switch back to first tab
-    for (const btn of allButtons) {
-      const text = await btn.textContent()
-      if (text?.includes('Terminal 1')) {
-        await btn.click()
-        break
-      }
-    }
-    await window.waitForTimeout(500)
-
-    // Rapid tab switching to trigger ResizeObserver on hidden containers
+    // Rapid session switching to trigger ResizeObserver on hidden containers
     for (let i = 0; i < 3; i++) {
-      for (const btn of allButtons) {
-        if ((await btn.textContent())?.includes('Terminal 2')) {
-          await btn.click()
-          break
-        }
-      }
+      await sessionOptions.nth(0).click()
       await window.waitForTimeout(200)
-      for (const btn of allButtons) {
-        if ((await btn.textContent())?.includes('Terminal 1')) {
-          await btn.click()
-          break
-        }
-      }
+      await sessionOptions.nth(1).click()
       await window.waitForTimeout(200)
     }
     await window.waitForTimeout(500)
 
-    // Write `tput cols` and read the output from the terminal DOM
-    const termIds: string[] = await window.evaluate(() =>
-      window.api.invoke('pty:active-ids')
-    )
-    const firstTermId = termIds.find((id) => id.startsWith('term-'))!
+    // We're on the second terminal; ask its shell how wide it thinks it is.
     await window.evaluate(
       (id) => window.api.invoke('pty:write', id, 'tput cols\r'),
-      firstTermId
+      secondTermId
     )
     await window.waitForTimeout(1000)
 
@@ -191,7 +207,12 @@ test.describe('Claude terminal tabs', () => {
     expect(cols!).toBeGreaterThanOrEqual(40)
   })
 
-  test('exiting one Claude terminal does not close the other', async () => {
+  test('one session exiting naturally does not close the other', async () => {
+    // Originally "/exit one of two Claude sessions". Which claude binary the
+    // PTY's login shell resolves is environment-dependent (the real CLI shows
+    // a trust prompt in fresh temp repos and ignores /exit), so exercise the
+    // same invariant — one PTY's natural exit must only auto-close its own
+    // session — with plain terminal sessions and a shell `exit`.
     await window.evaluate(() => {
       ;(window as any).__exitEvents = [] as string[]
       window.api.on('pty:exit', (payload) => {
@@ -199,21 +220,24 @@ test.describe('Claude terminal tabs', () => {
       })
     })
 
-    await window.getByTitle('Run Claude Code').first().click()
-    await window.waitForTimeout(4000)
-    await window.getByTitle('Run Claude Code').first().click()
-    await window.waitForTimeout(4000)
+    const id1 = await spawnTerminalSession(window)
+    const id2 = await spawnTerminalSession(window)
 
-    const allIds: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
-    const claudeIds = allIds.filter((id) => id.startsWith('claude-'))
-    expect(claudeIds.length).toBeGreaterThanOrEqual(2)
+    await window.evaluate((id) => window.api.invoke('pty:write', id as string, ' exit\r'), id1)
 
-    const [id1, id2] = claudeIds
-    await window.evaluate((id) => window.api.invoke('pty:write', id as string, '/exit\r'), id1)
-    await window.waitForTimeout(4000)
-
+    // The exited PTY disappears and its session auto-closes; the other lives.
+    await expect
+      .poll(
+        async () =>
+          (await window.evaluate(() => window.api.invoke('pty:active-ids'))) as string[],
+        { timeout: 10_000 }
+      )
+      .not.toContain(id1)
     const activeAfter: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
-    expect(activeAfter).not.toContain(id1)
     expect(activeAfter).toContain(id2)
+
+    const exitEvents: string[] = await window.evaluate(() => (window as any).__exitEvents)
+    expect(exitEvents).toContain(id1)
+    expect(exitEvents).not.toContain(id2)
   })
 })
