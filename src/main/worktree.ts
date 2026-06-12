@@ -28,7 +28,7 @@ function canonicalize(path: string): string {
  *
  * Bare repos show "bare" instead of a branch line.
  */
-function parsePorcelain(raw: string, defaultBranch: string | null): WorktreeInfo[] {
+export function parsePorcelain(raw: string, defaultBranch: string | null): WorktreeInfo[] {
   const results: WorktreeInfo[] = []
   const blocks = raw.trim().split('\n\n')
 
@@ -37,6 +37,7 @@ function parsePorcelain(raw: string, defaultBranch: string | null): WorktreeInfo
     let path = ''
     let branch = ''
     let isBare = false
+    let isPrunable = false
 
     for (const line of lines) {
       if (line.startsWith('worktree ')) {
@@ -47,11 +48,17 @@ function parsePorcelain(raw: string, defaultBranch: string | null): WorktreeInfo
         isBare = true
       } else if (line.startsWith('detached')) {
         branch = '(detached)'
+      } else if (line.startsWith('prunable')) {
+        // git marks worktrees whose directory is gone (e.g. /tmp wiped) as
+        // prunable. They're unusable: spawning a PTY there dies instantly and
+        // the file tree/git log error out. Hide them.
+        isPrunable = true
       }
     }
 
     // Skip the bare repo entry itself — it's not a usable worktree
     if (isBare) continue
+    if (isPrunable) continue
     if (!path) continue
 
     results.push({

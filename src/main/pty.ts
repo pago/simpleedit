@@ -1,6 +1,6 @@
 import * as pty from 'node-pty'
 import { app, type WebContents } from 'electron'
-import { writeFileSync, unlinkSync } from 'fs'
+import { writeFileSync, unlinkSync, existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -50,6 +50,27 @@ function recordBacklog(id: string, data: string): number {
 export function getTerminalBacklog(id: string): PtyBacklog {
   const b = backlogs.get(id)
   return b ? { ...b } : { data: '', start: 0, end: 0 }
+}
+
+/**
+ * pty.spawn with a nonexistent cwd dies instantly with exit code 1 and zero
+ * output — indistinguishable from a crashing process (e.g. a stale worktree
+ * whose directory was deleted). Fail with a readable message instead: the
+ * text lands in the backlog/terminal and the session shows the exited state.
+ * Returns true when the cwd is usable.
+ */
+function guardCwd(id: string, worktreePath: string, webContents: WebContents): boolean {
+  if (existsSync(worktreePath)) return true
+  const msg =
+    `SimpleEdit: cannot start session — the directory does not exist:\r\n` +
+    `  ${worktreePath}\r\n` +
+    `The worktree may have been deleted outside SimpleEdit. Pick another worktree and start a new session.\r\n`
+  const offset = recordBacklog(id, msg)
+  if (!webContents.isDestroyed()) {
+    webContents.send('pty:data', { id, data: msg, offset })
+    webContents.send('pty:exit', { id, exitCode: 1 })
+  }
+  return false
 }
 
 export interface ClaudeSpawnOptions extends ClaudeSpawnOptionsShared {
@@ -118,6 +139,7 @@ export function spawnTerminal(
   if (terminals.has(id)) {
     return
   }
+  if (!guardCwd(id, worktreePath, webContents)) return
 
   const shell = defaultShell()
   const term = pty.spawn(shell, ['-l'], getPtyOptions(worktreePath))
@@ -149,6 +171,7 @@ export function spawnClaudeTerminal(
   if (terminals.has(id)) {
     return
   }
+  if (!guardCwd(id, worktreePath, webContents)) return
 
   // No `--output-format stream-json`: the flag is silently ignored when stdin
   // is a TTY (which node-pty always provides) on CLI 2.1.148+. Session id
@@ -250,6 +273,7 @@ export function spawnForkedClaudeTerminal(
     )
   }
   if (terminals.has(placeholderTabId)) return
+  if (!guardCwd(placeholderTabId, targetWorktreePath, webContents)) return
 
   // Flag order verified empirically on CLI 2.1.148 (critic's pre-PR4 audit §4):
   // all three orderings of --session-id / --resume / --fork-session work.
@@ -304,6 +328,7 @@ export function spawnAgentsTerminal(
   if (terminals.has(id)) {
     return
   }
+  if (!guardCwd(id, worktreePath, webContents)) return
 
   const shell = defaultShell()
   const term = pty.spawn(shell, ['-i', '-l', '-c', 'claude agents'], getPtyOptions(worktreePath))
