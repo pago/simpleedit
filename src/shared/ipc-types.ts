@@ -173,6 +173,12 @@ export interface ClaudeEventMap {
   'claude:status': { worktreePath: string; status: ClaudeStatus; terminalId: string }
   'claude:session-id': { terminalId: string; sessionId: string }
   /**
+   * The session's tracked working directory changed (from a hook POST). When
+   * `cwd` falls inside a worktree of the session's repo, `worktreePath` is that
+   * worktree (so the renderer can repoint the workspace); otherwise it's null.
+   */
+  'claude:cwd': { terminalId: string; cwd: string; worktreePath: string | null }
+  /**
    * Fork operation outcome. `placeholderTabId` matches the id the renderer
    * used in `claude:fork`, so it can locate the placeholder tab to transition
    * (success) or mark errored (failure).
@@ -403,6 +409,24 @@ export interface AgentPanelEventMap {
     title: string
     worktreePath: string
     sourceTerminalId: string
+  }
+  /**
+   * `open_worktree` MCP tool: repoint the calling session's workspace at a
+   * worktree (already validated against the repo's worktree list main-side).
+   */
+  'agent-workspace:open-worktree': {
+    sourceTerminalId: string
+    worktreePath: string
+  }
+  /**
+   * `show_diff` MCP tool: open a diff tab in the calling session's workspace.
+   * `commitHash` follows the in-app convention: null = staging/uncommitted,
+   * 'branch' = branch-base diff, otherwise a commit SHA.
+   */
+  'agent-workspace:show-diff': {
+    sourceTerminalId: string
+    worktreePath: string
+    commitHash: string | null
   }
 }
 

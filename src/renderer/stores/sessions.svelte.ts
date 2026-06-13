@@ -368,6 +368,18 @@ export function initSessionListeners(): () => void {
     sessionsStore.update(data.terminalId, { claudeSessionId: data.sessionId })
   })
 
+  // Location tracking (Stage 2): the agent moved into a worktree we recognise.
+  // Repoint the session's workspace to follow it. Last-writer-wins against the
+  // manual dropdown — a fine default, since the agent's cwd is the freshest
+  // signal of what it's actually working on. No-match cwds are ignored (the
+  // workspace stays where the user/agent last put it).
+  const offCwd = window.api.on('claude:cwd', (data) => {
+    if (!data.worktreePath) return
+    const session = sessionsStore.get(data.terminalId)
+    if (!session || session.worktreePath === data.worktreePath) return
+    sessionsStore.setWorktree(data.terminalId, data.worktreePath)
+  })
+
   // Fork placeholder goes live on the new PTY's first byte.
   const offData = window.api.on('pty:data', ({ id }) => {
     const session = sessionsStore.get(id)
@@ -382,6 +394,7 @@ export function initSessionListeners(): () => void {
   return () => {
     offExit()
     offSessionId()
+    offCwd()
     offData()
     offForkResult()
   }

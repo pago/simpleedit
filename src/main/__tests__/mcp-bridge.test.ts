@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ChildProcess } from 'child_process'
 import { spawn } from 'child_process'
 import { join } from 'path'
-import { startBridge, stopBridge, getBridgeInfo, stopAllBridges } from '../mcp-bridge'
+import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver } from '../mcp-bridge'
 import { attachToTerminal, detachFromTerminal } from '../claude-stream'
+import { registerSession, unregisterTerminal } from '../cwd-tracker'
+import type { WorktreeInfo } from '../../shared/ipc-types'
 
 function makeWebContents() {
   return { isDestroyed: vi.fn(() => false), send: vi.fn() }
@@ -364,6 +366,178 @@ describe('MCP Bridge — HTTP endpoints', () => {
       expect(payload.tour.topics[0].id).toBe('/test/repo:staging:topic-0')
       expect(payload.tour.topics[1].id).toBe('/test/repo:staging:topic-1')
     })
+  })
+})
+
+describe('MCP Bridge — location-tracking hooks', () => {
+  let port: number
+  let token: string
+  let wc: ReturnType<typeof makeWebContents>
+
+  function wtList(...paths: string[]): WorktreeInfo[] {
+    return paths.map((p) => ({ path: p, branch: 'b', isMain: false, isCurrent: false }))
+  }
+
+  beforeEach(async () => {
+    wc = makeWebContents()
+    port = await startBridge(bridgeWebContentsId, wc as never)
+    token = getBridgeInfo(bridgeWebContentsId)!.token
+    setWorktreeResolver(async () => wtList('/repo/main', '/repo/feature'))
+  })
+
+  afterEach(() => {
+    setWorktreeResolver(async () => [])
+    unregisterTerminal('hook-term')
+  })
+
+  async function postHook(body: unknown): Promise<number> {
+    const res = await fetch(`http://127.0.0.1:${port}/${token}/hooks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    })
+    return res.status
+  }
+
+  it('routes a hook to its terminal and matches the cwd to a worktree', async () => {
+    registerSession('sess-h', 'hook-term')
+    const status = await postHook({
+      session_id: 'sess-h',
+      cwd: '/repo/feature/src',
+      hook_event_name: 'PostToolUse',
+    })
+    expect(status).toBe(200)
+    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+      terminalId: 'hook-term',
+      cwd: '/repo/feature/src',
+      worktreePath: '/repo/feature',
+    })
+  })
+
+  it('emits worktreePath null when cwd is outside every worktree', async () => {
+    registerSession('sess-h', 'hook-term')
+    await postHook({ session_id: 'sess-h', cwd: '/somewhere/else', hook_event_name: 'UserPromptSubmit' })
+    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+      terminalId: 'hook-term',
+      cwd: '/somewhere/else',
+      worktreePath: null,
+    })
+  })
+
+  it('still returns 200 (and emits nothing) for an unregistered session', async () => {
+    const status = await postHook({ session_id: 'unknown', cwd: '/repo/main' })
+    expect(status).toBe(200)
+    expect(wc.send).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 for a malformed body without throwing', async () => {
+    expect(await postHook('not json')).toBe(200)
+    expect(await postHook({ cwd: '/repo/main' })).toBe(200) // missing session_id
+    expect(wc.send).not.toHaveBeenCalled()
+  })
+})
+
+describe('MCP Bridge — open_worktree / show_diff tools', () => {
+  let port: number
+  let token: string
+  let wc: ReturnType<typeof makeWebContents>
+
+  function wtList(...paths: string[]): WorktreeInfo[] {
+    return paths.map((p) => ({ path: p, branch: p.split('/').pop()!, isMain: false, isCurrent: false }))
+  }
+
+  beforeEach(async () => {
+    wc = makeWebContents()
+    port = await startBridge(bridgeWebContentsId, wc as never)
+    token = getBridgeInfo(bridgeWebContentsId)!.token
+    setWorktreeResolver(async () => wtList('/repo/main', '/repo/feature'))
+  })
+
+  afterEach(() => {
+    setWorktreeResolver(async () => [])
+  })
+
+  async function post(body: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+    const res = await fetch(`http://127.0.0.1:${port}/${token}/tool-call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> }
+  }
+
+  it('open_worktree by path emits the IPC event', async () => {
+    const res = await post({ tool: 'open_worktree', terminalId: 'term-1', args: { worktreePath: '/repo/feature' } })
+    expect(res.status).toBe(200)
+    expect(wc.send).toHaveBeenCalledWith('agent-workspace:open-worktree', {
+      sourceTerminalId: 'term-1',
+      worktreePath: '/repo/feature',
+    })
+  })
+
+  it('open_worktree by branch resolves to the worktree path', async () => {
+    const res = await post({ tool: 'open_worktree', terminalId: 'term-1', args: { branch: 'feature' } })
+    expect(res.status).toBe(200)
+    expect(wc.send).toHaveBeenCalledWith('agent-workspace:open-worktree', {
+      sourceTerminalId: 'term-1',
+      worktreePath: '/repo/feature',
+    })
+  })
+
+  it('open_worktree returns 400 with the worktree list for an unknown target', async () => {
+    const res = await post({ tool: 'open_worktree', terminalId: 'term-1', args: { worktreePath: '/repo/nope' } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toContain('No worktree matches')
+  })
+
+  it('open_worktree returns 400 when neither path nor branch given', async () => {
+    const res = await post({ tool: 'open_worktree', terminalId: 'term-1', args: {} })
+    expect(res.status).toBe(400)
+  })
+
+  it('show_diff defaults commitHash to null (staging)', async () => {
+    const res = await post({ tool: 'show_diff', terminalId: 'term-1', args: { worktreePath: '/repo/main' } })
+    expect(res.status).toBe(200)
+    expect(wc.send).toHaveBeenCalledWith('agent-workspace:show-diff', {
+      sourceTerminalId: 'term-1',
+      worktreePath: '/repo/main',
+      commitHash: null,
+    })
+  })
+
+  it('show_diff maps "staging" and "" to null', async () => {
+    await post({ tool: 'show_diff', terminalId: 'term-1', args: { worktreePath: '/repo/main', commitHash: 'staging' } })
+    expect(wc.send).toHaveBeenLastCalledWith('agent-workspace:show-diff', expect.objectContaining({ commitHash: null }))
+    await post({ tool: 'show_diff', terminalId: 'term-1', args: { worktreePath: '/repo/main', commitHash: '' } })
+    expect(wc.send).toHaveBeenLastCalledWith('agent-workspace:show-diff', expect.objectContaining({ commitHash: null }))
+  })
+
+  it('show_diff passes through "branch" and a SHA', async () => {
+    await post({ tool: 'show_diff', terminalId: 'term-1', args: { worktreePath: '/repo/main', commitHash: 'branch' } })
+    expect(wc.send).toHaveBeenLastCalledWith('agent-workspace:show-diff', expect.objectContaining({ commitHash: 'branch' }))
+    await post({ tool: 'show_diff', terminalId: 'term-1', args: { worktreePath: '/repo/main', commitHash: 'deadbeef' } })
+    expect(wc.send).toHaveBeenLastCalledWith('agent-workspace:show-diff', expect.objectContaining({ commitHash: 'deadbeef' }))
+  })
+
+  it('show_diff rejects a worktreePath that is not in the repo', async () => {
+    const res = await post({ tool: 'show_diff', terminalId: 'term-1', args: { worktreePath: '/evil/path' } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toContain('not a worktree')
+  })
+
+  it('show_diff falls back to the terminal→worktree mapping when no path given', async () => {
+    attachToTerminal('term-attached', '/repo/main', wc as never)
+    try {
+      const res = await post({ tool: 'show_diff', terminalId: 'term-attached', args: {} })
+      expect(res.status).toBe(200)
+      expect(wc.send).toHaveBeenCalledWith('agent-workspace:show-diff', {
+        sourceTerminalId: 'term-attached',
+        worktreePath: '/repo/main',
+        commitHash: null,
+      })
+    } finally {
+      detachFromTerminal('term-attached')
+    }
   })
 })
 

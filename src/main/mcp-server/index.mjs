@@ -281,5 +281,64 @@ server.registerTool(
   },
 )
 
+// ── open_worktree: repoint the session's workspace ─────────────────────────
+
+server.registerTool(
+  'open_worktree',
+  {
+    description:
+      'Point the user\'s SimpleEdit workspace (file tree, git log, diff targets) at a git worktree. ' +
+      'Use this when you start working in — or want the user to look at — a specific worktree, ' +
+      'so the UI follows you there instead of staying on whatever was last open. ' +
+      'Identify the worktree by its absolute path OR its branch name (provide one). ' +
+      'The target is validated against the repo\'s actual worktree list; an invalid target returns the available worktrees so you can retry.',
+    inputSchema: {
+      worktreePath: z
+        .string()
+        .optional()
+        .describe('Absolute path to the worktree to open. Provide this or `branch`.'),
+      branch: z
+        .string()
+        .optional()
+        .describe('Branch name of the worktree to open. Provide this or `worktreePath`.'),
+    },
+  },
+  async ({ worktreePath, branch }) => {
+    const result = await postToBridge('open_worktree', { worktreePath, branch })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult('Workspace repointed in SimpleEdit.')
+  },
+)
+
+// ── show_diff: open a diff tab in the session's workspace ───────────────────
+
+server.registerTool(
+  'show_diff',
+  {
+    description:
+      'Open a diff in the user\'s SimpleEdit workspace so they can review changes interactively — ' +
+      'do not paste diffs as terminal text. ' +
+      'Use after making or committing changes, or whenever you want the user to look at a specific diff. ' +
+      'commitHash selects what to diff: omit it (or "staging") for uncommitted/working-tree changes, ' +
+      '"branch" for everything this branch added vs. its base, or a commit SHA for that commit. ' +
+      'worktreePath defaults to the session\'s current workspace worktree.',
+    inputSchema: {
+      commitHash: z
+        .string()
+        .optional()
+        .describe('"staging" or omit = uncommitted changes; "branch" = branch vs. base; otherwise a commit SHA.'),
+      worktreePath: z
+        .string()
+        .optional()
+        .describe('Absolute path to the worktree to diff. Defaults to the session\'s current workspace worktree.'),
+    },
+  },
+  async ({ commitHash, worktreePath }) => {
+    const result = await postToBridge('show_diff', { commitHash, worktreePath })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult('Diff opened in SimpleEdit. The user can now review the changes.')
+  },
+)
+
 const transport = new StdioServerTransport()
 await server.connect(transport)

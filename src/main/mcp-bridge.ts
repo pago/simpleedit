@@ -4,11 +4,12 @@ import { mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import type { WebContents } from 'electron'
-import type { Plan, Tour } from '../shared/ipc-types'
+import type { Plan, Tour, WorktreeInfo } from '../shared/ipc-types'
 import { savePlan } from './plan'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
 import { validateSpec, validateSpecActions } from './gen-ui-validate'
+import { parseHookBody, matchWorktree, terminalForSession } from './cwd-tracker'
 
 interface BridgeInstance {
   server: Server
@@ -18,6 +19,28 @@ interface BridgeInstance {
 }
 
 const bridges = new Map<number, BridgeInstance>()
+
+/**
+ * Resolves the worktree list for a window. Registered by index.ts (which owns
+ * the per-window repo map) so the bridge can map a hook's cwd → worktree and
+ * validate `open_worktree` targets without importing the renderer-facing repo
+ * routing. Stays null in unit tests that don't need worktree resolution.
+ */
+type WorktreeResolver = (webContentsId: number) => Promise<WorktreeInfo[]>
+let worktreeResolver: WorktreeResolver | null = null
+
+export function setWorktreeResolver(resolver: WorktreeResolver): void {
+  worktreeResolver = resolver
+}
+
+async function resolveWorktrees(webContentsId: number): Promise<WorktreeInfo[]> {
+  if (!worktreeResolver) return []
+  try {
+    return await worktreeResolver(webContentsId)
+  } catch {
+    return []
+  }
+}
 
 interface ToolCallPayload {
   tool: string
@@ -196,13 +219,125 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
     return { status: 200, body: { ok: true } }
   }
 
+  if (tool === 'open_worktree') {
+    const requestedPath = typeof args['worktreePath'] === 'string' ? (args['worktreePath'] as string) : undefined
+    const requestedBranch = typeof args['branch'] === 'string' ? (args['branch'] as string) : undefined
+    if (!requestedPath && !requestedBranch) {
+      return { status: 400, body: { error: 'open_worktree requires worktreePath or branch in args' } }
+    }
+
+    const worktrees = await resolveWorktrees(webContents.id)
+    const match = worktrees.find(
+      (w) => (requestedPath && w.path === requestedPath) || (requestedBranch && w.branch === requestedBranch),
+    )
+    if (!match) {
+      return {
+        status: 400,
+        body: {
+          error: `No worktree matches ${requestedPath ?? requestedBranch}`,
+          worktrees: worktrees.map((w) => ({ path: w.path, branch: w.branch })),
+        },
+      }
+    }
+
+    if (!webContents.isDestroyed()) {
+      webContents.send('agent-workspace:open-worktree', {
+        sourceTerminalId: terminalId,
+        worktreePath: match.path,
+      })
+    }
+    return { status: 200, body: { ok: true, worktreePath: match.path } }
+  }
+
+  if (tool === 'show_diff') {
+    const commitArg = args['commitHash']
+    // Convention: null = staging (default), 'branch' = branch-base diff,
+    // otherwise a commit SHA. 'staging' and '' both map to null.
+    let commitHash: string | null
+    if (commitArg == null || commitArg === '' || commitArg === 'staging') {
+      commitHash = null
+    } else if (typeof commitArg === 'string') {
+      commitHash = commitArg
+    } else {
+      return { status: 400, body: { error: 'show_diff commitHash must be a string' } }
+    }
+
+    const claudeWorktreePath = typeof args['worktreePath'] === 'string' ? (args['worktreePath'] as string) : undefined
+    const worktreePath = claudeWorktreePath ?? getWorktreeForTerminal(terminalId)
+    if (!worktreePath) {
+      return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
+    }
+
+    // Validate the worktree belongs to the repo (defense in depth; mirrors the
+    // worktree-scoping checks on show_panel). Skip when no resolver is wired.
+    const worktrees = await resolveWorktrees(webContents.id)
+    if (worktrees.length > 0 && !worktrees.some((w) => w.path === worktreePath)) {
+      return {
+        status: 400,
+        body: {
+          error: `worktreePath is not a worktree of this repo: ${worktreePath}`,
+          worktrees: worktrees.map((w) => w.path),
+        },
+      }
+    }
+
+    if (!webContents.isDestroyed()) {
+      webContents.send('agent-workspace:show-diff', {
+        sourceTerminalId: terminalId,
+        worktreePath,
+        commitHash,
+      })
+    }
+    return { status: 200, body: { ok: true } }
+  }
+
   return { status: 400, body: { error: `Unknown tool: ${tool}` } }
+}
+
+/**
+ * Handle a hook POST: parse session_id + cwd, route to the owning terminal,
+ * and tell the renderer which worktree (if any) the cwd now sits in. Always
+ * resolves 200 — hooks must never block Claude even if we can't route them.
+ */
+async function handleHook(body: string, webContents: WebContents): Promise<void> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return
+  }
+  const signal = parseHookBody(parsed)
+  if (!signal) return
+
+  const terminalId = terminalForSession(signal.sessionId)
+  if (!terminalId) return
+
+  const worktrees = await resolveWorktrees(webContents.id)
+  const worktreePath = matchWorktree(signal.cwd, worktrees)
+
+  if (!webContents.isDestroyed()) {
+    webContents.send('claude:cwd', { terminalId, cwd: signal.cwd, worktreePath })
+  }
 }
 
 function createBridgeServer(token: string, webContents: WebContents): Server {
   return createServer(async (req, res) => {
     // Validate token from URL path: /<token>/tool-call
     const expectedPath = `/${token}/tool-call`
+    const hooksPath = `/${token}/hooks`
+
+    // Location-tracking hook endpoint (Stage 2). Token-authed via the path,
+    // same scheme as tool-call. Body = the raw hook input JSON from the CLI.
+    if (req.method === 'POST' && req.url === hooksPath) {
+      try {
+        const body = await readBody(req)
+        await handleHook(body, webContents)
+      } catch {
+        /* never let hook handling surface an error to the CLI */
+      }
+      jsonResponse(res, 200, { ok: true })
+      return
+    }
 
     if (req.method === 'POST' && req.url === expectedPath) {
       try {
