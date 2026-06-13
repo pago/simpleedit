@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execSync } from 'child_process'
-import { MAIN, launchEnv, waitForWorktreesReady } from './fixtures'
+import { MAIN, launchEnv, waitForWorktreesReady, GIT_FIXTURE_ENV } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
@@ -28,7 +28,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     const seedPath = join(testRoot, 'seed')
     mkdirSync(seedPath, { recursive: true })
     const sh = (cwd: string, cmd: string): void => {
-      execSync(cmd, { cwd, stdio: 'pipe' })
+      execSync(cmd, { cwd, stdio: 'pipe', env: GIT_FIXTURE_ENV })
     }
     sh(seedPath, 'git init --initial-branch=main')
     sh(seedPath, 'git config user.email test@example.com')
