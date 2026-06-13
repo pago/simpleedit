@@ -133,16 +133,28 @@ calls, so no scoping was needed.
 - Click a persisted session → respawn `claude --resume <id>` in its launch dir.
 - Terminals are not persisted.
 
-## Stage 4 — Multi-repo sessions
+## Stage 4 — Multi-repo sessions — DEFERRED (not in this PR)
 
 The most invasive plumbing change and the most deferrable; everything above
-works single-repo.
+works single-repo. **Deferred out of this PR** and tracked on the
+`stage4-multirepo-wip` branch (partial: store + repo-parameterized IPC +
+types done and typecheck-clean; renderer wiring, repo-picker entry point, and
+gating unfinished). Reasons: it's unreachable without the picker UI, has a
+latent `setActiveSessionWorktree` arity bug `tsc` can't catch in `.svelte`,
+and couldn't be gated on the dev machine (locked SSH key hangs git-shelling
+tests; the E2E suite is single-repo). Resume from that branch.
 
-- Replace the per-window `Map<webContents.id, repoPath>` routing with
-  per-session (or per-workspace) repo context across all IPC namespaces.
-- Repo picker next to the worktree dropdown (point the workspace at another
-  bare repo mid-session).
-- Global "Recently viewed" list (spans repos/worktrees) above the file tree.
+Scoping note (confirmed): the per-window repo map is only load-bearing for the
+**worktree namespace** handlers (list/create/checkout/branches/watch) + the
+bridge resolver — most git/fs handlers already take an explicit `worktreePath`.
+So the real work is repo-parameterizing those handlers (done on the wip branch,
+with the per-window map preserved as the single-repo fallback) plus:
+
+- Repo picker next to the worktree dropdown (point a session at another bare
+  repo mid-session) — the missing user-facing entry point.
+- Per-session `repoPath` wired through SessionWorkspace / WorkspaceManager /
+  SessionList (started on wip, incomplete).
+- Global "Recently viewed" list (spans repos/worktrees).
 
 ## Out of scope (deliberately)
 
