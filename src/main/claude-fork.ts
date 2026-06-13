@@ -22,6 +22,7 @@ import type { ClaudeForkOptions } from '../shared/ipc-types'
 import { claudeProjectsDir } from './claude-paths'
 import { attachToTerminal } from './claude-stream'
 import { spawnForkedClaudeTerminal } from './pty'
+import { getBridgeInfo } from './mcp-bridge'
 
 /**
  * Walk `dir` recursively, returning a list of `{ relPath, size }` entries for
@@ -141,12 +142,14 @@ export async function performFork(
     // Spawn the forked Claude PTY. spawnForkedClaudeTerminal validates that
     // forkUuid !== sourceSessionId; we've already checked but the redundancy
     // is cheap.
+    const bridge = getBridgeInfo(webContents.id)
     spawnForkedClaudeTerminal(
       {
         placeholderTabId,
         sourceSessionId,
         targetWorktreePath,
         forkUuid,
+        ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {}),
       },
       webContents,
     )

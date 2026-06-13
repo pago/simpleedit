@@ -6,11 +6,14 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import type { ClaudeSpawnOptions as ClaudeSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
+import { registerSession, unregisterTerminal } from './cwd-tracker'
 
 type IPty = pty.IPty
 
 const terminals = new Map<string, IPty>()
 const mcpConfigPaths = new Map<string, string>()
+/** Hook settings files written at spawn (parallel to mcpConfigPaths). */
+const hookSettingsPaths = new Map<string, string>()
 
 /**
  * Capped per-terminal output backlog. The renderer's xterm attaches only
@@ -113,6 +116,60 @@ function cleanupMcpConfig(terminalId: string): void {
   }
 }
 
+/**
+ * Write a Claude settings file wiring location-tracking hooks to the bridge.
+ * Verified on CLI 2.1.175 (Stage 2 Part A): `--settings <path>` accepts a
+ * `hooks` config; `type: "http"` hooks POST the hook input JSON (carrying
+ * `session_id` + `cwd`) to `url`. We point both UserPromptSubmit (cheap, fires
+ * on every turn) and PostToolUse (catches cwd moves from Bash `cd`/worktree
+ * tools mid-turn) at the bridge's `/<token>/hooks` endpoint — the token in the
+ * path authenticates the same way the MCP tool-call route does.
+ */
+function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: string): string {
+  const settingsPath = join(tmpdir(), `simpleedit-hooks-${terminalId}.json`)
+  const endpoint = { type: 'http', url: `http://127.0.0.1:${bridgePort}/${bridgeToken}/hooks`, timeout: 5 }
+  const settings = {
+    hooks: {
+      UserPromptSubmit: [{ hooks: [endpoint] }],
+      PostToolUse: [{ hooks: [endpoint] }],
+    },
+  }
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return settingsPath
+}
+
+function cleanupHookSettings(terminalId: string): void {
+  const settingsPath = hookSettingsPaths.get(terminalId)
+  if (settingsPath) {
+    try { unlinkSync(settingsPath) } catch { /* file may already be gone */ }
+    hookSettingsPaths.delete(terminalId)
+  }
+}
+
+/**
+ * Wire MCP config + location-tracking hooks for a Claude spawn and register
+ * the session_id → terminalId mapping so hook POSTs route back. Returns the
+ * extra CLI flags to append. No-op (empty string) when no bridge is available
+ * (e.g. tests, or a window whose bridge failed to start).
+ */
+function buildBridgeFlags(
+  terminalId: string,
+  sessionId: string,
+  bridgePort: number | undefined,
+  bridgeToken: string | undefined,
+): string {
+  if (bridgePort == null || bridgeToken == null) return ''
+  let flags = ''
+  const configPath = writeMcpConfig(terminalId, bridgePort, bridgeToken)
+  mcpConfigPaths.set(terminalId, configPath)
+  flags += ` --mcp-config ${configPath}`
+  const settingsPath = writeHookSettings(terminalId, bridgePort, bridgeToken)
+  hookSettingsPaths.set(terminalId, settingsPath)
+  flags += ` --settings ${settingsPath}`
+  registerSession(sessionId, terminalId)
+  return flags
+}
+
 function defaultShell(): string {
   if (process.platform === 'win32') {
     return process.env['COMSPEC'] ?? 'cmd.exe'
@@ -178,12 +235,6 @@ export function spawnClaudeTerminal(
   // capture now flows through `--session-id <uuid>` below; see #95.
   let claudeCmd = 'claude'
 
-  if (bridgePort != null && bridgeToken != null) {
-    const configPath = writeMcpConfig(id, bridgePort, bridgeToken)
-    mcpConfigPaths.set(id, configPath)
-    claudeCmd += ` --mcp-config ${configPath}`
-  }
-
   // Pin the session id we want claude to use. For fresh tabs we generate a
   // UUID and tell claude to use it via `--session-id` (CLI flag added in
   // 2.x); for resumed tabs the id is already known from the resume arg.
@@ -196,13 +247,19 @@ export function spawnClaudeTerminal(
   // unless `--fork-session` is also passed; the resume path therefore does
   // not set `--session-id` and reuses the resumed id directly.
   let sessionId: string
+  let sessionFlag: string
   if (resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)) {
     sessionId = resumeSessionId
-    claudeCmd += ` --resume ${resumeSessionId}`
+    sessionFlag = ` --resume ${resumeSessionId}`
   } else {
     sessionId = randomUUID()
-    claudeCmd += ` --session-id ${sessionId}`
+    sessionFlag = ` --session-id ${sessionId}`
   }
+
+  // MCP config + location-tracking hooks (Stage 2). Registers the
+  // session_id → terminalId mapping so hook POSTs route back here.
+  claudeCmd += buildBridgeFlags(id, sessionId, bridgePort, bridgeToken)
+  claudeCmd += sessionFlag
 
   const shell = defaultShell()
   // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
@@ -225,6 +282,8 @@ export function spawnClaudeTerminal(
 
   term.onExit(({ exitCode }: { exitCode: number }) => {
     cleanupMcpConfig(id)
+    cleanupHookSettings(id)
+    unregisterTerminal(id)
     terminals.delete(id)
     if (!webContents.isDestroyed()) {
       // Clear the worktree's Claude status so the worktree picker (#87) and
@@ -260,10 +319,12 @@ export function spawnForkedClaudeTerminal(
     sourceSessionId: string
     targetWorktreePath: string
     forkUuid: string
+    bridgePort?: number
+    bridgeToken?: string
   },
   webContents: WebContents,
 ): void {
-  const { placeholderTabId, sourceSessionId, targetWorktreePath, forkUuid } = args
+  const { placeholderTabId, sourceSessionId, targetWorktreePath, forkUuid, bridgePort, bridgeToken } = args
 
   if (forkUuid === sourceSessionId) {
     // Programmer error — would silently append to the source instead of
@@ -281,10 +342,17 @@ export function spawnForkedClaudeTerminal(
   // No `--output-format stream-json`: it's silently ignored under a TTY on
   // 2.1.148+ (see #95/#106), and session-id is pinned via --session-id below,
   // so the flag was dead weight. (#107)
+  // MCP config + location-tracking hooks for the fork, same as a fresh spawn
+  // (Stage 2) — the fork's session id is `forkUuid`, registered for hook
+  // routing. The bridge wasn't previously wired here (see #87 history); it is
+  // now so the fork's UI-driving tools and cwd tracking work like any session.
+  const bridgeFlags = buildBridgeFlags(placeholderTabId, forkUuid, bridgePort, bridgeToken)
+
   const claudeCmd =
     `claude --session-id ${forkUuid}` +
     ` --resume ${sourceSessionId}` +
-    ` --fork-session`
+    ` --fork-session` +
+    bridgeFlags
 
   const shell = defaultShell()
   const term = pty.spawn(shell, ['-i', '-l', '-c', claudeCmd], getPtyOptions(targetWorktreePath))
@@ -300,6 +368,9 @@ export function spawnForkedClaudeTerminal(
   })
 
   term.onExit(({ exitCode }: { exitCode: number }) => {
+    cleanupMcpConfig(placeholderTabId)
+    cleanupHookSettings(placeholderTabId)
+    unregisterTerminal(placeholderTabId)
     terminals.delete(placeholderTabId)
     if (!webContents.isDestroyed()) {
       webContents.send('claude:status', {
@@ -374,6 +445,8 @@ export function killTerminal(id: string): void {
   // The PTY may already have exited on its own (terminals entry gone) —
   // the config and backlog still need dropping when the session closes.
   cleanupMcpConfig(id)
+  cleanupHookSettings(id)
+  unregisterTerminal(id)
   backlogs.delete(id)
 }
 
@@ -385,6 +458,8 @@ export function killAllTerminals(): void {
   for (const [id, term] of terminals) {
     try { term.kill() } catch { /* process may already be dead */ }
     cleanupMcpConfig(id)
+    cleanupHookSettings(id)
+    unregisterTerminal(id)
     terminals.delete(id)
   }
   backlogs.clear()

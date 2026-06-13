@@ -35,7 +35,7 @@ import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startPlan, startPlanFromDescription, revisePlan, cancelPlan, cancelAllPlans, loadPlan, savePlan } from './plan'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
-import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan } from './mcp-bridge'
+import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan, setWorktreeResolver } from './mcp-bridge'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import { inheritShellPath } from './shell-path'
@@ -59,6 +59,15 @@ function getWindowForContents(webContentsId: number): BrowserWindow | null {
     (w) => w.webContents.id === webContentsId
   ) ?? null
 }
+
+// Let the MCP bridge resolve a window's worktree list (for hook cwd→worktree
+// matching and open_worktree/show_diff validation) without exposing the
+// per-window repo map. Registered once at module load.
+setWorktreeResolver(async (webContentsId) => {
+  const repoPath = getRepoForSender(webContentsId)
+  if (!repoPath) return []
+  return listWorktrees(repoPath)
+})
 
 // ── Window creation ───────────────────────────────────────
 /**

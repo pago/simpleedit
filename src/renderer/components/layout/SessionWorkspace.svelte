@@ -6,7 +6,7 @@
   import AgentPopover from '../editor/AgentPopover.svelte'
   import PaneTabBar from './PaneTabBar.svelte'
   import TabContainer from './TabContainer.svelte'
-  import { openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
+  import { openDiffTab, openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
   import { planStore } from '../../stores/planStore.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
@@ -124,6 +124,39 @@
       // open() only adds the unread marker for *new* tabs — surface in-place
       // updates of a background panel explicitly.
       if (wasOpenAndUnfocused) tabsStore.markUnread(sid, tabId)
+    })
+    return unsub
+  })
+
+  // open_worktree MCP call: repoint this session's workspace at a worktree the
+  // agent named. Opening the viewer makes the repoint visible immediately
+  // (otherwise a fresh session stays full-bleed terminal).
+  $effect(() => {
+    const sid = sessionId
+    const unsub = window.api.on('agent-workspace:open-worktree', (data) => {
+      if (data.sourceTerminalId !== sid) return
+      sessionsStore.setWorktree(sid, data.worktreePath)
+      viewerOpen = true
+    })
+    return unsub
+  })
+
+  // show_diff MCP call: open a diff tab in this session's workspace, scoped to
+  // the named worktree. Mirrors the idle-vs-busy focus rule of plan/tour.
+  $effect(() => {
+    const sid = sessionId
+    const unsub = window.api.on('agent-workspace:show-diff', (data) => {
+      if (data.sourceTerminalId !== sid) return
+      const label =
+        data.commitHash === null
+          ? 'Uncommitted changes'
+          : data.commitHash === 'branch'
+            ? 'Branch changes'
+            : `Commit ${data.commitHash.slice(0, 7)}`
+      const idle = tabsStore.activeId(sid) === null
+      openDiffTab(sid, data.worktreePath, data.commitHash, label, {
+        focus: idle ? 'active' : 'background',
+      })
     })
     return unsub
   })
