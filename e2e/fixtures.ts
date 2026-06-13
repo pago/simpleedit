@@ -214,12 +214,24 @@ export interface TempRepo {
  *
  * Three commits + two files so diff/peek/pin scenarios have material.
  */
+/**
+ * Hermetic git env for fixture repos: ignore the host's global/system git
+ * config. Without this, a host with commit signing enabled (SSH/GPG) makes
+ * fixture commits prompt for a passphrase — which fails the entire suite the
+ * moment the ssh-agent drops the key (e.g. after the machine locks).
+ */
+export const GIT_FIXTURE_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+}
+
 export function createTempRepo(prefix: string): TempRepo {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   const seed = path.join(root, 'seed')
   fs.mkdirSync(seed, { recursive: true })
   const sh = (cwd: string, cmd: string): void => {
-    execSync(cmd, { cwd, stdio: 'pipe' })
+    execSync(cmd, { cwd, stdio: 'pipe', env: GIT_FIXTURE_ENV })
   }
   sh(seed, 'git init --initial-branch=main')
   sh(seed, 'git config user.email test@example.com')
