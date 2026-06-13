@@ -103,21 +103,24 @@ Stages 2–4.
   chooser is the Stage-1 way to point the workspace somewhere).
 - Remove Split / dual-pane from `PaneManager`.
 
-## Stage 2 — Session location tracking
+## Stage 2 — Session location tracking ✓ done 2026-06-13
 
-Mechanism (revised after the Stage 0 audit): interactive PTY sessions emit no
-stream-json, so the **HTTP-hook endpoint is the primary channel**, not a
-fallback. SimpleEdit runs a localhost server and installs hook config (via the
-`--settings` flag on spawn) that POSTs hook inputs — every hook event carries
-`cwd` and `session_id`, which routes to the owning session.
+Mechanism confirmed by a Part-A re-verification on CLI 2.1.175: `--settings`
+accepts a `hooks` config, `type:"http"` hooks POST the hook input JSON
+(carrying `cwd` + `session_id`) to a URL, and — contrary to the Stage 0
+note — **per-event `cwd` reliably tracks Bash `cd`** and persists across tool
+calls, so no scoping was needed.
 
-- Localhost hook endpoint in main; hook config injected at spawn.
-- Default the session's worktree selection to the tracked cwd (normalize
-  symlinks before matching against worktree paths).
-- MCP tools for "open the worktree" / "show the diff" targeting the calling
-  session's workspace.
-- Externally started `claude` sessions get the same hooks via user-level
-  settings — same endpoint, sessions matched by `session_id`.
+- HTTP hook endpoint on the per-window MCP bridge (`POST /<token>/hooks`,
+  always 200 so it never blocks the CLI); hook settings injected at spawn via
+  `--settings` (Claude + fork spawns; agents TUI skipped).
+- `cwd-tracker.ts` maps cwd → worktree (realpath + segment-boundary
+  longest-prefix); `claude:cwd` IPC repoints the session's workspace
+  (last-writer-wins vs the manual dropdown).
+- MCP tools `open_worktree` / `show_diff` target the calling session's
+  workspace (routed by `sourceTerminalId`, like `show_panel`).
+- Deferred: externally-started `claude` sessions via user-level settings —
+  out of scope for this PR (we own the flag only for sessions we spawn).
 
 ## Stage 3 — Session persistence + resume (supersedes #54) ✓ absorbed into Stage 1
 
