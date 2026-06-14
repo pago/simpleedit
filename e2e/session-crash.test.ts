@@ -6,15 +6,16 @@ import { test, expect, MAIN, launchEnv, createTempRepo, removeTempRepo, waitForW
 
 test('spawn-crash: session survives with banner and readable output', async () => {
   const repo = createTempRepo('crash-smoke')
-  // /bin/sh as login shell in a bare HOME: `claude` is not on the default
-  // PATH, so the spawn dies instantly with "not found" — same shape as the
-  // dev-mode failure being debugged.
+  // Drive the fake claude into immediate non-zero exit (simulated spawn
+  // failure). NB: don't nuke PATH to force "command not found" — a minimal
+  // PATH also breaks Electron's own launch under CI's xvfb. Under E2E the app
+  // spawns claude without a login shell, so the e2e fake (not a real claude on
+  // the dev machine) deterministically runs and honours this env var.
   const app = await electron.launch({
     args: [MAIN],
     env: launchEnv({
       SIMPLEEDIT_REPO: repo.bareRepoPath,
-      SHELL: '/bin/sh',
-      PATH: '/usr/bin:/bin',
+      SIMPLEEDIT_FAKE_CLAUDE_EXIT: '127',
     }),
   })
   const window = await app.firstWindow()
@@ -34,9 +35,8 @@ test('spawn-crash: session survives with banner and readable output', async () =
   // …and the crash output replayed into xterm despite the listener attaching late.
   await expect(
     window.locator('.xterm-rows').filter({ visible: true }).first()
-  ).toContainText(/not found/i, { timeout: 5_000 })
+  ).toContainText(/simulated spawn failure/i, { timeout: 5_000 })
 
-  await window.screenshot({ path: '/tmp/smoke-crash.png' })
   await app.close()
   removeTempRepo(repo)
 })
