@@ -4,6 +4,11 @@
 import { _electron as electron } from '@playwright/test'
 import { test, expect, MAIN, launchEnv, createTempRepo, removeTempRepo, waitForWorktreesReady } from './fixtures'
 
+// CI's container can't use Chromium's sandbox (needs kernel features it lacks),
+// so Electron won't launch there without --no-sandbox. Matches the sibling
+// raw-launch suites.
+const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
+
 test('spawn-crash: session survives with banner and readable output', async () => {
   const repo = createTempRepo('crash-smoke')
   // Drive the fake claude into immediate non-zero exit (simulated spawn
@@ -12,7 +17,7 @@ test('spawn-crash: session survives with banner and readable output', async () =
   // spawns claude without a login shell, so the e2e fake (not a real claude on
   // the dev machine) deterministically runs and honours this env var.
   const app = await electron.launch({
-    args: [MAIN],
+    args: [MAIN, ...SANDBOX_ARGS],
     env: launchEnv({
       SIMPLEEDIT_REPO: repo.bareRepoPath,
       SIMPLEEDIT_FAKE_CLAUDE_EXIT: '127',
