@@ -1,29 +1,41 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Fake `claude` binary for e2e tests. The real CLI isn't installed in CI, so
 # the PTY would otherwise exit immediately with "command not found", triggering
-# auto-close-on-pty:exit and removing the tab before Playwright can observe it.
+# auto-close-on-pty:exit and removing the session before Playwright can observe
+# it.
 #
 # This script emits a startup line (some tests wait on pty:data to detect the
-# terminal id), then idles. It ignores all arguments — the tests don't exercise
-# Claude's protocol, they exercise SimpleEdit's session UI.
+# terminal id), then idles until told to exit or killed. It ignores all
+# arguments — the tests don't exercise Claude's protocol, they exercise
+# SimpleEdit's session UI.
+#
+# IMPORTANT — must use bash, not /bin/sh: this relies on `read -t`, which dash
+# (Ubuntu's /bin/sh, used by CI) does NOT support. Under dash the read errored
+# every iteration, the loop fell through, and the script `exit 0`d immediately
+# — which the session store treats as a graceful exit and auto-closes the
+# session, so every "spawn a session then observe it" test failed in CI only.
+# Idling is also EOF-proof: a read failure (EOF, timeout, or unsupported flag)
+# never exits the process — only an explicit "/exit" or a SIGHUP from node-pty
+# on app shutdown ends it. A clean exit must mean "/exit", nothing else.
 #
 # Extras driven by tests:
-#  - SIMPLEEDIT_FAKE_CLAUDE_OSC=1: emit one OSC title with the real CLI's
-#    idle marker (✳ Claude Code) so the OSC→claude:status pipeline can be
-#    asserted deterministically (the real CLI's title behaviour depends on
-#    folder trust state, which a fresh temp repo never has).
-#  - Reading "/exit" on stdin exits 0, mirroring the real CLI's slash command,
-#    so pty:exit propagation can be tested without the real binary.
-#
-# The read timeout bounds idle lifetime at ~60s; node-pty SIGHUP on app
-# shutdown kills it immediately, so the bound shouldn't normally be hit.
+#  - SIMPLEEDIT_FAKE_CLAUDE_OSC=1: emit one OSC title with the real CLI's idle
+#    marker (✳ Claude Code) so the OSC→claude:status pipeline can be asserted
+#    deterministically (the real CLI's title behaviour depends on folder trust
+#    state, which a fresh temp repo never has).
+#  - Reading "/exit" on stdin exits 0, mirroring the real CLI's slash command.
 echo "fake claude ready"
 if [ "${SIMPLEEDIT_FAKE_CLAUDE_OSC:-}" = "1" ]; then
   printf '\033]0;\342\234\263 Claude Code\007'
 fi
-while read -t 60 line; do
-  case "$line" in
-    *"/exit"*) exit 0 ;;
-  esac
+while true; do
+  if IFS= read -r -t 3600 line; then
+    case "$line" in
+      *"/exit"*) exit 0 ;;
+    esac
+  else
+    # EOF / timeout / unsupported flag — keep idling rather than exiting, so a
+    # closed-stdin PTY doesn't masquerade as a graceful session exit.
+    sleep 1
+  fi
 done
-exit 0
