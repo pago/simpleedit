@@ -86,6 +86,7 @@ export function serializeSession(repoPath: string): SerializedSession {
       ...(sessionId ? { sessionId } : {}),
       launchDir: session.launchDir,
       worktreePath: session.worktreePath,
+      ...(session.repoPath ? { repoPath: session.repoPath } : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
       unread,
@@ -149,7 +150,15 @@ export function hydrateSession(session: SerializedSession): {
   let activeNewId: string | null = null
 
   session.sessions.forEach((s, index) => {
-    const worktreePath = knownPaths.has(s.worktreePath) ? s.worktreePath : mainPath
+    // A session pointed at a non-primary repo keeps its remembered worktree
+    // (that repo isn't loaded yet, so knownPaths can't validate it — the
+    // workspace loads the repo lazily on activation). Primary-repo sessions
+    // remap a vanished worktree to the primary main, as before.
+    const worktreePath = s.repoPath
+      ? s.worktreePath
+      : knownPaths.has(s.worktreePath)
+        ? s.worktreePath
+        : mainPath
     if (!worktreePath) {
       dropped++
       return
@@ -161,6 +170,7 @@ export function hydrateSession(session: SerializedSession): {
       ...(s.customLabel ? { customLabel: true as const } : {}),
       launchDir: s.launchDir ?? projectRoot() ?? worktreePath,
       worktreePath,
+      ...(s.repoPath ? { repoPath: s.repoPath } : {}),
       ...(s.sessionId ? { sessionId: s.sessionId } : {}),
     })
     if (!newId) {

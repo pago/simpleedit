@@ -4,6 +4,15 @@ let _worktreeList = $state<WorktreeInfo[]>([])
 /** Parent directory of the bare repo — the project's home. Claude sessions
  * launch here so all work shares one Claude memory (keyed by cwd). */
 let _projectRoot = $state<string | null>(null)
+/** The window's PRIMARY bare repo (the one opened from Welcome). Sessions that
+ * point at another repo carry their own `repoPath`; this is the default. */
+let _primaryRepo = $state<string | null>(null)
+/**
+ * Per-repo worktree lists for multi-repo sessions (Stage 4). The primary
+ * repo's list is mirrored here too, so `worktreeListFor(primary)` and the
+ * legacy `worktreeList()` always agree. Keyed by bare-repo path.
+ */
+let _worktreesByRepo = $state<Record<string, WorktreeInfo[]>>({})
 
 /**
  * Reactive accessors. In Svelte 5 .svelte.ts modules, exported functions
@@ -18,13 +27,67 @@ export function projectRoot(): string | null {
   return _projectRoot
 }
 
+/** The window's primary bare repo (default for sessions without an explicit repo). */
+export function primaryRepo(): string | null {
+  return _primaryRepo
+}
+
+/** The directory beside a bare repo — its project home (Claude memory locality). */
+export function projectRootForRepo(bareRepoPath: string): string {
+  const idx = bareRepoPath.lastIndexOf('/')
+  return idx > 0 ? bareRepoPath.slice(0, idx) : bareRepoPath
+}
+
 export function setProjectRoot(bareRepoPath: string | null): void {
   if (!bareRepoPath) {
     _projectRoot = null
+    _primaryRepo = null
+    _worktreesByRepo = {}
     return
   }
-  const idx = bareRepoPath.lastIndexOf('/')
-  _projectRoot = idx > 0 ? bareRepoPath.slice(0, idx) : bareRepoPath
+  _primaryRepo = bareRepoPath
+  _projectRoot = projectRootForRepo(bareRepoPath)
+}
+
+/** Worktrees of a specific repo (multi-repo sessions). Falls back to the
+ * primary repo's list when the repo matches the primary, so callers can pass a
+ * session's `repoPath` uniformly. */
+export function worktreeListFor(repoPath: string | null | undefined): WorktreeInfo[] {
+  if (!repoPath || repoPath === _primaryRepo) return _worktreeList
+  return _worktreesByRepo[repoPath] ?? []
+}
+
+/** Load + cache a non-primary repo's worktree list. Idempotent; safe to call
+ * on every session activation. */
+export async function refreshWorktreesFor(repoPath: string): Promise<WorktreeInfo[]> {
+  if (repoPath === _primaryRepo) {
+    await refreshWorktrees()
+    return _worktreeList
+  }
+  const list = await window.api.invoke('worktree:list', repoPath)
+  _worktreesByRepo = { ..._worktreesByRepo, [repoPath]: list }
+  return list
+}
+
+/** Main worktree of a specific repo (default-branch, path-sorted fallback). */
+export function mainWorktreeFor(repoPath: string | null | undefined): WorktreeInfo | null {
+  const list = worktreeListFor(repoPath)
+  return list.find((w) => w.isMain) ?? list[0] ?? null
+}
+
+/**
+ * Which loaded repo owns `worktreePath`, in `Session.repoPath` terms: the
+ * non-primary bare repo when the worktree belongs to one, else `undefined`
+ * (primary repo, or not in any loaded list). Lets renderer-side repoint paths
+ * (cwd tracking, open_worktree) derive the repo without the main process
+ * having to thread it through — the per-repo lists already live here.
+ */
+export function repoForWorktree(worktreePath: string): string | undefined {
+  for (const [repo, list] of Object.entries(_worktreesByRepo)) {
+    if (repo === _primaryRepo) continue
+    if (list.some((w) => w.path === worktreePath)) return repo
+  }
+  return undefined
 }
 
 /** The default-branch worktree, with a path-sorted fallback. */
@@ -34,6 +97,9 @@ export function mainWorktree(): WorktreeInfo | null {
 
 export async function refreshWorktrees(): Promise<void> {
   _worktreeList = await window.api.invoke('worktree:list')
+  if (_primaryRepo) {
+    _worktreesByRepo = { ..._worktreesByRepo, [_primaryRepo]: _worktreeList }
+  }
 }
 
 /**

@@ -11,7 +11,14 @@
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
-  import { worktreeList, projectRoot } from '../../stores/worktrees.svelte'
+  import {
+    projectRoot,
+    primaryRepo,
+    worktreeListFor,
+    mainWorktreeFor,
+    refreshWorktreesFor,
+    repoForWorktree,
+  } from '../../stores/worktrees.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
@@ -135,7 +142,7 @@
     const sid = sessionId
     const unsub = window.api.on('agent-workspace:open-worktree', (data) => {
       if (data.sourceTerminalId !== sid) return
-      sessionsStore.setWorktree(sid, data.worktreePath)
+      sessionsStore.setWorktree(sid, data.worktreePath, repoForWorktree(data.worktreePath))
       viewerOpen = true
     })
     return unsub
@@ -231,10 +238,44 @@
   let worktreePopoverEl = $state<HTMLElement | null>(null)
   let worktreeButtonEl = $state<HTMLButtonElement | undefined>()
 
+  // The repo this session's viewer is scoped to (undefined = window primary).
+  let repoPath = $derived(session?.repoPath)
+
+  // Lazily load a non-primary repo's worktrees so the popover/label resolve
+  // (covers sessions restored pointing at another repo). Idempotent + cached.
+  $effect(() => {
+    const repo = repoPath
+    if (repo && worktreeListFor(repo).length === 0) {
+      void refreshWorktreesFor(repo)
+    }
+  })
+
   let worktreeBranch = $derived.by(() => {
-    const wt = worktreeList().find((w) => w.path === worktreePath)
+    const wt = worktreeListFor(repoPath).find((w) => w.path === worktreePath)
     return wt?.branch ?? worktreePath.split('/').pop() ?? '—'
   })
+
+  // Repo picker (viewer-only — points this session's workspace at another bare
+  // repo's worktrees; does not change launchDir or the session model). Sits to
+  // the LEFT of the worktree picker. The label is the project-dir name.
+  let repoLabel = $derived(
+    (repoPath ?? primaryRepo() ?? '').replace(/\/[^/]*\.git$/, '').split('/').pop() ?? '—',
+  )
+
+  async function pickRepo(): Promise<void> {
+    const picked = await window.api.invoke('app:pick-repo')
+    if (!picked) return
+    // Loading the repo's worktrees registers it with the window (so cwd
+    // tracking / open_worktree resolve across it) and lets us land on its main.
+    await refreshWorktreesFor(picked)
+    const main = mainWorktreeFor(picked)
+    if (!main) return
+    // Normalize: undefined repoPath = the window's primary repo, so
+    // worktreeListFor / repoForWorktree agree on a single representation.
+    const repoArg = picked === primaryRepo() ? undefined : picked
+    sessionsStore.setActiveSessionWorktree(main.path, repoArg)
+    viewerOpen = true
+  }
 
   function handleWindowPointerDown(e: PointerEvent): void {
     if (!worktreePopoverOpen) return
@@ -323,6 +364,14 @@
     <div class="flex h-7 flex-none items-center justify-between border-b border-zinc-800 bg-zinc-900 px-2">
       <span class="truncate text-[11px] font-medium text-zinc-400">{session.label}</span>
       <div class="relative flex items-center gap-1">
+        <!-- Repo picker (viewer-only) — LEFT of the worktree picker. -->
+        <button
+          class="max-w-[160px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+          onclick={pickRepo}
+          title="Repository this workspace is viewing — click to view another bare repo (does not move the session)"
+        >
+          {repoLabel} ⊕
+        </button>
         <button
           bind:this={worktreeButtonEl}
           class="max-w-[220px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
@@ -348,7 +397,7 @@
             role="dialog"
             aria-label="Worktrees"
           >
-            <WorktreeList onselected={() => (worktreePopoverOpen = false)} />
+            <WorktreeList {repoPath} onselected={() => (worktreePopoverOpen = false)} />
           </div>
         {/if}
       </div>

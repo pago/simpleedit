@@ -25,15 +25,23 @@ interface WorktreeListWatchState {
   debounceTimer: ReturnType<typeof setTimeout> | null
 }
 
-const watchers = new Map<number, WorktreeListWatchState>()
+// Keyed by `${webContentsId}::${bareRepoPath}` so a window can watch the
+// project root of every repo its sessions point at (multi-repo), while a
+// closing window can tear down all of its watchers via the id prefix.
+const watchers = new Map<string, WorktreeListWatchState>()
+
+function watcherKey(webContentsId: number, bareRepoPath: string): string {
+  return `${webContentsId}::${bareRepoPath}`
+}
 
 export function watchWorktreeList(
   webContentsId: number,
   bareRepoPath: string,
   webContents: WebContents
 ): void {
-  // Don't double-watch a window that's already being watched.
-  if (watchers.has(webContentsId)) return
+  const key = watcherKey(webContentsId, bareRepoPath)
+  // Don't double-watch a (window, repo) pair that's already being watched.
+  if (watchers.has(key)) return
 
   const projectRoot = dirname(bareRepoPath)
 
@@ -60,15 +68,32 @@ export function watchWorktreeList(
   watcher.on('addDir', emit)
   watcher.on('unlinkDir', emit)
 
-  watchers.set(webContentsId, state)
+  watchers.set(key, state)
 }
 
-export function unwatchWorktreeList(webContentsId: number): void {
-  const state = watchers.get(webContentsId)
-  if (state) {
+/** Stop watching one repo for one window. Omit `bareRepoPath` to stop every
+ * watcher the window owns (window close / repo switch). */
+export function unwatchWorktreeList(webContentsId: number, bareRepoPath?: string): void {
+  if (bareRepoPath !== undefined) {
+    const state = watchers.get(watcherKey(webContentsId, bareRepoPath))
+    if (state) {
+      if (state.debounceTimer) clearTimeout(state.debounceTimer)
+      void state.watcher.close()
+      watchers.delete(watcherKey(webContentsId, bareRepoPath))
+    }
+    return
+  }
+  unwatchAllWorktreeListsForWindow(webContentsId)
+}
+
+/** Tear down every watcher owned by a window (matched by id prefix). */
+export function unwatchAllWorktreeListsForWindow(webContentsId: number): void {
+  const prefix = `${webContentsId}::`
+  for (const [key, state] of watchers) {
+    if (!key.startsWith(prefix)) continue
     if (state.debounceTimer) clearTimeout(state.debounceTimer)
     void state.watcher.close()
-    watchers.delete(webContentsId)
+    watchers.delete(key)
   }
 }
 

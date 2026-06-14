@@ -10,6 +10,7 @@
 import { untrack } from 'svelte'
 import { clearClaudeStatusForTerminal } from './claude-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
+import { repoForWorktree } from './worktrees.svelte'
 
 export type SessionKind = 'claude' | 'agents' | 'terminal'
 
@@ -33,6 +34,14 @@ export interface Session {
    * dropdown, and Stage 2 will follow the agent's tracked cwd.
    */
   worktreePath: string
+  /**
+   * The BARE REPO this session's worktree belongs to (Stage 4 multi-repo).
+   * Undefined means the window's primary repo — the single-repo default, so
+   * existing sessions and persistence are unaffected. Set when a session is
+   * pointed at another bare repo, so worktree:* calls and the workspace's
+   * worktree popover target the right repo.
+   */
+  repoPath?: string
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
   claudeSessionId?: string
   /** Restored-from-disk placeholder: no live PTY until the user clicks Resume. */
@@ -208,13 +217,27 @@ export const sessionsStore = {
     this.update(id, { label: label.trim(), customLabel: true })
   },
 
-  setWorktree(id: string, worktreePath: string): void {
-    this.update(id, { worktreePath })
+  /**
+   * Repoint a session's workspace at a worktree. `repoPath` is the bare repo
+   * that worktree belongs to — pass it (undefined = the window's primary repo)
+   * whenever the worktree may be in a non-primary repo, so the file tree, git
+   * log, and worktree popover all scope to the right repo. Omitting the
+   * argument leaves the session's current repo untouched (the common
+   * same-repo case, e.g. cwd tracking within the launched repo).
+   */
+  setWorktree(id: string, worktreePath: string, repoPath?: string): void {
+    const patch: Partial<Session> = { worktreePath }
+    if (arguments.length >= 3) patch.repoPath = repoPath
+    this.update(id, patch)
   },
 
-  /** Repoint the ACTIVE session's workspace (sidebar worktree clicks). */
-  setActiveSessionWorktree(worktreePath: string): void {
-    if (_activeId) this.update(_activeId, { worktreePath })
+  /** Repoint the ACTIVE session's workspace (sidebar / popover / repo-picker
+   * clicks). Pass repoPath (undefined = primary) when the worktree may be in a
+   * non-primary repo; omit to leave the session's current repo untouched. */
+  setActiveSessionWorktree(worktreePath: string, repoPath?: string): void {
+    if (!_activeId) return
+    if (arguments.length >= 2) this.setWorktree(_activeId, worktreePath, repoPath)
+    else this.setWorktree(_activeId, worktreePath)
   },
 
   /**
@@ -295,6 +318,7 @@ export const sessionsStore = {
     customLabel?: boolean
     launchDir: string
     worktreePath: string
+    repoPath?: string
     sessionId?: string
   }): string | null {
     if (input.kind === 'agents') {
@@ -309,6 +333,7 @@ export const sessionsStore = {
           customLabel: true,
           launchDir: input.launchDir,
           worktreePath: input.worktreePath,
+          ...(input.repoPath ? { repoPath: input.repoPath } : {}),
         },
       ]
       void window.api.invoke('claude:spawn-agents', { id, worktreePath: input.launchDir })
@@ -325,6 +350,7 @@ export const sessionsStore = {
         ...(input.customLabel ? { customLabel: true as const } : {}),
         launchDir: input.launchDir,
         worktreePath: input.worktreePath,
+        ...(input.repoPath ? { repoPath: input.repoPath } : {}),
         pendingResume: { sessionId: input.sessionId },
       },
     ]
@@ -377,7 +403,10 @@ export function initSessionListeners(): () => void {
     if (!data.worktreePath) return
     const session = sessionsStore.get(data.terminalId)
     if (!session || session.worktreePath === data.worktreePath) return
-    sessionsStore.setWorktree(data.terminalId, data.worktreePath)
+    // Resolve which repo owns the matched worktree so the viewer's repo and
+    // worktree stay coherent if the agent roamed into another opened repo
+    // (undefined = primary). Without this, repoPath could lag worktreePath.
+    sessionsStore.setWorktree(data.terminalId, data.worktreePath, repoForWorktree(data.worktreePath))
   })
 
   // Fork placeholder goes live on the new PTY's first byte.
