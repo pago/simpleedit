@@ -177,6 +177,19 @@ function defaultShell(): string {
   return process.env['SHELL'] ?? '/bin/zsh'
 }
 
+/**
+ * Shell args to run `cmd`. Production uses an interactive login shell
+ * (`-i -l`) so the user's profile is sourced and `claude` is found on PATH
+ * however it was installed. Under E2E (SIMPLEEDIT_E2E=1) the test harness
+ * already controls PATH (the e2e fake-claude dir is prepended), and the
+ * login shell's profile re-sourcing would non-deterministically shadow the
+ * fake with a real claude on the dev machine — so drop `-i -l` to make the
+ * prepended PATH authoritative. Flag-gated: no effect on production spawns.
+ */
+function claudeShellArgs(cmd: string): string[] {
+  return process.env['SIMPLEEDIT_E2E'] === '1' ? ['-c', cmd] : ['-i', '-l', '-c', cmd]
+}
+
 function getPtyOptions(worktreePath: string): pty.IPtyForkOptions {
   return {
     name: 'xterm-256color',
@@ -264,7 +277,7 @@ export function spawnClaudeTerminal(
   const shell = defaultShell()
   // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
   // ensuring claude is on PATH regardless of how it was installed.
-  const term = pty.spawn(shell, ['-i', '-l', '-c', claudeCmd], getPtyOptions(worktreePath))
+  const term = pty.spawn(shell, claudeShellArgs(claudeCmd), getPtyOptions(worktreePath))
 
   terminals.set(id, term)
 
@@ -355,7 +368,7 @@ export function spawnForkedClaudeTerminal(
     bridgeFlags
 
   const shell = defaultShell()
-  const term = pty.spawn(shell, ['-i', '-l', '-c', claudeCmd], getPtyOptions(targetWorktreePath))
+  const term = pty.spawn(shell, claudeShellArgs(claudeCmd), getPtyOptions(targetWorktreePath))
 
   terminals.set(placeholderTabId, term)
 
@@ -402,7 +415,7 @@ export function spawnAgentsTerminal(
   if (!guardCwd(id, worktreePath, webContents)) return
 
   const shell = defaultShell()
-  const term = pty.spawn(shell, ['-i', '-l', '-c', 'claude agents'], getPtyOptions(worktreePath))
+  const term = pty.spawn(shell, claudeShellArgs('claude agents'), getPtyOptions(worktreePath))
 
   terminals.set(id, term)
 
