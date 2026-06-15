@@ -1,5 +1,25 @@
 # simpleedit
 
+## 0.15.0
+
+### Minor Changes
+
+- [#126](https://github.com/pago/simpleedit/pull/126) [`551dc91`](https://github.com/pago/simpleedit/commit/551dc911d8325a2c203e636bfd18087acb9402e8) Thanks [@pago](https://github.com/pago)! - Agent-first UI pivot (Stage 1): sessions replace worktrees as the primary navigation entity. The sidebar lists agent/terminal sessions with live status; each session owns its workspace (tabs, worktree selection, file tree, git log) which is preserved across switches. A new session starts as a full-bleed terminal and grows viewer chrome when the first tab opens. Worktrees are demoted to a management section; clicking one repoints the active session's workspace. The Split concept is removed. Session persistence is rekeyed to sessions (save format v2) — agent sessions restore as click-to-resume entries with their tabs.
+
+- [#127](https://github.com/pago/simpleedit/pull/127) [`1b4d0e2`](https://github.com/pago/simpleedit/commit/1b4d0e2cb81e83a16a369d01cc2e1ce733e675b1) Thanks [@pago](https://github.com/pago)! - Stage 4 — multi-repo sessions. A session's workspace can now view worktrees from more than one bare repo: a repo picker (left of the worktree picker) points the viewer at another repo's worktrees without changing the session's launch dir or model. The `worktree:*` IPC handlers take an optional `repoPath` (the per-window repo map stays as the single-repo default), the cwd→worktree resolver matches across all of a window's opened repos, and per-session `repoPath` persists across restart. Recently-viewed deferred.
+
+- [#126](https://github.com/pago/simpleedit/pull/126) [`3b45c86`](https://github.com/pago/simpleedit/commit/3b45c86e00715624398e69c614cf3034eb19b7a0) Thanks [@pago](https://github.com/pago)! - Session location tracking (Stage 2). Spawned Claude sessions now report their working directory to SimpleEdit via injected HTTP hooks, and the session's workspace (file tree, git log, diff targets) automatically follows the agent into whichever worktree it's working in. Adds two MCP tools so agents can drive the UI directly: `open_worktree` (repoint the workspace) and `show_diff` (open a diff tab).
+
+### Patch Changes
+
+- [#124](https://github.com/pago/simpleedit/pull/124) [`5b195d5`](https://github.com/pago/simpleedit/commit/5b195d58a9bff68f1f8d02528c1db8392614eb55) Thanks [@pago](https://github.com/pago)! - fix: upgrade @electron/rebuild so node-gyp can find Visual Studio 2026
+
+  The Windows release build failed at install with "Could not find any Visual Studio
+  installation to use". GitHub migrated the `windows-latest` runner to Visual Studio 2026,
+  which node-gyp only learned to detect in v12.1.0. The pinned `@electron/rebuild@4.0.3`
+  pulled in node-gyp 11.x transitively. Bumping to `@electron/rebuild@^4.0.4` resolves
+  node-gyp ^12.2.0, restoring native rebuilds of node-pty on Windows.
+
 ## 0.14.1
 
 ### Patch Changes
