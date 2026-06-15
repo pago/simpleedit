@@ -90,6 +90,22 @@ export function repoForWorktree(worktreePath: string): string | undefined {
   return undefined
 }
 
+/**
+ * The bare repo that owns `worktreePath`, for grouping by repo: like
+ * `repoForWorktree` but normalized to the primary repo when the worktree is the
+ * primary's, so the session trail can bucket touched worktrees by repo. Null
+ * only before any repo is opened.
+ *
+ * Caveat: a worktree from a non-primary repo whose list hasn't loaded yet falls
+ * back to the primary key (we can't tell it apart until the list is cached) —
+ * so right after restore, before `refreshWorktreesFor` resolves, a few trail
+ * entries may bucket under the primary repo. It self-corrects reactively once
+ * the lists arrive, and the pickers drop paths that resolve to nothing.
+ */
+export function repoKeyForWorktree(worktreePath: string): string | null {
+  return repoForWorktree(worktreePath) ?? _primaryRepo
+}
+
 /** The default-branch worktree, with a path-sorted fallback. */
 export function mainWorktree(): WorktreeInfo | null {
   return _worktreeList.find((w) => w.isMain) ?? _worktreeList[0] ?? null

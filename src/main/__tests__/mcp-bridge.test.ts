@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ChildProcess } from 'child_process'
 import { spawn } from 'child_process'
 import { join } from 'path'
-import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver } from '../mcp-bridge'
+import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver, setRepoDiscoverer } from '../mcp-bridge'
 import { attachToTerminal, detachFromTerminal } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import type { WorktreeInfo } from '../../shared/ipc-types'
@@ -387,6 +387,7 @@ describe('MCP Bridge — location-tracking hooks', () => {
 
   afterEach(() => {
     setWorktreeResolver(async () => [])
+    setRepoDiscoverer(async () => null)
     unregisterTerminal('hook-term')
   })
 
@@ -411,16 +412,36 @@ describe('MCP Bridge — location-tracking hooks', () => {
       terminalId: 'hook-term',
       cwd: '/repo/feature/src',
       worktreePath: '/repo/feature',
+      repoPath: null,
     })
   })
 
-  it('emits worktreePath null when cwd is outside every worktree', async () => {
+  it('emits worktreePath + repoPath null when cwd is outside every worktree and no repo is discoverable', async () => {
     registerSession('sess-h', 'hook-term')
     await postHook({ session_id: 'sess-h', cwd: '/somewhere/else', hook_event_name: 'UserPromptSubmit' })
     expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
       terminalId: 'hook-term',
       cwd: '/somewhere/else',
       worktreePath: null,
+      repoPath: null,
+    })
+  })
+
+  it('discovers an unopened repo from the cwd and re-matches its worktree', async () => {
+    // The agent roamed into /other-repo, which the window never opened, so the
+    // primary resolver misses. The discoverer resolves + lists it, and the hook
+    // re-matches the cwd against the discovered worktrees.
+    registerSession('sess-h', 'hook-term')
+    setRepoDiscoverer(async (_id, cwd) => {
+      if (!cwd.startsWith('/other-repo')) return null
+      return { repoPath: '/other-repo/.bare', worktrees: wtList('/other-repo/backend') }
+    })
+    await postHook({ session_id: 'sess-h', cwd: '/other-repo/backend/src', hook_event_name: 'PostToolUse' })
+    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+      terminalId: 'hook-term',
+      cwd: '/other-repo/backend/src',
+      worktreePath: '/other-repo/backend',
+      repoPath: '/other-repo/.bare',
     })
   })
 

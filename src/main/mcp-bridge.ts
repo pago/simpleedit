@@ -42,6 +42,34 @@ async function resolveWorktrees(webContentsId: number): Promise<WorktreeInfo[]> 
   }
 }
 
+/**
+ * Resolves the bare repo for a cwd the window hasn't opened yet, registers it
+ * with the window, and returns its worktree list — the fallback when
+ * `matchWorktree` misses because the agent roamed into a fresh repo. Registered
+ * by index.ts (which owns the per-window repo map); null in unit tests.
+ */
+type RepoDiscoverer = (
+  webContentsId: number,
+  cwd: string,
+) => Promise<{ repoPath: string; worktrees: WorktreeInfo[] } | null>
+let repoDiscoverer: RepoDiscoverer | null = null
+
+export function setRepoDiscoverer(discoverer: RepoDiscoverer): void {
+  repoDiscoverer = discoverer
+}
+
+async function discoverRepo(
+  webContentsId: number,
+  cwd: string,
+): Promise<{ repoPath: string; worktrees: WorktreeInfo[] } | null> {
+  if (!repoDiscoverer) return null
+  try {
+    return await repoDiscoverer(webContentsId, cwd)
+  } catch {
+    return null
+  }
+}
+
 interface ToolCallPayload {
   tool: string
   args: Record<string, unknown>
@@ -313,10 +341,28 @@ async function handleHook(body: string, webContents: WebContents): Promise<void>
   if (!terminalId) return
 
   const worktrees = await resolveWorktrees(webContents.id)
-  const worktreePath = matchWorktree(signal.cwd, worktrees)
+  let worktreePath = matchWorktree(signal.cwd, worktrees)
+  let repoPath: string | null = null
+
+  // Miss = the agent roamed into a repo this window never opened. Resolve and
+  // register it, then re-match against its worktrees so a brand-new repo (the
+  // backend, a sibling service) still surfaces on the session's trail.
+  //
+  // Cost note: the hook response is awaited before we 200 (below), so on a miss
+  // the CLI briefly blocks on two git subprocesses (rev-parse + worktree list).
+  // This is in kind with the existing per-hook worktree resolver and is paid
+  // only on the first hook from each new repo per window — but a pathological
+  // cwd (network FS, huge repo) would stall the CLI's hook here.
+  if (!worktreePath) {
+    const discovered = await discoverRepo(webContents.id, signal.cwd)
+    if (discovered) {
+      repoPath = discovered.repoPath
+      worktreePath = matchWorktree(signal.cwd, discovered.worktrees)
+    }
+  }
 
   if (!webContents.isDestroyed()) {
-    webContents.send('claude:cwd', { terminalId, cwd: signal.cwd, worktreePath })
+    webContents.send('claude:cwd', { terminalId, cwd: signal.cwd, worktreePath, repoPath })
   }
 }
 

@@ -35,7 +35,8 @@ import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startPlan, startPlanFromDescription, revisePlan, cancelPlan, cancelAllPlans, loadPlan, savePlan } from './plan'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
-import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan, setWorktreeResolver } from './mcp-bridge'
+import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
+import { resolveBareRepo } from './cwd-tracker'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import { inheritShellPath } from './shell-path'
@@ -109,6 +110,19 @@ setWorktreeResolver(async (webContentsId) => {
   // and distinct bare repos never share a worktree directory.
   const seen = new Set<string>()
   return lists.flat().filter((w) => (seen.has(w.path) ? false : (seen.add(w.path), true)))
+})
+
+// Fallback for the bridge's hook handler: when a tracked cwd matches none of
+// the window's known worktrees, resolve the bare repo it belongs to, register
+// it with the window (so future matches and the resolver above cover it), and
+// hand back its worktrees for an immediate re-match. This is what lets an agent
+// roaming into a never-opened repo still surface on the session's trail.
+setRepoDiscoverer(async (webContentsId, cwd) => {
+  const repoPath = await resolveBareRepo(cwd)
+  if (!repoPath) return null
+  registerWindowRepo(webContentsId, repoPath)
+  const worktrees = await listWorktrees(repoPath).catch(() => [])
+  return { repoPath, worktrees }
 })
 
 // ── Window creation ───────────────────────────────────────

@@ -10,7 +10,13 @@
 import { untrack } from 'svelte'
 import { clearClaudeStatusForTerminal } from './claude-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
-import { repoForWorktree } from './worktrees.svelte'
+import {
+  repoForWorktree,
+  repoKeyForWorktree,
+  worktreeListFor,
+  refreshWorktreesFor,
+  primaryRepo,
+} from './worktrees.svelte'
 
 export type SessionKind = 'claude' | 'agents' | 'terminal'
 
@@ -42,6 +48,23 @@ export interface Session {
    * worktree popover target the right repo.
    */
   repoPath?: string
+  /**
+   * Worktrees this session has worked in, most-recently-touched first — the
+   * agent's location trail, fed by `claude:cwd`. Drives the repo picker
+   * (distinct repos in touch order) and the worktree picker's "touched" group.
+   * Seeded with the initial worktree so the current location shows before the
+   * agent moves.
+   */
+  touchedWorktrees: string[]
+  /**
+   * Whether this session's viewer chrome (tabs/file tree/git log) is open.
+   * Lifted from the workspace component so the global cwd listener can read it:
+   * the agent's moves only auto-repoint the view while the viewer is CLOSED
+   * (the user isn't reviewing). Open = freeze the view, surface the move in the
+   * picker instead. Undefined is treated as closed (progressive-disclosure
+   * default).
+   */
+  viewerOpen?: boolean
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
   claudeSessionId?: string
   /** Restored-from-disk placeholder: no live PTY until the user clicks Resume. */
@@ -126,7 +149,7 @@ export const sessionsStore = {
   ): string {
     const id = `claude-${crypto.randomUUID()}`
     _sessions = [
-      { id, kind: 'claude', label: defaultLabel('claude'), launchDir, worktreePath },
+      { id, kind: 'claude', label: defaultLabel('claude'), launchDir, worktreePath, touchedWorktrees: [worktreePath] },
       ..._sessions,
     ]
     select(id)
@@ -143,7 +166,7 @@ export const sessionsStore = {
     // The `claude agents` TUI sets noisy OSC titles — customLabel keeps
     // "Agents N" sticky (same rule as the old TerminalTabs).
     _sessions = [
-      { id, kind: 'agents', label: defaultLabel('agents'), customLabel: true, launchDir, worktreePath },
+      { id, kind: 'agents', label: defaultLabel('agents'), customLabel: true, launchDir, worktreePath, touchedWorktrees: [worktreePath] },
       ..._sessions,
     ]
     select(id)
@@ -155,7 +178,7 @@ export const sessionsStore = {
     const id = `term-${crypto.randomUUID()}`
     _sessions = [
       ..._sessions,
-      { id, kind: 'terminal', label: defaultLabel('terminal'), launchDir, worktreePath },
+      { id, kind: 'terminal', label: defaultLabel('terminal'), launchDir, worktreePath, touchedWorktrees: [worktreePath] },
     ]
     select(id)
     void window.api.invoke('pty:spawn', { id, worktreePath: launchDir })
@@ -241,6 +264,28 @@ export const sessionsStore = {
   },
 
   /**
+   * Record that the session worked in `worktreePath` — move-to-front on its
+   * trail (dedup). Drives the repo + worktree pickers; deliberately separate
+   * from `setWorktree` so the trail updates even when we don't move the view
+   * (viewer open / user reviewing).
+   */
+  recordTouch(id: string, worktreePath: string): void {
+    const session = findSession(id)
+    if (!session) return
+    const rest = session.touchedWorktrees.filter((p) => p !== worktreePath)
+    if (rest.length === session.touchedWorktrees.length - 1 && session.touchedWorktrees[0] === worktreePath) {
+      return // already at front — no state churn
+    }
+    this.update(id, { touchedWorktrees: [worktreePath, ...rest] })
+  },
+
+  setViewerOpen(id: string, open: boolean): void {
+    const session = findSession(id)
+    if (!session || !!session.viewerOpen === open) return
+    this.update(id, { viewerOpen: open })
+  },
+
+  /**
    * Apply an OSC title from the PTY. User-renamed sessions are sticky.
    * Strips Claude Code's status prefix (✳ U+2733 or braille spinner
    * U+2800–U+28FF), which is always followed by a space.
@@ -283,6 +328,7 @@ export const sessionsStore = {
         // launches there too (not at the project root).
         launchDir: targetWorktreePath,
         worktreePath: targetWorktreePath,
+        touchedWorktrees: [targetWorktreePath],
         forking: { sourceLabel },
       },
       ..._sessions,
@@ -319,8 +365,15 @@ export const sessionsStore = {
     launchDir: string
     worktreePath: string
     repoPath?: string
+    touchedWorktrees?: string[]
     sessionId?: string
   }): string | null {
+    // Restore the persisted trail; fall back to the workspace worktree so the
+    // current location still shows in the pickers for pre-trail blobs.
+    const touchedWorktrees =
+      input.touchedWorktrees && input.touchedWorktrees.length > 0
+        ? input.touchedWorktrees
+        : [input.worktreePath]
     if (input.kind === 'agents') {
       // Agent View can't resume (no session-id) — respawn fresh, same slot.
       const id = `agents-${crypto.randomUUID()}`
@@ -334,6 +387,7 @@ export const sessionsStore = {
           launchDir: input.launchDir,
           worktreePath: input.worktreePath,
           ...(input.repoPath ? { repoPath: input.repoPath } : {}),
+          touchedWorktrees,
         },
       ]
       void window.api.invoke('claude:spawn-agents', { id, worktreePath: input.launchDir })
@@ -351,6 +405,7 @@ export const sessionsStore = {
         launchDir: input.launchDir,
         worktreePath: input.worktreePath,
         ...(input.repoPath ? { repoPath: input.repoPath } : {}),
+        touchedWorktrees,
         pendingResume: { sessionId: input.sessionId },
       },
     ]
@@ -368,6 +423,33 @@ export const sessionsStore = {
     nextAgentsIndex = 1
     nextTerminalIndex = 1
   },
+}
+
+/**
+ * Distinct repos this session has touched, most-recently-first. Each touched
+ * worktree is normalized to its repo key (primary repo for primary worktrees),
+ * so the repo picker lists exactly the repos this agent has worked across.
+ */
+export function touchedReposForSession(session: Session): string[] {
+  const repos: string[] = []
+  for (const wt of session.touchedWorktrees) {
+    const repo = repoKeyForWorktree(wt)
+    if (repo && !repos.includes(repo)) repos.push(repo)
+  }
+  return repos
+}
+
+/**
+ * This session's touched worktrees within one repo, most-recently-first.
+ * `repoPath` undefined = the primary repo. Backs the worktree picker's pinned
+ * "touched" group (the rest of the repo's worktrees follow, alphabetically).
+ */
+export function touchedWorktreesForRepo(
+  session: Session,
+  repoPath: string | null | undefined,
+): string[] {
+  const key = repoPath ?? primaryRepo()
+  return session.touchedWorktrees.filter((wt) => repoKeyForWorktree(wt) === key)
 }
 
 /**
@@ -394,19 +476,31 @@ export function initSessionListeners(): () => void {
     sessionsStore.update(data.terminalId, { claudeSessionId: data.sessionId })
   })
 
-  // Location tracking (Stage 2): the agent moved into a worktree we recognise.
-  // Repoint the session's workspace to follow it. Last-writer-wins against the
-  // manual dropdown — a fine default, since the agent's cwd is the freshest
-  // signal of what it's actually working on. No-match cwds are ignored (the
-  // workspace stays where the user/agent last put it).
+  // Location tracking (Stage 2+): the agent's tracked cwd moved.
+  //   • Always RECORD the move on the session's trail (drives the pickers),
+  //     after caching a freshly-discovered repo's worktrees so it resolves.
+  //   • Only FOLLOW it with the view when the viewer is CLOSED — if it's open
+  //     the user is reviewing, so we leave the view put and let the picker
+  //     indicator surface the move instead.
+  // Last-writer-wins against the manual dropdown when we do follow — the
+  // agent's cwd is the freshest signal of what it's working on.
   const offCwd = window.api.on('claude:cwd', (data) => {
-    if (!data.worktreePath) return
     const session = sessionsStore.get(data.terminalId)
-    if (!session || session.worktreePath === data.worktreePath) return
-    // Resolve which repo owns the matched worktree so the viewer's repo and
-    // worktree stay coherent if the agent roamed into another opened repo
-    // (undefined = primary). Without this, repoPath could lag worktreePath.
-    sessionsStore.setWorktree(data.terminalId, data.worktreePath, repoForWorktree(data.worktreePath))
+    if (!session) return
+    void (async () => {
+      // data.repoPath is set only when the agent roamed into a repo this window
+      // hadn't opened; cache its worktrees so repoForWorktree / the pickers
+      // can resolve the new worktree before we record it.
+      if (data.repoPath && worktreeListFor(data.repoPath).length === 0) {
+        await refreshWorktreesFor(data.repoPath)
+      }
+      if (!data.worktreePath) return
+      sessionsStore.recordTouch(data.terminalId, data.worktreePath)
+      const current = sessionsStore.get(data.terminalId)
+      if (!current || current.viewerOpen) return
+      if (current.worktreePath === data.worktreePath) return
+      sessionsStore.setWorktree(data.terminalId, data.worktreePath, repoForWorktree(data.worktreePath))
+    })()
   })
 
   // Fork placeholder goes live on the new PTY's first byte.

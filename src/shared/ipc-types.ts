@@ -179,8 +179,19 @@ export interface ClaudeEventMap {
    * The session's tracked working directory changed (from a hook POST). When
    * `cwd` falls inside a worktree of the session's repo, `worktreePath` is that
    * worktree (so the renderer can repoint the workspace); otherwise it's null.
+   *
+   * `repoPath` is the bare repo that contains `cwd`, resolved even when the
+   * window had never opened that repo before (the agent roamed into a fresh
+   * repo). Null when the cwd couldn't be resolved to a bare repo at all. The
+   * renderer uses it to register the repo and record it on the session's
+   * touched trail so it appears in the repo picker.
    */
-  'claude:cwd': { terminalId: string; cwd: string; worktreePath: string | null }
+  'claude:cwd': {
+    terminalId: string
+    cwd: string
+    worktreePath: string | null
+    repoPath: string | null
+  }
   /**
    * Fork operation outcome. `placeholderTabId` matches the id the renderer
    * used in `claude:fork`, so it can locate the placeholder tab to transition
@@ -347,6 +358,13 @@ export interface SerializedAgentSession {
    * the primary repo's main worktree.
    */
   repoPath?: string
+  /**
+   * Worktrees this session has worked in, most-recently-touched first (the
+   * agent's location trail). Drives the repo picker (distinct repos, in touch
+   * order) and the worktree picker's "touched" group. Restored so the pickers
+   * survive a restart rather than rebuilding only as the agent moves again.
+   */
+  touchedWorktrees?: string[]
   tabs: SerializedTab[]
   activeTabId: string | null
   unread: string[]
