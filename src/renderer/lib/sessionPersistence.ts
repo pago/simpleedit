@@ -11,7 +11,7 @@ import type {
   SerializedSession,
   SerializedTab,
 } from '../../shared/ipc-types'
-import { worktreeList, projectRoot } from '../stores/worktrees.svelte'
+import { worktreeList, projectRoot, refreshWorktreesFor } from '../stores/worktrees.svelte'
 import { sessionsStore } from '../stores/sessions.svelte'
 import { tabsStore, type Tab } from '../stores/tabsStore.svelte'
 
@@ -87,6 +87,11 @@ export function serializeSession(repoPath: string): SerializedSession {
       launchDir: session.launchDir,
       worktreePath: session.worktreePath,
       ...(session.repoPath ? { repoPath: session.repoPath } : {}),
+      // Spread into a plain array: the live value is a Svelte $state proxy,
+      // which isn't structured-cloneable across the session:save IPC.
+      ...(session.touchedWorktrees.length > 0
+        ? { touchedWorktrees: [...session.touchedWorktrees] }
+        : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
       unread,
@@ -148,6 +153,10 @@ export function hydrateSession(session: SerializedSession): {
   let restored = 0
   let dropped = 0
   let activeNewId: string | null = null
+  // Non-primary repos any restored session points at — load their worktrees so
+  // the trail entries resolve to their repos in the picker (repoKeyForWorktree
+  // needs the cache). Fire-and-forget; the pickers fill in reactively.
+  const trailRepos = new Set<string>()
 
   session.sessions.forEach((s, index) => {
     // A session pointed at a non-primary repo keeps its remembered worktree
@@ -171,8 +180,10 @@ export function hydrateSession(session: SerializedSession): {
       launchDir: s.launchDir ?? projectRoot() ?? worktreePath,
       worktreePath,
       ...(s.repoPath ? { repoPath: s.repoPath } : {}),
+      ...(s.touchedWorktrees ? { touchedWorktrees: s.touchedWorktrees } : {}),
       ...(s.sessionId ? { sessionId: s.sessionId } : {}),
     })
+    if (s.repoPath) trailRepos.add(s.repoPath)
     if (!newId) {
       // Claude session without a captured uuid — nothing to resume.
       dropped++
@@ -197,6 +208,8 @@ export function hydrateSession(session: SerializedSession): {
   })
 
   if (activeNewId) sessionsStore.select(activeNewId)
+
+  for (const repo of trailRepos) void refreshWorktreesFor(repo)
 
   return { restoredSessions: restored, droppedSessions: dropped }
 }

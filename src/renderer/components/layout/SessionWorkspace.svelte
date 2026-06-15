@@ -6,6 +6,7 @@
   import AgentPopover from '../editor/AgentPopover.svelte'
   import PaneTabBar from './PaneTabBar.svelte'
   import TabContainer from './TabContainer.svelte'
+  import RepoPicker from './RepoPicker.svelte'
   import { openDiffTab, openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
   import { planStore } from '../../stores/planStore.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
@@ -44,10 +45,16 @@
    * Progressive disclosure: a fresh session is just a full-bleed terminal.
    * The viewer chrome (tabs + file tree + git log) appears when the first tab
    * opens, or when the user toggles it explicitly; it never auto-hides.
+   *
+   * Lives on the session (not component-local) so the global cwd listener can
+   * read it: the agent only auto-repoints the view while the viewer is CLOSED.
    */
-  let viewerOpen = $state(false)
+  let viewerOpen = $derived(session?.viewerOpen ?? false)
+  function setViewerOpen(open: boolean): void {
+    sessionsStore.setViewerOpen(sessionId, open)
+  }
   $effect(() => {
-    if (tabs.length > 0) viewerOpen = true
+    if (tabs.length > 0) setViewerOpen(true)
   })
 
   // All live Claude sessions are valid "Discuss with Agent" targets; the
@@ -143,7 +150,7 @@
     const unsub = window.api.on('agent-workspace:open-worktree', (data) => {
       if (data.sourceTerminalId !== sid) return
       sessionsStore.setWorktree(sid, data.worktreePath, repoForWorktree(data.worktreePath))
-      viewerOpen = true
+      setViewerOpen(true)
     })
     return unsub
   })
@@ -255,13 +262,10 @@
     return wt?.branch ?? worktreePath.split('/').pop() ?? '—'
   })
 
-  // Repo picker (viewer-only — points this session's workspace at another bare
-  // repo's worktrees; does not change launchDir or the session model). Sits to
-  // the LEFT of the worktree picker. The label is the project-dir name.
-  let repoLabel = $derived(
-    (repoPath ?? primaryRepo() ?? '').replace(/\/[^/]*\.git$/, '').split('/').pop() ?? '—',
-  )
-
+  // "Open another repo…" fallback from RepoPicker: points this session's
+  // workspace at a bare repo via the directory dialog (does not change
+  // launchDir or the session model). Normal repo switching goes through the
+  // RepoPicker dropdown over the agent's touched repos.
   async function pickRepo(): Promise<void> {
     const picked = await window.api.invoke('app:pick-repo')
     if (!picked) return
@@ -274,7 +278,7 @@
     // worktreeListFor / repoForWorktree agree on a single representation.
     const repoArg = picked === primaryRepo() ? undefined : picked
     sessionsStore.setActiveSessionWorktree(main.path, repoArg)
-    viewerOpen = true
+    setViewerOpen(true)
   }
 
   function handleWindowPointerDown(e: PointerEvent): void {
@@ -364,14 +368,10 @@
     <div class="flex h-7 flex-none items-center justify-between border-b border-zinc-800 bg-zinc-900 px-2">
       <span class="truncate text-[11px] font-medium text-zinc-400">{session.label}</span>
       <div class="relative flex items-center gap-1">
-        <!-- Repo picker (viewer-only) — LEFT of the worktree picker. -->
-        <button
-          class="max-w-[160px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
-          onclick={pickRepo}
-          title="Repository this workspace is viewing — click to view another bare repo (does not move the session)"
-        >
-          {repoLabel} ⊕
-        </button>
+        <!-- Repo picker (viewer-only) — LEFT of the worktree picker. Lists the
+             repos this agent has worked across; "Open another…" falls back to
+             the directory dialog. -->
+        <RepoPicker {repoPath} onpickother={pickRepo} />
         <button
           bind:this={worktreeButtonEl}
           class="max-w-[220px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
@@ -384,7 +384,7 @@
         </button>
         <button
           class="rounded px-1.5 py-0.5 text-[10px] {viewerOpen ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
-          onclick={() => (viewerOpen = !viewerOpen)}
+          onclick={() => setViewerOpen(!viewerOpen)}
           title={viewerOpen ? 'Hide files, git log and editor' : 'Show files, git log and editor'}
         >
           Files

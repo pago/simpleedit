@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   parseHookBody,
   matchWorktree,
+  resolveBareRepo,
   registerSession,
   terminalForSession,
   unregisterTerminal,
@@ -125,6 +127,48 @@ describe('matchWorktree', () => {
 
   it('returns null for an empty worktree list', () => {
     expect(matchWorktree(join(real, 'main'), [])).toBeNull()
+  })
+})
+
+describe('resolveBareRepo', () => {
+  let root: string
+  let real: string
+  let proj: string
+  let commonDir: string
+  let worktreeDir: string
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'se-repo-'))
+    real = realpathSync(root)
+    proj = join(real, 'proj')
+    mkdirSync(proj)
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', proj, ...args], { stdio: 'pipe' })
+    }
+    git('init', '-q')
+    git('config', 'user.email', 't@t')
+    git('config', 'user.name', 't')
+    git('config', 'commit.gpgsign', 'false') // ignore the runner's global signing config
+    git('commit', '--allow-empty', '-q', '-m', 'init')
+    worktreeDir = join(real, 'wt')
+    git('worktree', 'add', '-q', worktreeDir, '-b', 'feat')
+    commonDir = realpathSync(join(proj, '.git'))
+  })
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('resolves the common git dir from inside a linked worktree', async () => {
+    expect(await resolveBareRepo(worktreeDir)).toBe(commonDir)
+  })
+
+  it('resolves the common git dir from the main working tree', async () => {
+    expect(await resolveBareRepo(proj)).toBe(commonDir)
+  })
+
+  it('returns null when cwd is not inside a git repo', async () => {
+    expect(await resolveBareRepo(real)).toBeNull()
   })
 })
 

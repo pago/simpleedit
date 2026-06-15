@@ -13,6 +13,7 @@
  */
 import { realpathSync } from 'fs'
 import { sep } from 'path'
+import { simpleGit } from 'simple-git'
 import type { WorktreeInfo } from '../shared/ipc-types'
 
 /** Parsed signal from a hook POST body. Null when the body is unusable. */
@@ -73,6 +74,30 @@ export function matchWorktree(cwd: string, worktrees: WorktreeInfo[]): string | 
     }
   }
   return best
+}
+
+/**
+ * Resolve the bare repo that owns `cwd` by asking git for its common git dir
+ * (the shared dir across a worktree set is the bare repo itself). Returns the
+ * realpathed absolute path — matching how matchWorktree compares — or null when
+ * cwd isn't inside a git repo.
+ *
+ * This backs the hook's "agent roamed into a repo the window never opened"
+ * path: matchWorktree can only see repos already listed for the window, so when
+ * it misses we resolve the repo here, register it, and re-match.
+ */
+export async function resolveBareRepo(cwd: string): Promise<string | null> {
+  try {
+    const out = await simpleGit(cwd).raw([
+      'rev-parse',
+      '--path-format=absolute',
+      '--git-common-dir',
+    ])
+    const dir = out.trim()
+    return dir ? safeRealpath(dir) : null
+  } catch {
+    return null
+  }
 }
 
 // ── session_id → terminalId registry ────────────────────────────────────────

@@ -9,7 +9,7 @@
     primaryRepo,
     optimisticRemoveWorktree,
   } from '../../stores/worktrees.svelte'
-  import { sessionsStore } from '../../stores/sessions.svelte'
+  import { sessionsStore, touchedWorktreesForRepo } from '../../stores/sessions.svelte'
   import { getClaudeStatus } from '../../stores/claude-status.svelte'
   import { sanitizeBranchName, isValidBranchName } from '../../lib/branchName'
   import { worktreeLabel } from '../../lib/worktreeLabel'
@@ -62,6 +62,34 @@
   let isPrimary = $derived(!repoPath || repoPath === primaryRepo())
   let repoArg = $derived(isPrimary ? undefined : repoPath)
   let worktrees = $derived(isPrimary ? worktreeList() : worktreeListFor(repoPath))
+
+  let activeSession = $derived(sessionsStore.activeSession())
+
+  // The active session's selected worktree (highlighted) and the agent's
+  // current location (trail head) — the latter drives the "agent is over here"
+  // indicator when it differs from what you're viewing.
+  let selectedPath = $derived(activeSession?.worktreePath ?? null)
+  let agentPath = $derived(activeSession?.touchedWorktrees[0] ?? null)
+
+  // Ordering: worktrees this session has touched (most-recent first) pinned to
+  // the top, a separator, then the rest of the repo's worktrees alphabetically.
+  // Touched paths not present in the list (pruned worktrees) are dropped.
+  let touchedPaths = $derived(activeSession ? touchedWorktreesForRepo(activeSession, repoPath) : [])
+  let touchedWorktrees = $derived.by(() => {
+    const byPath = new Map(worktrees.map((w) => [w.path, w]))
+    const out: WorktreeInfo[] = []
+    for (const p of touchedPaths) {
+      const w = byPath.get(p)
+      if (w && !out.includes(w)) out.push(w)
+    }
+    return out
+  })
+  let restWorktrees = $derived.by(() => {
+    const touchedSet = new Set(touchedWorktrees.map((w) => w.path))
+    return worktrees
+      .filter((w) => !touchedSet.has(w.path))
+      .sort((a, b) => worktreeLabel(a).localeCompare(worktreeLabel(b)))
+  })
 
   function refresh(): Promise<unknown> {
     return repoArg ? refreshWorktreesFor(repoArg) : refreshWorktrees()
@@ -281,85 +309,103 @@
     </div>
   {/if}
 
-  <div class="flex flex-col" role="listbox" aria-label="Worktrees">
-    {#each worktrees as worktree (worktree.path)}
-      {@const isActive = sessionsStore.activeSession()?.worktreePath === worktree.path}
-      <div
-        class="group relative flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm {isActive
-          ? 'bg-zinc-700 text-zinc-100'
-          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
-        role="option"
-        aria-selected={isActive}
-        tabindex="0"
-        onclick={() => handleSelect(worktree)}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSelect(worktree) }}
-      >
-        <span
-          class="h-2 w-2 shrink-0 rounded-full {isActive ? 'bg-green-400' : 'bg-zinc-600'}"
-        ></span>
-        <span class="flex-1 truncate" title={worktree.path}>{worktreeLabel(worktree)}</span>
-        <span
-          class="text-[10px] {getClaudeStatus(worktree.path) === 'running'
-            ? 'text-yellow-400'
-            : getClaudeStatus(worktree.path) === 'error'
-              ? 'text-red-400'
-              : getClaudeStatus(worktree.path) === 'waiting'
-                ? 'text-blue-400'
-                : 'text-zinc-500'}"
-        >{getClaudeStatus(worktree.path)}</span>
+  {#snippet row(worktree: WorktreeInfo)}
+    {@const isActive = selectedPath === worktree.path}
+    {@const isAgentHere = agentPath === worktree.path && agentPath !== selectedPath}
+    <div
+      class="group relative flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm {isActive
+        ? 'bg-zinc-700 text-zinc-100'
+        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
+      role="option"
+      aria-selected={isActive}
+      tabindex="0"
+      onclick={() => handleSelect(worktree)}
+      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSelect(worktree) }}
+    >
+      <span
+        class="h-2 w-2 shrink-0 rounded-full {isActive
+          ? 'bg-green-400'
+          : isAgentHere
+            ? 'bg-amber-400'
+            : 'bg-zinc-600'}"
+        title={isAgentHere ? 'Agent is working here' : undefined}
+      ></span>
+      <span class="flex-1 truncate" title={worktree.path}>{worktreeLabel(worktree)}</span>
+      <span
+        class="text-[10px] {getClaudeStatus(worktree.path) === 'running'
+          ? 'text-yellow-400'
+          : getClaudeStatus(worktree.path) === 'error'
+            ? 'text-red-400'
+            : getClaudeStatus(worktree.path) === 'waiting'
+              ? 'text-blue-400'
+              : 'text-zinc-500'}"
+      >{getClaudeStatus(worktree.path)}</span>
 
-        {#if !worktree.isMain}
-          {#if removing === worktree.path}
-            <button
-              class="shrink-0 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-red-500"
-              onclick={(e) => {
-                e.stopPropagation()
-                handleRemove(worktree.path)
-              }}
+      {#if !worktree.isMain}
+        {#if removing === worktree.path}
+          <button
+            class="shrink-0 rounded bg-red-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-red-500"
+            onclick={(e) => {
+              e.stopPropagation()
+              handleRemove(worktree.path)
+            }}
+          >
+            Confirm
+          </button>
+          <button
+            class="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
+            onclick={(e) => {
+              e.stopPropagation()
+              removing = null
+            }}
+          >
+            Cancel
+          </button>
+        {:else}
+          <button
+            class="absolute right-1 top-1/2 -translate-y-1/2 rounded bg-zinc-700/90 p-1 text-zinc-300 opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-zinc-600 hover:text-red-400 group-hover:opacity-100 focus:opacity-100"
+            onclick={(e) => {
+              e.stopPropagation()
+              removing = worktree.path
+            }}
+            title="Remove worktree"
+            aria-label="Remove worktree"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+              class="h-3.5 w-3.5"
             >
-              Confirm
-            </button>
-            <button
-              class="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
-              onclick={(e) => {
-                e.stopPropagation()
-                removing = null
-              }}
-            >
-              Cancel
-            </button>
-          {:else}
-            <button
-              class="absolute right-1 top-1/2 -translate-y-1/2 rounded bg-zinc-700/90 p-1 text-zinc-300 opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-zinc-600 hover:text-red-400 group-hover:opacity-100 focus:opacity-100"
-              onclick={(e) => {
-                e.stopPropagation()
-                removing = worktree.path
-              }}
-              title="Remove worktree"
-              aria-label="Remove worktree"
-            >
-              <svg
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
-                class="h-3.5 w-3.5"
-              >
-                <path
-                  d="M3 4h10M6.5 4V2.5h3V4M4.5 4v9.5a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V4M6.5 7v4.5M9.5 7v4.5"
-                  stroke="currentColor"
-                  stroke-width="1.2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-          {/if}
+              <path
+                d="M3 4h10M6.5 4V2.5h3V4M4.5 4v9.5a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V4M6.5 7v4.5M9.5 7v4.5"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
         {/if}
-      </div>
+      {/if}
+    </div>
+  {/snippet}
+
+  <div class="flex flex-col" role="listbox" aria-label="Worktrees">
+    {#each touchedWorktrees as worktree (worktree.path)}
+      {@render row(worktree)}
+    {/each}
+
+    {#if touchedWorktrees.length > 0 && restWorktrees.length > 0}
+      <div class="my-1 border-t border-zinc-800" role="separator"></div>
+    {/if}
+
+    {#each restWorktrees as worktree (worktree.path)}
+      {@render row(worktree)}
     {/each}
   </div>
 
-  {#if worktreeList().length === 0}
+  {#if worktrees.length === 0}
     <p class="px-2 text-xs text-zinc-500">No worktrees found</p>
   {/if}
 </div>
