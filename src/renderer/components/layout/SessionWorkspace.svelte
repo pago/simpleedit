@@ -394,6 +394,7 @@
             {activeId}
             {peekId}
             unread={unreadIds}
+            {activeTab}
             onselect={selectTab}
             onclose={closeTab}
             onpin={pinTab}

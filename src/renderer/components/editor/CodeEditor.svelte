@@ -15,9 +15,13 @@
      * `path` as a tab in this pane; cursor positioning is handled here.
      */
     onOpenFile?: (path: string) => void
+    /** Fires with the current buffer text after load and on every edit. */
+    oncontentchange?: (value: string) => void
+    /** Fires once with the Monaco instance after the editor is created. */
+    oneditorready?: (editor: monaco.editor.IStandaloneCodeEditor) => void
   }
 
-  let { filePath, worktreeRoot, onModified, ondiscusswithagent, onOpenFile }: Props = $props()
+  let { filePath, worktreeRoot, onModified, ondiscusswithagent, onOpenFile, oncontentchange, oneditorready }: Props = $props()
 
   // Reads through this ref so the opener handler — registered once at editor
   // creation — sees the current onOpenFile prop without re-binding.
@@ -100,6 +104,7 @@
 
       currentFilePath = path
       onModified?.(path, false)
+      oncontentchange?.(content)
 
       const reveal = consumePendingReveal(path)
       if (reveal) applyReveal(editor, reveal)
@@ -190,11 +195,14 @@
       },
     })
 
+    oneditorready?.(editor)
+
     editor.onDidChangeModelContent(() => {
       if (currentFilePath && !isLoadingFile) {
+        const content = editor!.getValue()
         onModified?.(currentFilePath, true)
+        oncontentchange?.(content)
         if (worktreeRoot) {
-          const content = editor!.getValue()
           const language = getLanguage(currentFilePath)
           lspClientManager.changeDocument(currentFilePath, language, content, worktreeRoot)
         }

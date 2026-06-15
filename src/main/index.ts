@@ -39,7 +39,11 @@ import { resolveBareRepo } from './cwd-tracker'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import { inheritShellPath } from './shell-path'
+import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import type { JsonRpcMessage, SerializedSession } from '../shared/ipc-types'
+
+// Privileged schemes must be registered before the app is ready.
+registerAssetProtocolScheme()
 
 // ── Per-window repo tracking ──────────────────────────────
 // The PRIMARY repo per window (title bar, session save/load keying, and the
@@ -531,6 +535,13 @@ app.whenReady().then(() => {
   })
 
   registerAllHandlers()
+
+  // Serve worktree-local assets (e.g. images in Markdown previews). Reads are
+  // bounded to the directory containing each open window's bare repo, where its
+  // worktrees live alongside it.
+  installAssetProtocolHandler(() =>
+    Array.from(new Set(Array.from(windowRepoMap.values()).map((repo) => dirname(repo)))),
+  )
 
   // ── Application menu ─────────────────────────────────────
   const isMac = process.platform === 'darwin'
