@@ -41,8 +41,6 @@
         if (tab.commitHash === null) return 'Tour: Uncommitted changes'
         if (tab.commitHash === 'branch') return 'Branch tour'
         return `Tour: ${tab.commitMessage.split('\n')[0] || tab.commitHash.slice(0, 7)}`
-      case 'plan':
-        return tab.label
       case 'composed':
         return tab.title
     }

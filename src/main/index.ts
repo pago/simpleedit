@@ -33,9 +33,8 @@ import { performFork } from './claude-fork'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
-import { startPlan, startPlanFromDescription, revisePlan, cancelPlan, cancelAllPlans, loadPlan, savePlan } from './plan'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
-import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, loadLatestClaudePlan, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
+import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
@@ -476,35 +475,6 @@ function registerAllHandlers(): void {
     saveOverview(worktreePath, commitHash, overview)
   })
 
-  // ── Plan ────────────────────────────────────────────────
-  ipcMain.handle('plan:start', (event, worktreePath: string, commitHash: string | null) => {
-    return startPlan(worktreePath, commitHash, event.sender)
-  })
-
-  ipcMain.handle('plan:start-from-description', (event, worktreePath: string, description: string) => {
-    return startPlanFromDescription(worktreePath, description, event.sender)
-  })
-
-  ipcMain.handle('plan:cancel', (_event, worktreePath: string, commitHash: string | null) => {
-    cancelPlan(worktreePath, commitHash)
-  })
-
-  ipcMain.handle('plan:load', (_event, worktreePath: string, commitHash: string | null) => {
-    return loadPlan(worktreePath, commitHash)
-  })
-
-  ipcMain.handle('plan:save', (_event, worktreePath: string, commitHash: string | null, plan: unknown) => {
-    savePlan(worktreePath, commitHash, plan as import('../shared/ipc-types').Plan)
-  })
-
-  ipcMain.handle('plan:revise', (event, worktreePath: string, commitHash: string | null, feedback: string) => {
-    return revisePlan(worktreePath, commitHash, feedback, event.sender)
-  })
-
-  ipcMain.handle('plan:latest-claude', (_event, worktreePath: string) => {
-    return loadLatestClaudePlan(worktreePath)
-  })
-
   // ── LSP ─────────────────────────────────────────────────
   ipcMain.handle('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
     try {
@@ -604,7 +574,6 @@ app.on('before-quit', () => {
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
-  try { cancelAllPlans() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
 })
@@ -616,7 +585,6 @@ app.on('window-all-closed', () => {
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
-  try { cancelAllPlans() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {

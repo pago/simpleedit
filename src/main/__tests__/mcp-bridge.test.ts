@@ -81,41 +81,11 @@ describe('MCP Bridge — HTTP endpoints', () => {
     return { status: res.status, body: json }
   }
 
-  it('POST to /token/tool-call with show_plan emits correct IPC event', async () => {
-    const plan = {
-      overview: 'Test plan overview',
-      tasks: [
-        {
-          id: 't1',
-          title: 'Task one',
-          description: 'Do the thing',
-          status: 'todo',
-          reactions: [],
-          discussion: [],
-        },
-      ],
-    }
-
-    const res = await post(`/${token}/tool-call`, {
-      tool: 'show_plan',
-      terminalId: 'term-123',
-      args: { plan, worktreePath: '/test/repo' },
-    })
-
-    expect(res.status).toBe(200)
-    expect(res.body).toEqual({ ok: true })
-    expect(wc.send).toHaveBeenCalledWith('plan:from-claude', {
-      key: '/test/repo:claude-term-123',
-      terminalId: 'term-123',
-      plan,
-    })
-  })
-
   it('returns 404 for wrong token path', async () => {
     const res = await post('/wrong-token/tool-call', {
-      tool: 'show_plan',
+      tool: 'complete_task',
       terminalId: 'term-1',
-      args: { plan: { overview: '', tasks: [] }, worktreePath: '/test' },
+      args: {},
     })
     expect(res.status).toBe(404)
   })
@@ -131,7 +101,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
 
   it('returns 400 for missing terminalId', async () => {
     const res = await post(`/${token}/tool-call`, {
-      tool: 'show_plan',
+      tool: 'complete_task',
       args: {},
     })
     expect(res.status).toBe(400)
@@ -148,16 +118,6 @@ describe('MCP Bridge — HTTP endpoints', () => {
     expect(res.body.error).toContain('Unknown tool')
   })
 
-  it('returns 400 for show_plan missing required args', async () => {
-    const res = await post(`/${token}/tool-call`, {
-      tool: 'show_plan',
-      terminalId: 'term-1',
-      args: { plan: { overview: '', tasks: [] } },
-      // missing worktreePath
-    })
-    expect(res.status).toBe(400)
-  })
-
   it('returns 400 for invalid JSON body', async () => {
     const res = await fetch(`http://127.0.0.1:${port}/${token}/tool-call`, {
       method: 'POST',
@@ -165,22 +125,6 @@ describe('MCP Bridge — HTTP endpoints', () => {
       body: 'not json',
     })
     expect(res.status).toBe(400)
-  })
-
-  it('does not emit IPC when webContents is destroyed', async () => {
-    wc.isDestroyed.mockReturnValue(true)
-
-    const res = await post(`/${token}/tool-call`, {
-      tool: 'show_plan',
-      terminalId: 'term-1',
-      args: {
-        plan: { overview: '', tasks: [] },
-        worktreePath: '/test',
-      },
-    })
-
-    expect(res.status).toBe(200)
-    expect(wc.send).not.toHaveBeenCalled()
   })
 
   describe('complete_task', () => {
@@ -622,90 +566,6 @@ describe.skipIf(!runIntegration)('MCP Server → Bridge integration', () => {
       proc.stdin!.write(JSON.stringify(message) + '\n')
     })
   }
-
-  it('MCP server show_plan call flows through to bridge IPC', async () => {
-    // Spawn the real MCP server with bridge env vars
-    mcpProc = spawn('node', [MCP_SERVER_PATH], {
-      env: {
-        ...process.env,
-        SIMPLEEDIT_BRIDGE_PORT: String(port),
-        SIMPLEEDIT_BRIDGE_TOKEN: token,
-        SIMPLEEDIT_TERMINAL_ID: 'mcp-test-term',
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    // Wait for server to start
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
-    // Step 1: Initialize the MCP session
-    const initResponse = await sendMcpMessage(mcpProc, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'test', version: '1.0.0' },
-      },
-    })
-
-    expect(initResponse['id']).toBe(1)
-    expect(initResponse['result']).toBeDefined()
-
-    // Step 2: Send initialized notification
-    mcpProc.stdin!.write(JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'notifications/initialized',
-    }) + '\n')
-
-    await new Promise((resolve) => setTimeout(resolve, 200))
-
-    // Step 3: Call the show_plan tool
-    const toolResponse = await sendMcpMessage(mcpProc, {
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/call',
-      params: {
-        name: 'show_plan',
-        arguments: {
-          plan: {
-            overview: 'Integration test plan',
-            tasks: [
-              {
-                title: 'Integration task',
-                description: 'Verify the full chain',
-              },
-            ],
-          },
-          worktreePath: '/integration/test',
-        },
-      },
-    })
-
-    expect(toolResponse['id']).toBe(2)
-    const result = toolResponse['result'] as Record<string, unknown>
-    expect(result).toBeDefined()
-    const content = result['content'] as Array<{ type: string; text: string }>
-    expect(content[0].text).toContain('Plan displayed')
-
-    // Verify the bridge forwarded to webContents
-    // Zod applies defaults (status: 'todo') and strips unknown fields
-    expect(wc.send).toHaveBeenCalledWith('plan:from-claude', {
-      key: '/integration/test:claude-mcp-test-term',
-      terminalId: 'mcp-test-term',
-      plan: {
-        overview: 'Integration test plan',
-        tasks: [
-          {
-            title: 'Integration task',
-            description: 'Verify the full chain',
-            status: 'todo',
-          },
-        ],
-      },
-    })
-  }, 15000)
 
   it('MCP server complete_task call flows through to bridge IPC', async () => {
     mcpProc = spawn('node', [MCP_SERVER_PATH], {

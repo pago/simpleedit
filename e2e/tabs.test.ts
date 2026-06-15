@@ -105,40 +105,6 @@ async function getWorktreePath(window: Page): Promise<string> {
   )
 }
 
-/** Simulate a Claude-authored plan arriving via the main→renderer bridge. */
-async function sendClaudePlan(
-  app: ElectronApplication,
-  window: Page,
-  opts: { terminalId: string; overview: string }
-): Promise<string> {
-  const wt = await getWorktreePath(window)
-  await app.evaluate(
-    ({ BrowserWindow }, { wt: worktreePath, tid, overview }) => {
-      const win = BrowserWindow.getAllWindows()[0]
-      if (!win) return
-      win.webContents.send('plan:from-claude', {
-        key: `${worktreePath}:claude-${tid}`,
-        terminalId: tid,
-        plan: {
-          overview,
-          tasks: [
-            {
-              id: 'tab-e2e-1',
-              title: 'Unified tab model task',
-              description: 'Stub task for the tab-model E2E suite',
-              status: 'todo',
-              reactions: [],
-              discussion: [],
-            },
-          ],
-        },
-      })
-    },
-    { wt, tid: opts.terminalId, overview: opts.overview }
-  )
-  return wt
-}
-
 interface TourPayload {
   overview: string
   topics: Array<{
@@ -223,7 +189,7 @@ test.describe('#61 unified tabs — diff tabs, peek, pin', () => {
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
-    // Claude session (plan/tour events route by its id) and open the viewer.
+    // Claude session (tour events route by its id) and open the viewer.
     sessionId = await spawnClaudeSession(window)
     await openWorkspaceViewer(window)
     await waitForCommits(window)
@@ -366,7 +332,7 @@ test.describe('#61 unified tabs — GitLog tour icon', () => {
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
-    // Claude session (plan/tour events route by its id) and open the viewer.
+    // Claude session (tour events route by its id) and open the viewer.
     sessionId = await spawnClaudeSession(window)
     await openWorkspaceViewer(window)
     await waitForCommits(window)
@@ -466,7 +432,7 @@ test.describe('#61 unified tabs — agent-initiated tabs', () => {
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
-    // Claude session (plan/tour events route by its id) and open the viewer.
+    // Claude session (tour events route by its id) and open the viewer.
     sessionId = await spawnClaudeSession(window)
     await openWorkspaceViewer(window)
     await waitForCommits(window)
@@ -485,51 +451,51 @@ test.describe('#61 unified tabs — agent-initiated tabs', () => {
       timeout: 5_000,
     })
 
-    // Agent dispatches a plan — since pane has an active tab, plan should
+    // Agent dispatches a tour — since pane has an active tab, the tour should
     // arrive in the background with the unread marker.
-    await sendClaudePlan(app, window, {
+    await sendClaudeTour(app, window, {
+      commitHash: null,
       terminalId: sessionId,
-      overview: 'Background plan',
     })
     await window.waitForTimeout(1_000)
 
-    const planTabs = window.locator(
-      '[data-testid="worktree-tab"][data-kind="plan"]:visible'
+    const tourTabs = window.locator(
+      '[data-testid="worktree-tab"][data-kind="tour"]:visible'
     )
-    await expect(planTabs).toHaveCount(1, { timeout: 5_000 })
+    await expect(tourTabs).toHaveCount(1, { timeout: 5_000 })
 
     // It should not be active …
-    await expect(planTabs.first()).toHaveAttribute('data-active', 'false')
+    await expect(tourTabs.first()).toHaveAttribute('data-active', 'false')
     // … and should be flagged unread.
-    await expect(planTabs.first()).toHaveAttribute('data-unread', 'true')
+    await expect(tourTabs.first()).toHaveAttribute('data-unread', 'true')
 
     // The diff tab the user was on should still be active.
     await expect(diffTabs.first()).toHaveAttribute('data-active', 'true')
 
-    // Clicking the plan tab clears the unread flag.
-    await planTabs.first().click()
+    // Clicking the tour tab clears the unread flag.
+    await tourTabs.first().click()
     await window.waitForTimeout(300)
-    await expect(planTabs.first()).toHaveAttribute('data-active', 'true')
-    await expect(planTabs.first()).toHaveAttribute('data-unread', 'false')
+    await expect(tourTabs.first()).toHaveAttribute('data-active', 'true')
+    await expect(tourTabs.first()).toHaveAttribute('data-unread', 'false')
   })
 
   test('agent-initiated tab auto-focuses when the pane is idle (no active tab)', async () => {
     // Fresh launch: no tab is open, pane is idle.
     await expect(allTabs(window)).toHaveCount(0, { timeout: 3_000 })
 
-    await sendClaudePlan(app, window, {
+    await sendClaudeTour(app, window, {
+      commitHash: null,
       terminalId: sessionId,
-      overview: 'Idle plan — should auto-focus',
     })
     await window.waitForTimeout(1_000)
 
-    const planTabs = window.locator(
-      '[data-testid="worktree-tab"][data-kind="plan"]:visible'
+    const tourTabs = window.locator(
+      '[data-testid="worktree-tab"][data-kind="tour"]:visible'
     )
-    await expect(planTabs).toHaveCount(1, { timeout: 5_000 })
+    await expect(tourTabs).toHaveCount(1, { timeout: 5_000 })
     // Auto-focus → active, not unread.
-    await expect(planTabs.first()).toHaveAttribute('data-active', 'true')
-    await expect(planTabs.first()).toHaveAttribute('data-unread', 'false')
+    await expect(tourTabs.first()).toHaveAttribute('data-active', 'true')
+    await expect(tourTabs.first()).toHaveAttribute('data-unread', 'false')
   })
 })
 
@@ -561,7 +527,7 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
-    // Claude session (plan/tour events route by its id) and open the viewer.
+    // Claude session (tour events route by its id) and open the viewer.
     sessionId = await spawnClaudeSession(window)
     await openWorkspaceViewer(window)
     await waitForCommits(window)
@@ -582,13 +548,6 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
     await fileNode.click()
     await window.waitForTimeout(400)
 
-    // Plan tab: via agent bridge.
-    await sendClaudePlan(app, window, {
-      terminalId: sessionId,
-      overview: 'Plan for icon test',
-    })
-    await window.waitForTimeout(500)
-
     // Tour tab: via agent bridge.
     await sendClaudeTour(app, window, {
       commitHash: null,
@@ -597,7 +556,7 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
     await window.waitForTimeout(500)
 
     // Every open tab should render an icon element labeled with its kind.
-    for (const kind of ['file', 'diff', 'tour', 'plan']) {
+    for (const kind of ['file', 'diff', 'tour']) {
       const iconsForKind = window.locator(
         `[data-testid="worktree-tab"][data-kind="${kind}"]:visible [data-testid="tab-kind-icon"]`
       )
@@ -610,34 +569,22 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
       await expect(iconsForKind.first()).toHaveAttribute('data-kind', kind)
     }
 
-    // All four kind-icons should be distinct elements by virtue of their
-    // data-kind attributes — i.e. four icons with four unique `data-kind`s.
+    // All three kind-icons should be distinct elements by virtue of their
+    // data-kind attributes — i.e. three icons with three unique `data-kind`s.
     const allKindIcons = window.locator('[data-testid="tab-kind-icon"]:visible')
     const count = await allKindIcons.count()
-    expect(count).toBeGreaterThanOrEqual(4)
+    expect(count).toBeGreaterThanOrEqual(3)
 
     const seen = new Set<string>()
     for (let i = 0; i < count; i++) {
       const k = await allKindIcons.nth(i).getAttribute('data-kind')
       if (k) seen.add(k)
     }
-    expect(seen).toEqual(new Set(['file', 'diff', 'tour', 'plan']))
+    expect(seen).toEqual(new Set(['file', 'diff', 'tour']))
   })
 
-  test('plan and tour tabs are sticky: subsequent peek actions do not replace them', async () => {
-    // Open a Claude plan tab — this is agent-initiated and sticky.
-    await sendClaudePlan(app, window, {
-      terminalId: sessionId,
-      overview: 'Sticky plan — should survive peek actions',
-    })
-    await window.waitForTimeout(800)
-
-    const planTabs = window.locator(
-      '[data-testid="worktree-tab"][data-kind="plan"]:visible'
-    )
-    await expect(planTabs).toHaveCount(1, { timeout: 5_000 })
-
-    // Open a Claude tour — also sticky.
+  test('tour tabs are sticky: subsequent peek actions do not replace them', async () => {
+    // Open a Claude tour — agent-initiated and sticky.
     await sendClaudeTour(app, window, {
       commitHash: null,
       terminalId: sessionId,
@@ -661,13 +608,11 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
       await window.waitForTimeout(400)
     }
 
-    // Plan and tour tabs must still be present exactly once each — peek
-    // replacement is scoped to file/diff kinds only.
-    await expect(planTabs).toHaveCount(1)
+    // The tour tab must still be present exactly once — peek replacement is
+    // scoped to file/diff kinds only.
     await expect(tourTabs).toHaveCount(1)
 
-    // Plan/tour must never be marked as peek tabs.
-    await expect(planTabs.first()).toHaveAttribute('data-peek', 'false')
+    // Tour must never be marked as a peek tab.
     await expect(tourTabs.first()).toHaveAttribute('data-peek', 'false')
 
     // At most one diff tab remains (the peek slot) because we never pinned

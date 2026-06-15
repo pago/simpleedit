@@ -32,13 +32,6 @@
     <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2" />
     <path d="m10.5 5.5-4 1.2-1.2 4 4-1.2 1.2-4Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
   </svg>
-{:else if kind === 'plan'}
-  <!-- Checklist glyph -->
-  <svg data-testid="tab-kind-icon" data-kind="plan" class={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-    <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2" />
-    <path d="m5 7.5 1.4 1.4L9.5 5.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
-    <path d="M5 11.5h6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-  </svg>
 {:else if kind === 'composed'}
   <!-- Reserved: Claude sparkle glyph matching the ✦ terminal tab button -->
   <span data-testid="tab-kind-icon" data-kind="composed" class="{className} inline-flex items-center justify-center font-semibold leading-none" aria-hidden="true">✦</span>

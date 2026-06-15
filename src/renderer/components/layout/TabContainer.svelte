@@ -1,7 +1,6 @@
 <script lang="ts">
   import CodeEditor from '../editor/CodeEditor.svelte'
   import DiffReview from '../editor/DiffReview.svelte'
-  import PlanView from '../editor/PlanView.svelte'
   import TourPanel from '../editor/TourPanel.svelte'
   import ComposedPanel from '../composed/ComposedPanel.svelte'
   import type { Tab } from '../../stores/tabsStore.svelte'
@@ -35,7 +34,7 @@
     onOpenFile,
   }: Props = $props()
 
-  /** Diff/tour/plan tabs pin their git context at open time. */
+  /** Diff/tour tabs pin their git context at open time. */
   let tabWorktree = $derived('worktreePath' in tab ? tab.worktreePath : worktreePath)
 </script>
 
@@ -59,14 +58,6 @@
     {terminals}
     {onclose}
     {ondiscusswithagent}
-    {onsendtoagent}
-  />
-{:else if tab.kind === 'plan'}
-  <PlanView
-    worktreePath={tabWorktree}
-    commitHash={tab.planHash}
-    {terminals}
-    {onclose}
     {onsendtoagent}
   />
 {:else if tab.kind === 'tour'}
