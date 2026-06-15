@@ -1,12 +1,14 @@
 <script lang="ts">
   import type { Tab } from '../../stores/tabsStore.svelte'
   import TabIcon from './TabIcon.svelte'
+  import TabActions, { tabHasActions } from './TabActions.svelte'
 
   interface Props {
     tabs: Tab[]
     activeId: string | null
     peekId: string | null
     unread: ReadonlySet<string>
+    activeTab: Tab | null
     onselect: (tabId: string) => void
     onclose: (tabId: string) => void
     onpin?: (tabId: string) => void
@@ -18,6 +20,7 @@
     activeId,
     peekId,
     unread,
+    activeTab,
     onselect,
     onclose,
     onpin,
@@ -104,8 +107,9 @@
 {#if tabs.length > 0}
   <div
     data-testid="worktree-tab-bar"
-    class="flex h-9 items-center overflow-x-auto border-b border-zinc-800 bg-zinc-900"
+    class="flex h-9 items-center border-b border-zinc-800 bg-zinc-900"
   >
+    <div class="flex h-full min-w-0 flex-1 items-center overflow-x-auto">
     {#each tabs as tab, i (tab.id)}
       {@const isActive = activeId === tab.id}
       {@const isPeek = peekId === tab.id}
@@ -163,5 +167,12 @@
         </button>
       </div>
     {/each}
+    </div>
+
+    {#if tabHasActions(activeTab)}
+      <div class="flex flex-none items-center px-2" data-testid="worktree-tab-actions">
+        <TabActions tab={activeTab} />
+      </div>
+    {/if}
   </div>
 {/if}

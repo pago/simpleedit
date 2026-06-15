@@ -1,5 +1,7 @@
 <script lang="ts">
   import CodeEditor from '../editor/CodeEditor.svelte'
+  import MarkdownView from '../editor/MarkdownView.svelte'
+  import { isMarkdownPath } from '../../lib/markdown'
   import DiffReview from '../editor/DiffReview.svelte'
   import TourPanel from '../editor/TourPanel.svelte'
   import ComposedPanel from '../composed/ComposedPanel.svelte'
@@ -38,7 +40,17 @@
   let tabWorktree = $derived('worktreePath' in tab ? tab.worktreePath : worktreePath)
 </script>
 
-{#if tab.kind === 'file'}
+{#if tab.kind === 'file' && isMarkdownPath(tab.path)}
+  <div class="flex-1 min-h-0">
+    <MarkdownView
+      filePath={tab.path}
+      worktreeRoot={worktreePath}
+      onModified={onFileModified}
+      {ondiscusswithagent}
+      {onOpenFile}
+    />
+  </div>
+{:else if tab.kind === 'file'}
   <div class="flex-1 min-h-0">
     <CodeEditor
       filePath={tab.path}
