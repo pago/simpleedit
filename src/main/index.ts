@@ -21,7 +21,7 @@ import {
   createFile, createDirectory, renamePath, deletePath,
 } from './file-watcher'
 import { listWorktrees, createWorktree, checkoutWorktree, listAvailableBranches, removeWorktree, cloneBareRepo } from './worktree'
-import { watchWorktreeList, unwatchWorktreeList, unwatchAllWorktreeLists } from './worktree-watcher'
+import { watchWorktreeList, unwatchWorktreeList, unwatchAllWorktreeLists, unwatchAllWorktreeListsForWindow } from './worktree-watcher'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
@@ -42,7 +42,15 @@ import { inheritShellPath } from './shell-path'
 import type { JsonRpcMessage, SerializedSession } from '../shared/ipc-types'
 
 // ── Per-window repo tracking ──────────────────────────────
+// The PRIMARY repo per window (title bar, session save/load keying, and the
+// fallback for worktree:* calls that omit an explicit repoPath). Single-repo
+// behavior routes entirely through this map.
 const windowRepoMap = new Map<number, string>()
+// Every repo a window has touched (primary + any session pointed at another
+// bare repo via an explicit repoPath). Used by the MCP bridge resolver and the
+// worktree watcher so multi-repo windows match cwds / validate open_worktree
+// across all their repos. Always contains the primary repo.
+const windowReposMap = new Map<number, Set<string>>()
 
 function getRepoForSender(webContentsId: number): string | null {
   return windowRepoMap.get(webContentsId) ?? null
@@ -52,6 +60,34 @@ function getRepoForSenderOrThrow(webContentsId: number): string {
   const repo = windowRepoMap.get(webContentsId)
   if (!repo) throw new Error('No repository set for this window')
   return repo
+}
+
+/**
+ * Resolve the bare-repo path for a worktree:* call: the explicit `repoPath`
+ * arg if the renderer passed one (multi-repo session), else the window's
+ * primary repo. Registers any newly-seen repo into the window's repo set so
+ * the bridge resolver and watcher cover it.
+ */
+function resolveWorktreeRepo(webContentsId: number, repoPath?: string): string {
+  const resolved = repoPath ?? getRepoForSenderOrThrow(webContentsId)
+  registerWindowRepo(webContentsId, resolved)
+  return resolved
+}
+
+function registerWindowRepo(webContentsId: number, repoPath: string): void {
+  let set = windowReposMap.get(webContentsId)
+  if (!set) {
+    set = new Set<string>()
+    windowReposMap.set(webContentsId, set)
+  }
+  set.add(repoPath)
+}
+
+function getReposForSender(webContentsId: number): string[] {
+  const set = windowReposMap.get(webContentsId)
+  if (set && set.size > 0) return [...set]
+  const primary = windowRepoMap.get(webContentsId)
+  return primary ? [primary] : []
 }
 
 function getWindowForContents(webContentsId: number): BrowserWindow | null {
@@ -64,9 +100,15 @@ function getWindowForContents(webContentsId: number): BrowserWindow | null {
 // matching and open_worktree/show_diff validation) without exposing the
 // per-window repo map. Registered once at module load.
 setWorktreeResolver(async (webContentsId) => {
-  const repoPath = getRepoForSender(webContentsId)
-  if (!repoPath) return []
-  return listWorktrees(repoPath)
+  const repos = getReposForSender(webContentsId)
+  if (repos.length === 0) return []
+  const lists = await Promise.all(
+    repos.map((repo) => listWorktrees(repo).catch(() => []))
+  )
+  // De-dup by path: a worktree is uniquely identified by its filesystem path,
+  // and distinct bare repos never share a worktree directory.
+  const seen = new Set<string>()
+  return lists.flat().filter((w) => (seen.has(w.path) ? false : (seen.add(w.path), true)))
 })
 
 // ── Window creation ───────────────────────────────────────
@@ -103,6 +145,7 @@ function createWindow(repoPath?: string): BrowserWindow {
 
   if (repoPath) {
     windowRepoMap.set(webContentsId, repoPath)
+    registerWindowRepo(webContentsId, repoPath)
     addRecentRepo(repoPath)
     startBridge(webContentsId, win.webContents).catch((err) => {
       console.error('[SimpleEdit] Failed to start MCP bridge:', err)
@@ -111,8 +154,9 @@ function createWindow(repoPath?: string): BrowserWindow {
 
   win.on('closed', () => {
     stopBridge(webContentsId)
-    unwatchWorktreeList(webContentsId)
+    unwatchAllWorktreeListsForWindow(webContentsId)
     windowRepoMap.delete(webContentsId)
+    windowReposMap.delete(webContentsId)
   })
 
   win.on('ready-to-show', () => {
@@ -152,6 +196,7 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('app:set-repo', (event, repoPath: string) => {
     windowRepoMap.set(event.sender.id, repoPath)
+    registerWindowRepo(event.sender.id, repoPath)
     addRecentRepo(repoPath)
     const win = getWindowForContents(event.sender.id)
     if (win) {
@@ -270,43 +315,47 @@ function registerAllHandlers(): void {
   })
 
   // ── Worktrees ───────────────────────────────────────────
-  ipcMain.handle('worktree:list', async (event) => {
+  // Every handler takes an OPTIONAL explicit `repoPath`: when present (a
+  // session pointed at another bare repo) it targets that repo; when omitted
+  // it falls back to the window's primary repo — preserving single-repo
+  // behavior byte-for-byte.
+  ipcMain.handle('worktree:list', async (event, repoPath?: string) => {
     try {
-      const repoPath = getRepoForSenderOrThrow(event.sender.id)
-      return await listWorktrees(repoPath)
+      const repo = resolveWorktreeRepo(event.sender.id, repoPath)
+      return await listWorktrees(repo)
     } catch (err) {
       console.error('[SimpleEdit] worktree:list failed:', err)
       return []
     }
   })
 
-  ipcMain.handle('worktree:create', async (event, name: string, baseBranch?: string) => {
-    const repoPath = getRepoForSenderOrThrow(event.sender.id)
-    return createWorktree(repoPath, name, baseBranch)
+  ipcMain.handle('worktree:create', async (event, name: string, baseBranch?: string, repoPath?: string) => {
+    const repo = resolveWorktreeRepo(event.sender.id, repoPath)
+    return createWorktree(repo, name, baseBranch)
   })
 
-  ipcMain.handle('worktree:checkout', async (event, branch: string) => {
-    const repoPath = getRepoForSenderOrThrow(event.sender.id)
-    return checkoutWorktree(repoPath, branch)
+  ipcMain.handle('worktree:checkout', async (event, branch: string, repoPath?: string) => {
+    const repo = resolveWorktreeRepo(event.sender.id, repoPath)
+    return checkoutWorktree(repo, branch)
   })
 
-  ipcMain.handle('worktree:branches', async (event) => {
-    const repoPath = getRepoForSenderOrThrow(event.sender.id)
-    return listAvailableBranches(repoPath)
+  ipcMain.handle('worktree:branches', async (event, repoPath?: string) => {
+    const repo = resolveWorktreeRepo(event.sender.id, repoPath)
+    return listAvailableBranches(repo)
   })
 
-  ipcMain.handle('worktree:remove', async (event, worktreePath: string) => {
-    const repoPath = getRepoForSenderOrThrow(event.sender.id)
-    return removeWorktree(repoPath, worktreePath)
+  ipcMain.handle('worktree:remove', async (event, worktreePath: string, repoPath?: string) => {
+    const repo = resolveWorktreeRepo(event.sender.id, repoPath)
+    return removeWorktree(repo, worktreePath)
   })
 
-  ipcMain.handle('worktree:watch', (event) => {
-    const repoPath = getRepoForSenderOrThrow(event.sender.id)
-    watchWorktreeList(event.sender.id, repoPath, event.sender)
+  ipcMain.handle('worktree:watch', (event, repoPath?: string) => {
+    const repo = resolveWorktreeRepo(event.sender.id, repoPath)
+    watchWorktreeList(event.sender.id, repo, event.sender)
   })
 
-  ipcMain.handle('worktree:unwatch', (event) => {
-    unwatchWorktreeList(event.sender.id)
+  ipcMain.handle('worktree:unwatch', (event, repoPath?: string) => {
+    unwatchWorktreeList(event.sender.id, repoPath)
   })
 
   // ── Claude stream ───────────────────────────────────────

@@ -3,7 +3,10 @@
   import type { WorktreeInfo, BranchInfo } from '../../../shared/ipc-types'
   import {
     worktreeList,
+    worktreeListFor,
     refreshWorktrees,
+    refreshWorktreesFor,
+    primaryRepo,
     optimisticRemoveWorktree,
   } from '../../stores/worktrees.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
@@ -41,23 +44,38 @@
       : availableBranches
   )
 
-  onMount(() => {
-    refreshWorktrees()
-  })
-
   interface Props {
     /** Notified after a worktree is picked or created — lets the hosting
      * popover close itself. */
     onselected?: (worktree: WorktreeInfo) => void
+    /** The bare repo to operate on. Omitted/primary → the window's primary
+     * repo (single-repo default). A non-primary repo scopes every IPC call
+     * and the rendered list to that repo (multi-repo session). */
+    repoPath?: string
   }
 
-  let { onselected }: Props = $props()
+  let { onselected, repoPath }: Props = $props()
+
+  // Resolve to the primary repo when omitted, so `isPrimary`/IPC args are
+  // uniform. `repoArg` is what we pass to worktree:* — undefined for the
+  // primary repo (preserves the single-repo fallback path).
+  let isPrimary = $derived(!repoPath || repoPath === primaryRepo())
+  let repoArg = $derived(isPrimary ? undefined : repoPath)
+  let worktrees = $derived(isPrimary ? worktreeList() : worktreeListFor(repoPath))
+
+  function refresh(): Promise<unknown> {
+    return repoArg ? refreshWorktreesFor(repoArg) : refreshWorktrees()
+  }
+
+  onMount(() => {
+    void refresh()
+  })
 
   // Clicking a worktree repoints the ACTIVE session's workspace at it —
   // worktrees are an isolation mechanism sessions use, not a navigation
   // entity of their own anymore.
   function handleSelect(worktree: WorktreeInfo): void {
-    sessionsStore.setActiveSessionWorktree(worktree.path)
+    sessionsStore.setActiveSessionWorktree(worktree.path, repoArg)
     onselected?.(worktree)
   }
 
@@ -68,7 +86,7 @@
     if (mode === 'checkout') {
       busy = true
       try {
-        availableBranches = await window.api.invoke('worktree:branches')
+        availableBranches = await window.api.invoke('worktree:branches', repoArg)
       } catch (err) {
         errorMsg = err instanceof Error ? err.message : 'Failed to load branches'
       } finally {
@@ -88,11 +106,11 @@
     errorMsg = ''
     try {
       const created = createMode === 'new'
-        ? await window.api.invoke('worktree:create', newName.trim())
-        : await window.api.invoke('worktree:checkout', selectedBranch)
+        ? await window.api.invoke('worktree:create', newName.trim(), undefined, repoArg)
+        : await window.api.invoke('worktree:checkout', selectedBranch, repoArg)
       cancelCreate()
-      await refreshWorktrees()
-      sessionsStore.setActiveSessionWorktree(created.path)
+      await refresh()
+      sessionsStore.setActiveSessionWorktree(created.path, repoArg)
       onselected?.(created)
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : 'Operation failed'
@@ -107,15 +125,17 @@
     // background; on failure we put the row back and surface the error.
     errorMsg = ''
     removing = null
-    const snapshot = optimisticRemoveWorktree(worktreePath)
-    if (!snapshot) return
+    // Optimistic in-place removal is only wired for the primary repo's global
+    // list; non-primary repos refresh from canonical after the IPC resolves.
+    const snapshot = isPrimary ? optimisticRemoveWorktree(worktreePath) : null
+    if (isPrimary && !snapshot) return
     try {
-      await window.api.invoke('worktree:remove', worktreePath)
+      await window.api.invoke('worktree:remove', worktreePath, repoArg)
       // Refresh against the canonical list — the server may have side effects
       // we didn't predict (e.g. pruned branches, status changes).
-      await refreshWorktrees()
+      await refresh()
     } catch (err) {
-      snapshot.rollback()
+      snapshot?.rollback()
       errorMsg = err instanceof Error ? err.message : 'Failed to remove worktree'
     }
   }
@@ -262,7 +282,7 @@
   {/if}
 
   <div class="flex flex-col" role="listbox" aria-label="Worktrees">
-    {#each worktreeList() as worktree (worktree.path)}
+    {#each worktrees as worktree (worktree.path)}
       {@const isActive = sessionsStore.activeSession()?.worktreePath === worktree.path}
       <div
         class="group relative flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm {isActive

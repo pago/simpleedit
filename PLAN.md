@@ -133,28 +133,27 @@ calls, so no scoping was needed.
 - Click a persisted session → respawn `claude --resume <id>` in its launch dir.
 - Terminals are not persisted.
 
-## Stage 4 — Multi-repo sessions — DEFERRED (not in this PR)
+## Stage 4 — Multi-repo sessions ✓ done 2026-06-14 (stacked PR on `stage4-multirepo`)
 
-The most invasive plumbing change and the most deferrable; everything above
-works single-repo. **Deferred out of this PR** and tracked on the
-`stage4-multirepo-wip` branch (partial: store + repo-parameterized IPC +
-types done and typecheck-clean; renderer wiring, repo-picker entry point, and
-gating unfinished). Reasons: it's unreachable without the picker UI, has a
-latent `setActiveSessionWorktree` arity bug `tsc` can't catch in `.svelte`,
-and couldn't be gated on the dev machine (locked SSH key hangs git-shelling
-tests; the E2E suite is single-repo). Resume from that branch.
+A session's workspace can view worktrees from more than one bare repo. The
+per-window repo map is only load-bearing for the **worktree namespace**
+handlers (list/create/checkout/branches/watch) + the bridge resolver — most
+git/fs handlers already take an explicit `worktreePath` — so those handlers
+gained an optional `repoPath`, with the per-window map preserved as the
+single-repo default (existing behavior byte-for-byte unchanged).
 
-Scoping note (confirmed): the per-window repo map is only load-bearing for the
-**worktree namespace** handlers (list/create/checkout/branches/watch) + the
-bridge resolver — most git/fs handlers already take an explicit `worktreePath`.
-So the real work is repo-parameterizing those handlers (done on the wip branch,
-with the per-window map preserved as the single-repo fallback) plus:
+- **Repo picker** (viewer-only) to the LEFT of the worktree picker: points the
+  active session's workspace at another bare repo via `app:pick-repo`; does not
+  change `launchDir` or the session model.
+- Per-session `repoPath` (undefined = primary) threaded through the store,
+  `SessionWorkspace`, and persistence (restores pointed at its repo).
+- Repo identity resolved renderer-side (`repoForWorktree`) so `claude:cwd`
+  auto-repoint and `open_worktree` keep repo+worktree coherent without the
+  main process threading repo through every event.
+- The cwd→worktree resolver matches across all of a window's opened repos.
 
-- Repo picker next to the worktree dropdown (point a session at another bare
-  repo mid-session) — the missing user-facing entry point.
-- Per-session `repoPath` wired through SessionWorkspace / WorkspaceManager /
-  SessionList (started on wip, incomplete).
-- Global "Recently viewed" list (spans repos/worktrees).
+Deferred: **Recently viewed** (per Patrick — shouldn't consume extra space);
+externally-started sessions' user-level hooks (from Stage 2).
 
 ## Out of scope (deliberately)
 

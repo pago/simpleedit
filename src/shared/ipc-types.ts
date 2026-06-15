@@ -14,15 +14,18 @@ export interface WorktreeInfo {
   isCurrent: boolean
 }
 
+// All worktree handlers take an OPTIONAL trailing `repoPath` (the bare repo to
+// target). Omitted → the window's primary repo (single-repo fallback); present
+// → a session pointed at another bare repo (multi-repo, Stage 4).
 export interface WorktreeInvokeMap {
-  'worktree:list': { args: []; result: WorktreeInfo[] }
-  'worktree:create': { args: [name: string, baseBranch?: string]; result: WorktreeInfo }
-  'worktree:checkout': { args: [branch: string]; result: WorktreeInfo }
-  'worktree:branches': { args: []; result: BranchInfo[] }
-  'worktree:remove': { args: [path: string]; result: void }
+  'worktree:list': { args: [repoPath?: string]; result: WorktreeInfo[] }
+  'worktree:create': { args: [name: string, baseBranch?: string, repoPath?: string]; result: WorktreeInfo }
+  'worktree:checkout': { args: [branch: string, repoPath?: string]; result: WorktreeInfo }
+  'worktree:branches': { args: [repoPath?: string]; result: BranchInfo[] }
+  'worktree:remove': { args: [path: string, repoPath?: string]; result: void }
   /** Start/stop watching the project root for externally-created/removed worktrees (#120). */
-  'worktree:watch': { args: []; result: void }
-  'worktree:unwatch': { args: []; result: void }
+  'worktree:watch': { args: [repoPath?: string]; result: void }
+  'worktree:unwatch': { args: [repoPath?: string]; result: void }
 }
 
 export interface WorktreeEventMap {
@@ -337,6 +340,13 @@ export interface SerializedAgentSession {
   launchDir?: string
   /** The worktree the session's workspace was pointed at. */
   worktreePath: string
+  /**
+   * The bare repo `worktreePath` belongs to (Stage 4 multi-repo). Absent =
+   * the window's primary repo (single-repo default). When set to a non-primary
+   * repo, restore keeps the workspace pointed there rather than remapping to
+   * the primary repo's main worktree.
+   */
+  repoPath?: string
   tabs: SerializedTab[]
   activeTabId: string | null
   unread: string[]
