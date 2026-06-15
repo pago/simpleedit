@@ -1,7 +1,7 @@
 /**
  * Unified per-worktree tab model.
  *
- * Every first-class view in a WorktreePane — files, diffs, tours, plans, and
+ * Every first-class view in a WorktreePane — files, diffs, tours, and
  * (reserved) agent-composed panels — is a tab in the per-worktree list. Two
  * panes showing the same worktree share the same tab list.
  *
@@ -15,7 +15,6 @@ export type Tab =
   | FileTab
   | DiffTab
   | TourTab
-  | PlanTab
   | ComposedTab
 
 export interface FileTab {
@@ -50,17 +49,6 @@ export interface TourTab {
   commitMessage: string
 }
 
-export interface PlanTab {
-  kind: 'plan'
-  id: string
-  worktreePath: string
-  /** 'user-plan' | 'plan-claude:<terminalId>' | commit SHA. */
-  planHash: string
-  label: string
-  /** Terminal id when plan originated from Claude, otherwise null. */
-  claudeTerminalId: string | null
-}
-
 /**
  * Agent-composed panel rendered through the gen-ui catalog (#62).
  *
@@ -79,7 +67,7 @@ export interface ComposedTab {
 
 export type TabKind = Tab['kind']
 
-/** Kinds that participate in peek mode. Tours and plans are always sticky. */
+/** Kinds that participate in peek mode. Tours are always sticky. */
 const PEEKABLE_KINDS: ReadonlySet<TabKind> = new Set(['file', 'diff'])
 
 interface WorktreeTabState {
@@ -117,7 +105,6 @@ export function tabIdFor(
     | { kind: 'file'; path: string }
     | { kind: 'diff'; worktreePath: string; commitHash: string | null }
     | { kind: 'tour'; worktreePath: string; commitHash: string | null }
-    | { kind: 'plan'; planHash: string }
     | { kind: 'composed'; id: string },
 ): string {
   switch (spec.kind) {
@@ -127,8 +114,6 @@ export function tabIdFor(
       return `diff:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
     case 'tour':
       return `tour:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
-    case 'plan':
-      return `plan:${spec.planHash}`
     case 'composed':
       return `composed:${spec.id}`
   }

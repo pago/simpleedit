@@ -1,5 +1,5 @@
 /**
- * Helpers for opening diff, plan, and tour tabs. Every first-class view is a
+ * Helpers for opening diff and tour tabs. Every first-class view is a
  * tab on {@link tabsStore}; call sites reach for these helpers to avoid
  * re-deriving the `tabIdFor(...)` + `open(...)` shape everywhere.
  *
@@ -8,7 +8,7 @@
  * review several worktrees without its tabs dangling.
  */
 
-import { tabsStore, tabIdFor, type DiffTab, type PlanTab, type TourTab, type OpenOptions } from './tabsStore.svelte'
+import { tabsStore, tabIdFor, type DiffTab, type TourTab, type OpenOptions } from './tabsStore.svelte'
 
 export interface OpenDiffOptions extends OpenOptions {
   /** Hint the Findings section to show immediately after the diff loads. */
@@ -49,30 +49,6 @@ export function openTourTab(
     commitMessage,
   }
   return tabsStore.open(workspaceKey, tab, opts) as TourTab
-}
-
-export interface OpenPlanOptions extends OpenOptions {
-  /** Terminal that originated a Claude plan, if any. */
-  claudeTerminalId?: string | null
-}
-
-export function openPlanTab(
-  workspaceKey: string,
-  worktreePath: string,
-  planHash: string,
-  label: string,
-  opts: OpenPlanOptions = {},
-): PlanTab {
-  const { claudeTerminalId, ...openOpts } = opts
-  const tab: PlanTab = {
-    kind: 'plan',
-    id: tabIdFor({ kind: 'plan', planHash }),
-    worktreePath,
-    planHash,
-    label,
-    claudeTerminalId: claudeTerminalId ?? null,
-  }
-  return tabsStore.open(workspaceKey, tab, openOpts) as PlanTab
 }
 
 /**

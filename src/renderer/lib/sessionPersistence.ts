@@ -37,15 +37,6 @@ function serializeTab(tab: Tab): SerializedTab | null {
         commitHash: tab.commitHash,
         commitMessage: tab.commitMessage,
       }
-    case 'plan':
-      return {
-        kind: 'plan',
-        id: tab.id,
-        worktreePath: tab.worktreePath,
-        planHash: tab.planHash,
-        label: tab.label,
-        claudeTerminalId: tab.claudeTerminalId,
-      }
     case 'composed':
       // Agent-composed panels are tied to a live Claude tool call; restoring
       // them would dangle. Drop on save.
@@ -107,7 +98,7 @@ export function serializeSession(repoPath: string): SerializedSession {
   }
 }
 
-function deserializeTab(t: SerializedTab): Tab {
+function deserializeTab(t: SerializedTab): Tab | null {
   switch (t.kind) {
     case 'file':
       return { kind: 'file', id: t.id, path: t.path, modified: false }
@@ -127,15 +118,10 @@ function deserializeTab(t: SerializedTab): Tab {
         commitHash: t.commitHash,
         commitMessage: t.commitMessage,
       }
-    case 'plan':
-      return {
-        kind: 'plan',
-        id: t.id,
-        worktreePath: t.worktreePath,
-        planHash: t.planHash,
-        label: t.label,
-        claudeTerminalId: t.claudeTerminalId,
-      }
+    default:
+      // Forward-compat: sessions saved by older builds may carry kinds we no
+      // longer support (e.g. the removed 'plan' tab). Skip them on restore.
+      return null
   }
 }
 
@@ -195,7 +181,9 @@ export function hydrateSession(session: SerializedSession): {
       // Tabs pinned to a deleted worktree would error on load — drop them.
       if (t.kind !== 'file' && !knownPaths.has(t.worktreePath)) continue
       if (t.kind === 'file' && !t.path.startsWith(worktreePath) && ![...knownPaths].some((p) => t.path.startsWith(p))) continue
-      tabsStore.open(newId, deserializeTab(t), { focus: 'background' })
+      const tab = deserializeTab(t)
+      // Forward-compat: a removed kind (e.g. old 'plan' tab) deserializes to null.
+      if (tab) tabsStore.open(newId, tab, { focus: 'background' })
     }
     for (const id of s.unread) {
       tabsStore.markUnread(newId, id)

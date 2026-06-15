@@ -49,43 +49,6 @@ function okResult(text) {
 }
 
 server.registerTool(
-  'show_plan',
-  {
-    description:
-      'ALWAYS use this tool to present implementation plans to the user. ' +
-      'The user is working in SimpleEdit\'s IDE and expects plans to appear in the interactive Plan Mode UI — ' +
-      'never print plan content as terminal text. ' +
-      'Call this tool whenever you have a multi-step implementation approach to communicate: ' +
-      'when the user asks you to create a plan, design a solution, or plan out work, ' +
-      'or whenever you would otherwise write out an enumerated list of steps before coding. ' +
-      'After showing the plan, the user may react to or comment on individual tasks through the Plan Mode UI — ' +
-      'their feedback will arrive in your terminal as plain text. Revise and call show_plan again with the updated plan.',
-    inputSchema: {
-      plan: z.object({
-        overview: z.string().describe('High-level summary of the implementation plan'),
-        tasks: z.array(
-          z.object({
-            title: z.string().describe('Short title for this task'),
-            description: z.string().describe('Detailed description of what this task involves'),
-            affectedFiles: z.array(z.string()).optional().describe('File paths that will be created or modified'),
-            status: z
-              .enum(['todo', 'in-progress', 'done', 'rejected'])
-              .default('todo')
-              .describe('Current status of this task')
-          })
-        ).describe('Ordered list of tasks that make up the plan')
-      }).describe('The implementation plan to display'),
-      worktreePath: z.string().describe('Absolute path to the git worktree this plan applies to')
-    }
-  },
-  async ({ plan, worktreePath }) => {
-    const result = await postToBridge('show_plan', { plan, worktreePath })
-    if (!result.ok) return errorResult(`Error: ${result.error}`)
-    return okResult('Plan displayed in SimpleEdit Plan Mode. The user can now review and provide feedback.')
-  }
-)
-
-server.registerTool(
   'complete_task',
   {
     description:

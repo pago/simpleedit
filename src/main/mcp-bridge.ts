@@ -1,11 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
 import { randomBytes } from 'crypto'
-import { mkdirSync, writeFileSync, readFileSync } from 'fs'
-import { join } from 'path'
-import { app } from 'electron'
 import type { WebContents } from 'electron'
-import type { Plan, Tour, WorktreeInfo } from '../shared/ipc-types'
-import { savePlan } from './plan'
+import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
 import { validateSpec, validateSpecActions } from './gen-ui-validate'
@@ -90,70 +86,10 @@ function jsonResponse(res: ServerResponse, status: number, body: Record<string, 
   res.end(JSON.stringify(body))
 }
 
-// -- Latest Claude plan pointer persistence --------------------
-
-function latestClaudePlanFile(): string {
-  const dir = join(app.getPath('userData'), 'config', 'plans')
-  mkdirSync(dir, { recursive: true })
-  return join(dir, 'latest-claude-plans.json')
-}
-
-function saveLatestClaudePlan(worktreePath: string, terminalId: string): void {
-  try {
-    let existing: Record<string, string> = {}
-    try {
-      existing = JSON.parse(readFileSync(latestClaudePlanFile(), 'utf-8')) as Record<string, string>
-    } catch { /* file doesn't exist yet */ }
-    existing[worktreePath] = terminalId
-    writeFileSync(latestClaudePlanFile(), JSON.stringify(existing, null, 2), 'utf-8')
-  } catch (err) {
-    console.error('[MCP Bridge] Failed to save latest Claude plan pointer:', err)
-  }
-}
-
-export function loadLatestClaudePlan(worktreePath: string): string | null {
-  try {
-    const data = JSON.parse(readFileSync(latestClaudePlanFile(), 'utf-8')) as Record<string, string>
-    return data[worktreePath] ?? null
-  } catch {
-    return null
-  }
-}
-
 // -- Tool call handling ----------------------------------------
 
 async function handleToolCall(payload: ToolCallPayload, webContents: WebContents): Promise<{ status: number; body: Record<string, unknown> }> {
   const { tool, args, terminalId } = payload
-
-  if (tool === 'show_plan') {
-    const plan = args['plan'] as Plan | undefined
-    const claudeWorktreePath = args['worktreePath'] as string | undefined
-
-    if (!plan) {
-      return { status: 400, body: { error: 'show_plan requires plan in args' } }
-    }
-
-    // Use the authoritative worktree path from the terminal attachment,
-    // falling back to what Claude provided. The terminal-to-worktree mapping
-    // is set when the terminal is spawned and always matches the WorktreePane's path.
-    const worktreePath = getWorktreeForTerminal(terminalId) ?? claudeWorktreePath
-    if (!worktreePath) {
-      return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
-    }
-
-    // Persist the plan to disk so it survives app restarts
-    savePlan(worktreePath, `claude-${terminalId}`, plan)
-    saveLatestClaudePlan(worktreePath, terminalId)
-
-    const key = `${worktreePath}:claude-${terminalId}`
-    if (!webContents.isDestroyed()) {
-      webContents.send('plan:from-claude', { key, terminalId, plan })
-    } else {
-      console.warn(`[MCP Bridge] webContents is destroyed, cannot send plan:from-claude IPC`)
-    }
-
-    return { status: 200, body: { ok: true } }
-  }
 
   if (tool === 'complete_task') {
     const tour = args['tour'] as Tour | undefined

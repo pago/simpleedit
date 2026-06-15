@@ -4,7 +4,6 @@ import {
   tabIdFor,
   type DiffTab,
   type FileTab,
-  type PlanTab,
   type TourTab,
 } from '../tabsStore.svelte'
 
@@ -35,17 +34,6 @@ function tourTab(hash: string | null, message = 'x'): TourTab {
   }
 }
 
-function planTab(planHash: string, label = 'Plan'): PlanTab {
-  return {
-    kind: 'plan',
-    id: tabIdFor({ kind: 'plan', planHash }),
-    worktreePath: W,
-    planHash,
-    label,
-    claudeTerminalId: null,
-  }
-}
-
 beforeEach(() => {
   tabsStore.closeAll(W)
   tabsStore.closeAll(W2)
@@ -57,7 +45,6 @@ describe('tabIdFor', () => {
     expect(tabIdFor({ kind: 'diff', worktreePath: W, commitHash: null })).toBe(`diff:${W}:staging`)
     expect(tabIdFor({ kind: 'diff', worktreePath: W, commitHash: 'abc' })).toBe(`diff:${W}:abc`)
     expect(tabIdFor({ kind: 'tour', worktreePath: W, commitHash: null })).toBe(`tour:${W}:staging`)
-    expect(tabIdFor({ kind: 'plan', planHash: 'user-plan' })).toBe('plan:user-plan')
     expect(tabIdFor({ kind: 'composed', id: 'foo' })).toBe('composed:foo')
   })
 
@@ -195,13 +182,10 @@ describe('peek mode', () => {
     expect(tabsStore.peekId(W)).toBeNull()
   })
 
-  it('tour and plan tabs are never peek even when peek=true is requested', () => {
+  it('tour tabs are never peek even when peek=true is requested', () => {
     const t = tourTab('abc')
-    const p = planTab('user-plan')
     tabsStore.open(W, t, { peek: true })
-    tabsStore.open(W, p, { peek: true })
     expect(tabsStore.isPeek(W, t.id)).toBe(false)
-    expect(tabsStore.isPeek(W, p.id)).toBe(false)
     expect(tabsStore.peekId(W)).toBeNull()
   })
 

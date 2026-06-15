@@ -7,8 +7,7 @@
   import PaneTabBar from './PaneTabBar.svelte'
   import TabContainer from './TabContainer.svelte'
   import RepoPicker from './RepoPicker.svelte'
-  import { openDiffTab, openPlanTab, openTourTab } from '../../stores/diffReview.svelte'
-  import { planStore } from '../../stores/planStore.svelte'
+  import { openDiffTab, openTourTab } from '../../stores/diffReview.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
@@ -76,25 +75,8 @@
     }
   })
 
-  // Plan-from-Claude: focus when the workspace is idle, otherwise open in
-  // background with the unread marker so we don't steal focus mid-task.
-  $effect(() => {
-    const sid = sessionId
-    const unsub = window.api.on('plan:from-claude', (data) => {
-      if (data.terminalId !== sid) return
-
-      planStore.receivePlanFromClaude(data.key, data.terminalId, data.plan)
-
-      const idle = tabsStore.activeId(sid) === null
-      openPlanTab(sid, sessionsStore.get(sid)?.worktreePath ?? worktreePath, `claude-${data.terminalId}`, 'Claude Plan', {
-        focus: idle ? 'active' : 'background',
-        claudeTerminalId: data.terminalId,
-      })
-    })
-    return unsub
-  })
-
-  // Tour-from-Claude: same idle-vs-busy focus rule, routed by session.
+  // Tour-from-Claude: focus when the workspace is idle, otherwise open in
+  // background with the unread marker so we don't steal focus mid-task. Routed by session.
   $effect(() => {
     const sid = sessionId
     const unsub = window.api.on('tour:from-claude', (data) => {
@@ -156,7 +138,7 @@
   })
 
   // show_diff MCP call: open a diff tab in this session's workspace, scoped to
-  // the named worktree. Mirrors the idle-vs-busy focus rule of plan/tour.
+  // the named worktree. Mirrors the idle-vs-busy focus rule of tour.
   $effect(() => {
     const sid = sessionId
     const unsub = window.api.on('agent-workspace:show-diff', (data) => {

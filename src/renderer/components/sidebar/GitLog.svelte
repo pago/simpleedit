@@ -1,12 +1,11 @@
 <script lang="ts">
   import type { GitCommitInfo } from '../../../shared/ipc-types'
-  import { openDiffTab, openPlanTab, openTourTab, activeDiffHash } from '../../stores/diffReview.svelte'
+  import { openDiffTab, openTourTab, activeDiffHash } from '../../stores/diffReview.svelte'
   import { triggerTour, tourStore, loadCachedTour } from '../../stores/tourStore.svelte'
-  import { planStore } from '../../stores/planStore.svelte'
   import TabIcon from '../layout/TabIcon.svelte'
 
   interface Props {
-    /** tabsStore key of the owning session — where diff/tour/plan tabs open. */
+    /** tabsStore key of the owning session — where diff/tour tabs open. */
     workspaceKey: string
     worktreePath: string | null
   }
@@ -89,19 +88,6 @@
     triggerTour(worktreePath, 'branch')
   }
 
-  async function openPlan(): Promise<void> {
-    if (!worktreePath) return
-    // Prefer reopening the most recent Claude-originated plan if one exists (check disk too)
-    const claudeTerminalId = await planStore.loadLatestClaudePlanTerminalId(worktreePath)
-    if (claudeTerminalId) {
-      openPlanTab(workspaceKey, worktreePath, `claude-${claudeTerminalId}`, 'Claude Plan', {
-        claudeTerminalId,
-      })
-    } else {
-      openPlanTab(workspaceKey, worktreePath, 'user-plan', 'Plan')
-    }
-  }
-
   function openTour(commit: { hash: string | null; message: string }): void {
     if (!worktreePath) return
     const label = commit.hash
@@ -166,13 +152,6 @@
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Git Log</span>
     <div class="flex items-center gap-1">
       {#if worktreePath}
-        <button
-          class="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
-          onclick={openPlan}
-          title="Create an implementation plan"
-        >
-          ✦ Plan
-        </button>
         <button
           class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
           onclick={startBranchTour}

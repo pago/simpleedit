@@ -273,50 +273,6 @@ export interface TourEventMap {
   }
 }
 
-// ── Plan ─────────────────────────────────────────────────
-export type PlanReaction = 'thumbs-up' | 'thumbs-down' | 'question' | 'rocket' | 'eyes'
-
-export interface PlanDiscussionMessage {
-  id: string
-  taskId: string
-  role: 'user' | 'assistant'
-  text: string
-}
-
-export interface PlanTask {
-  id: string
-  title: string
-  description: string
-  affectedFiles?: string[]
-  status: 'todo' | 'in-progress' | 'done' | 'rejected'
-  reactions: PlanReaction[]
-  discussion: PlanDiscussionMessage[]
-}
-
-export interface Plan {
-  overview: string
-  tasks: PlanTask[]
-}
-
-export type PlanStatus = 'idle' | 'running' | 'revising' | 'done' | 'error'
-
-export interface PlanInvokeMap {
-  'plan:start': { args: [worktreePath: string, commitHash: string | null]; result: void }
-  'plan:start-from-description': { args: [worktreePath: string, description: string]; result: void }
-  'plan:cancel': { args: [worktreePath: string, commitHash: string | null]; result: void }
-  'plan:load': { args: [worktreePath: string, commitHash: string | null]; result: Plan | null }
-  'plan:save': { args: [worktreePath: string, commitHash: string | null, plan: Plan]; result: void }
-  'plan:revise': { args: [worktreePath: string, commitHash: string | null, feedback: string]; result: void }
-  'plan:latest-claude': { args: [worktreePath: string]; result: string | null }
-}
-
-export interface PlanEventMap {
-  'plan:overview': { key: string; overview: string }
-  'plan:task': { key: string; task: PlanTask }
-  'plan:status': { key: string; status: PlanStatus; error?: string }
-  'plan:from-claude': { key: string; terminalId: string; plan: Plan }
-}
-
 // ── Session save/restore ─────────────────────────────────
 /**
  * Per-repo persisted snapshot of what was open last time the user quit.
@@ -328,7 +284,6 @@ export type SerializedTab =
   | { kind: 'file'; id: string; path: string }
   | { kind: 'diff'; id: string; worktreePath: string; commitHash: string | null; commitMessage: string }
   | { kind: 'tour'; id: string; worktreePath: string; commitHash: string | null; commitMessage: string }
-  | { kind: 'plan'; id: string; worktreePath: string; planHash: string; label: string; claudeTerminalId: string | null }
 
 /** One persisted agent session plus its workspace state. */
 export interface SerializedAgentSession {
@@ -468,7 +423,6 @@ export type InvokeMap = WorktreeInvokeMap &
   AppInvokeMap &
   ReviewInvokeMap &
   TourInvokeMap &
-  PlanInvokeMap &
   LspInvokeMap &
   SessionInvokeMap
 
@@ -480,6 +434,5 @@ export type EventMap = WorktreeEventMap &
   GitEventMap &
   ReviewEventMap &
   TourEventMap &
-  PlanEventMap &
   LspEventMap &
   AgentPanelEventMap
