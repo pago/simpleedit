@@ -119,11 +119,11 @@
   oncontextmenu={handleContextMenu}
 >
   {#if entry.isDirectory}
-    <span class="w-4 text-center text-xs text-zinc-500">{expanded ? '▼' : '▶'}</span>
-    <span>📁</span>
+    <span class="w-4 shrink-0 text-center text-xs text-zinc-500">{expanded ? '▼' : '▶'}</span>
+    <span class="w-4 shrink-0 text-center">📁</span>
   {:else}
-    <span class="w-4"></span>
-    <span>📄</span>
+    <span class="w-4 shrink-0"></span>
+    <span class="w-4 shrink-0 text-center">📄</span>
   {/if}
   <span class="truncate">{entry.name}</span>
 </div>
