@@ -40,6 +40,7 @@ import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
+import { initAutoUpdater } from './auto-update'
 import type { JsonRpcMessage, SerializedSession } from '../shared/ipc-types'
 
 // Privileged schemes must be registered before the app is ready.
@@ -535,6 +536,7 @@ app.whenReady().then(() => {
   })
 
   registerAllHandlers()
+  initAutoUpdater()
 
   // Serve worktree-local assets (e.g. images in Markdown previews). Reads are
   // bounded to the directory containing each open window's bare repo, where its
