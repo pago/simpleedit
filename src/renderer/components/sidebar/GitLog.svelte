@@ -8,9 +8,13 @@
     /** tabsStore key of the owning session — where diff/tour tabs open. */
     workspaceKey: string
     worktreePath: string | null
+    /** When true, only the title bar is shown — the commit list is hidden. */
+    collapsed?: boolean
+    /** Toggle the collapsed/expanded state. */
+    ontoggle?: () => void
   }
 
-  let { workspaceKey, worktreePath }: Props = $props()
+  let { workspaceKey, worktreePath, collapsed = false, ontoggle }: Props = $props()
 
   let selectedCommitHash = $derived(
     worktreePath ? activeDiffHash(workspaceKey, worktreePath) : undefined
@@ -149,7 +153,15 @@
 
 <div class="flex flex-col gap-1">
   <div class="sticky top-0 z-10 -mx-3 flex items-center justify-between bg-zinc-900 px-4 pb-1 pt-2">
-    <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Git Log</span>
+    <button
+      class="flex items-center gap-1 rounded text-xs font-medium uppercase tracking-wider text-zinc-400 hover:text-zinc-200"
+      onclick={ontoggle}
+      aria-expanded={!collapsed}
+      title={collapsed ? 'Expand git log' : 'Collapse git log'}
+    >
+      <span class="text-[9px] leading-none text-zinc-300">{collapsed ? '▲' : '▼'}</span>
+      Git Log
+    </button>
     <div class="flex items-center gap-1">
       {#if worktreePath}
         <button
@@ -171,7 +183,9 @@
     </div>
   </div>
 
-  {#if !worktreePath}
+  {#if collapsed}
+    <!-- Collapsed: title bar only -->
+  {:else if !worktreePath}
     <p class="px-2 text-xs text-zinc-500">Select a worktree</p>
   {:else if loading}
     <p class="px-2 text-xs text-zinc-500">Loading...</p>

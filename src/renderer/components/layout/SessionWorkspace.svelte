@@ -286,6 +286,15 @@
     localStorage.setItem(FILE_TREE_COLLAPSED_KEY, String(fileTreeCollapsed))
   }
 
+  const GIT_LOG_COLLAPSED_KEY = 'simpleedit:gitLogCollapsed'
+
+  let gitLogCollapsed = $state(localStorage.getItem(GIT_LOG_COLLAPSED_KEY) === 'true')
+
+  function toggleGitLog(): void {
+    gitLogCollapsed = !gitLogCollapsed
+    localStorage.setItem(GIT_LOG_COLLAPSED_KEY, String(gitLogCollapsed))
+  }
+
   let verticalSplit = $state(60)
   let rightColumnWidth = $state(260)
   let isResizingVertical = $state(false)
@@ -452,8 +461,17 @@
                 oncollapse={toggleFileTree}
               />
             </div>
-            <div class="min-h-0 flex-1 overflow-y-auto border-t border-zinc-800 bg-zinc-900 px-3 pb-2">
-              <GitLog workspaceKey={sessionId} worktreePath={worktreePath || null} />
+            <div
+              class="border-t border-zinc-800 bg-zinc-900 px-3 {gitLogCollapsed
+                ? 'flex-none pb-1'
+                : 'min-h-0 flex-1 overflow-y-auto pb-2'}"
+            >
+              <GitLog
+                workspaceKey={sessionId}
+                worktreePath={worktreePath || null}
+                collapsed={gitLogCollapsed}
+                ontoggle={toggleGitLog}
+              />
             </div>
           </div>
         {/if}
