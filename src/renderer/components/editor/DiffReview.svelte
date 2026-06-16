@@ -5,6 +5,7 @@
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
   import { tick } from 'svelte'
+  import { computeFileLabels } from '../../lib/fileLabels'
   import { reviewStore, reviewKey, triggerReview } from '../../stores/reviewStore.svelte'
   import { tourStore, tourKey, triggerTour } from '../../stores/tourStore.svelte'
   import { openTourTab } from '../../stores/diffReview.svelte'
@@ -213,15 +214,17 @@
     }
   }
 
-  function fileName(path: string): string {
-    const parts = path.split('/')
-    return parts[parts.length - 1] ?? path
-  }
+  // Filename-first labels: the filename (plus parent dir for context-less names
+  // like index.ts, and any segments needed to disambiguate collisions) is the
+  // prominent part; the leading directory is dimmed and absorbs truncation.
+  const fileLabels = $derived(computeFileLabels(files.map((f) => f.path)))
 
-  function dirName(path: string): string {
-    const parts = path.split('/')
-    if (parts.length <= 1) return ''
-    return parts.slice(0, -1).join('/') + '/'
+  // Custom hover tooltip — the native `title` has a ~1.5s delay and is unstyled.
+  let tip = $state<{ path: string; left: number; top: number } | null>(null)
+
+  function showTip(e: MouseEvent, path: string): void {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    tip = { path, left: r.left, top: r.bottom + 4 }
   }
 </script>
 
@@ -343,19 +346,21 @@
           {:else}
             {#each files as file (file.path)}
               <button
-                class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs transition-colors
+                class="flex w-full items-baseline gap-1.5 overflow-hidden px-2 py-1 text-left text-xs transition-colors
                   {selectedFile === file.path
                   ? 'bg-zinc-800 text-zinc-200'
                   : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-300'}"
                 onclick={() => { highlightLines = undefined; selectFile(file.path) }}
-                title={file.path}
+                onmouseenter={(e) => showTip(e, file.path)}
+                onmouseleave={() => (tip = null)}
               >
-                <span class="w-3 flex-none text-center font-mono text-[10px] {statusColor(file.status)}">
+                <span class="w-3 flex-none self-center text-center font-mono text-[10px] {statusColor(file.status)}">
                   {statusLabel(file.status)}
                 </span>
-                <span class="min-w-0 truncate">
-                  <span class="text-zinc-600">{dirName(file.path)}</span>{fileName(file.path)}
-                </span>
+                <span class="flex-none whitespace-nowrap">{fileLabels.get(file.path)?.primary}</span>
+                {#if fileLabels.get(file.path)?.secondary}
+                  <span class="min-w-0 truncate text-zinc-600">{fileLabels.get(file.path)?.secondary}</span>
+                {/if}
               </button>
             {/each}
           {/if}
@@ -398,4 +403,13 @@
       {/if}
     </div>
   </div>
+
+  {#if tip}
+    <div
+      class="pointer-events-none fixed z-50 max-w-[24rem] rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs break-all text-zinc-200 shadow-lg"
+      style="left: {tip.left}px; top: {tip.top}px"
+    >
+      {tip.path}
+    </div>
+  {/if}
 </div>
