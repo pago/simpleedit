@@ -11,6 +11,7 @@
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
+  import { worktreeLabel } from '../../lib/worktreeLabel'
   import {
     projectRoot,
     primaryRepo,
@@ -241,7 +242,7 @@
 
   let worktreeBranch = $derived.by(() => {
     const wt = worktreeListFor(repoPath).find((w) => w.path === worktreePath)
-    return wt?.branch ?? worktreePath.split('/').pop() ?? '—'
+    return wt ? worktreeLabel(wt) : (worktreePath.split('/').pop() ?? '—')
   })
 
   // "Open another repo…" fallback from RepoPicker: points this session's

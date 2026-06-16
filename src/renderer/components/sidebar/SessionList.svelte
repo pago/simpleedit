@@ -5,6 +5,7 @@
   import { sessionsStore, type Session } from '../../stores/sessions.svelte'
   import { getClaudeStatusForTerminal } from '../../stores/claude-status.svelte'
   import { worktreeList, refreshWorktrees, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
+  import { worktreeLabel } from '../../lib/worktreeLabel'
 
   let sessions = $derived(sessionsStore.sessions())
   let activeId = $derived(sessionsStore.activeSessionId())
@@ -280,7 +281,7 @@
 
   function worktreeBranch(session: Session): string {
     const wt = worktreeList().find((w) => w.path === session.worktreePath)
-    return wt?.branch ?? session.worktreePath.split('/').pop() ?? ''
+    return wt ? worktreeLabel(wt) : (session.worktreePath.split('/').pop() ?? '')
   }
 </script>
 
