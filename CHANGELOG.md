@@ -1,5 +1,54 @@
 # simpleedit
 
+## 0.16.0
+
+### Minor Changes
+
+- [#130](https://github.com/pago/simpleedit/pull/130) [`c179e19`](https://github.com/pago/simpleedit/commit/c179e19fe38f2f1a7e4c16dd97f7887ebdf8bbd4) Thanks [@pago](https://github.com/pago)! - Sessions now track the agent's location trail across repos and worktrees. When
+  an agent works in a repo the window never opened, the hook handler resolves and
+  registers it so it surfaces automatically. The repo picker becomes a dropdown
+  over the repos this agent has worked in (switching one lands on its
+  most-recently-touched worktree), and the worktree picker pins touched worktrees
+  to the top — most-recent first — above a separator, then the rest
+  alphabetically. The view only follows the agent while the Files viewer is
+  closed; with it open, an amber indicator marks where the agent moved instead of
+  swapping out what you're reviewing. The trail persists with resumable sessions.
+
+- [#50](https://github.com/pago/simpleedit/pull/50) [`265df3b`](https://github.com/pago/simpleedit/commit/265df3bc3afe4c13da76f9d6f4d655e6a6b2bf65) Thanks [@pago](https://github.com/pago)! - Add automatic update support via electron-updater. The app now checks for new GitHub releases on startup and shows a banner when an update is available to download and install.
+
+- [#135](https://github.com/pago/simpleedit/pull/135) [`5e1579e`](https://github.com/pago/simpleedit/commit/5e1579e039be87821141c290994ea751b6cbd2be) Thanks [@pago](https://github.com/pago)! - Make the Git Log panel collapsible. A chevron in its title bar collapses the panel to just the title bar (Tour Branch and Refresh buttons stay available) and expands it back to half of the files/git-log column. The collapsed state is persisted across sessions.
+
+- [#140](https://github.com/pago/simpleedit/pull/140) [`0cdcf61`](https://github.com/pago/simpleedit/commit/0cdcf618a48ddae45fab7fa7b9f399eb8fb42b8c) Thanks [@pago](https://github.com/pago)! - Diff file list now uses filename-first labels so the filename stays visible
+  without resizing the panel. Context-less names (`index.ts`, `mod.rs`,
+  `__init__.py`, Next.js `page`/`route`/`layout`, …) are shown with their parent
+  directory (e.g. `DiffReview/index.tsx`), and files that would otherwise share a
+  label are disambiguated with the minimal distinguishing path segments. A
+  styled, no-delay hover tooltip replaces the native `title` and reveals the full
+  path.
+
+- [#132](https://github.com/pago/simpleedit/pull/132) [`2588afd`](https://github.com/pago/simpleedit/commit/2588afd1314c7d42210b9ee2c2f0f5d4bbc30763) Thanks [@pago](https://github.com/pago)! - Remove Plan Mode. The structured plan view (NDJSON task list with reactions,
+  status cycling, and per-task agent dispatch) forced plans into a data model
+  that couldn't represent the prose, diagrams, and narrative that make a plan
+  useful, and the resulting UI was cluttered. Planning is better served by a
+  markdown document plus the existing terminal, so the feature has been dropped:
+  the `show_plan` MCP tool, the headless plan generator, the `plan:*` IPC
+  channels, the `plan` tab kind, and the Git Log "✦ Plan" button are all gone.
+
+  Sessions saved by older builds that contain a plan tab restore cleanly — the
+  stale tab is skipped on hydrate.
+
+- [#137](https://github.com/pago/simpleedit/pull/137) [`509b43a`](https://github.com/pago/simpleedit/commit/509b43ad5e7b39f7ff309165eb371133100a9560) Thanks [@pago](https://github.com/pago)! - Watch open editor files for external changes. Clean buffers auto-reload from disk; dirty buffers show a "file changed on disk — reload?" banner so unsaved edits are never clobbered.
+
+- [#133](https://github.com/pago/simpleedit/pull/133) [`c8ffc03`](https://github.com/pago/simpleedit/commit/c8ffc035fea6a0ef7db88f7f7548047543e7ee1f) Thanks [@pago](https://github.com/pago)! - Markdown files now open with raw / hybrid / rendered view modes, toggled from a control on the right of the tab bar (WebStorm-style). The rendered preview parses Markdown with `marked` + DOMPurify, renders mermaid diagrams and Monaco-themed syntax highlighting in fenced code blocks, resolves relative images via a worktree-scoped `wt-asset:` protocol, and keeps scroll position anchored between editor and preview in hybrid mode.
+
+### Patch Changes
+
+- [#138](https://github.com/pago/simpleedit/pull/138) [`41cb138`](https://github.com/pago/simpleedit/commit/41cb138d5fecd33228fe81c0326c8a8b5e4566d2) Thanks [@pago](https://github.com/pago)! - Fix inconsistent file-tree icon alignment. The folder/file emoji previously sat in a width-less span, so the icon and label columns drifted with each glyph's rendered width. Pinning the icon into a fixed-width centered slot keeps every row's icon and label aligned regardless of font/glyph rendering.
+
+- [#136](https://github.com/pago/simpleedit/pull/136) [`509cacb`](https://github.com/pago/simpleedit/commit/509cacb34adfcd24c5dc5d97f76fb6e0c3ac9228) Thanks [@pago](https://github.com/pago)! - Fix Markdown view mode locking after the first switch. The per-file view-mode store used a plain `$state(new Map())`, whose `.set()`/`.get()` mutations are not tracked by Svelte 5; once a file had a stored mode the reader's dependency dropped and the toggle stopped responding. The store now uses `SvelteMap` so subsequent switches stay reactive.
+
+- [#139](https://github.com/pago/simpleedit/pull/139) [`126cffb`](https://github.com/pago/simpleedit/commit/126cffbb8cba1823807af383b30792e53b5f2cfd) Thanks [@pago](https://github.com/pago)! - Fix worktree labels in the workspace header button and session list to show `dir (branch)` when the directory name differs from the checked-out branch, matching the worktree popover list.
+
 ## 0.15.0
 
 ### Minor Changes
