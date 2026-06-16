@@ -91,6 +91,12 @@ export interface FsInvokeMap {
 export interface EditorInvokeMap {
   'editor:open': { args: [filePath: string]; result: string }
   'editor:save': { args: [filePath: string, content: string]; result: void }
+  'editor:watch': { args: [filePath: string]; result: void }
+  'editor:unwatch': { args: [filePath: string]; result: void }
+}
+
+export interface EditorEventMap {
+  'editor:file-changed': { filePath: string }
 }
 
 // ── Git ───────────────────────────────────────────────────
@@ -454,4 +460,5 @@ export type EventMap = WorktreeEventMap &
   TourEventMap &
   LspEventMap &
   AgentPanelEventMap &
-  UpdateEventMap
+  UpdateEventMap &
+  EditorEventMap

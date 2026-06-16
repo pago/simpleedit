@@ -38,6 +38,9 @@
   let editor: monaco.editor.IStandaloneCodeEditor | undefined
   let currentFilePath: string | null = null
   let isLoadingFile = false
+  let isDirty = false
+  let fileStaleDirty = $state(false)
+  let watchedPath: string | null = null
 
   const extensionToLanguage: Record<string, string> = {
     '.ts': 'typescript',
@@ -103,6 +106,8 @@
       }
 
       currentFilePath = path
+      isDirty = false
+      fileStaleDirty = false
       onModified?.(path, false)
       oncontentchange?.(content)
 
@@ -115,9 +120,25 @@
           console.warn(`[LSP] ${language} unavailable:`, err instanceof Error ? err.message : err)
         })
       }
+
+      // Update file watch: unwatch previous path, watch new one.
+      if (watchedPath && watchedPath !== path) {
+        void window.api.invoke('editor:unwatch', watchedPath)
+      }
+      if (watchedPath !== path) {
+        void window.api.invoke('editor:watch', path)
+        watchedPath = path
+      }
     } catch (err: unknown) {
       console.error('Failed to load file:', err)
     }
+  }
+
+  function reloadFromDisk(): void {
+    if (!currentFilePath) return
+    fileStaleDirty = false
+    isDirty = false
+    void loadFile(currentFilePath)
   }
 
   async function saveFile(): Promise<void> {
@@ -125,6 +146,7 @@
     const content = editor.getValue()
     try {
       await window.api.invoke('editor:save', currentFilePath, content)
+      isDirty = false
       onModified?.(currentFilePath, false)
     } catch (err: unknown) {
       console.error('Failed to save file:', err)
@@ -199,6 +221,7 @@
 
     editor.onDidChangeModelContent(() => {
       if (currentFilePath && !isLoadingFile) {
+        isDirty = true
         const content = editor!.getValue()
         onModified?.(currentFilePath, true)
         oncontentchange?.(content)
@@ -209,7 +232,21 @@
       }
     })
 
+    const unsubFileChange = window.api.on('editor:file-changed', ({ filePath: changedPath }) => {
+      if (changedPath !== watchedPath) return
+      if (!isDirty) {
+        void loadFile(changedPath)
+      } else {
+        fileStaleDirty = true
+      }
+    })
+
     return () => {
+      unsubFileChange()
+      if (watchedPath) {
+        void window.api.invoke('editor:unwatch', watchedPath)
+        watchedPath = null
+      }
       unbindOpener()
       if (currentFilePath && worktreeRoot) {
         const language = getLanguage(currentFilePath)
@@ -233,4 +270,23 @@
   })
 </script>
 
-<div class="h-full w-full" bind:this={container}></div>
+<div class="flex h-full w-full flex-col">
+  {#if fileStaleDirty}
+    <div class="flex flex-none items-center gap-2 border-b border-yellow-700/50 bg-yellow-950/40 px-3 py-1">
+      <span class="text-xs text-yellow-300">File changed on disk</span>
+      <button
+        class="rounded px-2 py-0.5 text-[11px] text-yellow-300 hover:bg-yellow-500/20"
+        onclick={reloadFromDisk}
+      >
+        Reload
+      </button>
+      <button
+        class="rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-700"
+        onclick={() => (fileStaleDirty = false)}
+      >
+        Dismiss
+      </button>
+    </div>
+  {/if}
+  <div class="min-h-0 flex-1" bind:this={container}></div>
+</div>

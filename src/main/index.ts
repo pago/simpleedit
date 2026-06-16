@@ -22,6 +22,7 @@ import {
 } from './file-watcher'
 import { listWorktrees, createWorktree, checkoutWorktree, listAvailableBranches, removeWorktree, cloneBareRepo } from './worktree'
 import { watchWorktreeList, unwatchWorktreeList, unwatchAllWorktreeLists, unwatchAllWorktreeListsForWindow } from './worktree-watcher'
+import { watchEditorFile, unwatchEditorFile, unwatchAllEditorFilesForWindow, unwatchAllEditorFiles } from './editor-watcher'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
@@ -173,6 +174,7 @@ function createWindow(repoPath?: string): BrowserWindow {
   win.on('closed', () => {
     stopBridge(webContentsId)
     unwatchAllWorktreeListsForWindow(webContentsId)
+    unwatchAllEditorFilesForWindow(webContentsId)
     windowRepoMap.delete(webContentsId)
     windowReposMap.delete(webContentsId)
   })
@@ -330,6 +332,14 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('editor:save', (_event, filePath: string, content: string) => {
     return writeFile(filePath, content)
+  })
+
+  ipcMain.handle('editor:watch', (event, filePath: string) => {
+    watchEditorFile(event.sender.id, filePath, event.sender)
+  })
+
+  ipcMain.handle('editor:unwatch', (event, filePath: string) => {
+    unwatchEditorFile(event.sender.id, filePath)
   })
 
   // ── Worktrees ───────────────────────────────────────────
@@ -585,6 +595,7 @@ app.on('before-quit', () => {
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
+  try { unwatchAllEditorFiles() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
@@ -596,6 +607,7 @@ app.on('window-all-closed', () => {
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
+  try { unwatchAllEditorFiles() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
