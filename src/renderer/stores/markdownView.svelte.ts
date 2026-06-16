@@ -11,11 +11,17 @@
  * share the same path → they share the view mode (matching the shared tab list).
  */
 
+import { SvelteMap } from 'svelte/reactivity'
+
 export type MarkdownViewMode = 'raw' | 'hybrid' | 'rendered'
 
 const DEFAULT_MODE: MarkdownViewMode = 'rendered'
 
-let _modes = $state<Map<string, MarkdownViewMode>>(new Map())
+// SvelteMap (not a plain `$state(new Map())`) so per-key `.get()`/`.set()` are
+// tracked. With a plain Map a reader's `get(path)` dependency is dropped once
+// the path has an entry (the `?? _lastChosen` fallback short-circuits), so the
+// view mode locked after the first switch.
+const _modes = new SvelteMap<string, MarkdownViewMode>()
 // Remembered most-recent choice, used as the default for files not yet seen.
 let _lastChosen = $state<MarkdownViewMode>(DEFAULT_MODE)
 
