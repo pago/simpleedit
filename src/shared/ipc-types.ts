@@ -199,6 +199,22 @@ export interface ClaudeEventMap {
     repoPath: string | null
   }
   /**
+   * The session touched a file in a worktree its `cwd` is NOT inside — the
+   * agent read or edited a file in a sibling repo without `cd`-ing there. The
+   * renderer registers the repo and records it on the session's touched trail
+   * (so it appears in the repo picker) WITHOUT repointing the workspace view —
+   * a glance at another repo shouldn't move what the user is looking at.
+   *
+   * `repoPath` is the bare repo when it was freshly discovered (so the renderer
+   * can cache its worktrees), else null. `worktreePath` is always the resolved
+   * worktree the touched file lives in.
+   */
+  'claude:repo-touch': {
+    terminalId: string
+    worktreePath: string
+    repoPath: string | null
+  }
+  /**
    * Fork operation outcome. `placeholderTabId` matches the id the renderer
    * used in `claude:fork`, so it can locate the placeholder tab to transition
    * (success) or mark errored (failure).

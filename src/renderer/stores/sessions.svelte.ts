@@ -712,6 +712,20 @@ export function initSessionListeners(): () => void {
     })()
   })
 
+  // The agent read/edited a file in a repo its cwd never entered. RECORD the
+  // touch (so the repo surfaces in the picker) but never FOLLOW it — unlike
+  // claude:cwd, a file glance must not repoint the workspace the user is on.
+  const offRepoTouch = window.api.on('claude:repo-touch', (data) => {
+    const session = sessionsStore.get(data.terminalId)
+    if (!session) return
+    void (async () => {
+      if (data.repoPath && worktreeListFor(data.repoPath).length === 0) {
+        await refreshWorktreesFor(data.repoPath)
+      }
+      sessionsStore.recordTouch(data.terminalId, data.worktreePath)
+    })()
+  })
+
   // Fork placeholder goes live on the new PTY's first byte.
   const offData = window.api.on('pty:data', ({ id }) => {
     const session = sessionsStore.get(id)
@@ -727,6 +741,7 @@ export function initSessionListeners(): () => void {
     offExit()
     offSessionId()
     offCwd()
+    offRepoTouch()
     offData()
     offForkResult()
   }

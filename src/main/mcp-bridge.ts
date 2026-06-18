@@ -1,5 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
 import { randomBytes } from 'crypto'
+import { dirname } from 'path'
 import type { WebContents } from 'electron'
 import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
@@ -259,9 +260,45 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
 }
 
 /**
+ * Resolve a path to the worktree (and bare repo) that contains it. First
+ * matches against the window's known worktrees; on a miss the agent has roamed
+ * into a repo this window never opened, so we resolve + register it via the
+ * discoverer and re-match against its worktrees. `repoPath` is non-null only on
+ * that discovery path (the caller already knows the primary repo).
+ */
+async function locateWorktree(
+  webContentsId: number,
+  location: string,
+  knownWorktrees: WorktreeInfo[],
+): Promise<{ worktreePath: string | null; repoPath: string | null }> {
+  let worktreePath = matchWorktree(location, knownWorktrees)
+  if (worktreePath) return { worktreePath, repoPath: null }
+
+  const discovered = await discoverRepo(webContentsId, location)
+  if (!discovered) return { worktreePath: null, repoPath: null }
+  return {
+    worktreePath: matchWorktree(location, discovered.worktrees),
+    repoPath: discovered.repoPath,
+  }
+}
+
+/**
  * Handle a hook POST: parse session_id + cwd, route to the owning terminal,
  * and tell the renderer which worktree (if any) the cwd now sits in. Always
  * resolves 200 — hooks must never block Claude even if we can't route them.
+ *
+ * Two signals feed the session's repo trail:
+ *   • `cwd` — where the agent IS. Drives `claude:cwd`, which both records the
+ *     touch and (when the viewer is closed) repoints the workspace view.
+ *   • the touched `file_path` — a file the agent read/edited, which may live in
+ *     a DIFFERENT repo the cwd never entered (the agent doesn't `cd` to read a
+ *     file). Drives `claude:repo-touch`, which records the touch ONLY: a glance
+ *     at a sibling repo should surface it in the picker, not yank the view.
+ *
+ * Cost note: the hook response is awaited before we 200, so a miss on either
+ * path briefly blocks the CLI on git subprocesses (rev-parse + worktree list),
+ * paid once per new repo per window. A pathological path (network FS, huge
+ * repo) would stall the CLI's hook here.
  */
 async function handleHook(body: string, webContents: WebContents): Promise<void> {
   let parsed: unknown
@@ -277,28 +314,28 @@ async function handleHook(body: string, webContents: WebContents): Promise<void>
   if (!terminalId) return
 
   const worktrees = await resolveWorktrees(webContents.id)
-  let worktreePath = matchWorktree(signal.cwd, worktrees)
-  let repoPath: string | null = null
-
-  // Miss = the agent roamed into a repo this window never opened. Resolve and
-  // register it, then re-match against its worktrees so a brand-new repo (the
-  // backend, a sibling service) still surfaces on the session's trail.
-  //
-  // Cost note: the hook response is awaited before we 200 (below), so on a miss
-  // the CLI briefly blocks on two git subprocesses (rev-parse + worktree list).
-  // This is in kind with the existing per-hook worktree resolver and is paid
-  // only on the first hook from each new repo per window — but a pathological
-  // cwd (network FS, huge repo) would stall the CLI's hook here.
-  if (!worktreePath) {
-    const discovered = await discoverRepo(webContents.id, signal.cwd)
-    if (discovered) {
-      repoPath = discovered.repoPath
-      worktreePath = matchWorktree(signal.cwd, discovered.worktrees)
-    }
-  }
+  const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
 
   if (!webContents.isDestroyed()) {
-    webContents.send('claude:cwd', { terminalId, cwd: signal.cwd, worktreePath, repoPath })
+    webContents.send('claude:cwd', {
+      terminalId,
+      cwd: signal.cwd,
+      worktreePath: cwd.worktreePath,
+      repoPath: cwd.repoPath,
+    })
+  }
+
+  // A touched file outside the cwd's worktree means the agent worked in another
+  // worktree/repo without moving its cwd there — record it on the trail too.
+  if (!signal.filePath) return
+  const file = await locateWorktree(webContents.id, dirname(signal.filePath), worktrees)
+  if (!file.worktreePath || file.worktreePath === cwd.worktreePath) return
+  if (!webContents.isDestroyed()) {
+    webContents.send('claude:repo-touch', {
+      terminalId,
+      worktreePath: file.worktreePath,
+      repoPath: file.repoPath,
+    })
   }
 }
 

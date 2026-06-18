@@ -22,17 +22,52 @@ describe('parseHookBody', () => {
     expect(parseHookBody({ session_id: 'abc', cwd: '/x/y', hook_event_name: 'PostToolUse' })).toEqual({
       sessionId: 'abc',
       cwd: '/x/y',
+      filePath: null,
     })
   })
 
-  it('ignores extra fields (event kind, tool input, etc.)', () => {
+  it('ignores fields it does not use (event kind, Bash command, etc.)', () => {
     const body = {
       session_id: 's',
       cwd: '/p',
       tool_name: 'Bash',
       tool_input: { command: 'cd /q' },
     }
-    expect(parseHookBody(body)).toEqual({ sessionId: 's', cwd: '/p' })
+    expect(parseHookBody(body)).toEqual({ sessionId: 's', cwd: '/p', filePath: null })
+  })
+
+  it('surfaces an absolute file_path from a file tool (Read/Write/Edit)', () => {
+    const body = {
+      session_id: 's',
+      cwd: '/repo/main',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/other-repo/backend/src/app.ts', old_string: 'a', new_string: 'b' },
+    }
+    expect(parseHookBody(body)).toEqual({
+      sessionId: 's',
+      cwd: '/repo/main',
+      filePath: '/other-repo/backend/src/app.ts',
+    })
+  })
+
+  it('surfaces notebook_path (NotebookEdit) as the touched file', () => {
+    const body = {
+      session_id: 's',
+      cwd: '/repo/main',
+      tool_name: 'NotebookEdit',
+      tool_input: { notebook_path: '/other-repo/analysis.ipynb' },
+    }
+    expect(parseHookBody(body)?.filePath).toBe('/other-repo/analysis.ipynb')
+  })
+
+  it('ignores a relative file_path (can only resolve absolute paths to a repo)', () => {
+    const body = {
+      session_id: 's',
+      cwd: '/repo/main',
+      tool_name: 'Read',
+      tool_input: { file_path: 'src/app.ts' },
+    }
+    expect(parseHookBody(body)?.filePath).toBeNull()
   })
 
   it('returns null when session_id is missing or empty', () => {

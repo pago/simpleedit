@@ -4,6 +4,7 @@ import {
   sessionsStore,
   touchedReposForSession,
   touchedWorktreesForRepo,
+  initSessionListeners,
   type Session,
 } from '../sessions.svelte'
 import { setProjectRoot, refreshWorktreesFor, repoKeyForWorktree } from '../worktrees.svelte'
@@ -76,6 +77,59 @@ describe('touchedWorktreesForRepo', () => {
       '/repo/primary/feat',
       '/repo/primary/main',
     ])
+  })
+})
+
+describe('claude:repo-touch listener', () => {
+  type Handler = (data: unknown) => void
+  const handlers = new Map<string, Handler>()
+
+  beforeEach(() => {
+    handlers.clear()
+    const api = (window as unknown as { api: Record<string, unknown> }).api
+    api.on = vi.fn((channel: string, handler: Handler) => {
+      handlers.set(channel, handler)
+      return () => handlers.delete(channel)
+    })
+  })
+
+  it('records a touched sibling repo on the trail without repointing the view', async () => {
+    const off = initSessionListeners()
+    try {
+      const id = sessionsStore.createClaude('/launch', '/repo/primary/main')
+      const before = sessionsStore.get(id)?.worktreePath
+
+      handlers.get('claude:repo-touch')!({
+        terminalId: id,
+        worktreePath: '/repo/other/wip',
+        repoPath: null, // OTHER already cached in the outer beforeEach
+      })
+      await Promise.resolve()
+
+      const session = sessionsStore.get(id)!
+      // The sibling repo now shows in the picker...
+      expect(touchedReposForSession(session)).toEqual([OTHER, PRIMARY])
+      // ...but the workspace view stayed put (repo-touch never follows).
+      expect(session.worktreePath).toBe(before)
+    } finally {
+      off()
+    }
+  })
+
+  it('ignores a touch for an unknown terminal', async () => {
+    const off = initSessionListeners()
+    try {
+      expect(() =>
+        handlers.get('claude:repo-touch')!({
+          terminalId: 'ghost',
+          worktreePath: '/repo/other/wip',
+          repoPath: null,
+        }),
+      ).not.toThrow()
+      await Promise.resolve()
+    } finally {
+      off()
+    }
   })
 })
 
