@@ -326,19 +326,35 @@ export interface SerializedAgentSession {
    * survive a restart rather than rebuilding only as the agent moves again.
    */
   touchedWorktrees?: string[]
+  /**
+   * The session group this entry belongs to (a `SerializedGroup.id`), or absent
+   * when standalone. Members of a group are kept contiguous in `sessions`.
+   */
+  groupId?: string
   tabs: SerializedTab[]
   activeTabId: string | null
   unread: string[]
 }
 
+/** A persisted session group (Edge-style tab group). */
+export interface SerializedGroup {
+  id: string
+  name: string
+  color: string
+  collapsed: boolean
+}
+
 export interface SerializedSession {
-  version: 2
+  /** 2 = pre-grouping blobs (hydrate as all-standalone); 3 = with `groups`. */
+  version: 2 | 3
   repoPath: string
   savedAt: string
   /** Sidebar order. */
   sessions: SerializedAgentSession[]
   /** Index into `sessions` of the entry that was active, if any. */
   activeIndex: number | null
+  /** Session groups, in sidebar order. Absent in v2 blobs. */
+  groups?: SerializedGroup[]
 }
 
 export interface SessionInvokeMap {

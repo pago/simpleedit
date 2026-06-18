@@ -79,10 +79,35 @@ export interface Session {
    * what happened; only zero-code (graceful) exits auto-close.
    */
   exited?: { exitCode: number }
+  /**
+   * The group this session belongs to (a `SessionGroup.id`), or undefined when
+   * standalone. The sidebar keeps every group's members CONTIGUOUS in
+   * `_sessions`, so grouping is purely an ordering invariant — see
+   * `normalizeGroups`.
+   */
+  groupId?: string
 }
+
+/**
+ * A named, colored, collapsible container over a contiguous run of sessions —
+ * modelled on browser tab groups (Edge). Single level: groups never nest.
+ */
+export interface SessionGroup {
+  id: string
+  name: string
+  /** Tailwind-ish color token; one of GROUP_COLORS. */
+  color: string
+  collapsed: boolean
+}
+
+/** Auto-assigned to new groups, cycled by group count. */
+const GROUP_COLORS = ['sky', 'violet', 'emerald', 'amber', 'rose', 'cyan'] as const
 
 let _sessions = $state<Session[]>([])
 let _activeId = $state<string | null>(null)
+let _groups = $state<SessionGroup[]>([])
+/** Session whose terminal should grab focus once it mounts (keyboard new-session). */
+let _pendingFocusId = $state<string | null>(null)
 /** Sessions whose workspace has been mounted — kept alive across switches. */
 let _visitedIds = $state<string[]>([])
 
@@ -114,6 +139,48 @@ function findSession(id: string): Session | undefined {
   return _sessions.find((s) => s.id === id)
 }
 
+/**
+ * Re-cluster every group's members so they form one contiguous run, anchored at
+ * the index of the group's earliest current member. Stable for everything else.
+ * The safety net that lets each mutating op set `groupId` + splice naively and
+ * trust the contiguity invariant is restored here.
+ */
+function normalizeGroups(): void {
+  if (!_sessions.some((s) => s.groupId)) return
+
+  const result: Session[] = []
+  const emitted = new Set<string>()
+  for (const s of _sessions) {
+    if (!s.groupId) {
+      result.push(s)
+      continue
+    }
+    // At a group's anchor (first member seen in array order), emit every member
+    // of that group in their current relative order; skip later stragglers.
+    if (emitted.has(s.groupId)) continue
+    emitted.add(s.groupId)
+    for (const m of _sessions) if (m.groupId === s.groupId) result.push(m)
+  }
+  _sessions = result
+}
+
+/** Drop a group when it has <2 members, clearing the lone member's groupId. */
+function dissolveIfOrphaned(groupId: string | undefined): void {
+  if (!groupId) return
+  if (!_groups.some((g) => g.id === groupId)) return
+  const members = _sessions.filter((s) => s.groupId === groupId)
+  if (members.length >= 2) return
+  for (const m of members) {
+    const idx = _sessions.findIndex((s) => s.id === m.id)
+    if (idx >= 0) {
+      const next = _sessions.slice()
+      next[idx] = { ...next[idx], groupId: undefined }
+      _sessions = next
+    }
+  }
+  _groups = _groups.filter((g) => g.id !== groupId)
+}
+
 export const sessionsStore = {
   sessions(): Session[] {
     return _sessions
@@ -129,6 +196,14 @@ export const sessionsStore = {
 
   visitedIds(): string[] {
     return _visitedIds
+  },
+
+  groups(): SessionGroup[] {
+    return _groups
+  },
+
+  group(id: string): SessionGroup | undefined {
+    return _groups.find((g) => g.id === id)
   },
 
   get(id: string): Session | undefined {
@@ -212,10 +287,12 @@ export const sessionsStore = {
     }
 
     const idx = _sessions.findIndex((s) => s.id === id)
+    const closedGroup = session.groupId
     _sessions = _sessions.filter((s) => s.id !== id)
     _visitedIds = _visitedIds.filter((v) => v !== id)
     clearClaudeStatusForTerminal(id)
     tabsStore.closeAll(id)
+    dissolveIfOrphaned(closedGroup)
 
     if (_activeId === id) {
       const next = _sessions[Math.min(idx, _sessions.length - 1)]
@@ -311,6 +388,119 @@ export const sessionsStore = {
     })
   },
 
+  // ── grouping & reorder ─────────────────────────────────────────────────────
+
+  /**
+   * Move a session within the list. `target` encodes the drop intent:
+   *  • `{ mode: 'before' | 'after', refId }` — place next to `refId`, inheriting
+   *    refId's group (so dropping next to a standalone session ungroups, and
+   *    dropping next to a grouped one joins that group).
+   *  • `{ mode: 'intoGroup', groupId }` — append to a group's run.
+   *  • `{ mode: 'toEnd' }` — move to the end of the list as a standalone session.
+   * Contiguity is restored by `normalizeGroups` afterwards, so the splice index
+   * only needs to be approximately right.
+   */
+  moveSession(
+    draggedId: string,
+    target:
+      | { mode: 'before' | 'after'; refId: string }
+      | { mode: 'intoGroup'; groupId: string }
+      | { mode: 'toEnd' },
+  ): void {
+    const dragged = findSession(draggedId)
+    if (!dragged) return
+    const prevGroup = dragged.groupId
+    const without = _sessions.filter((s) => s.id !== draggedId)
+
+    let nextGroupId: string | undefined
+    let insertAt: number
+    if (target.mode === 'toEnd') {
+      nextGroupId = undefined
+      insertAt = without.length
+    } else if (target.mode === 'intoGroup') {
+      nextGroupId = target.groupId
+      const members = without.filter((s) => s.groupId === target.groupId)
+      const last = members[members.length - 1]
+      insertAt = last ? without.findIndex((s) => s.id === last.id) + 1 : without.length
+    } else {
+      if (target.refId === draggedId) return
+      const refIdx = without.findIndex((s) => s.id === target.refId)
+      if (refIdx < 0) return
+      nextGroupId = findSession(target.refId)?.groupId
+      insertAt = target.mode === 'after' ? refIdx + 1 : refIdx
+    }
+
+    const moved: Session = { ...dragged, groupId: nextGroupId }
+    _sessions = [...without.slice(0, insertAt), moved, ...without.slice(insertAt)]
+
+    normalizeGroups()
+    if (prevGroup !== nextGroupId) dissolveIfOrphaned(prevGroup)
+  },
+
+  /**
+   * Create a group from existing sessions (gesture or context menu). Members
+   * become contiguous at the earliest member's position. Returns the group id.
+   */
+  createGroup(memberIds: string[], name = 'New group', color?: string): string | null {
+    const members = memberIds.filter((id) => findSession(id))
+    if (members.length < 2) return null
+    const id = `group-${crypto.randomUUID()}`
+    _groups = [
+      ..._groups,
+      { id, name, color: color ?? GROUP_COLORS[_groups.length % GROUP_COLORS.length], collapsed: false },
+    ]
+    const memberSet = new Set(members)
+    _sessions = _sessions.map((s) => (memberSet.has(s.id) ? { ...s, groupId: id } : s))
+    normalizeGroups()
+    return id
+  },
+
+  renameGroup(id: string, name: string): void {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    _groups = _groups.map((g) => (g.id === id ? { ...g, name: trimmed } : g))
+  },
+
+  setGroupColor(id: string, color: string): void {
+    _groups = _groups.map((g) => (g.id === id ? { ...g, color } : g))
+  },
+
+  toggleGroupCollapsed(id: string): void {
+    _groups = _groups.map((g) => (g.id === id ? { ...g, collapsed: !g.collapsed } : g))
+  },
+
+  /** Remove a session from its group (context menu), dissolving a stub group. */
+  removeFromGroup(sessionId: string): void {
+    const session = findSession(sessionId)
+    if (!session?.groupId) return
+    const groupId = session.groupId
+    this.update(sessionId, { groupId: undefined })
+    normalizeGroups()
+    dissolveIfOrphaned(groupId)
+  },
+
+  /** Disband a whole group, leaving its members in place as standalone. */
+  ungroup(groupId: string): void {
+    _sessions = _sessions.map((s) => (s.groupId === groupId ? { ...s, groupId: undefined } : s))
+    _groups = _groups.filter((g) => g.id !== groupId)
+  },
+
+  // ── terminal focus signal ──────────────────────────────────────────────────
+
+  /** Ask the named session's terminal to grab focus once it mounts. */
+  requestTerminalFocus(id: string): void {
+    _pendingFocusId = id
+  },
+
+  pendingFocusId(): string | null {
+    return _pendingFocusId
+  },
+
+  /** Clear the focus request if it targets `id` (called once focus is applied). */
+  consumeFocusRequest(id: string): void {
+    if (_pendingFocusId === id) _pendingFocusId = null
+  },
+
   // ── fork ─────────────────────────────────────────────────────────────────
 
   /**
@@ -367,6 +557,7 @@ export const sessionsStore = {
     repoPath?: string
     touchedWorktrees?: string[]
     sessionId?: string
+    groupId?: string
   }): string | null {
     // Restore the persisted trail; fall back to the workspace worktree so the
     // current location still shows in the pickers for pre-trail blobs.
@@ -388,6 +579,7 @@ export const sessionsStore = {
           worktreePath: input.worktreePath,
           ...(input.repoPath ? { repoPath: input.repoPath } : {}),
           touchedWorktrees,
+          ...(input.groupId ? { groupId: input.groupId } : {}),
         },
       ]
       void window.api.invoke('claude:spawn-agents', { id, worktreePath: input.launchDir })
@@ -406,10 +598,25 @@ export const sessionsStore = {
         worktreePath: input.worktreePath,
         ...(input.repoPath ? { repoPath: input.repoPath } : {}),
         touchedWorktrees,
+        ...(input.groupId ? { groupId: input.groupId } : {}),
         pendingResume: { sessionId: input.sessionId },
       },
     ]
     return id
+  },
+
+  /** Seed group definitions from a restored blob (before sessions are added). */
+  restoreGroups(groups: SessionGroup[]): void {
+    _groups = groups.map((g) => ({ ...g }))
+  },
+
+  /**
+   * After hydration, normalize order and drop any group that ended up with <2
+   * members (e.g. members that were plain terminals, which aren't persisted).
+   */
+  finalizeRestoredGroups(): void {
+    normalizeGroups()
+    for (const g of [..._groups]) dissolveIfOrphaned(g.id)
   },
 
   /** Reset everything (switching repos). */
@@ -418,6 +625,8 @@ export const sessionsStore = {
     forkErrorDismissTimers.clear()
     _sessions = []
     _activeId = null
+    _groups = []
+    _pendingFocusId = null
     _visitedIds = []
     nextClaudeIndex = 1
     nextAgentsIndex = 1
