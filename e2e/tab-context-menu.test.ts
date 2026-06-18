@@ -347,12 +347,10 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     const menu = window.getByRole('menu').first()
     await expect(menu).toBeVisible()
 
-    // Menu order: Fork, Rename, Close. Post-#102 Fork is enabled (session-id
-    // captured synchronously at spawn) and post-gate-removal it's always
-    // visible, so initial focus lands on Fork. ArrowDown → Rename. ArrowDown
-    // → Close. Enter activates Close.
-    await window.keyboard.press('ArrowDown')
-    await window.keyboard.press('ArrowDown')
+    // Close is always the last menu item (after a separator); initial focus is
+    // on the first item (Fork), so ArrowUp wraps to Close regardless of any
+    // grouping items in between. Enter activates it.
+    await window.keyboard.press('ArrowUp')
     await window.keyboard.press('Enter')
 
     await expect(window.locator('[role="option"]:has-text("Claude 2")')).toHaveCount(0, { timeout: 5_000 })
