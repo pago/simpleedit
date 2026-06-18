@@ -1,5 +1,11 @@
 # simpleedit
 
+## 0.17.0
+
+### Minor Changes
+
+- [#142](https://github.com/pago/simpleedit/pull/142) [`1c9fd4a`](https://github.com/pago/simpleedit/commit/1c9fd4a7d04e0e62ca9565ebee8bc5144551aa0f) Thanks [@pago](https://github.com/pago)! - Sessions panel: drag to reorder sessions, gather them into named, collapsible groups (Edge-style — drag and dwell over a session's center to group, or use the context menu), and create a new Claude session from the keyboard with ⌘T (focusing its terminal). Group membership and order persist across restarts.
+
 ## 0.16.0
 
 ### Minor Changes
