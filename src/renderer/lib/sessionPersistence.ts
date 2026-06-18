@@ -8,6 +8,7 @@
  */
 import type {
   SerializedAgentSession,
+  SerializedGroup,
   SerializedSession,
   SerializedTab,
 } from '../../shared/ipc-types'
@@ -15,7 +16,7 @@ import { worktreeList, projectRoot, refreshWorktreesFor } from '../stores/worktr
 import { sessionsStore } from '../stores/sessions.svelte'
 import { tabsStore, type Tab } from '../stores/tabsStore.svelte'
 
-const SAVE_VERSION = 2
+const SAVE_VERSION = 3
 
 function serializeTab(tab: Tab): SerializedTab | null {
   switch (tab.kind) {
@@ -83,11 +84,21 @@ export function serializeSession(repoPath: string): SerializedSession {
       ...(session.touchedWorktrees.length > 0
         ? { touchedWorktrees: [...session.touchedWorktrees] }
         : {}),
+      ...(session.groupId ? { groupId: session.groupId } : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
       unread,
     })
   }
+
+  // Persist only groups that still have a persisted member — terminals (and
+  // other unpersisted entries) are skipped above, so a terminals-only group
+  // would dangle.
+  const persistedGroupIds = new Set(sessions.map((s) => s.groupId).filter(Boolean))
+  const groups: SerializedGroup[] = sessionsStore
+    .groups()
+    .filter((g) => persistedGroupIds.has(g.id))
+    .map((g) => ({ id: g.id, name: g.name, color: g.color, collapsed: g.collapsed }))
 
   return {
     version: SAVE_VERSION,
@@ -95,6 +106,7 @@ export function serializeSession(repoPath: string): SerializedSession {
     savedAt: new Date().toISOString(),
     sessions,
     activeIndex,
+    ...(groups.length > 0 ? { groups } : {}),
   }
 }
 
@@ -139,6 +151,10 @@ export function hydrateSession(session: SerializedSession): {
   let restored = 0
   let dropped = 0
   let activeNewId: string | null = null
+
+  // Seed group definitions before sessions so addRestoredSession can attach
+  // each entry to its group; stub groups are pruned in finalize below.
+  sessionsStore.restoreGroups(session.groups ?? [])
   // Non-primary repos any restored session points at — load their worktrees so
   // the trail entries resolve to their repos in the picker (repoKeyForWorktree
   // needs the cache). Fire-and-forget; the pickers fill in reactively.
@@ -168,6 +184,7 @@ export function hydrateSession(session: SerializedSession): {
       ...(s.repoPath ? { repoPath: s.repoPath } : {}),
       ...(s.touchedWorktrees ? { touchedWorktrees: s.touchedWorktrees } : {}),
       ...(s.sessionId ? { sessionId: s.sessionId } : {}),
+      ...(s.groupId ? { groupId: s.groupId } : {}),
     })
     if (s.repoPath) trailRepos.add(s.repoPath)
     if (!newId) {
@@ -194,6 +211,10 @@ export function hydrateSession(session: SerializedSession): {
 
     if (session.activeIndex === index) activeNewId = newId
   })
+
+  // Restore order + drop groups that lost too many members (e.g. all-terminal
+  // groups, which aren't persisted).
+  sessionsStore.finalizeRestoredGroups()
 
   if (activeNewId) sessionsStore.select(activeNewId)
 

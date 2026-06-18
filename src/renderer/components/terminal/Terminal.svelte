@@ -3,6 +3,7 @@
   import { FitAddon } from '@xterm/addon-fit'
   import { WebLinksAddon } from '@xterm/addon-web-links'
   import '@xterm/xterm/css/xterm.css'
+  import { sessionsStore } from '../../stores/sessions.svelte'
 
   interface Props {
     terminalId: string
@@ -286,6 +287,12 @@
           term.scrollToBottom()
         } else if (savedViewportY !== undefined) {
           term.scrollToLine(savedViewportY)
+        }
+        // Honor a keyboard "new session" focus request once this terminal is
+        // mounted and visible (the session id doubles as the terminal id).
+        if (sessionsStore.pendingFocusId() === terminalId) {
+          term.focus()
+          sessionsStore.consumeFocusRequest(terminalId)
         }
       })
     } else {

@@ -4,7 +4,7 @@
   import WorkspaceManager from './components/layout/WorkspaceManager.svelte'
   import Welcome from './components/Welcome.svelte'
   import CommandPalette from './components/command-palette/CommandPalette.svelte'
-  import { refreshWorktrees, setProjectRoot } from './stores/worktrees.svelte'
+  import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initClaudeStatusListeners } from './stores/claude-status.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
@@ -109,6 +109,24 @@
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
       e.preventDefault()
       togglePalette()
+      return
+    }
+    // ⌘T / Ctrl+T — new Claude session, focusing its terminal. Fires even while
+    // a terminal is focused (the common case); xterm's helper textarea is
+    // exempt from the text-field guard so the shortcut still reaches us there.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName
+      const inTextField =
+        (tag === 'INPUT' || tag === 'TEXTAREA') &&
+        !target?.classList.contains('xterm-helper-textarea')
+      if (inTextField) return
+      const wt = mainWorktree()
+      const root = projectRoot() ?? wt?.path
+      if (!root || !wt) return
+      e.preventDefault()
+      const id = sessionsStore.createClaude(root, wt.path)
+      sessionsStore.requestTerminalFocus(id)
     }
   }
 
