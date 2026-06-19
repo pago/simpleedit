@@ -12,7 +12,7 @@
  * both sides before comparing.
  */
 import { realpathSync } from 'fs'
-import { sep } from 'path'
+import { isAbsolute, sep } from 'path'
 import { simpleGit } from 'simple-git'
 import type { WorktreeInfo } from '../shared/ipc-types'
 
@@ -20,12 +20,36 @@ import type { WorktreeInfo } from '../shared/ipc-types'
 export interface HookSignal {
   sessionId: string
   cwd: string
+  /**
+   * Absolute path of a file the tool touched, when this is a `PostToolUse`
+   * event for a file tool (Read/Write/Edit/MultiEdit/NotebookEdit). The agent
+   * can read or edit a file in a sibling repo WITHOUT `cd`-ing there, so `cwd`
+   * alone never reveals that repo — this is the only signal that does. Null for
+   * non-file events (UserPromptSubmit, Bash, …) or relative paths.
+   */
+  filePath: string | null
+}
+
+/**
+ * Pull the touched file path out of a tool's input. Read/Write/Edit/MultiEdit
+ * use `file_path`; NotebookEdit uses `notebook_path`. Only absolute paths are
+ * usable — we resolve them to a repo via git, which needs a real location, and
+ * a relative path would resolve against the wrong (bridge) cwd.
+ */
+function parseToolFilePath(toolInput: unknown): string | null {
+  if (typeof toolInput !== 'object' || toolInput === null) return null
+  const rec = toolInput as Record<string, unknown>
+  const raw = rec['file_path'] ?? rec['notebook_path']
+  if (typeof raw !== 'string' || !raw || !isAbsolute(raw)) return null
+  return raw
 }
 
 /**
  * Extract the location signal from a hook event body. Hooks fire for many
  * event types (PostToolUse, UserPromptSubmit, …); every one carries
- * `session_id` + `cwd`, which is all we need — we ignore the event kind.
+ * `session_id` + `cwd`. `PostToolUse` events for file tools also carry the
+ * touched `file_path` under `tool_input`, which we surface so a cross-repo file
+ * touch (not just a `cd`) puts that repo on the session's trail.
  */
 export function parseHookBody(body: unknown): HookSignal | null {
   if (typeof body !== 'object' || body === null) return null
@@ -34,7 +58,7 @@ export function parseHookBody(body: unknown): HookSignal | null {
   const cwd = rec['cwd']
   if (typeof sessionId !== 'string' || !sessionId) return null
   if (typeof cwd !== 'string' || !cwd) return null
-  return { sessionId, cwd }
+  return { sessionId, cwd, filePath: parseToolFilePath(rec['tool_input']) }
 }
 
 /** realpath that degrades to the input when the path doesn't resolve. */

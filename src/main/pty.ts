@@ -120,10 +120,13 @@ function cleanupMcpConfig(terminalId: string): void {
  * Write a Claude settings file wiring location-tracking hooks to the bridge.
  * Verified on CLI 2.1.175 (Stage 2 Part A): `--settings <path>` accepts a
  * `hooks` config; `type: "http"` hooks POST the hook input JSON (carrying
- * `session_id` + `cwd`) to `url`. We point both UserPromptSubmit (cheap, fires
- * on every turn) and PostToolUse (catches cwd moves from Bash `cd`/worktree
- * tools mid-turn) at the bridge's `/<token>/hooks` endpoint — the token in the
- * path authenticates the same way the MCP tool-call route does.
+ * `session_id`, `cwd`, and — on `PostToolUse` — `tool_input`) to `url`. We
+ * point both UserPromptSubmit (cheap, fires on every turn) and PostToolUse at
+ * the bridge's `/<token>/hooks` endpoint — the token in the path authenticates
+ * the same way the MCP tool-call route does. PostToolUse earns its keep twice:
+ * it catches cwd moves (Bash `cd`/worktree tools) AND the `file_path` of a file
+ * the agent read/edited in a sibling repo it never `cd`'d into (see
+ * cwd-tracker's parseHookBody / mcp-bridge's handleHook).
  */
 function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: string): string {
   const settingsPath = join(tmpdir(), `simpleedit-hooks-${terminalId}.json`)

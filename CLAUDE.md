@@ -69,6 +69,29 @@ line, tries `JSON.parse`, and emits:
 The "Ask Claude" bar in the diff review sends contextual questions (with commit/file
 info) directly to the Claude terminal's PTY input.
 
+### Session location & repo trail (hook-based)
+Each spawned Claude session is launched with a `--settings` file (`pty.ts`
+`writeHookSettings`) wiring `UserPromptSubmit` + `PostToolUse` HTTP hooks to the
+per-window bridge's `/<token>/hooks` endpoint. `mcp-bridge.ts` `handleHook`
+parses the body (`cwd-tracker.ts` `parseHookBody`) and drives the session's
+"touched repos" trail — which feeds the **repo picker dropdown**
+(`RepoPicker.svelte` → `touchedReposForSession`) and the worktree picker.
+
+Two distinct signals, do not conflate them:
+- **`cwd`** — where the agent *is*. Only changes on Bash `cd` / worktree tools.
+  Emits `claude:cwd`, which records the touch **and** repoints the workspace
+  view (when the viewer is closed).
+- **`tool_input.file_path`** (on `PostToolUse`) — a file the agent *read or
+  edited*, which can live in a **sibling repo the cwd never entered** (Read/Edit
+  /Write take an absolute path; they don't move the cwd). Emits
+  `claude:repo-touch`, which records the touch **only** — a glance at another
+  repo must not yank the user's view.
+
+A repo the window never opened is resolved on demand (`resolveBareRepo` →
+`git rev-parse --git-common-dir`) and registered for the window. Gotcha: if you
+only track `cwd`, cross-repo file reads/edits silently never appear in the
+picker — that was the original bug (`e2e/session-repo-trail.test.ts`).
+
 ### Diff review flow
 GitLog sidebar → click commit → `diffReviewStore` → WorktreePane shows DiffReview.
 DiffReview uses Monaco's `createDiffEditor` for inline diffs. "Uncommitted changes"

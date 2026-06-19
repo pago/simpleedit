@@ -389,6 +389,63 @@ describe('MCP Bridge — location-tracking hooks', () => {
     })
   })
 
+  it('records a cross-repo file touch as claude:repo-touch (agent read/edited without cd)', async () => {
+    // cwd stays in the opened repo (/repo/feature), but the agent edited a file
+    // in a sibling repo it never cd'd into. The discoverer resolves the sibling
+    // from the file's directory; we emit a repo-touch so it joins the trail.
+    registerSession('sess-h', 'hook-term')
+    setRepoDiscoverer(async (_id, location) => {
+      if (!location.startsWith('/other-repo')) return null
+      return { repoPath: '/other-repo/.bare', worktrees: wtList('/other-repo/backend') }
+    })
+    await postHook({
+      session_id: 'sess-h',
+      cwd: '/repo/feature/src',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/other-repo/backend/src/app.ts' },
+    })
+    // cwd still resolves to the opened worktree (view-following signal)...
+    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+      terminalId: 'hook-term',
+      cwd: '/repo/feature/src',
+      worktreePath: '/repo/feature',
+      repoPath: null,
+    })
+    // ...and the touched file surfaces the sibling repo (trail-only signal).
+    expect(wc.send).toHaveBeenCalledWith('claude:repo-touch', {
+      terminalId: 'hook-term',
+      worktreePath: '/other-repo/backend',
+      repoPath: '/other-repo/.bare',
+    })
+  })
+
+  it('does not emit claude:repo-touch when the touched file is in the cwd worktree', async () => {
+    registerSession('sess-h', 'hook-term')
+    await postHook({
+      session_id: 'sess-h',
+      cwd: '/repo/feature',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: '/repo/feature/src/app.ts' },
+    })
+    const touchCalls = wc.send.mock.calls.filter((c: unknown[]) => c[0] === 'claude:repo-touch')
+    expect(touchCalls).toHaveLength(0)
+  })
+
+  it('does not emit claude:repo-touch for a non-file hook (no file_path)', async () => {
+    registerSession('sess-h', 'hook-term')
+    await postHook({
+      session_id: 'sess-h',
+      cwd: '/repo/feature',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    })
+    const touchCalls = wc.send.mock.calls.filter((c: unknown[]) => c[0] === 'claude:repo-touch')
+    expect(touchCalls).toHaveLength(0)
+  })
+
   it('still returns 200 (and emits nothing) for an unregistered session', async () => {
     const status = await postHook({ session_id: 'unknown', cwd: '/repo/main' })
     expect(status).toBe(200)
