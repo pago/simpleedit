@@ -1,5 +1,11 @@
 # simpleedit
 
+## 0.17.1
+
+### Patch Changes
+
+- [#144](https://github.com/pago/simpleedit/pull/144) [`7eee0df`](https://github.com/pago/simpleedit/commit/7eee0df30321dbb39cef91845d56017709b9f075) Thanks [@pago](https://github.com/pago)! - Fix: a repo the agent only **reads or edits a file in** (without `cd`-ing there) now appears in the session's repo picker. Repo tracking previously keyed solely off the hook `cwd`, which a Read/Edit/Write never moves, so sibling repos stayed invisible. `PostToolUse` now also resolves the touched `file_path` to its repo and records it on the trail — without repointing the workspace view.
+
 ## 0.17.0
 
 ### Minor Changes
