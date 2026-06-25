@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from 'child_process'
 import { execSync, type ExecSyncOptions } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node.js'
+import { StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node'
 import type { WebContents } from 'electron'
 import type { JsonRpcMessage } from '../shared/ipc-types'
 
