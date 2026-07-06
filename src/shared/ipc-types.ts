@@ -379,6 +379,86 @@ export interface SessionInvokeMap {
   'session:clear': { args: [repoPath: string]; result: void }
 }
 
+// ── Models (local Ollama + cloud Claude) ──────────────────
+/**
+ * Which brain a session runs against. `anthropic` uses normal cloud auth (no
+ * env override); `ollama` points the harness at a local endpoint (defaults to
+ * http://localhost:11434 when `endpoint` is absent).
+ */
+export type ModelRef =
+  | { provider: 'anthropic'; model: string }
+  | { provider: 'ollama'; model: string; endpoint?: string }
+
+/** How well a model is expected to run on the current machine (see computeFit). */
+export type ModelFit = 'fits' | 'marginal' | 'too-big'
+
+/**
+ * A model surfaced in the management UI. Covers both installed Ollama models
+ * and curated recommendations; `installed` disambiguates. `minRamBytes` is an
+ * estimate (params × bytes-per-param + context overhead) and may be absent when
+ * we can't infer the parameter size.
+ */
+export interface ModelDescriptor {
+  name: string
+  paramSize?: string
+  quantization?: string
+  minRamBytes?: number
+  fit: ModelFit
+  installed: boolean
+  toolCapable: boolean
+}
+
+/** A curated, not-necessarily-installed recommendation with display metadata. */
+export interface RecommendedModel extends ModelDescriptor {
+  label: string
+  notes?: string
+}
+
+/** Machine profile used to size recommendations. */
+export interface HardwareInfo {
+  totalRamBytes: number
+  chip: string
+  platform: string
+}
+
+/** Bounded features (plus interactive spawn) each get a per-feature default. */
+export type ModelFeatureKey = 'review' | 'tour' | 'screenPrs' | 'interactive'
+
+/** Persisted model preferences (userData/config/models.json). */
+export interface ModelConfig {
+  /** Per-feature default model. */
+  defaults: Partial<Record<ModelFeatureKey, ModelRef>>
+  /** Model names allowed to appear in the quick ✦ submenu. */
+  submenuAllowlist: string[]
+  /** The last model a session was launched against. */
+  lastUsed?: ModelRef
+}
+
+/** One NDJSON progress line from `POST /api/pull`, forwarded to the renderer. */
+export interface ModelPullProgress {
+  name: string
+  status: string
+  completed?: number
+  total?: number
+}
+
+export interface ModelsInvokeMap {
+  /** Is Ollama reachable? Gates the whole local-model UI. */
+  'models:available': { args: []; result: boolean }
+  /** Installed Ollama models ∩ tool-capable, annotated with hardware fit. */
+  'models:installed': { args: []; result: ModelDescriptor[] }
+  /** Curated recommendations minus what's installed, annotated with fit. */
+  'models:recommended': { args: []; result: RecommendedModel[] }
+  /** Start a pull; streams `models:pull-progress`, resolves on completion. */
+  'models:pull': { args: [name: string]; result: void }
+  'models:config-get': { args: []; result: ModelConfig }
+  'models:config-set': { args: [partial: Partial<ModelConfig>]; result: ModelConfig }
+}
+
+export interface ModelsEventMap {
+  'models:pull-progress': ModelPullProgress
+}
+
 // ── App-level ─────────────────────────────────────────────
 export interface RecentRepo {
   path: string
@@ -480,7 +560,8 @@ export type InvokeMap = WorktreeInvokeMap &
   TourInvokeMap &
   LspInvokeMap &
   SessionInvokeMap &
-  UpdateInvokeMap
+  UpdateInvokeMap &
+  ModelsInvokeMap
 
 export type SendMap = LspSendMap
 
@@ -493,4 +574,5 @@ export type EventMap = WorktreeEventMap &
   LspEventMap &
   AgentPanelEventMap &
   UpdateEventMap &
-  EditorEventMap
+  EditorEventMap &
+  ModelsEventMap

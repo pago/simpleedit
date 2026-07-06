@@ -39,10 +39,18 @@ import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeReso
 import { resolveBareRepo } from './cwd-tracker'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
+import {
+  isAvailable as isOllamaAvailable,
+  pull as pullModel,
+  listInstalledModels,
+  listRecommendedModels,
+  getModelConfig,
+  setModelConfig
+} from './models'
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig } from '../shared/ipc-types'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -488,6 +496,41 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('tour:save-overview', (_event, worktreePath: string, commitHash: string | null, overview: string) => {
     saveOverview(worktreePath, commitHash, overview)
+  })
+
+  // ── Models (local Ollama + cloud Claude) ────────────────
+  ipcMain.handle('models:available', () => {
+    return isOllamaAvailable()
+  })
+
+  ipcMain.handle('models:installed', () => {
+    return listInstalledModels()
+  })
+
+  ipcMain.handle('models:recommended', () => {
+    return listRecommendedModels()
+  })
+
+  ipcMain.handle('models:pull', async (event, name: string) => {
+    const wc = event.sender
+    await pullModel(name, (p) => {
+      if (!wc.isDestroyed()) {
+        wc.send('models:pull-progress', {
+          name,
+          status: p.status,
+          completed: p.completed,
+          total: p.total
+        })
+      }
+    })
+  })
+
+  ipcMain.handle('models:config-get', () => {
+    return getModelConfig()
+  })
+
+  ipcMain.handle('models:config-set', (_event, partial: Partial<ModelConfig>) => {
+    return setModelConfig(partial)
   })
 
   // ── LSP ─────────────────────────────────────────────────
