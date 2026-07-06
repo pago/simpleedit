@@ -8,6 +8,7 @@
  * `pty:*` / `claude:*` IPC routes work unchanged.
  */
 import { untrack } from 'svelte'
+import type { ModelRef } from '../../shared/ipc-types'
 import { clearClaudeStatusForTerminal } from './claude-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -78,6 +79,11 @@ export interface Session {
   viewerOpen?: boolean
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
   claudeSessionId?: string
+  /**
+   * The brain this session was launched against (cloud Claude or local Ollama).
+   * Absent = cloud default. Resume/fork re-applying this is a deferred follow-up.
+   */
+  model?: ModelRef
   /** Restored-from-disk placeholder: no live PTY until the user clicks Resume. */
   pendingResume?: { sessionId: string }
   /** Fork-in-flight placeholder until the new PTY emits its first byte. */
@@ -231,11 +237,23 @@ export const sessionsStore = {
   createClaude(
     launchDir: string,
     worktreePath: string,
-    opts: { resumeSessionId?: string } = {},
+    opts: { resumeSessionId?: string; model?: ModelRef } = {},
   ): string {
     const id = `claude-${crypto.randomUUID()}`
+    const model = opts.model
     _sessions = [
-      { id, kind: 'claude', provider: 'claude', label: defaultLabel('claude'), launchDir, worktreePath, touchedWorktrees: [worktreePath] },
+      {
+        id,
+        kind: 'claude',
+        provider: 'claude',
+        // A picked model names the session (and pins the label so OSC titles
+        // don't overwrite it); the plain cloud default keeps "Claude N".
+        label: model ? model.model : defaultLabel('claude'),
+        ...(model ? { customLabel: true as const, model } : {}),
+        launchDir,
+        worktreePath,
+        touchedWorktrees: [worktreePath],
+      },
       ..._sessions,
     ]
     select(id)
@@ -243,7 +261,20 @@ export const sessionsStore = {
       id,
       worktreePath: launchDir,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
+      ...(model ? { model } : {}),
     })
+    // For cloud Claude, upgrade the raw model id to its human display name once
+    // the (static) catalog resolves — best-effort, leaves the id if not found.
+    if (model?.provider === 'anthropic') {
+      const anthropicModel = model.model
+      void window.api
+        .invoke('models:claude')
+        .then((catalog) => {
+          const match = catalog.find((m) => m.model === anthropicModel)
+          if (match) sessionsStore.update(id, { label: match.displayName })
+        })
+        .catch(() => {})
+    }
     return id
   },
 

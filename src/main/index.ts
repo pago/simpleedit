@@ -52,7 +52,7 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions } from '../shared/ipc-types'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -450,7 +450,7 @@ function registerAllHandlers(): void {
   })
 
   // ── Claude stream ───────────────────────────────────────
-  ipcMain.handle('claude:spawn', (event, options: PtySpawnOptions) => {
+  ipcMain.handle('claude:spawn', (event, options: ClaudeSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
     spawnClaudeTerminal(
       {

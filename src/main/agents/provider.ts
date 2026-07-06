@@ -6,7 +6,7 @@
  * provider — see `claude.ts`, which self-registers on import.
  */
 import type { WebContents } from 'electron'
-import type { ClaudeStatus, ClaudeForkOptions } from '../../shared/ipc-types'
+import type { ClaudeStatus, ClaudeForkOptions, ModelRef } from '../../shared/ipc-types'
 
 /** Inputs for a fresh (or resumed) agent launch. */
 export interface LaunchContext {
@@ -15,6 +15,12 @@ export interface LaunchContext {
   resumeSessionId?: string
   bridgePort?: number
   bridgeToken?: string
+  /**
+   * Which brain to run against (fresh-spawn only). `ollama` prefixes the
+   * ANTHROPIC_BASE_URL env override inline on the command; `anthropic` just
+   * adds `--model` and keeps normal cloud auth. Absent = cloud default.
+   */
+  model?: ModelRef
 }
 
 /**

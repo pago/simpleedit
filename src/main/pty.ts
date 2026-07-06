@@ -223,7 +223,7 @@ export function spawnClaudeTerminal(
   options: ClaudeSpawnOptions,
   webContents: WebContents
 ): void {
-  const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId } = options
+  const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, model } = options
 
   if (terminals.has(id)) return
   if (!guardCwd(id, worktreePath, webContents)) return
@@ -234,6 +234,7 @@ export function spawnClaudeTerminal(
     ...(resumeSessionId ? { resumeSessionId } : {}),
     ...(bridgePort != null ? { bridgePort } : {}),
     ...(bridgeToken != null ? { bridgeToken } : {}),
+    ...(model ? { model } : {}),
   })
 
   spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: true, clearStatusOnExit: true }, webContents)

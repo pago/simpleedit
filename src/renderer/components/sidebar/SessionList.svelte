@@ -3,6 +3,7 @@
   import ForkWorktreePicker, { type ForkTarget } from '../terminal/ForkWorktreePicker.svelte'
   import PromptModal from '../PromptModal.svelte'
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
+  import type { ModelRef } from '../../../shared/ipc-types'
   import { getClaudeStatusForTerminal } from '../../stores/claude-status.svelte'
   import { worktreeList, refreshWorktrees, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
@@ -72,23 +73,86 @@
     if (wt) sessionsStore.createTerminal(wt.path)
   }
 
-  // ── new-session menu (✦ button: claude vs agent view) ────────────────────
+  // ── new-session menu (✦ button: claude / agent view / allowlisted models) ──
   let newMenu: { x: number; y: number } | null = $state(null)
   let newButtonEl: HTMLButtonElement | undefined = $state()
 
-  const newMenuItems: ContextMenuItem[] = [
+  const NEW_MENU_DEFAULTS: ContextMenuItem[] = [
     { id: 'new-claude', label: 'New Claude session' },
     { id: 'new-agents', label: 'New Agent View session' },
   ]
 
-  function pickNewMenuItem(id: string): void {
-    if (id === 'new-claude') startClaude()
-    else if (id === 'new-agents') startAgents()
+  let newMenuItems: ContextMenuItem[] = $state(NEW_MENU_DEFAULTS)
+  /** key (allowlist entry) → ModelRef for the current menu; rebuilt on open. */
+  let modelMenuRefs: Map<string, ModelRef> = $state(new Map())
+
+  /**
+   * Resolve the persisted submenu allowlist against the live catalogs into
+   * "start a session with model X" entries. A Claude catalog entry's key is its
+   * anthropic model id; an installed Ollama model's key is its name (only
+   * tool-capable ones — review-only models can't drive the interactive agent).
+   * Keys that no longer resolve (uninstalled / dropped from the catalog) are
+   * skipped. Falls back to just the two defaults if the fetches fail.
+   */
+  async function buildNewMenu(): Promise<void> {
+    try {
+      const [config, claudeModels, installed] = await Promise.all([
+        window.api.invoke('models:config-get'),
+        window.api.invoke('models:claude'),
+        window.api.invoke('models:installed'),
+      ])
+
+      const resolver = new Map<string, { ref: ModelRef; label: string }>()
+      for (const m of claudeModels) {
+        resolver.set(m.model, { ref: { provider: 'anthropic', model: m.model }, label: m.displayName })
+      }
+      for (const m of installed) {
+        if (!m.toolCapable) continue
+        resolver.set(m.name, { ref: { provider: 'ollama', model: m.name }, label: m.name })
+      }
+
+      const refs = new Map<string, ModelRef>()
+      const resolved = config.submenuAllowlist.flatMap((key) => {
+        const hit = resolver.get(key)
+        if (!hit) return []
+        refs.set(key, hit.ref)
+        return [{ key, label: hit.label }]
+      })
+
+      modelMenuRefs = refs
+      newMenuItems = [
+        ...NEW_MENU_DEFAULTS,
+        ...resolved.map((m, i) => ({
+          id: `model:${m.key}`,
+          label: `New session · ${m.label}`,
+          separatorBefore: i === 0,
+        })),
+      ]
+    } catch {
+      modelMenuRefs = new Map()
+      newMenuItems = NEW_MENU_DEFAULTS
+    }
   }
 
-  function openNewMenuAtPointer(e: MouseEvent): void {
+  function pickNewMenuItem(id: string): void {
+    if (id === 'new-claude') {
+      startClaude()
+    } else if (id === 'new-agents') {
+      startAgents()
+    } else if (id.startsWith('model:')) {
+      const ref = modelMenuRefs.get(id.slice('model:'.length))
+      if (!ref) return
+      const wt = mainWorktree()
+      const root = projectRoot() ?? wt?.path
+      if (root && wt) sessionsStore.createClaude(root, wt.path, { model: ref })
+    }
+  }
+
+  async function openNewMenuAtPointer(e: MouseEvent): Promise<void> {
     e.preventDefault()
-    newMenu = { x: e.clientX, y: e.clientY }
+    const { clientX: x, clientY: y } = e
+    await buildNewMenu()
+    newMenu = { x, y }
   }
 
   // ── per-session context menu / rename / fork ─────────────────────────────

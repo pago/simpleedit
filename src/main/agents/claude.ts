@@ -143,9 +143,21 @@ function makeCleanup(terminalId: string): () => void {
  * reuses the resumed id directly.
  */
 function buildLaunch(ctx: LaunchContext): LaunchPlan {
-  const { terminalId, resumeSessionId, bridgePort, bridgeToken } = ctx
+  const { terminalId, resumeSessionId, bridgePort, bridgeToken, model } = ctx
 
   let command = 'claude'
+  // Only `ollama` swaps the brain via an inline env override. It is prefixed
+  // INLINE on the command string (not the pty env object) so a login shell's
+  // ~/.zshrc can't clobber ANTHROPIC_BASE_URL/API_KEY after the env is set.
+  // Both endpoint and model land in a shell `-c` string, so validate before
+  // interpolating — treat them as injection surface.
+  if (model?.provider === 'ollama') {
+    const endpoint = model.endpoint ?? 'http://localhost:11434'
+    if (!/^https?:\/\/[A-Za-z0-9._:-]+(?:\/[A-Za-z0-9._~/-]*)?$/.test(endpoint)) {
+      throw new Error(`Invalid Ollama endpoint: ${endpoint}`)
+    }
+    command = `ANTHROPIC_BASE_URL=${endpoint} ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= claude`
+  }
 
   let sessionId: string
   let sessionFlag: string
@@ -161,6 +173,11 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   // session_id → terminalId mapping so hook POSTs route back here.
   command += buildBridgeFlags(terminalId, sessionId, bridgePort, bridgeToken)
   command += sessionFlag
+
+  if (model?.model) {
+    if (!/^[A-Za-z0-9._:/-]+$/.test(model.model)) throw new Error(`Invalid model id: ${model.model}`)
+    command += ` --model ${model.model}`
+  }
 
   return { command, sessionId, cleanup: makeCleanup(terminalId) }
 }

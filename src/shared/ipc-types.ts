@@ -138,6 +138,12 @@ export type ClaudeStatus = 'idle' | 'running' | 'waiting' | 'error'
 export interface ClaudeSpawnOptions extends PtySpawnOptions {
   /** When set, claude is launched with `--resume <id>` to restore a prior session. */
   resumeSessionId?: string
+  /**
+   * Which brain to launch against (fresh spawn only). `ollama` points the
+   * harness at a local endpoint via an inline env override; `anthropic` adds
+   * `--model` with normal cloud auth. Absent = cloud default.
+   */
+  model?: ModelRef
 }
 
 export interface ClaudeInvokeMap {
