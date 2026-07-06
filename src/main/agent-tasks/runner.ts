@@ -1,0 +1,278 @@
+/**
+ * Provider-agnostic execution layer for bounded tasks. A task assembles a
+ * prompt; a `Runner` turns it into a stream of validated result items. Two
+ * strategies share one interface:
+ *
+ * - `ClaudeCodeRunner` — spawns `claude --print --output-format stream-json …`,
+ *   the full harness (real file/LSP access). This is the current Review path,
+ *   lifted verbatim out of `review.ts`.
+ * - `DirectRunner` — POSTs straight to Ollama's **native** `/api/chat`, no
+ *   harness. Never the Anthropic-compat `/v1/messages` endpoint, which hangs
+ *   (Ollama #13949) — routing local tasks here is why they work at all.
+ *
+ * Both extract NDJSON result objects from the model's text with the same
+ * `json-scanner`, so a task's validator (`parse`) is reused unchanged.
+ */
+import { spawn } from 'child_process'
+import * as readline from 'readline'
+import type { ModelRef } from '../../shared/ipc-types'
+import { findJsonObjectEnd } from '../lib/json-scanner'
+import { resolveClaudePath } from '../lib/shell-path'
+import { chatStream, type ChatMessage } from '../models/ollama'
+
+const DEFAULT_NUM_CTX = 32768
+
+export interface RunRequest<Item> {
+  system: string
+  user: string
+  /**
+   * Validate one scanned JSON object into an Item, or return null to skip it.
+   * Stands in for the design's `schema: JSONSchema`: there is no schema-
+   * validation lib in play, and the existing Review path validates by hand, so
+   * the "schema" is carried as a validator reused across both runners.
+   */
+  parse: (obj: unknown) => Item | null
+  /** A chosen model. `anthropic` adds `--model`; `ollama` targets `/api/chat`. */
+  model?: ModelRef
+}
+
+export interface RunOptions {
+  signal?: AbortSignal
+}
+
+export interface Runner {
+  run<Item>(req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item>
+}
+
+/**
+ * Accumulate streamed model text and progressively extract complete JSON
+ * objects, validating each with `parse`. Handles both snapshot chunks (each a
+ * growing prefix of the whole response) and delta chunks (only the new text) —
+ * the same dual behaviour the inline Review parser relied on.
+ */
+function createFindingScanner<Item>(parse: (obj: unknown) => Item | null): (chunk: string) => Item[] {
+  let accumulated = ''
+  let scanPos = 0
+  return (chunk: string): Item[] => {
+    accumulated = chunk.startsWith(accumulated) ? chunk : accumulated + chunk
+    const items: Item[] = []
+    let pos = scanPos
+    while (pos < accumulated.length) {
+      const start = accumulated.indexOf('{', pos)
+      if (start === -1) break
+      const end = findJsonObjectEnd(accumulated, start)
+      if (end === -1) break // incomplete — wait for more text
+      const json = accumulated.slice(start, end + 1)
+      try {
+        const item = parse(JSON.parse(json) as unknown)
+        if (item !== null) items.push(item)
+      } catch {
+        /* not a complete/valid object */
+      }
+      scanPos = end + 1
+      pos = scanPos
+    }
+    return items
+  }
+}
+
+interface PushStream<T> {
+  push(item: T): void
+  close(): void
+  fail(err: unknown): void
+  iterable: AsyncIterable<T>
+}
+
+/**
+ * Bridge a callback/event source (a child process) into an `AsyncIterable`.
+ * Buffers items pushed before they're pulled, and surfaces `fail()` as a
+ * rejection once the buffer drains.
+ */
+function createPushStream<T>(): PushStream<T> {
+  const queue: T[] = []
+  let waiting: { resolve: (r: IteratorResult<T>) => void; reject: (e: unknown) => void } | null = null
+  let done = false
+  let failed = false
+  let failure: unknown
+
+  return {
+    push(item: T): void {
+      if (done) return
+      if (waiting) {
+        const w = waiting
+        waiting = null
+        w.resolve({ value: item, done: false })
+      } else {
+        queue.push(item)
+      }
+    },
+    close(): void {
+      if (done) return
+      done = true
+      if (waiting) {
+        const w = waiting
+        waiting = null
+        w.resolve({ value: undefined as never, done: true })
+      }
+    },
+    fail(err: unknown): void {
+      if (done) return
+      done = true
+      failed = true
+      failure = err
+      if (waiting) {
+        const w = waiting
+        waiting = null
+        w.reject(err)
+      }
+    },
+    iterable: {
+      [Symbol.asyncIterator](): AsyncIterator<T> {
+        return {
+          next(): Promise<IteratorResult<T>> {
+            if (queue.length > 0) return Promise.resolve({ value: queue.shift() as T, done: false })
+            if (failed) return Promise.reject(failure)
+            if (done) return Promise.resolve({ value: undefined as never, done: true })
+            return new Promise((resolve, reject) => {
+              waiting = { resolve, reject }
+            })
+          },
+        }
+      },
+    },
+  }
+}
+
+export interface ClaudeCodeRunnerOptions {
+  /** Working directory for the spawned harness (the worktree under review). */
+  cwd: string
+}
+
+/**
+ * Today's Review path: spawn `claude --print --output-format stream-json …`,
+ * pipe the user prompt to stdin, parse `stream_event`/`result` line by line,
+ * and extract NDJSON items. Behaviour-identical to the former inline `review.ts`
+ * flow when `req.system` is empty and no model is chosen.
+ */
+export class ClaudeCodeRunner implements Runner {
+  constructor(private readonly opts: ClaudeCodeRunnerOptions) {}
+
+  run<Item>(req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item> {
+    const stream = createPushStream<Item>()
+    void this.spawn(req, stream, opts)
+    return stream.iterable
+  }
+
+  private async spawn<Item>(req: RunRequest<Item>, stream: PushStream<Item>, opts?: RunOptions): Promise<void> {
+    let claudeBin: string
+    try {
+      claudeBin = await resolveClaudePath()
+    } catch (err) {
+      stream.fail(err)
+      return
+    }
+
+    const args = ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages']
+    if (req.model?.provider === 'anthropic' && req.model.model) args.push('--model', req.model.model)
+    if (req.system) args.push('--append-system-prompt', req.system)
+
+    const proc = spawn(claudeBin, args, {
+      cwd: this.opts.cwd,
+      env: process.env as Record<string, string>,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    const onAbort = (): void => {
+      try {
+        proc.kill()
+      } catch {
+        /* already dead */
+      }
+    }
+    if (opts?.signal) {
+      if (opts.signal.aborted) onAbort()
+      else opts.signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    proc.stdin.write(req.user, 'utf8')
+    proc.stdin.end()
+
+    const scan = createFindingScanner<Item>(req.parse)
+
+    const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
+    rl.on('line', (line) => {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('{')) return
+      try {
+        const ev = JSON.parse(trimmed) as Record<string, unknown>
+        // Each stream_event carries a growing snapshot of the assistant text.
+        if (ev['type'] === 'stream_event') {
+          const inner = ev['event'] as Record<string, unknown> | undefined
+          if (inner?.['type'] === 'content_block_delta') {
+            const delta = inner['delta'] as Record<string, unknown> | undefined
+            if (delta?.['type'] === 'text_delta' && typeof delta['text'] === 'string' && delta['text']) {
+              for (const item of scan(delta['text'] as string)) stream.push(item)
+            }
+          }
+        }
+        // Final result — catches anything not yet scanned.
+        if (ev['type'] === 'result' && typeof ev['result'] === 'string') {
+          for (const item of scan(ev['result'] as string)) stream.push(item)
+        }
+      } catch {
+        /* non-event line */
+      }
+    })
+
+    let stderrBuf = ''
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString()
+    })
+
+    proc.on('close', (code) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      if (stderrBuf) console.error('[runner] claude stderr:', stderrBuf.slice(0, 500))
+      if (code === 0) stream.close()
+      else stream.fail(new Error(`claude exited with code ${code}`))
+    })
+
+    proc.on('error', (err: Error) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      stream.fail(err)
+    })
+  }
+}
+
+/**
+ * Harness-free path for local models: stream Ollama's **native** `/api/chat`
+ * and extract NDJSON items with the same scanner. Refuses any non-Ollama model
+ * — the Anthropic-compat endpoint hangs (Ollama #13949), so we never touch it.
+ */
+export class DirectRunner implements Runner {
+  async *run<Item>(req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item> {
+    const model = req.model
+    if (!model || model.provider !== 'ollama') {
+      throw new Error('DirectRunner requires an Ollama model (native /api/chat); refusing to run')
+    }
+
+    const messages: ChatMessage[] = req.system
+      ? [
+          { role: 'system', content: req.system },
+          { role: 'user', content: req.user },
+        ]
+      : [{ role: 'user', content: req.user }]
+
+    const scan = createFindingScanner<Item>(req.parse)
+    for await (const chunk of chatStream({
+      model: model.model,
+      messages,
+      endpoint: model.endpoint,
+      numCtx: DEFAULT_NUM_CTX,
+      signal: opts?.signal,
+    })) {
+      for (const item of scan(chunk)) yield item
+    }
+  }
+}

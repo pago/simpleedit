@@ -118,6 +118,58 @@ async function* streamLines(res: Response): AsyncGenerator<string> {
   if (last) yield last
 }
 
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatStreamOptions {
+  model: string
+  messages: ChatMessage[]
+  /**
+   * Context window. Ollama defaults to 4096, which silently truncates a review
+   * diff; bounded tasks pass something generous (e.g. 32768).
+   */
+  numCtx?: number
+  endpoint?: string
+  signal?: AbortSignal
+}
+
+/**
+ * POST /api/chat with `stream: true`, yielding the assistant message `content`
+ * as it streams. This is Ollama's **native** endpoint — never the Anthropic-compat
+ * `/v1/messages`, which hangs after Claude Code's `count_tokens` probe (Ollama
+ * #13949) and is the whole reason local bounded tasks route through here.
+ *
+ * Reasoning models (e.g. gpt-oss) emit their chain-of-thought in a separate
+ * `message.thinking`/`message.reasoning` field; we deliberately ignore it and
+ * yield only `content`, which carries the answer (here, the NDJSON findings).
+ */
+export async function* chatStream(o: ChatStreamOptions): AsyncGenerator<string> {
+  const body = {
+    model: o.model,
+    messages: o.messages,
+    stream: true,
+    options: { num_ctx: o.numCtx ?? 32768 },
+  }
+  const res = await ollamaFetch('/api/chat', o.endpoint, { ...jsonPost(body), signal: o.signal })
+  if (!res.ok) throw new Error(`Ollama /api/chat failed: ${res.status}`)
+
+  for await (const line of streamLines(res)) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isRecord(parsed)) continue
+    if (typeof parsed.error === 'string') throw new Error(parsed.error)
+    const message = isRecord(parsed.message) ? parsed.message : undefined
+    const content = message && typeof message.content === 'string' ? message.content : ''
+    if (content) yield content
+  }
+}
+
 /**
  * POST /api/pull — stream NDJSON progress lines, invoking `onProgress` per
  * line. Resolves once the stream ends; rejects on transport error or an
