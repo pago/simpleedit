@@ -54,10 +54,14 @@ interface Runner {
 - **`ClaudeCodeRunner`** — spawns `claude --print --output-format stream-json …` (today's
   path, lifted out of `review.ts`). Full harness, so the model has real file/LSP access — good
   when the task benefits from a *strong* model exploring. Model swap via spawn env.
-- **`DirectRunner`** — POSTs straight to Ollama's Anthropic-compatible endpoint (or Anthropic
-  cloud). No tools, single pass, faster/cheaper — good for pure generation and local models.
-  Uses provider structured-output where available; else the NDJSON-prompt + `json-scanner`
-  approach we already use.
+- **`DirectRunner`** — POSTs straight to the model API, no harness. For **local** models this
+  MUST target Ollama's **native `/api/chat` or OpenAI-compat `/v1/chat/completions`** (both
+  verified working) — **NOT** Ollama's Anthropic `/v1/messages` endpoint, which hangs on Claude
+  Code's `count_tokens` probe (Ollama #13949, unresolved). For cloud, the Anthropic API. No
+  tools, single pass, faster/cheaper — good for pure generation and local models. Uses provider
+  structured-output where available; else the NDJSON-prompt + `json-scanner` approach we already
+  use. Because this bypasses both Claude Code and the broken Anthropic endpoint, **local
+  bounded tasks work today** (see local-models "Known blocker").
 
 `ModelRef` comes from `src/main/models/` (defined in [local-models](./local-models.md)) — the
 shared seam. Keep this interface **ACP-agnostic** so a future ACP decision doesn't force a
@@ -128,7 +132,7 @@ can still chase a thread.
 3. **Re-home Tour** onto the substrate (second consumer validates the shape).
 4. **Wire the model layer** (`ModelRef` from local-models.md) so Review/Tour can target a
    local model.
-5. **`DirectRunner`** (Ollama Anthropic-compat / Anthropic cloud, no harness) as the
+5. **`DirectRunner`** (Ollama native/OpenAI endpoint for local — never the Anthropic path, see #13949; Anthropic cloud for cloud; no harness) as the
    "local/fast" option.
 6. **LSP `expandWithLsp`** context-expander for Review (the surroundings win).
 7. **`runFanout` + screen-PRs** built native on the substrate (validates the fan-out path we

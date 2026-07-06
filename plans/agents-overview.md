@@ -111,6 +111,22 @@ Resume/fork across providers is an explicit **quality-of-life** concern, not a d
 keep Claude's logic, allow per-provider logic for OpenCode/Antigravity, or skip where the tool
 doesn't support it (capability-gated).
 
+## Findings from the local-model v0 spike (2026-07)
+
+Empirically tested on Ollama 0.31.1 + gpt-oss:20b:
+- **Interactive local via Claude Code is blocked upstream** — Ollama #13949 hangs Claude Code's
+  `/v1/messages` requests (its `count_tokens` probe poisons the endpoint); restart-only
+  workaround, not our bug. So v0's "Claude Code + local Ollama model" path is currently dead —
+  the Claude *cloud*-model half of v0 still works, and the plumbing is reusable.
+- **Local coding therefore requires a different harness** — OpenCode (works via Ollama's OpenAI
+  endpoint), i.e. the [agent-providers](./agent-providers.md) path. Antigravity is a separate
+  *cloud* agent (Google), not a local path — don't conflate the two.
+- **Local's highest-ROI, unblocked value is bounded tasks** ([bounded-tasks](./bounded-tasks.md)
+  `DirectRunner` on Ollama's native endpoint) — cheaper than a new interactive provider and
+  squarely on the cost thesis. Reprioritize toward it.
+- Reasoning models (gpt-oss) are slow (~30–50s even for trivial prompts) — a poor interactive
+  fit regardless; better for deliberate bounded tasks.
+
 ## Shared non-goals
 
 - Building our own agent harness or tool suite (the entire point is to avoid this).

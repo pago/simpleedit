@@ -44,6 +44,32 @@ a real drop for heavy coding. Ollama recommends 64k+ context (serious VRAM), and
 prompt cache locally, so interactive throughput can be poor. Surface these as hints, don't
 hide them.
 
+## ⚠ Known blocker: interactive local via Claude Code (Ollama #13949)
+
+**Verified 2026-07 on Ollama 0.31.1 + gpt-oss:20b.** Launching Claude Code against a *local*
+Ollama model (the interactive spike below) does not work: Claude Code probes
+`/v1/messages/count_tokens?beta=true`, Ollama 404s that unsupported endpoint, and the 404
+**degrades Ollama's `/v1/messages` handler so every subsequent request hangs indefinitely** —
+the symptom is a session that produces no output. Unresolved upstream
+([ollama#13949](https://github.com/ollama/ollama/issues/13949)), affects multiple
+models/versions; the only workaround is restarting Ollama (recurs each session). Ollama's
+**native `/api/chat` and OpenAI-compat `/v1/chat/completions` work fine** — it is specifically
+the Anthropic endpoint Claude Code uses that breaks.
+
+What this means for what we built:
+- The v0 spike's **Claude cloud-model selection works** (it's just `--model opus` etc., no
+  Ollama) and is worth keeping. Its **local-Ollama branch is dead for interactive use** — so
+  the interactive picker should not offer local Ollama models until upstream is fixed (they
+  hang); reserve local models for the bounded-task defaults, which work.
+- **Local interactive coding needs a different harness** — OpenCode (provider-agnostic, uses
+  the working OpenAI endpoint; gpt-oss confirmed to tool-call through it on the test machine)
+  via the [agent-providers](./agent-providers.md) path. Antigravity is a separate *cloud* agent
+  (Google), not a local path.
+- **Local bounded tasks are unblocked** — the substrate's `DirectRunner`
+  ([bounded-tasks](./bounded-tasks.md)) hits Ollama's native/OpenAI endpoint directly,
+  bypassing both Claude Code and the broken Anthropic endpoint. This is now the robust,
+  ship-today local path, and it matches the cost thesis.
+
 ## Model discovery & install
 
 Two sources, composed — live truth for what's installed, a curated on-ramp for what isn't.

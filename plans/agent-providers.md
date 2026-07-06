@@ -135,6 +135,13 @@ per-provider integration cost to budget beyond "embed the TUI."
   abstraction, keep (b) as an OpenCode-only escape hatch.
 - **Antigravity CLI** is brand new (May 2026) and evolving; treat flags/paths as unstable.
   Keep the provider capability-driven so a missing feature just flips a flag off.
+- **Validated (2026-07):** OpenCode reaches Ollama via the OpenAI-compat endpoint (NOT the
+  Anthropic `/v1/messages` path that hangs Claude Code — see [local-models](./local-models.md)
+  "Known blocker" / ollama#13949), and gpt-oss tool-calls correctly through it on the test
+  machine — so **OpenCode is the viable local *interactive* provider** (the path Claude Code
+  can't take today). Its own Ollama gotchas: tool-*execution* reliability (opencode#1034) and
+  Ollama's 4096 `num_ctx` default (raise it or agentic tool use silently breaks). **Antigravity
+  runs Google's models (cloud)** — it diversifies cloud backends, it is not a local-model path.
 
 ## Graceful degradation rules
 
