@@ -11,6 +11,7 @@ import { RECOMMENDED_MODELS, computeFit } from './recommendations'
 export { isAvailable, pull } from './ollama'
 export { detectHardware } from './hardware'
 export { getModelConfig, setModelConfig } from './config'
+export { CLAUDE_MODELS } from './claude-catalog'
 
 const GB = 1024 ** 3
 // Context/runtime overhead on top of raw weights, added to every estimate.
@@ -45,13 +46,19 @@ export function estimateMinRam(paramSize?: string, quant?: string): number | und
   return Math.round(params * bytesPerParam(quant) + CONTEXT_OVERHEAD_BYTES)
 }
 
-/** Installed Ollama models ∩ tool-capable, annotated with hardware fit. */
+/**
+ * All installed Ollama models, annotated with hardware fit and whether they're
+ * tool-capable. Non-tool models aren't dropped: the UI surfaces them as "review
+ * only" (usable for bounded tasks like Review/Tour, which don't need tool
+ * calling) but not for the interactive agent.
+ */
 export async function listInstalledModels(): Promise<ModelDescriptor[]> {
   const { totalRamBytes } = detectHardware()
   const installed = await listInstalled()
   const out: ModelDescriptor[] = []
   for (const m of installed) {
-    if (!(await isToolCapable(m.name))) continue
+    // A model whose capabilities can't be probed is treated as non-tool.
+    const toolCapable = await isToolCapable(m.name).catch(() => false)
     const minRamBytes = estimateMinRam(m.paramSize, m.quantization)
     out.push({
       name: m.name,
@@ -60,7 +67,7 @@ export async function listInstalledModels(): Promise<ModelDescriptor[]> {
       minRamBytes,
       fit: minRamBytes === undefined ? 'fits' : computeFit(minRamBytes, totalRamBytes),
       installed: true,
-      toolCapable: true,
+      toolCapable,
     })
   }
   return out

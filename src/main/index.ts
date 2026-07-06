@@ -45,7 +45,9 @@ import {
   listInstalledModels,
   listRecommendedModels,
   getModelConfig,
-  setModelConfig
+  setModelConfig,
+  detectHardware,
+  CLAUDE_MODELS
 } from './models'
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
@@ -209,6 +211,59 @@ function createWindow(repoPath?: string): BrowserWindow {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+
+  return win
+}
+
+// ── Settings window ───────────────────────────────────────
+// A single shared settings window (not per-repo): the model config it edits is
+// global. Reuse the existing window when it's already open.
+let settingsWindow: BrowserWindow | null = null
+
+function createSettingsWindow(): BrowserWindow {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus()
+    return settingsWindow
+  }
+
+  const win = new BrowserWindow({
+    width: 820,
+    height: 640,
+    minWidth: 720,
+    minHeight: 480,
+    show: false,
+    title: 'Settings — SimpleEdit',
+    titleBarStyle: 'hiddenInset',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.mjs'),
+      sandbox: false,
+      ...(isUnobtrusiveTest ? { backgroundThrottling: false } : {})
+    }
+  })
+  settingsWindow = win
+
+  win.on('closed', () => {
+    settingsWindow = null
+  })
+
+  win.on('ready-to-show', () => {
+    if (isUnobtrusiveTest) {
+      win.showInactive()
+    } else {
+      win.show()
+    }
+  })
+
+  win.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?view=settings`)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'), { search: 'view=settings' })
   }
 
   return win
@@ -503,6 +558,14 @@ function registerAllHandlers(): void {
     return isOllamaAvailable()
   })
 
+  ipcMain.handle('models:claude', () => {
+    return CLAUDE_MODELS
+  })
+
+  ipcMain.handle('models:hardware', () => {
+    return detectHardware()
+  })
+
   ipcMain.handle('models:installed', () => {
     return listInstalledModels()
   })
@@ -600,9 +663,29 @@ app.whenReady().then(() => {
 
   // ── Application menu ─────────────────────────────────────
   const isMac = process.platform === 'darwin'
+  const settingsItem: Electron.MenuItemConstructorOptions = {
+    label: 'Settings…',
+    accelerator: 'CmdOrCtrl+,',
+    click: () => createSettingsWindow()
+  }
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac
-      ? [{ role: 'appMenu' as const }]
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about' as const },
+            { type: 'separator' as const },
+            settingsItem,
+            { type: 'separator' as const },
+            { role: 'services' as const },
+            { type: 'separator' as const },
+            { role: 'hide' as const },
+            { role: 'hideOthers' as const },
+            { role: 'unhide' as const },
+            { type: 'separator' as const },
+            { role: 'quit' as const }
+          ]
+        } satisfies Electron.MenuItemConstructorOptions]
       : []),
     {
       label: 'File',
@@ -612,7 +695,8 @@ app.whenReady().then(() => {
           accelerator: 'CmdOrCtrl+Shift+N',
           click: () => createWindow()
         },
-        { type: 'separator' },
+        ...(isMac ? [] : [{ type: 'separator' as const }, settingsItem]),
+        { type: 'separator' as const },
         isMac ? { role: 'close' as const } : { role: 'quit' as const }
       ]
     },

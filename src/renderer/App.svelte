@@ -10,6 +10,11 @@
   import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
   import { hydrateSession, serializeSession } from './lib/sessionPersistence'
   import UpdateBanner from './components/UpdateBanner.svelte'
+  import SettingsWindow from './components/settings/SettingsWindow.svelte'
+
+  // A dedicated settings window loads the renderer with `?view=settings`. It's a
+  // standalone surface — no Welcome/IDE bootstrap, palette, or session restore.
+  const isSettingsView = new URLSearchParams(window.location.search).get('view') === 'settings'
 
   let sidebarWidth = $state(260)
   let isResizing = $state(false)
@@ -22,6 +27,7 @@
   )
 
   onMount(() => {
+    if (isSettingsView) return
     const unsubStatus = initClaudeStatusListeners()
     const unsubSessions = initSessionListeners()
     void initRepoFromMain()
@@ -106,6 +112,7 @@
   })
 
   function handleGlobalKeydown(e: KeyboardEvent): void {
+    if (isSettingsView) return
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
       e.preventDefault()
       togglePalette()
@@ -150,6 +157,9 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
+{#if isSettingsView}
+  <SettingsWindow />
+{:else}
 {#if isPaletteOpen()}
   <CommandPalette />
 {/if}
@@ -194,4 +204,5 @@
     <div class="drag-region h-9 flex-none bg-zinc-950"></div>
     <Welcome onreposelected={handleRepoSelected} />
   </div>
+{/if}
 {/if}

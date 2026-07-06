@@ -414,6 +414,16 @@ export interface RecommendedModel extends ModelDescriptor {
   notes?: string
 }
 
+/**
+ * A Claude cloud model offered in the picker. Doubles as an `anthropic` ModelRef
+ * (`model` is the `--model` value) plus a human display name.
+ */
+export interface ClaudeModel {
+  provider: 'anthropic'
+  displayName: string
+  model: string
+}
+
 /** Machine profile used to size recommendations. */
 export interface HardwareInfo {
   totalRamBytes: number
@@ -445,7 +455,11 @@ export interface ModelPullProgress {
 export interface ModelsInvokeMap {
   /** Is Ollama reachable? Gates the whole local-model UI. */
   'models:available': { args: []; result: boolean }
-  /** Installed Ollama models ∩ tool-capable, annotated with hardware fit. */
+  /** The static Claude cloud model list (always available). */
+  'models:claude': { args: []; result: ClaudeModel[] }
+  /** This machine's profile (chip + RAM), used to show fit/hardware hints. */
+  'models:hardware': { args: []; result: HardwareInfo }
+  /** All installed Ollama models, annotated with hardware fit + tool-capability. */
   'models:installed': { args: []; result: ModelDescriptor[] }
   /** Curated recommendations minus what's installed, annotated with fit. */
   'models:recommended': { args: []; result: RecommendedModel[] }

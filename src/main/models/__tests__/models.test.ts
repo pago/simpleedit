@@ -55,7 +55,7 @@ describe('estimateMinRam', () => {
 })
 
 describe('listInstalledModels', () => {
-  it('filters out non-tool-capable models and annotates fit', async () => {
+  it('returns all installed models annotated with toolCapable and fit', async () => {
     const tags: InstalledTag[] = [
       { name: 'qwen2.5-coder:7b', paramSize: '7B', quantization: 'Q4_K_M' },
       { name: 'nomic-embed-text', paramSize: '137M' },
@@ -64,7 +64,7 @@ describe('listInstalledModels', () => {
     isToolCapableMock.mockImplementation(async (name) => name === 'qwen2.5-coder:7b')
 
     const out = await listInstalledModels()
-    expect(out).toHaveLength(1)
+    expect(out).toHaveLength(2)
     expect(out[0]).toMatchObject({
       name: 'qwen2.5-coder:7b',
       installed: true,
@@ -72,6 +72,27 @@ describe('listInstalledModels', () => {
       fit: 'fits', // ~5GB on a 16GB machine
     })
     expect(out[0].minRamBytes).toBeGreaterThan(0)
+    // Non-tool models are no longer dropped — surfaced as review-only.
+    expect(out[1]).toMatchObject({
+      name: 'nomic-embed-text',
+      installed: true,
+      toolCapable: false,
+    })
+  })
+
+  it('treats an unprobeable model as non-tool rather than aborting the list', async () => {
+    listInstalledMock.mockResolvedValue([
+      { name: 'good:7b', paramSize: '7B', quantization: 'Q4_K_M' },
+      { name: 'flaky:7b', paramSize: '7B', quantization: 'Q4_K_M' },
+    ])
+    isToolCapableMock.mockImplementation(async (name) => {
+      if (name === 'flaky:7b') throw new Error('show failed')
+      return true
+    })
+
+    const out = await listInstalledModels()
+    expect(out).toHaveLength(2)
+    expect(out.find((m) => m.name === 'flaky:7b')?.toolCapable).toBe(false)
   })
 
   it('marks a too-big model on a small machine', async () => {
