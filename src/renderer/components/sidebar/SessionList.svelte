@@ -89,26 +89,25 @@
   /**
    * Resolve the persisted submenu allowlist against the live catalogs into
    * "start a session with model X" entries. A Claude catalog entry's key is its
-   * anthropic model id; an installed Ollama model's key is its name (only
-   * tool-capable ones — review-only models can't drive the interactive agent).
-   * Keys that no longer resolve (uninstalled / dropped from the catalog) are
-   * skipped. Falls back to just the two defaults if the fetches fail.
+   * anthropic model id. Local Ollama models are excluded — launching Claude Code
+   * against a local model hangs (Ollama #13949), so only Claude cloud models are
+   * startable interactively; locals are Review/Tour defaults instead. Keys that no
+   * longer resolve (dropped from the catalog) are skipped; falls back to the two
+   * defaults if the fetch fails.
    */
   async function buildNewMenu(): Promise<void> {
     try {
-      const [config, claudeModels, installed] = await Promise.all([
+      const [config, claudeModels] = await Promise.all([
         window.api.invoke('models:config-get'),
         window.api.invoke('models:claude'),
-        window.api.invoke('models:installed'),
       ])
 
+      // Only Claude cloud models are offered as interactive sessions. Local
+      // Ollama models are intentionally excluded: launching Claude Code against
+      // a local model hangs (Ollama #13949). Locals serve as Review/Tour defaults.
       const resolver = new Map<string, { ref: ModelRef; label: string }>()
       for (const m of claudeModels) {
         resolver.set(m.model, { ref: { provider: 'anthropic', model: m.model }, label: m.displayName })
-      }
-      for (const m of installed) {
-        if (!m.toolCapable) continue
-        resolver.set(m.name, { ref: { provider: 'ollama', model: m.name }, label: m.name })
       }
 
       const refs = new Map<string, ModelRef>()
