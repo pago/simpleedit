@@ -282,6 +282,13 @@
       {/if}
     </section>
 
+    <p class="mt-4 text-[11.5px] text-zinc-500">
+      Finding models:
+      <a href="https://aider.chat/docs/leaderboards/" target="_blank" rel="noreferrer" class="text-blue-400 hover:underline">Aider leaderboard ↗</a>
+      · <a href="https://www.reddit.com/r/LocalLLaMA/" target="_blank" rel="noreferrer" class="text-blue-400 hover:underline">r/LocalLLaMA ↗</a>
+      · <a href="https://ollama.com/library" target="_blank" rel="noreferrer" class="text-blue-400 hover:underline">ollama.com/library ↗</a>
+    </p>
+
     {#if hardware}
       <p class="mt-3 text-[11.5px] text-zinc-500">
         Fit is estimated for this machine ({hardwareLine}) at a 64k context window.
