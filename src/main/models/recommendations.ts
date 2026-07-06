@@ -18,44 +18,37 @@ export interface CuratedModel {
   notes: string
 }
 
-// VERIFY model names/sizes — may be stale. Selection criteria: tool-calling
-// capable, coding-tuned, runnable at ~64k context on typical dev hardware.
+// Verified against the Ollama library, July 2026. These are all agent-capable
+// (tool-calling works on Ollama) — the two gates that go stale fastest are
+// currency and tool-calling, so the app still confirms `tools` live via
+// /api/show at install rather than trusting this list. Notable exclusions:
+// qwen3.5 (tool-calling broken on Ollama, issue #14493 — usable for Review/Tour
+// but not the interactive agent), codestral (no reliable tools + 32k context),
+// deepseek-coder (no native tools). Revise as the field moves — names churn fast.
 export const RECOMMENDED_MODELS: CuratedModel[] = [
   {
-    name: 'qwen2.5-coder:7b',
-    label: 'Qwen2.5 Coder 7B',
-    minRamBytes: 6 * GB,
-    notes: 'Strong small coding model with tool-calling. Good default on 16GB+.',
+    name: 'gpt-oss:20b',
+    label: 'gpt-oss 20B',
+    minRamBytes: 16 * GB,
+    notes: 'Best small tool-capable coder; MoE, fast, runs on 16GB. Great starter.',
   },
   {
-    name: 'qwen2.5-coder:14b',
-    label: 'Qwen2.5 Coder 14B',
-    minRamBytes: 12 * GB,
-    notes: 'Noticeably stronger; wants ~24GB for comfortable context.',
-  },
-  {
-    name: 'qwen2.5-coder:32b',
-    label: 'Qwen2.5 Coder 32B',
+    name: 'qwen3-coder:30b',
+    label: 'Qwen3 Coder 30B',
     minRamBytes: 24 * GB,
-    notes: 'Best of the Qwen coders; needs a 32GB+ machine.',
+    notes: 'Top local agentic coder — 256K context, MoE (fast). Recommended default on 32GB+.',
   },
   {
-    name: 'llama3.1:8b',
-    label: 'Llama 3.1 8B',
-    minRamBytes: 8 * GB,
-    notes: 'General-purpose with reliable tool-calling.',
+    name: 'devstral-small-2:24b',
+    label: 'Devstral Small 2 24B',
+    minRamBytes: 22 * GB,
+    notes: 'SWE-bench-tuned agent; dense, reliable tool loops. Wants ~32GB.',
   },
   {
-    name: 'mistral-nemo:12b',
-    label: 'Mistral Nemo 12B',
-    minRamBytes: 10 * GB,
-    notes: 'Long-context, tool-calling capable.',
-  },
-  {
-    name: 'devstral:24b',
-    label: 'Devstral 24B',
-    minRamBytes: 18 * GB,
-    notes: 'Agentic-coding tuned (SWE-bench); tool-calling. Wants 32GB.',
+    name: 'gpt-oss:120b',
+    label: 'gpt-oss 120B',
+    minRamBytes: 80 * GB,
+    notes: 'Strongest gpt-oss; workstation only (~96GB+). MoE.',
   },
 ]
 
