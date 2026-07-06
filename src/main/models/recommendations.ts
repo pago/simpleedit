@@ -39,6 +39,12 @@ export const RECOMMENDED_MODELS: CuratedModel[] = [
     notes: 'Top local agentic coder — 256K context, MoE (fast). Recommended default on 32GB+.',
   },
   {
+    name: 'qwen3.6:35b',
+    label: 'Qwen3.6 35B',
+    minRamBytes: 30 * GB,
+    notes: 'Newest Qwen agentic coder — MoE (~3B active, fast), ~73 SWE-bench. Tool-calling on Ollama is finicky (needs enable_thinking:false, or calls leak into the reasoning channel); the live /api/show probe auto-demotes it to review-only if tools aren’t reported. Wants ~32GB.',
+  },
+  {
     name: 'devstral-small-2:24b',
     label: 'Devstral Small 2 24B',
     minRamBytes: 22 * GB,
