@@ -192,7 +192,7 @@ export interface ClaudeEventMap {
    * renderer uses it to register the repo and record it on the session's
    * touched trail so it appears in the repo picker.
    */
-  'claude:cwd': {
+  'session:cwd': {
     terminalId: string
     cwd: string
     worktreePath: string | null
@@ -209,7 +209,7 @@ export interface ClaudeEventMap {
    * can cache its worktrees), else null. `worktreePath` is always the resolved
    * worktree the touched file lives in.
    */
-  'claude:repo-touch': {
+  'session:repo-touch': {
     terminalId: string
     worktreePath: string
     repoPath: string | null

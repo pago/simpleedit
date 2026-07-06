@@ -7,11 +7,11 @@
  * don't move the process cwd). Before the fix the hook handler keyed the
  * session's repo trail purely off `cwd`, which stays in A — so B never joined
  * the repo dropdown. Now PostToolUse's `tool_input.file_path` is resolved to
- * its repo and recorded via `claude:repo-touch`.
+ * its repo and recorded via `session:repo-touch`.
  *
  * This drives the REAL path end to end: a genuine PostToolUse hook POSTed to
  * the running window's bridge (port+token read from the spawn-time hook
- * settings file), through handleHook's repo discovery, the claude:repo-touch
+ * settings file), through handleHook's repo discovery, the session:repo-touch
  * IPC, the renderer listener, and the RepoPicker menu. Like its e2e siblings
  * it's gated on SIMPLEEDIT_TEST_REPO so it runs locally, not in CI (CI coverage
  * lives in the deterministic cwd-tracker / mcp-bridge / session-trail tests).

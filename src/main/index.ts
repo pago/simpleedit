@@ -30,7 +30,7 @@ import {
   watchGitRefs, unwatchGitRefs, unwatchAllGitRefs, triggerStatusCheck
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
-import { performFork } from './claude-fork'
+import { getProvider } from './agents/provider'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
@@ -412,7 +412,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('claude:fork', async (event, options) => {
-    await performFork(options, event.sender)
+    await getProvider('claude').fork!(options, event.sender)
   })
 
   // ── Git ─────────────────────────────────────────────────

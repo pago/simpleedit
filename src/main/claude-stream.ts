@@ -61,7 +61,7 @@ export function emitPtyData(terminalId: string, data: string): void {
  *   \x1b]0;✳ My session title\x07     — session done
  *   \x1b]0;⠐ My session title\x07     — session running
  */
-function extractOscTitles(data: string): string[] {
+export function extractOscTitles(data: string): string[] {
   const re = /\x1b\]0;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
   const titles: string[] = []
   let match
@@ -75,7 +75,7 @@ function extractOscTitles(data: string): string[] {
  * Derive Claude status from a terminal title emitted by Claude Code.
  * Returns null if the title is unrecognised (e.g. a shell title).
  */
-function statusFromTitle(title: string): ClaudeStatus | null {
+export function statusFromTitle(title: string): ClaudeStatus | null {
   const firstCp = title.codePointAt(0) ?? 0
   if (firstCp === 0x2733) {
     // ✳ U+2733 eight-spoked asterisk — Claude's idle indicator

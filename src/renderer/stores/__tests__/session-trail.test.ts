@@ -80,7 +80,7 @@ describe('touchedWorktreesForRepo', () => {
   })
 })
 
-describe('claude:repo-touch listener', () => {
+describe('session:repo-touch listener', () => {
   type Handler = (data: unknown) => void
   const handlers = new Map<string, Handler>()
 
@@ -99,7 +99,7 @@ describe('claude:repo-touch listener', () => {
       const id = sessionsStore.createClaude('/launch', '/repo/primary/main')
       const before = sessionsStore.get(id)?.worktreePath
 
-      handlers.get('claude:repo-touch')!({
+      handlers.get('session:repo-touch')!({
         terminalId: id,
         worktreePath: '/repo/other/wip',
         repoPath: null, // OTHER already cached in the outer beforeEach
@@ -120,7 +120,7 @@ describe('claude:repo-touch listener', () => {
     const off = initSessionListeners()
     try {
       expect(() =>
-        handlers.get('claude:repo-touch')!({
+        handlers.get('session:repo-touch')!({
           terminalId: 'ghost',
           worktreePath: '/repo/other/wip',
           repoPath: null,

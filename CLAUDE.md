@@ -79,12 +79,12 @@ parses the body (`cwd-tracker.ts` `parseHookBody`) and drives the session's
 
 Two distinct signals, do not conflate them:
 - **`cwd`** — where the agent *is*. Only changes on Bash `cd` / worktree tools.
-  Emits `claude:cwd`, which records the touch **and** repoints the workspace
+  Emits `session:cwd`, which records the touch **and** repoints the workspace
   view (when the viewer is closed).
 - **`tool_input.file_path`** (on `PostToolUse`) — a file the agent *read or
   edited*, which can live in a **sibling repo the cwd never entered** (Read/Edit
   /Write take an absolute path; they don't move the cwd). Emits
-  `claude:repo-touch`, which records the touch **only** — a glance at another
+  `session:repo-touch`, which records the touch **only** — a glance at another
   repo must not yank the user's view.
 
 A repo the window never opened is resolved on demand (`resolveBareRepo` →
