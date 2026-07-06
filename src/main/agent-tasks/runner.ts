@@ -20,8 +20,6 @@ import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveClaudePath } from '../lib/shell-path'
 import { chatStream, type ChatMessage } from '../models/ollama'
 
-const DEFAULT_NUM_CTX = 32768
-
 export interface RunRequest<Item> {
   system: string
   user: string
@@ -159,7 +157,11 @@ export class ClaudeCodeRunner implements Runner {
 
   run<Item>(req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item> {
     const stream = createPushStream<Item>()
-    void this.spawn(req, stream, opts)
+    // `run()` returns immediately; if spawn's synchronous setup throws (bad
+    // args, stdin.write on a dead pipe), a bare `void` would swallow it and the
+    // stream would never settle — hanging the review on 'running'. Route any
+    // such rejection to fail() so it surfaces as an error instead.
+    this.spawn(req, stream, opts).catch((err) => stream.fail(err))
     return stream.iterable
   }
 
@@ -269,7 +271,7 @@ export class DirectRunner implements Runner {
       model: model.model,
       messages,
       endpoint: model.endpoint,
-      numCtx: DEFAULT_NUM_CTX,
+      // num_ctx default (past Ollama's truncating 4096) lives in chatStream.
       signal: opts?.signal,
     })) {
       for (const item of scan(chunk)) yield item

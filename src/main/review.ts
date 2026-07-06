@@ -80,7 +80,13 @@ export async function startReview(
     sendStatus(webContents, key, 'done')
   } catch (err: unknown) {
     activeReviews.delete(key)
-    sendStatus(webContents, key, 'error', err instanceof Error ? err.message : String(err))
+    // A user-initiated cancel aborts the runner, which surfaces as a throw here.
+    // That's not a failure — report a neutral 'done' rather than 'error'.
+    if (controller.signal.aborted) {
+      sendStatus(webContents, key, 'done')
+    } else {
+      sendStatus(webContents, key, 'error', err instanceof Error ? err.message : String(err))
+    }
   }
 }
 
