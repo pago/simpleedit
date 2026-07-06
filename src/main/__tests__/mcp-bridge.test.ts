@@ -352,7 +352,7 @@ describe('MCP Bridge — location-tracking hooks', () => {
       hook_event_name: 'PostToolUse',
     })
     expect(status).toBe(200)
-    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+    expect(wc.send).toHaveBeenCalledWith('session:cwd', {
       terminalId: 'hook-term',
       cwd: '/repo/feature/src',
       worktreePath: '/repo/feature',
@@ -363,7 +363,7 @@ describe('MCP Bridge — location-tracking hooks', () => {
   it('emits worktreePath + repoPath null when cwd is outside every worktree and no repo is discoverable', async () => {
     registerSession('sess-h', 'hook-term')
     await postHook({ session_id: 'sess-h', cwd: '/somewhere/else', hook_event_name: 'UserPromptSubmit' })
-    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+    expect(wc.send).toHaveBeenCalledWith('session:cwd', {
       terminalId: 'hook-term',
       cwd: '/somewhere/else',
       worktreePath: null,
@@ -381,7 +381,7 @@ describe('MCP Bridge — location-tracking hooks', () => {
       return { repoPath: '/other-repo/.bare', worktrees: wtList('/other-repo/backend') }
     })
     await postHook({ session_id: 'sess-h', cwd: '/other-repo/backend/src', hook_event_name: 'PostToolUse' })
-    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+    expect(wc.send).toHaveBeenCalledWith('session:cwd', {
       terminalId: 'hook-term',
       cwd: '/other-repo/backend/src',
       worktreePath: '/other-repo/backend',
@@ -389,7 +389,7 @@ describe('MCP Bridge — location-tracking hooks', () => {
     })
   })
 
-  it('records a cross-repo file touch as claude:repo-touch (agent read/edited without cd)', async () => {
+  it('records a cross-repo file touch as session:repo-touch (agent read/edited without cd)', async () => {
     // cwd stays in the opened repo (/repo/feature), but the agent edited a file
     // in a sibling repo it never cd'd into. The discoverer resolves the sibling
     // from the file's directory; we emit a repo-touch so it joins the trail.
@@ -406,21 +406,21 @@ describe('MCP Bridge — location-tracking hooks', () => {
       tool_input: { file_path: '/other-repo/backend/src/app.ts' },
     })
     // cwd still resolves to the opened worktree (view-following signal)...
-    expect(wc.send).toHaveBeenCalledWith('claude:cwd', {
+    expect(wc.send).toHaveBeenCalledWith('session:cwd', {
       terminalId: 'hook-term',
       cwd: '/repo/feature/src',
       worktreePath: '/repo/feature',
       repoPath: null,
     })
     // ...and the touched file surfaces the sibling repo (trail-only signal).
-    expect(wc.send).toHaveBeenCalledWith('claude:repo-touch', {
+    expect(wc.send).toHaveBeenCalledWith('session:repo-touch', {
       terminalId: 'hook-term',
       worktreePath: '/other-repo/backend',
       repoPath: '/other-repo/.bare',
     })
   })
 
-  it('does not emit claude:repo-touch when the touched file is in the cwd worktree', async () => {
+  it('does not emit session:repo-touch when the touched file is in the cwd worktree', async () => {
     registerSession('sess-h', 'hook-term')
     await postHook({
       session_id: 'sess-h',
@@ -429,11 +429,11 @@ describe('MCP Bridge — location-tracking hooks', () => {
       tool_name: 'Write',
       tool_input: { file_path: '/repo/feature/src/app.ts' },
     })
-    const touchCalls = wc.send.mock.calls.filter((c: unknown[]) => c[0] === 'claude:repo-touch')
+    const touchCalls = wc.send.mock.calls.filter((c: unknown[]) => c[0] === 'session:repo-touch')
     expect(touchCalls).toHaveLength(0)
   })
 
-  it('does not emit claude:repo-touch for a non-file hook (no file_path)', async () => {
+  it('does not emit session:repo-touch for a non-file hook (no file_path)', async () => {
     registerSession('sess-h', 'hook-term')
     await postHook({
       session_id: 'sess-h',
@@ -442,7 +442,7 @@ describe('MCP Bridge — location-tracking hooks', () => {
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     })
-    const touchCalls = wc.send.mock.calls.filter((c: unknown[]) => c[0] === 'claude:repo-touch')
+    const touchCalls = wc.send.mock.calls.filter((c: unknown[]) => c[0] === 'session:repo-touch')
     expect(touchCalls).toHaveLength(0)
   })
 

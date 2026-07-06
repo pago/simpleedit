@@ -8,6 +8,7 @@
  * `pty:*` / `claude:*` IPC routes work unchanged.
  */
 import { untrack } from 'svelte'
+import type { ModelRef } from '../../shared/ipc-types'
 import { clearClaudeStatusForTerminal } from './claude-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -20,10 +21,21 @@ import {
 
 export type SessionKind = 'claude' | 'agents' | 'terminal'
 
+/** Which interactive-agent provider backs this session. Only Claude Code today
+ * (see src/main/agents/); other providers will extend this union. */
+export type AgentProviderId = 'claude'
+
 export interface Session {
   /** PTY terminal id in main ('claude-…', 'agents-…', 'term-…'). */
   id: string
   kind: SessionKind
+  /**
+   * The agent provider backing this session (harness axis, orthogonal to
+   * `kind`). Set on agent-backed sessions; absent for plain terminals. Defaults
+   * to 'claude' — the only provider today. The `claude:spawn` invoke isn't yet
+   * routed by this (YAGNI for one provider).
+   */
+  provider?: AgentProviderId
   label: string
   /** True when the user renamed the session — OSC titles no longer apply. */
   customLabel?: boolean
@@ -50,7 +62,7 @@ export interface Session {
   repoPath?: string
   /**
    * Worktrees this session has worked in, most-recently-touched first — the
-   * agent's location trail, fed by `claude:cwd`. Drives the repo picker
+   * agent's location trail, fed by `session:cwd`. Drives the repo picker
    * (distinct repos in touch order) and the worktree picker's "touched" group.
    * Seeded with the initial worktree so the current location shows before the
    * agent moves.
@@ -67,6 +79,11 @@ export interface Session {
   viewerOpen?: boolean
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
   claudeSessionId?: string
+  /**
+   * The brain this session was launched against (cloud Claude or local Ollama).
+   * Absent = cloud default. Resume/fork re-applying this is a deferred follow-up.
+   */
+  model?: ModelRef
   /** Restored-from-disk placeholder: no live PTY until the user clicks Resume. */
   pendingResume?: { sessionId: string }
   /** Fork-in-flight placeholder until the new PTY emits its first byte. */
@@ -220,11 +237,23 @@ export const sessionsStore = {
   createClaude(
     launchDir: string,
     worktreePath: string,
-    opts: { resumeSessionId?: string } = {},
+    opts: { resumeSessionId?: string; model?: ModelRef } = {},
   ): string {
     const id = `claude-${crypto.randomUUID()}`
+    const model = opts.model
     _sessions = [
-      { id, kind: 'claude', label: defaultLabel('claude'), launchDir, worktreePath, touchedWorktrees: [worktreePath] },
+      {
+        id,
+        kind: 'claude',
+        provider: 'claude',
+        // A picked model names the session (and pins the label so OSC titles
+        // don't overwrite it); the plain cloud default keeps "Claude N".
+        label: model ? model.model : defaultLabel('claude'),
+        ...(model ? { customLabel: true as const, model } : {}),
+        launchDir,
+        worktreePath,
+        touchedWorktrees: [worktreePath],
+      },
       ..._sessions,
     ]
     select(id)
@@ -232,7 +261,20 @@ export const sessionsStore = {
       id,
       worktreePath: launchDir,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
+      ...(model ? { model } : {}),
     })
+    // For cloud Claude, upgrade the raw model id to its human display name once
+    // the (static) catalog resolves — best-effort, leaves the id if not found.
+    if (model?.provider === 'anthropic') {
+      const anthropicModel = model.model
+      void window.api
+        .invoke('models:claude')
+        .then((catalog) => {
+          const match = catalog.find((m) => m.model === anthropicModel)
+          if (match) sessionsStore.update(id, { label: match.displayName })
+        })
+        .catch(() => {})
+    }
     return id
   },
 
@@ -241,7 +283,7 @@ export const sessionsStore = {
     // The `claude agents` TUI sets noisy OSC titles — customLabel keeps
     // "Agents N" sticky (same rule as the old TerminalTabs).
     _sessions = [
-      { id, kind: 'agents', label: defaultLabel('agents'), customLabel: true, launchDir, worktreePath, touchedWorktrees: [worktreePath] },
+      { id, kind: 'agents', provider: 'claude', label: defaultLabel('agents'), customLabel: true, launchDir, worktreePath, touchedWorktrees: [worktreePath] },
       ..._sessions,
     ]
     select(id)
@@ -513,6 +555,7 @@ export const sessionsStore = {
       {
         id,
         kind: 'claude',
+        provider: 'claude',
         label: defaultLabel('claude'),
         // Forks are explicitly "into worktree": the fork lives there, so it
         // launches there too (not at the project root).
@@ -573,6 +616,7 @@ export const sessionsStore = {
         {
           id,
           kind: 'agents',
+          provider: 'claude',
           label: input.label || defaultLabel('agents'),
           customLabel: true,
           launchDir: input.launchDir,
@@ -592,6 +636,7 @@ export const sessionsStore = {
       {
         id,
         kind: 'claude',
+        provider: 'claude',
         label: input.label || defaultLabel('claude'),
         ...(input.customLabel ? { customLabel: true as const } : {}),
         launchDir: input.launchDir,
@@ -693,7 +738,7 @@ export function initSessionListeners(): () => void {
   //     indicator surface the move instead.
   // Last-writer-wins against the manual dropdown when we do follow — the
   // agent's cwd is the freshest signal of what it's working on.
-  const offCwd = window.api.on('claude:cwd', (data) => {
+  const offCwd = window.api.on('session:cwd', (data) => {
     const session = sessionsStore.get(data.terminalId)
     if (!session) return
     void (async () => {
@@ -714,8 +759,8 @@ export function initSessionListeners(): () => void {
 
   // The agent read/edited a file in a repo its cwd never entered. RECORD the
   // touch (so the repo surfaces in the picker) but never FOLLOW it — unlike
-  // claude:cwd, a file glance must not repoint the workspace the user is on.
-  const offRepoTouch = window.api.on('claude:repo-touch', (data) => {
+  // session:cwd, a file glance must not repoint the workspace the user is on.
+  const offRepoTouch = window.api.on('session:repo-touch', (data) => {
     const session = sessionsStore.get(data.terminalId)
     if (!session) return
     void (async () => {

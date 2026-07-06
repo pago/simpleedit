@@ -1,0 +1,249 @@
+/**
+ * The Claude Code agent provider. Owns everything Claude-specific about a
+ * launch: the `claude` binary + flags, the `--session-id`/`--resume`/
+ * `--fork-session` branching, the MCP gen-UI bridge (`--mcp-config`) and the
+ * location-tracking hooks (`--settings`), plus their temp-file cleanup. The
+ * generic PTY plumbing (spawn, backlog, onData/onExit) stays in `pty.ts`; this
+ * module just produces `LaunchPlan`s and the capability descriptor.
+ */
+import { app } from 'electron'
+import { writeFileSync, unlinkSync } from 'fs'
+import { randomUUID } from 'crypto'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import type { WebContents } from 'electron'
+import type { ClaudeForkOptions, ClaudeStatus } from '../../shared/ipc-types'
+import { extractOscTitles, statusFromTitle } from '../claude-stream'
+import { performFork } from '../claude-fork'
+import { registerSession, unregisterTerminal } from '../cwd-tracker'
+import { registerProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './provider'
+
+const mcpConfigPaths = new Map<string, string>()
+/** Hook settings files written at spawn (parallel to mcpConfigPaths). */
+const hookSettingsPaths = new Map<string, string>()
+
+function getMcpServerPath(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'mcp-server', 'index.mjs')
+  }
+  return join(app.getAppPath(), 'out', 'mcp-server', 'index.mjs')
+}
+
+function writeMcpConfig(terminalId: string, bridgePort: number, bridgeToken: string): string {
+  const configPath = join(tmpdir(), `simpleedit-mcp-${terminalId}.json`)
+  const config = {
+    mcpServers: {
+      simpleedit: {
+        type: 'stdio',
+        command: 'node',
+        args: [getMcpServerPath()],
+        env: {
+          SIMPLEEDIT_BRIDGE_PORT: String(bridgePort),
+          SIMPLEEDIT_BRIDGE_TOKEN: bridgeToken,
+          SIMPLEEDIT_TERMINAL_ID: terminalId
+        }
+      }
+    }
+  }
+  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  return configPath
+}
+
+function cleanupMcpConfig(terminalId: string): void {
+  const configPath = mcpConfigPaths.get(terminalId)
+  if (configPath) {
+    try { unlinkSync(configPath) } catch { /* file may already be gone */ }
+    mcpConfigPaths.delete(terminalId)
+  }
+}
+
+/**
+ * Write a Claude settings file wiring location-tracking hooks to the bridge.
+ * Verified on CLI 2.1.175 (Stage 2 Part A): `--settings <path>` accepts a
+ * `hooks` config; `type: "http"` hooks POST the hook input JSON (carrying
+ * `session_id`, `cwd`, and — on `PostToolUse` — `tool_input`) to `url`. We
+ * point both UserPromptSubmit (cheap, fires on every turn) and PostToolUse at
+ * the bridge's `/<token>/hooks` endpoint — the token in the path authenticates
+ * the same way the MCP tool-call route does. PostToolUse earns its keep twice:
+ * it catches cwd moves (Bash `cd`/worktree tools) AND the `file_path` of a file
+ * the agent read/edited in a sibling repo it never `cd`'d into (see
+ * cwd-tracker's parseHookBody / mcp-bridge's handleHook).
+ */
+function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: string): string {
+  const settingsPath = join(tmpdir(), `simpleedit-hooks-${terminalId}.json`)
+  const endpoint = { type: 'http', url: `http://127.0.0.1:${bridgePort}/${bridgeToken}/hooks`, timeout: 5 }
+  const settings = {
+    hooks: {
+      UserPromptSubmit: [{ hooks: [endpoint] }],
+      PostToolUse: [{ hooks: [endpoint] }],
+    },
+  }
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return settingsPath
+}
+
+function cleanupHookSettings(terminalId: string): void {
+  const settingsPath = hookSettingsPaths.get(terminalId)
+  if (settingsPath) {
+    try { unlinkSync(settingsPath) } catch { /* file may already be gone */ }
+    hookSettingsPaths.delete(terminalId)
+  }
+}
+
+/**
+ * Wire MCP config + location-tracking hooks for a Claude spawn and register
+ * the session_id → terminalId mapping so hook POSTs route back. Returns the
+ * extra CLI flags to append. No-op (empty string) when no bridge is available
+ * (e.g. tests, or a window whose bridge failed to start).
+ */
+function buildBridgeFlags(
+  terminalId: string,
+  sessionId: string,
+  bridgePort: number | undefined,
+  bridgeToken: string | undefined,
+): string {
+  if (bridgePort == null || bridgeToken == null) return ''
+  let flags = ''
+  const configPath = writeMcpConfig(terminalId, bridgePort, bridgeToken)
+  mcpConfigPaths.set(terminalId, configPath)
+  flags += ` --mcp-config ${configPath}`
+  const settingsPath = writeHookSettings(terminalId, bridgePort, bridgeToken)
+  hookSettingsPaths.set(terminalId, settingsPath)
+  flags += ` --settings ${settingsPath}`
+  registerSession(sessionId, terminalId)
+  return flags
+}
+
+/**
+ * Cleanup run on PTY exit or kill: drop the temp MCP-config + hook-settings
+ * files and forget the session→terminal hook routing. All three are no-ops when
+ * nothing was wired (no bridge), matching the previous unconditional cleanup.
+ */
+function makeCleanup(terminalId: string): () => void {
+  return () => {
+    cleanupMcpConfig(terminalId)
+    cleanupHookSettings(terminalId)
+    unregisterTerminal(terminalId)
+  }
+}
+
+/**
+ * Build the launch plan for a fresh or resumed Claude session.
+ *
+ * No `--output-format stream-json`: the flag is silently ignored when stdin is
+ * a TTY (which node-pty always provides) on CLI 2.1.148+. Session id capture
+ * flows through `--session-id <uuid>`; see #95.
+ *
+ * We pin the session id we want claude to use. For fresh tabs we generate a
+ * UUID and tell claude to use it via `--session-id`; for resumed tabs the id is
+ * already known from the resume arg. Either way the session id is known to
+ * SimpleEdit *before* claude has written anything. Note: claude rejects
+ * `--session-id <new>` alongside `--resume <existing>` unless `--fork-session`
+ * is also passed; the resume path therefore does not set `--session-id` and
+ * reuses the resumed id directly.
+ */
+function buildLaunch(ctx: LaunchContext): LaunchPlan {
+  const { terminalId, resumeSessionId, bridgePort, bridgeToken, model } = ctx
+
+  let command = 'claude'
+  // Only `ollama` swaps the brain via an inline env override. It is prefixed
+  // INLINE on the command string (not the pty env object) so a login shell's
+  // ~/.zshrc can't clobber ANTHROPIC_BASE_URL/API_KEY after the env is set.
+  // Both endpoint and model land in a shell `-c` string, so validate before
+  // interpolating — treat them as injection surface.
+  if (model?.provider === 'ollama') {
+    const endpoint = model.endpoint ?? 'http://localhost:11434'
+    if (!/^https?:\/\/[A-Za-z0-9._:-]+(?:\/[A-Za-z0-9._~/-]*)?$/.test(endpoint)) {
+      throw new Error(`Invalid Ollama endpoint: ${endpoint}`)
+    }
+    command = `ANTHROPIC_BASE_URL=${endpoint} ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= claude`
+  }
+
+  let sessionId: string
+  let sessionFlag: string
+  if (resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)) {
+    sessionId = resumeSessionId
+    sessionFlag = ` --resume ${resumeSessionId}`
+  } else {
+    sessionId = randomUUID()
+    sessionFlag = ` --session-id ${sessionId}`
+  }
+
+  // MCP config + location-tracking hooks (Stage 2). Registers the
+  // session_id → terminalId mapping so hook POSTs route back here.
+  command += buildBridgeFlags(terminalId, sessionId, bridgePort, bridgeToken)
+  command += sessionFlag
+
+  if (model?.model) {
+    if (!/^[A-Za-z0-9._:/-]+$/.test(model.model)) throw new Error(`Invalid model id: ${model.model}`)
+    command += ` --model ${model.model}`
+  }
+
+  return { command, sessionId, cleanup: makeCleanup(terminalId) }
+}
+
+/**
+ * Build the launch plan for a forked session in the target worktree, resuming
+ * from `sourceSessionId` and pinning the new session to `forkUuid`.
+ *
+ * Flag order verified empirically on CLI 2.1.148 (critic's pre-PR4 audit §4):
+ * all three orderings of --session-id / --resume / --fork-session work. Using
+ * the form that reads "fork the source session as a new id". MCP config +
+ * location-tracking hooks are wired the same as a fresh spawn — the fork's
+ * session id is `forkUuid`, registered for hook routing (#87).
+ */
+export function buildForkLaunch(args: {
+  placeholderTabId: string
+  sourceSessionId: string
+  forkUuid: string
+  bridgePort?: number
+  bridgeToken?: string
+}): LaunchPlan {
+  const { placeholderTabId, sourceSessionId, forkUuid, bridgePort, bridgeToken } = args
+
+  const bridgeFlags = buildBridgeFlags(placeholderTabId, forkUuid, bridgePort, bridgeToken)
+
+  const command =
+    `claude --session-id ${forkUuid}` +
+    ` --resume ${sourceSessionId}` +
+    ` --fork-session` +
+    bridgeFlags
+
+  return { command, sessionId: forkUuid, cleanup: makeCleanup(placeholderTabId) }
+}
+
+/**
+ * Build the launch plan for `claude agents` — the interactive TUI for
+ * inspecting / managing Claude Code agents. Unlike a normal Claude spawn this
+ * wires no MCP bridge, no hooks, and captures no session id: agents is purely
+ * TUI-driven and emits no machine-readable stream.
+ */
+export function buildAgentsLaunch(): { command: string } {
+  return { command: 'claude agents' }
+}
+
+export const claudeProvider: AgentProvider = {
+  id: 'claude',
+  buildLaunch,
+  detectStatus(chunk: string): ClaudeStatus | null {
+    let status: ClaudeStatus | null = null
+    for (const title of extractOscTitles(chunk)) {
+      const s = statusFromTitle(title)
+      if (s !== null) status = s
+    }
+    return status
+  },
+  fork(options: ClaudeForkOptions, webContents: WebContents): Promise<void> {
+    return performFork(options, webContents)
+  },
+  capabilities: {
+    status: 'osc',
+    resume: true,
+    fork: true,
+    tracking: 'full',
+    mcp: true,
+    modelOverride: 'env',
+  },
+}
+
+registerProvider(claudeProvider)

@@ -30,7 +30,7 @@ import {
   watchGitRefs, unwatchGitRefs, unwatchAllGitRefs, triggerStatusCheck
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
-import { performFork } from './claude-fork'
+import { getProvider } from './agents/provider'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
@@ -39,10 +39,20 @@ import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeReso
 import { resolveBareRepo } from './cwd-tracker'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
+import {
+  isAvailable as isOllamaAvailable,
+  pull as pullModel,
+  listInstalledModels,
+  listRecommendedModels,
+  getModelConfig,
+  setModelConfig,
+  detectHardware,
+  CLAUDE_MODELS
+} from './models'
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions } from '../shared/ipc-types'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -201,6 +211,59 @@ function createWindow(repoPath?: string): BrowserWindow {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+
+  return win
+}
+
+// ── Settings window ───────────────────────────────────────
+// A single shared settings window (not per-repo): the model config it edits is
+// global. Reuse the existing window when it's already open.
+let settingsWindow: BrowserWindow | null = null
+
+function createSettingsWindow(): BrowserWindow {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus()
+    return settingsWindow
+  }
+
+  const win = new BrowserWindow({
+    width: 820,
+    height: 640,
+    minWidth: 720,
+    minHeight: 480,
+    show: false,
+    title: 'Settings — SimpleEdit',
+    titleBarStyle: 'hiddenInset',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.mjs'),
+      sandbox: false,
+      ...(isUnobtrusiveTest ? { backgroundThrottling: false } : {})
+    }
+  })
+  settingsWindow = win
+
+  win.on('closed', () => {
+    settingsWindow = null
+  })
+
+  win.on('ready-to-show', () => {
+    if (isUnobtrusiveTest) {
+      win.showInactive()
+    } else {
+      win.show()
+    }
+  })
+
+  win.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?view=settings`)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'), { search: 'view=settings' })
   }
 
   return win
@@ -387,7 +450,7 @@ function registerAllHandlers(): void {
   })
 
   // ── Claude stream ───────────────────────────────────────
-  ipcMain.handle('claude:spawn', (event, options: PtySpawnOptions) => {
+  ipcMain.handle('claude:spawn', (event, options: ClaudeSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
     spawnClaudeTerminal(
       {
@@ -412,7 +475,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('claude:fork', async (event, options) => {
-    await performFork(options, event.sender)
+    await getProvider('claude').fork!(options, event.sender)
   })
 
   // ── Git ─────────────────────────────────────────────────
@@ -490,6 +553,49 @@ function registerAllHandlers(): void {
     saveOverview(worktreePath, commitHash, overview)
   })
 
+  // ── Models (local Ollama + cloud Claude) ────────────────
+  ipcMain.handle('models:available', () => {
+    return isOllamaAvailable()
+  })
+
+  ipcMain.handle('models:claude', () => {
+    return CLAUDE_MODELS
+  })
+
+  ipcMain.handle('models:hardware', () => {
+    return detectHardware()
+  })
+
+  ipcMain.handle('models:installed', () => {
+    return listInstalledModels()
+  })
+
+  ipcMain.handle('models:recommended', () => {
+    return listRecommendedModels()
+  })
+
+  ipcMain.handle('models:pull', async (event, name: string) => {
+    const wc = event.sender
+    await pullModel(name, (p) => {
+      if (!wc.isDestroyed()) {
+        wc.send('models:pull-progress', {
+          name,
+          status: p.status,
+          completed: p.completed,
+          total: p.total
+        })
+      }
+    })
+  })
+
+  ipcMain.handle('models:config-get', () => {
+    return getModelConfig()
+  })
+
+  ipcMain.handle('models:config-set', (_event, partial: Partial<ModelConfig>) => {
+    return setModelConfig(partial)
+  })
+
   // ── LSP ─────────────────────────────────────────────────
   ipcMain.handle('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
     try {
@@ -557,9 +663,29 @@ app.whenReady().then(() => {
 
   // ── Application menu ─────────────────────────────────────
   const isMac = process.platform === 'darwin'
+  const settingsItem: Electron.MenuItemConstructorOptions = {
+    label: 'Settings…',
+    accelerator: 'CmdOrCtrl+,',
+    click: () => createSettingsWindow()
+  }
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac
-      ? [{ role: 'appMenu' as const }]
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about' as const },
+            { type: 'separator' as const },
+            settingsItem,
+            { type: 'separator' as const },
+            { role: 'services' as const },
+            { type: 'separator' as const },
+            { role: 'hide' as const },
+            { role: 'hideOthers' as const },
+            { role: 'unhide' as const },
+            { type: 'separator' as const },
+            { role: 'quit' as const }
+          ]
+        } satisfies Electron.MenuItemConstructorOptions]
       : []),
     {
       label: 'File',
@@ -569,7 +695,8 @@ app.whenReady().then(() => {
           accelerator: 'CmdOrCtrl+Shift+N',
           click: () => createWindow()
         },
-        { type: 'separator' },
+        ...(isMac ? [] : [{ type: 'separator' as const }, settingsItem]),
+        { type: 'separator' as const },
         isMac ? { role: 'close' as const } : { role: 'quit' as const }
       ]
     },

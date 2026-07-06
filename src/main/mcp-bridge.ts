@@ -288,11 +288,11 @@ async function locateWorktree(
  * resolves 200 — hooks must never block Claude even if we can't route them.
  *
  * Two signals feed the session's repo trail:
- *   • `cwd` — where the agent IS. Drives `claude:cwd`, which both records the
+ *   • `cwd` — where the agent IS. Drives `session:cwd`, which both records the
  *     touch and (when the viewer is closed) repoints the workspace view.
  *   • the touched `file_path` — a file the agent read/edited, which may live in
  *     a DIFFERENT repo the cwd never entered (the agent doesn't `cd` to read a
- *     file). Drives `claude:repo-touch`, which records the touch ONLY: a glance
+ *     file). Drives `session:repo-touch`, which records the touch ONLY: a glance
  *     at a sibling repo should surface it in the picker, not yank the view.
  *
  * Cost note: the hook response is awaited before we 200, so a miss on either
@@ -317,7 +317,7 @@ async function handleHook(body: string, webContents: WebContents): Promise<void>
   const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
 
   if (!webContents.isDestroyed()) {
-    webContents.send('claude:cwd', {
+    webContents.send('session:cwd', {
       terminalId,
       cwd: signal.cwd,
       worktreePath: cwd.worktreePath,
@@ -331,7 +331,7 @@ async function handleHook(body: string, webContents: WebContents): Promise<void>
   const file = await locateWorktree(webContents.id, dirname(signal.filePath), worktrees)
   if (!file.worktreePath || file.worktreePath === cwd.worktreePath) return
   if (!webContents.isDestroyed()) {
-    webContents.send('claude:repo-touch', {
+    webContents.send('session:repo-touch', {
       terminalId,
       worktreePath: file.worktreePath,
       repoPath: file.repoPath,
