@@ -44,31 +44,31 @@ a real drop for heavy coding. Ollama recommends 64k+ context (serious VRAM), and
 prompt cache locally, so interactive throughput can be poor. Surface these as hints, don't
 hide them.
 
-## ⚠ Known blocker: interactive local via Claude Code (Ollama #13949)
+## Ollama #13949 — interactive local via Claude Code (RESOLVED via env var)
 
-**Verified 2026-07 on Ollama 0.31.1 + gpt-oss:20b.** Launching Claude Code against a *local*
-Ollama model (the interactive spike below) does not work: Claude Code probes
-`/v1/messages/count_tokens?beta=true`, Ollama 404s that unsupported endpoint, and the 404
-**degrades Ollama's `/v1/messages` handler so every subsequent request hangs indefinitely** —
-the symptom is a session that produces no output. Unresolved upstream
-([ollama#13949](https://github.com/ollama/ollama/issues/13949)), affects multiple
-models/versions; the only workaround is restarting Ollama (recurs each session). Ollama's
-**native `/api/chat` and OpenAI-compat `/v1/chat/completions` work fine** — it is specifically
-the Anthropic endpoint Claude Code uses that breaks.
+**Verified 2026-07 on Ollama 0.31.1 + gpt-oss:20b.** Claude Code probes
+`/v1/messages/count_tokens?beta=true`; Ollama 404s that unsupported endpoint, and the 404
+poisons Ollama's `/v1/messages` handler so every subsequent request hangs indefinitely — a
+session with no output ([ollama#13949](https://github.com/ollama/ollama/issues/13949),
+unresolved upstream).
 
-What this means for what we built:
-- The v0 spike's **Claude cloud-model selection works** (it's just `--model opus` etc., no
-  Ollama) and is worth keeping. Its **local-Ollama branch is dead for interactive use** — so
-  the interactive picker should not offer local Ollama models until upstream is fixed (they
-  hang); reserve local models for the bounded-task defaults, which work.
-- **Local interactive coding needs a different harness** — OpenCode (provider-agnostic, uses
-  the working OpenAI endpoint; gpt-oss confirmed to tool-call through it on the test machine)
-  via the [agent-providers](./agent-providers.md) path. Antigravity is a separate *cloud* agent
-  (Google), not a local path.
-- **Local bounded tasks are unblocked** — the substrate's `DirectRunner`
-  ([bounded-tasks](./bounded-tasks.md)) hits Ollama's native/OpenAI endpoint directly,
-  bypassing both Claude Code and the broken Anthropic endpoint. This is now the robust,
-  ship-today local path, and it matches the cost thesis.
+**Fix: set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` on the local spawn.** It suppresses the
+`count_tokens` probe, so Ollama never 404s, never poisons, and the session works. Verified: with
+that single env var, `claude -p` against gpt-oss returns normally (without it, it hangs). The
+Claude provider sets it in the `ollama` branch of `buildLaunch`, so **interactive local coding
+via Claude Code is enabled** and local models are back in the interactive picker.
+
+Consequences:
+- **Interactive local runs on Claude Code's (good) harness** — no proxy, no upstream wait; the
+  flag is our fix and is inert once Ollama patches #13949.
+- The **OpenCode provider is now optional** for local-interactive (Claude Code covers it) — it
+  remains valuable for backend diversity, not a requirement. Antigravity stays cloud-only.
+- **Local bounded tasks** still run via `DirectRunner` on Ollama's native endpoint
+  ([bounded-tasks](./bounded-tasks.md)) — that path never touched the Anthropic endpoint.
+- Caveat: Claude Code can't pass `num_ctx` over Ollama's Anthropic endpoint, so an interactive
+  local session runs at Ollama's default context for the model (raise it via
+  `OLLAMA_CONTEXT_LENGTH` / a Modelfile if the harness's large prompt truncates). Quality and
+  speed remain model-dependent.
 
 ## Model discovery & install
 

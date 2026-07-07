@@ -29,8 +29,11 @@ describe('claude provider buildLaunch — model application', () => {
   it('ollama model prefixes the inline env override and appends --model', () => {
     const command = launch({ provider: 'ollama', model: 'gpt-oss:20b' })
     expect(command.startsWith(
-      'ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= claude',
+      'ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude',
     )).toBe(true)
+    // The disable-nonessential-traffic flag is what suppresses Claude Code's
+    // /v1/messages/count_tokens probe that otherwise hangs Ollama (#13949).
+    expect(command).toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1')
     expect(command.endsWith(' --model gpt-oss:20b')).toBe(true)
   })
 

@@ -173,7 +173,7 @@
       >
         <span>Installed · local</span>
         <span class="text-[11px] font-medium normal-case tracking-normal text-zinc-500">
-          available as Review / Tour defaults — interactive local is blocked (Ollama #13949)
+          tool-capable models can run the interactive agent
         </span>
       </div>
       {#if sortedInstalled.length === 0}
@@ -205,14 +205,13 @@
             <span class="rounded-full px-2 py-1 text-[11px] font-semibold tabular-nums {fitClasses(model.fit)}">
               {fitLabel(model.fit)}
             </span>
-            <!-- Interactive quick-picker is Claude-cloud-only for now: launching
-                 Claude Code against a local model hangs (Ollama #13949). Local
-                 models are chosen as Review/Tour defaults instead. -->
             <Toggle
-              checked={false}
-              disabled={true}
-              label="Local models can't run the interactive agent yet (Ollama #13949) — set them as a Review/Tour default instead"
-              onchange={() => {}}
+              checked={allowlist.has(model.name)}
+              disabled={!model.toolCapable}
+              label={model.toolCapable
+                ? `Show ${model.name} in quick picker`
+                : `${model.name} cannot run the interactive agent`}
+              onchange={(v) => toggleSubmenu(model.name, v)}
             />
           </div>
         {/each}
