@@ -33,6 +33,7 @@ import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } f
 import { getProvider } from './agents/provider'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
+import { startScreening, cancelScreening, cancelAllScreening } from './screenprs'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
@@ -52,7 +53,7 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions, ScreenPrsFilters } from '../shared/ipc-types'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -536,6 +537,15 @@ function registerAllHandlers(): void {
     cancelReview(worktreePath, commitHash)
   })
 
+  // ── Screen PRs ─────────────────────────────────────────
+  ipcMain.handle('screenprs:start', (event, filters: ScreenPrsFilters) => {
+    return startScreening(filters, event.sender)
+  })
+
+  ipcMain.handle('screenprs:cancel', (event) => {
+    cancelScreening(event.sender)
+  })
+
   // ── Tour ───────────────────────────────────────────────
   ipcMain.handle('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
     return startTour(worktreePath, commitHash, event.sender, overrideOverview)
@@ -725,6 +735,7 @@ app.on('before-quit', () => {
   try { unwatchAllEditorFiles() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
+  try { cancelAllScreening() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
 })
@@ -737,6 +748,7 @@ app.on('window-all-closed', () => {
   try { unwatchAllEditorFiles() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
+  try { cancelAllScreening() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
