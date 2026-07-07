@@ -151,12 +151,19 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   // ~/.zshrc can't clobber ANTHROPIC_BASE_URL/API_KEY after the env is set.
   // Both endpoint and model land in a shell `-c` string, so validate before
   // interpolating — treat them as injection surface.
+  //
+  // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is required for local Ollama:
+  // Claude Code otherwise probes `/v1/messages/count_tokens`, which Ollama 404s,
+  // and that 404 poisons Ollama's `/v1/messages` handler so every subsequent
+  // request hangs indefinitely (Ollama #13949). Disabling the non-essential
+  // probe sidesteps the poison entirely — verified: without it the session hangs
+  // with no output; with it a local session works.
   if (model?.provider === 'ollama') {
     const endpoint = model.endpoint ?? 'http://localhost:11434'
     if (!/^https?:\/\/[A-Za-z0-9._:-]+(?:\/[A-Za-z0-9._~/-]*)?$/.test(endpoint)) {
       throw new Error(`Invalid Ollama endpoint: ${endpoint}`)
     }
-    command = `ANTHROPIC_BASE_URL=${endpoint} ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= claude`
+    command = `ANTHROPIC_BASE_URL=${endpoint} ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude`
   }
 
   let sessionId: string
