@@ -34,6 +34,7 @@ import { getProvider } from './agents/provider'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startScreening, cancelScreening, cancelAllScreening } from './screenprs'
+import { startDeepReview, cancelDeepReview, cancelAllDeepReviews } from './deep-review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
@@ -54,6 +55,7 @@ import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions, ScreenPrsFilters } from '../shared/ipc-types'
+import type { PrContext } from '../shared/screenprs'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -546,6 +548,14 @@ function registerAllHandlers(): void {
     cancelScreening(event.sender)
   })
 
+  ipcMain.handle('screenprs:deep-start', (event, context: PrContext) => {
+    return startDeepReview(context, event.sender)
+  })
+
+  ipcMain.handle('screenprs:deep-cancel', (_event, url: string) => {
+    cancelDeepReview(url)
+  })
+
   // ── Tour ───────────────────────────────────────────────
   ipcMain.handle('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
     return startTour(worktreePath, commitHash, event.sender, overrideOverview)
@@ -736,6 +746,7 @@ app.on('before-quit', () => {
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
+  try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
 })
@@ -749,6 +760,7 @@ app.on('window-all-closed', () => {
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
+  try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {

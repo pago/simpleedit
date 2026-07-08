@@ -7,6 +7,9 @@ type Handlers = {
   'screenprs:screening'?: (d: EventMap['screenprs:screening']) => void
   'screenprs:card'?: (d: EventMap['screenprs:card']) => void
   'screenprs:status'?: (d: EventMap['screenprs:status']) => void
+  'screenprs:deep-lens'?: (d: EventMap['screenprs:deep-lens']) => void
+  'screenprs:deep-result'?: (d: EventMap['screenprs:deep-result']) => void
+  'screenprs:deep-status'?: (d: EventMap['screenprs:deep-status']) => void
 }
 
 let handlers: Handlers
@@ -80,8 +83,27 @@ describe('screenPrsStore ingestion', () => {
     expect(screenPrsStore.byBucket().attention).toHaveLength(1)
   })
 
+  it('tracks deep-review lens progress, result, and status by url', () => {
+    handlers['screenprs:deep-status']!({ url: 'u1', status: 'running' })
+    handlers['screenprs:deep-lens']!({ url: 'u1', lens: 'soundness', status: 'running' })
+    handlers['screenprs:deep-lens']!({ url: 'u1', lens: 'soundness', status: 'done' })
+    handlers['screenprs:deep-result']!({
+      url: 'u1',
+      findings: [{ lens: 'soundness', severity: 'blocking', file: 'a.ts', title: 'npe', detail: 'guard' }],
+    })
+    handlers['screenprs:deep-status']!({ url: 'u1', status: 'done' })
+
+    const d = screenPrsStore.deepFor('u1')
+    expect(d?.status).toBe('done')
+    expect(d?.lenses.soundness).toBe('done')
+    expect(d?.findings).toHaveLength(1)
+    // A different PR is unaffected.
+    expect(screenPrsStore.deepFor('other')).toBeUndefined()
+  })
+
   it('unsubscribes cleanly', () => {
     dispose()
     expect(handlers['screenprs:card']).toBeUndefined()
+    expect(handlers['screenprs:deep-status']).toBeUndefined()
   })
 })

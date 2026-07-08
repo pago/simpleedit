@@ -90,6 +90,46 @@ export function bucketOf(pr: Pick<ScreenPrCard, 'ci' | 'approvedByOther' | 'impa
 
 export const BUCKET_ORDER: ScreenPrBucket[] = ['attention', 'quick', 'waiting', 'fyi']
 
+// ── Deep review ───────────────────────────────────────────────────────────────
+// A thorough pass over a chosen PR: fan out focused review *lenses*, then a
+// synthesis step dedups/ranks/drops-noise. Mostly local by default; cloud only
+// for the lenses that earn it (plans/screen-prs.md §3.2).
+
+export type DeepLensId = 'intent' | 'tests' | 'soundness' | 'types' | 'architecture'
+
+export const DEEP_LENS_ORDER: DeepLensId[] = ['soundness', 'intent', 'tests', 'types', 'architecture']
+
+export const DEEP_LENS_LABEL: Record<DeepLensId, string> = {
+  soundness: 'Soundness & bugs',
+  intent: 'Intent vs. implementation',
+  tests: 'Test coverage',
+  types: 'Type safety',
+  architecture: 'Architecture & design',
+}
+
+export type DeepSeverity = 'blocking' | 'concern' | 'note'
+
+export interface DeepFinding {
+  lens: DeepLensId
+  severity: DeepSeverity
+  file: string
+  line?: string
+  title: string
+  detail: string
+}
+
+export type DeepReviewStatus = 'idle' | 'running' | 'done' | 'error'
+export type DeepLensStatus = 'running' | 'done' | 'error'
+
+export const SEVERITY_RANK: Record<DeepSeverity, number> = { blocking: 0, concern: 1, note: 2 }
+
+/** Sort curated findings blocking-first, then by lens order, then file. */
+export function compareDeepFindings(a: DeepFinding, b: DeepFinding): number {
+  if (SEVERITY_RANK[a.severity] !== SEVERITY_RANK[b.severity]) return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
+  if (a.lens !== b.lens) return DEEP_LENS_ORDER.indexOf(a.lens) - DEEP_LENS_ORDER.indexOf(b.lens)
+  return a.file.localeCompare(b.file)
+}
+
 /**
  * Within a bucket: attention worst-first (high impact, most issues), quick
  * smallest-first (fastest to clear), everything else newest-first. Total order,
