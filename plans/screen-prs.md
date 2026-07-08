@@ -1,7 +1,41 @@
 # Plan: Screen PRs — fan-out triage → deep review → decide
 
-Status: **UX settled, design locked (2026-07-07)** · Branch: `feat/run-fanout` · Worktree: `../fanout`
+Status: **UX settled (2026-07-07); most of it built & merged (2026-07-08)** · Worktree: `../fanout`
 Reference prototype (interactive, HTML): https://claude.ai/code/artifact/a76d3a82-1c4f-4e41-b7d1-539c49abde09
+
+## Implementation status (2026-07-08)
+
+**Built & merged to `main`** (PRs #150 runFanout, #151 triage logic, #152 triage UI, #153 deep
+review, #154 cache + resilience + Discuss + sidebar split button):
+- **Triage** — `runFanout` over PRs, diff-only, local (Haiku fallback); streaming buckets, per-file
+  syntax-highlighted diff (`lib/parseDiff.ts` + Monaco `colorize`), selectable in-progress cards.
+- **Deep review** — lens fan-out + synthesis reduce (`deep-review.ts`, `tasks/deep-review-lenses.ts`),
+  per-lens model config + Settings pane, backend concurrency gate (`agent-tasks/gate.ts`).
+- **Persistent cache** (`screenprs-cache.ts`) — SHA-keyed; re-screen only re-runs changed PRs;
+  ⌥-click Re-screen forces. Deep results cached per SHA.
+- **Progress** — `queued`/`screening`/`triaging` events → "Triaging now / scheduled / gathering"
+  phases; per-PR `timeoutMs` in `runFanout` so a wedged model can't freeze the batch.
+- **Discuss with Agent** — spawns a primed Claude session (`initialPrompt` threaded through
+  `claude:spawn`→`buildLaunch`); brief = PR url + findings + review-session guardrails; agent uses
+  `gh` (URL-based) to inspect/checkout/post. Model via the shared **SplitButton** (also now the
+  sidebar ✦ Agent button).
+- **Settings** — Default Model pane has a Screen PRs (triage) field; Deep Review pane per-lens.
+
+**Load-bearing gotcha (cost us a long debug):** anything passed across Electron IPC
+(`window.api.invoke`) must be a **plain object** — Svelte 5 `$state` proxies throw "An object could
+not be cloned". Use `$state.snapshot(...)`. Bit us on `screenprs:start` filters, `deep-start`
+context, `config-set`, and the Discuss model ref.
+
+**Operational:** qwen3.6:27b (27B reasoning) **wedged Ollama** during triage — too heavy; use Haiku
+(cloud, parallel) or gpt-oss:20b for triage. The `timeoutMs` guard now bounds this.
+
+**REMAINING (next sessions):**
+1. **Review composer** — the in-app *human* path: collect line comments (from findings / diff
+   clicks / own) + summary + verdict → `gh pr review --approve|--comment|--request-changes` with a
+   **confirm-guard**. First thing that WRITES to GitHub. (The `gh` write wrappers go in `github/gh.ts`.)
+2. Repo-aware deep-review lenses on a **checked-out worktree** (diff-only today).
+3. Stacked-PR grouping (needs `headRefName` in the gh adapter/context).
+4. Quick-approve ✓ on cards (one-click approve, no detail).
 
 > A SimpleEdit feature adapted from the `screen-prs` Claude skill: screen the PR review
 > queue and produce a ranked, streaming overview of *what to review next*, then carry a chosen
