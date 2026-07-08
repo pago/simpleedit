@@ -17,8 +17,8 @@ review, #154 cache + resilience + Discuss + sidebar split button):
   phases; per-PR `timeoutMs` in `runFanout` so a wedged model can't freeze the batch.
 - **Discuss with Agent** — spawns a primed Claude session (`initialPrompt` threaded through
   `claude:spawn`→`buildLaunch`); brief = PR url + findings + review-session guardrails; agent uses
-  `gh` (URL-based) to inspect/checkout/post. Model via the shared **SplitButton** (also now the
-  sidebar ✦ Agent button).
+  `gh` (URL-based) to inspect/checkout/post. Model via the shared **SplitButton** (`components/
+  SplitButton.svelte`).
 - **Settings** — Default Model pane has a Screen PRs (triage) field; Deep Review pane per-lens.
 
 **Load-bearing gotcha (cost us a long debug):** anything passed across Electron IPC
@@ -36,6 +36,10 @@ context, `config-set`, and the Discuss model ref.
 2. Repo-aware deep-review lenses on a **checked-out worktree** (diff-only today).
 3. Stacked-PR grouping (needs `headRefName` in the gh adapter/context).
 4. Quick-approve ✓ on cards (one-click approve, no detail).
+5. **Reuse SplitButton for the sidebar ✦ Agent button** — attempted, reverted: it regressed the
+   accessible agent-view menu (e2e `agent-view-menu*` drive keyboard nav + `menuitem` roles + a
+   "New Claude session" item). Redo needs SplitButton's menu to be a proper keyboard-navigable
+   menu (roles + arrow/Enter) plus updating those e2e tests.
 
 > A SimpleEdit feature adapted from the `screen-prs` Claude skill: screen the PR review
 > queue and produce a ranked, streaming overview of *what to review next*, then carry a chosen
