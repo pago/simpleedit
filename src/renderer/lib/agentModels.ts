@@ -9,7 +9,8 @@ export interface AgentModel {
   id: string
   label: string
   tier: 'cloud' | 'local'
-  ref: ModelRef
+  /** Absent = the CLI's default model (no `--model` flag). */
+  ref?: ModelRef
 }
 
 export async function loadAgentModels(): Promise<AgentModel[]> {

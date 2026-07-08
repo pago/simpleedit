@@ -263,7 +263,9 @@ export const sessionsStore = {
       id,
       worktreePath: launchDir,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
-      ...(model ? { model } : {}),
+      // $state.snapshot: `model` may be a Svelte proxy (e.g. an element of a
+      // $state model list) — Electron IPC structured-clone rejects proxies.
+      ...(model ? { model: $state.snapshot(model) } : {}),
       ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
     })
     // For cloud Claude, upgrade the raw model id to its human display name once

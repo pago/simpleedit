@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
   import ForkWorktreePicker, { type ForkTarget } from '../terminal/ForkWorktreePicker.svelte'
   import PromptModal from '../PromptModal.svelte'
+  import SplitButton from '../SplitButton.svelte'
+  import { loadAgentModels, type AgentModel } from '../../lib/agentModels'
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
-  import type { ModelRef } from '../../../shared/ipc-types'
   import { getClaudeStatusForTerminal } from '../../stores/claude-status.svelte'
   import { worktreeList, refreshWorktrees, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
@@ -54,14 +56,6 @@
     return GROUP_COLOR_CLASS[c] ?? GROUP_COLOR_CLASS.sky
   }
 
-  /** Claude sessions launch at the PROJECT ROOT (one Claude memory for all
-   * work); their workspace viewer defaults to the main worktree. */
-  function startClaude(): void {
-    const wt = mainWorktree()
-    const root = projectRoot() ?? wt?.path
-    if (root && wt) sessionsStore.createClaude(root, wt.path)
-  }
-
   function startAgents(): void {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
@@ -74,88 +68,20 @@
     if (wt) sessionsStore.createTerminal(wt.path)
   }
 
-  // ── new-session menu (✦ button: claude / agent view / allowlisted models) ──
-  let newMenu: { x: number; y: number } | null = $state(null)
-  let newButtonEl: HTMLButtonElement | undefined = $state()
+  // ── new-session split button (✦ Agent: main = new Claude on the chosen model;
+  //    caret = model menu + Agent View). "Default" keeps the plain-cloud spawn. ──
+  const DEFAULT_MODEL: AgentModel = { id: 'default', label: 'Default', tier: 'cloud' }
+  let agentModels = $state<AgentModel[]>([DEFAULT_MODEL])
+  let agentModelId = $state<string>('default')
+  onMount(async () => {
+    agentModels = [DEFAULT_MODEL, ...(await loadAgentModels().catch(() => []))]
+  })
 
-  const NEW_MENU_DEFAULTS: ContextMenuItem[] = [
-    { id: 'new-claude', label: 'New Claude session' },
-    { id: 'new-agents', label: 'New Agent View session' },
-  ]
-
-  let newMenuItems: ContextMenuItem[] = $state(NEW_MENU_DEFAULTS)
-  /** key (allowlist entry) → ModelRef for the current menu; rebuilt on open. */
-  let modelMenuRefs: Map<string, ModelRef> = $state(new Map())
-
-  /**
-   * Resolve the persisted submenu allowlist against the live catalogs into
-   * "start a session with model X" entries. A Claude catalog entry's key is its
-   * anthropic model id; an installed Ollama model's key is its name (tool-capable
-   * ones only — review-only models can't drive the interactive agent). Keys that
-   * no longer resolve (uninstalled / dropped from the catalog) are skipped; falls
-   * back to the two defaults if the fetch fails.
-   */
-  async function buildNewMenu(): Promise<void> {
-    try {
-      const [config, claudeModels, installed] = await Promise.all([
-        window.api.invoke('models:config-get'),
-        window.api.invoke('models:claude'),
-        window.api.invoke('models:installed'),
-      ])
-
-      const resolver = new Map<string, { ref: ModelRef; label: string }>()
-      for (const m of claudeModels) {
-        resolver.set(m.model, { ref: { provider: 'anthropic', model: m.model }, label: m.displayName })
-      }
-      // Tool-capable local models are startable interactively now that the
-      // Ollama #13949 hang is fixed (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).
-      for (const m of installed) {
-        if (!m.toolCapable) continue
-        resolver.set(m.name, { ref: { provider: 'ollama', model: m.name }, label: m.name })
-      }
-
-      const refs = new Map<string, ModelRef>()
-      const resolved = config.submenuAllowlist.flatMap((key) => {
-        const hit = resolver.get(key)
-        if (!hit) return []
-        refs.set(key, hit.ref)
-        return [{ key, label: hit.label }]
-      })
-
-      modelMenuRefs = refs
-      newMenuItems = [
-        ...NEW_MENU_DEFAULTS,
-        ...resolved.map((m, i) => ({
-          id: `model:${m.key}`,
-          label: `New session · ${m.label}`,
-          separatorBefore: i === 0,
-        })),
-      ]
-    } catch {
-      modelMenuRefs = new Map()
-      newMenuItems = NEW_MENU_DEFAULTS
-    }
-  }
-
-  function pickNewMenuItem(id: string): void {
-    if (id === 'new-claude') {
-      startClaude()
-    } else if (id === 'new-agents') {
-      startAgents()
-    } else if (id.startsWith('model:')) {
-      const ref = modelMenuRefs.get(id.slice('model:'.length))
-      if (!ref) return
-      const wt = mainWorktree()
-      const root = projectRoot() ?? wt?.path
-      if (root && wt) sessionsStore.createClaude(root, wt.path, { model: ref })
-    }
-  }
-
-  async function openNewMenuAtPointer(e: MouseEvent): Promise<void> {
-    e.preventDefault()
-    const { clientX: x, clientY: y } = e
-    await buildNewMenu()
-    newMenu = { x, y }
+  /** Start a Claude session on the picked model (no ref = the CLI default). */
+  function startAgentSession(m: AgentModel): void {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) sessionsStore.createClaude(root, wt.path, m.ref ? { model: m.ref } : {})
   }
 
   // ── per-session context menu / rename / fork ─────────────────────────────
@@ -706,18 +632,18 @@
   <div class="sticky top-0 z-10 -mx-3 flex items-center justify-between bg-zinc-900 px-4 pb-1 pt-2">
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Sessions</span>
     <div class="flex items-center gap-1">
-      <button
-        bind:this={newButtonEl}
-        class="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-orange-400/70 hover:bg-zinc-700 hover:text-orange-300 disabled:opacity-50"
-        onclick={startClaude}
-        oncontextmenu={openNewMenuAtPointer}
+      <SplitButton
+        label="Agent"
+        icon="✦"
+        size="sm"
+        tone="agent"
+        models={agentModels}
+        bind:selectedId={agentModelId}
+        onstart={startAgentSession}
         disabled={worktreeList().length === 0}
-        aria-label="New Claude session"
-        aria-haspopup="menu"
-        title="New Claude session (⌘T · right-click for Agent View)"
-      >
-        ✦ Agent
-      </button>
+        extraItems={[{ id: 'agents', label: 'New Agent View session' }]}
+        onextra={() => startAgents()}
+      />
       <button
         class="flex h-5 items-center rounded px-1.5 text-[11px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
         onclick={startTerminal}
@@ -728,19 +654,6 @@
       </button>
     </div>
   </div>
-
-  {#if newMenu}
-    <ContextMenu
-      x={newMenu.x}
-      y={newMenu.y}
-      items={newMenuItems}
-      onpick={pickNewMenuItem}
-      onclose={() => {
-        newMenu = null
-        newButtonEl?.focus()
-      }}
-    />
-  {/if}
 
   {#if sessions.length === 0}
     <p class="px-2 text-xs text-zinc-500">No sessions — start an agent or terminal</p>
