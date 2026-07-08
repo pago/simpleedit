@@ -70,7 +70,7 @@
     {:else if icon}
       <span>{icon}</span>
     {/if}
-    {label}{selected ? ` · ${selected.label}` : ''}
+    {label}{selected?.ref ? ` · ${selected.label}` : ''}
   </button>
   <button
     class="rounded-r-md border border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:opacity-50 {caretCls}"
