@@ -5,7 +5,7 @@
  */
 
 import type { Spec } from './gen-ui-catalog'
-import type { PrContext, ScreenPrCard } from './screenprs'
+import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus } from './screenprs'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -301,14 +301,24 @@ export type ScreenPrsRunStatus = 'running' | 'done' | 'error'
 export interface ScreenPrsInvokeMap {
   'screenprs:start': { args: [filters: ScreenPrsFilters]; result: void }
   'screenprs:cancel': { args: []; result: void }
+  /** Run a deep review on one PR (full context is passed — triage doesn't retain it). */
+  'screenprs:deep-start': { args: [context: PrContext]; result: void }
+  'screenprs:deep-cancel': { args: [url: string]; result: void }
 }
 
 export interface ScreenPrsEventMap {
-  /** A PR's context is gathered; render a placeholder card while triage runs. */
+  /** The queue is known (right after search): seed placeholders before gathering. */
+  'screenprs:queued': { refs: PrRef[] }
+  /** A PR's context is gathered; the placeholder gains size/CI/reviewers. */
   'screenprs:screening': { context: PrContext }
   /** A PR finished triage — full card with its derived bucket. */
   'screenprs:card': { card: ScreenPrCard }
   'screenprs:status': { status: ScreenPrsRunStatus; error?: string; total?: number }
+  /** Per-lens progress for a PR's deep review (keyed by the PR url). */
+  'screenprs:deep-lens': { url: string; lens: DeepLensId; status: DeepLensStatus }
+  /** The synthesized, curated deep-review findings for a PR. */
+  'screenprs:deep-result': { url: string; findings: DeepFinding[] }
+  'screenprs:deep-status': { url: string; status: DeepReviewStatus; error?: string }
 }
 
 export interface TourEventMap {
@@ -463,6 +473,21 @@ export interface HardwareInfo {
 /** Bounded features (plus interactive spawn) each get a per-feature default. */
 export type ModelFeatureKey = 'review' | 'tour' | 'screenPrs' | 'interactive'
 
+/** Per-lens deep-review setting: whether it runs, and (optionally) on which model.
+ *  An unset `model` inherits the `screenPrs` default (so deep review is as local
+ *  as triage unless a lens is explicitly escalated to cloud). */
+export interface DeepLensSetting {
+  enabled: boolean
+  model?: ModelRef
+}
+
+/** Deep-review configuration: per-lens settings + the synthesis model. */
+export interface DeepReviewConfig {
+  lenses: Partial<Record<DeepLensId, DeepLensSetting>>
+  /** Model for the synthesis/noise-kill reduce (defaults to the screenPrs model). */
+  synthesisModel?: ModelRef
+}
+
 /** Persisted model preferences (userData/config/models.json). */
 export interface ModelConfig {
   /** Per-feature default model. */
@@ -471,6 +496,8 @@ export interface ModelConfig {
   submenuAllowlist: string[]
   /** The last model a session was launched against. */
   lastUsed?: ModelRef
+  /** Deep-review lens config (Screen PRs). */
+  deepReview?: DeepReviewConfig
 }
 
 /** One NDJSON progress line from `POST /api/pull`, forwarded to the renderer. */

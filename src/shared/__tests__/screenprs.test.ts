@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { bucketOf, isCritical, compareInBucket, type ScreenPrCard, type TriageFinding } from '../screenprs'
+import { bucketOf, isCritical, compareInBucket, compareDeepFindings, type ScreenPrCard, type TriageFinding, type DeepFinding } from '../screenprs'
 
 const issue: TriageFinding = { label: 'issue', file: 'a.ts', title: 'bug' }
 const suggestion: TriageFinding = { label: 'suggestion', file: 'a.ts', title: 'nit' }
@@ -59,5 +59,24 @@ describe('compareInBucket', () => {
     const fyi = card({ approvedByOther: true, impact: 'low' })
     const sorted = [fyi, waiting, quick, attn].sort(compareInBucket).map((c) => c.bucket)
     expect(sorted).toEqual(['attention', 'quick', 'waiting', 'fyi'])
+  })
+})
+
+describe('compareDeepFindings', () => {
+  const f = (over: Partial<DeepFinding>): DeepFinding => ({
+    lens: 'soundness', severity: 'note', file: 'a.ts', title: 't', detail: 'd', ...over,
+  })
+  it('orders blocking → concern → note, then by lens order, then file', () => {
+    const note = f({ severity: 'note' })
+    const blocking = f({ severity: 'blocking' })
+    const concern = f({ severity: 'concern' })
+    expect([note, blocking, concern].sort(compareDeepFindings).map((x) => x.severity)).toEqual([
+      'blocking', 'concern', 'note',
+    ])
+  })
+  it('breaks severity ties by lens order (soundness before intent)', () => {
+    const intent = f({ severity: 'concern', lens: 'intent' })
+    const soundness = f({ severity: 'concern', lens: 'soundness' })
+    expect([intent, soundness].sort(compareDeepFindings).map((x) => x.lens)).toEqual(['soundness', 'intent'])
   })
 })

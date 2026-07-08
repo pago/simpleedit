@@ -11,7 +11,7 @@ import { RECOMMENDED_MODELS, computeFit } from './recommendations'
 export { isAvailable, pull } from './ollama'
 export { detectHardware } from './hardware'
 export { getModelConfig, setModelConfig } from './config'
-export { CLAUDE_MODELS } from './claude-catalog'
+export { CLAUDE_MODELS, DEFAULT_TRIAGE_MODEL } from './claude-catalog'
 
 const GB = 1024 ** 3
 // Context/runtime overhead on top of raw weights, added to every estimate.

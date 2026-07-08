@@ -1,13 +1,15 @@
 <script lang="ts">
   import ModelsPane from './ModelsPane.svelte'
   import DefaultModelPane from './DefaultModelPane.svelte'
+  import DeepReviewPane from './DeepReviewPane.svelte'
 
-  type PaneId = 'models' | 'defaults'
+  type PaneId = 'models' | 'defaults' | 'deepreview'
   let active = $state<PaneId>('models')
 
   const NAV: { id: PaneId; label: string }[] = [
     { id: 'models', label: 'Models' },
     { id: 'defaults', label: 'Default Model' },
+    { id: 'deepreview', label: 'Deep Review' },
   ]
 </script>
 
@@ -36,9 +38,13 @@
             <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
               <rect x="3" y="4" width="18" height="4" rx="1" /><rect x="3" y="10" width="18" height="4" rx="1" /><rect x="3" y="16" width="18" height="4" rx="1" />
             </svg>
-          {:else}
+          {:else if item.id === 'defaults'}
             <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
               <path d="M12 3v4M12 17v4M3 12h4M17 12h4" /><circle cx="12" cy="12" r="3.2" />
+            </svg>
+          {:else}
+            <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="7" cy="7" r="3.5" /><path d="M9.6 9.6L14 14" stroke-linecap="round" /><path d="M15 17h5M15 20h5" />
             </svg>
           {/if}
           {item.label}
@@ -54,8 +60,10 @@
     <div class="min-w-0 flex-1 overflow-y-auto px-6 pb-8 pt-6">
       {#if active === 'models'}
         <ModelsPane />
-      {:else}
+      {:else if active === 'defaults'}
         <DefaultModelPane />
+      {:else}
+        <DeepReviewPane />
       {/if}
     </div>
   </div>

@@ -63,13 +63,16 @@
     const ref = byKey.get(key)
     if (!ref) return
     const next = { ...defaults, [feature]: ref }
-    const config = await window.api.invoke('models:config-set', { defaults: next })
+    // Snapshot to a plain object: `defaults` (and its nested refs) are $state
+    // proxies, which Electron IPC structured-clone rejects.
+    const config = await window.api.invoke('models:config-set', { defaults: $state.snapshot(next) })
     defaults = config.defaults
   }
 
   const FIELDS: { feature: ModelFeatureKey; label: string; desc: string }[] = [
     { feature: 'review', label: 'Review', desc: 'Diff review — the “what should I look at” pass.' },
     { feature: 'tour', label: 'Tour', desc: 'Codebase tour & summaries.' },
+    { feature: 'screenPrs', label: 'Screen PRs (triage)', desc: 'PR triage + deep-review lenses. Defaults to Haiku when unset.' },
   ]
 </script>
 
@@ -139,7 +142,8 @@
       local models are selectable here even though they can’t run the interactive agent.
     </div>
     <p class="mt-3 max-w-[560px] text-[11.5px] text-zinc-500">
-      PR triage (screen-PRs) will appear here as a third task once it ships.
+      Screen PRs triage falls back to <span class="font-mono text-zinc-400">Haiku 4.5</span> when
+      unset; per-lens deep-review overrides live in the config.
     </p>
   {/if}
 </div>

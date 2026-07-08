@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import type { ScreenPrCard, ScreenPrBucket, PrCiStatus } from '../../../shared/screenprs'
   import { BUCKET_ORDER } from '../../../shared/screenprs'
   import PrDetail from './PrDetail.svelte'
+  import MagnifierIcon from './MagnifierIcon.svelte'
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
@@ -11,9 +13,9 @@
   let selectedKey = $derived(screenPrsStore.selectedKey())
   let selectedCard = $derived(screenPrsStore.selectedCard())
   let selectedContext = $derived(screenPrsStore.selectedContext())
-  let filters = $derived(screenPrsStore.filters())
 
   let done = $derived([...Object.values(byBucket)].reduce((n, arr) => n + arr.length, 0))
+  let hasAny = $derived(done > 0 || pending.length > 0)
 
   const BUCKETS: Record<ScreenPrBucket, { label: string; sub: string; stripe: string; head: string }> = {
     attention: { label: 'Needs your attention', sub: 'critical or high-impact', stripe: 'bg-red-500', head: 'text-red-400' },
@@ -22,17 +24,37 @@
     fyi: { label: 'Already approved — FYI', sub: 'covered by others', stripe: 'bg-zinc-600', head: 'text-zinc-400' },
   }
 
-  let owner = $state(filters.owner ?? '')
+  // Org/cutoff seeded once from the store's current filter (not reactive — these
+  // are editable inputs).
+  let owner = $state(screenPrsStore.filters().owner ?? '')
   let cutoff = $state('30')
 
+  // Read-only preview of which model triage/deep review will run on. Refetched on
+  // mount and whenever screening starts, so a Settings change is reflected.
+  let triageModel = $state('…')
+  async function refreshTriageModel(): Promise<void> {
+    try {
+      const [cfg, claude] = await Promise.all([
+        window.api.invoke('models:config-get'),
+        window.api.invoke('models:claude'),
+      ])
+      const m = cfg.defaults.screenPrs
+      if (!m) triageModel = 'Haiku 4.5 · default'
+      else if (m.provider === 'ollama') triageModel = `${m.model} · local`
+      else triageModel = claude.find((c) => c.model === m.model)?.displayName ?? m.model
+    } catch {
+      triageModel = 'Haiku 4.5 · default'
+    }
+  }
+  onMount(refreshTriageModel)
+
   function isoCutoff(days: string): string {
-    // Deterministic-enough client cutoff; the main process re-derives if needed.
     const d = new Date()
     d.setDate(d.getDate() - Number(days))
     return d.toISOString().slice(0, 10)
   }
-
   function screen(): void {
+    void refreshTriageModel()
     void screenPrsStore.start({ owner: owner.trim() || undefined, updatedSince: isoCutoff(cutoff) })
   }
 
@@ -57,11 +79,14 @@
       </h1>
       <div class="flex-1"></div>
       {#if status === 'running'}
-        <span class="text-[11px] text-zinc-500">screening {done}{total ? `/${total}` : ''}…</span>
+        <span class="text-[11px] text-zinc-500">
+          {total === undefined ? 'finding PRs…' : `screening ${done}/${total}`}
+        </span>
         <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancel()}>Stop</button>
       {:else}
-        <button class="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700" onclick={screen}>
-          {done > 0 ? '↻ Re-screen' : '🔎 Screen'}
+        <button class="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700" onclick={screen}>
+          <MagnifierIcon class="h-3.5 w-3.5" />
+          {done > 0 ? 'Re-screen' : 'Screen'}
         </button>
       {/if}
     </div>
@@ -78,27 +103,66 @@
           <option value="90">90 days</option>
         </select>
       </label>
-      <span class="text-[10px] italic text-zinc-600">triage model configured in Settings</span>
+      <span class="ml-auto text-[10.5px] text-zinc-600">triage · <span class="text-zinc-500">{triageModel}</span></span>
     </div>
   </div>
 
   <!-- Split: queue | detail -->
   <div class="flex min-h-0 flex-1">
     <div class="w-[380px] flex-none overflow-y-auto border-r border-zinc-800 px-3 py-4" class:flex-1={!selectedKey}>
-      {#if done === 0 && pending.length === 0}
-        <div class="flex flex-col items-center gap-2 py-16 text-zinc-600">
+      {#if !hasAny}
+        <div class="flex flex-col items-center gap-3 py-16 text-zinc-600">
           {#if status === 'error'}
             <div class="text-sm text-red-400">Screening failed</div>
             <div class="max-w-xs text-center text-[11px]">{screenPrsStore.error()}</div>
           {:else if status === 'done'}
-            <div class="text-2xl opacity-70">✓</div>
+            <MagnifierIcon class="h-7 w-7 opacity-50" />
             <div class="text-xs">No open PRs awaiting your review.</div>
+          {:else if status === 'running'}
+            <span class="h-4 w-4 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>
+            <div class="text-xs">Finding PRs…</div>
           {:else}
-            <div class="text-2xl opacity-70">🔎</div>
+            <MagnifierIcon class="h-7 w-7 opacity-50" />
             <div class="text-xs">Screen your review queue to begin.</div>
           {/if}
         </div>
       {:else}
+        <!-- Screening… — in-progress PRs; they move into a bucket once triaged -->
+        {#if pending.length > 0}
+          <div class="mb-5">
+            <div class="mb-2 flex items-center gap-2">
+              <span class="h-3 w-3 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Screening…</span>
+              <span class="rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{pending.length}</span>
+            </div>
+            <div class="flex flex-col gap-2">
+              {#each pending as p (p.ref.url)}
+                <button
+                  class="flex w-full flex-col gap-1.5 rounded-lg border border-dashed bg-zinc-900/50 p-3 text-left transition-colors
+                    {selectedKey === p.ref.url ? 'border-blue-500' : 'border-zinc-800 hover:border-zinc-700'}
+                    {p.context ? '' : 'cursor-default'}"
+                  disabled={!p.context}
+                  title={p.context ? 'Open — diff is ready, triage still running' : 'Gathering context…'}
+                  onclick={() => screenPrsStore.select(p.ref.url)}
+                >
+                  <div class="flex items-baseline gap-2">
+                    <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-400">{p.ref.repo}</b>#{p.ref.number}</span>
+                    <span class="flex-1 text-[12.5px] leading-snug text-zinc-300">{p.ref.title}</span>
+                  </div>
+                  <div class="flex items-center gap-2 text-[10.5px] text-zinc-600">
+                    {#if p.context}
+                      <span class="tabular-nums text-zinc-400"><span class="text-emerald-400">+{p.context.additions}</span> <span class="text-red-400">−{p.context.deletions}</span> <span class="text-zinc-600">·</span> {p.context.changedFiles}f</span>
+                      <span>· gathered, judging…</span>
+                    {:else}
+                      <span>gathering context…</span>
+                    {/if}
+                  </div>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         {#each BUCKET_ORDER as b (b)}
           {@const cards = byBucket[b]}
           {#if cards.length > 0}
@@ -142,13 +206,6 @@
             </div>
           {/if}
         {/each}
-
-        {#if pending.length > 0}
-          <div class="flex items-center gap-2 rounded-lg border border-dashed border-zinc-800 px-3 py-2 text-[11px] text-zinc-600">
-            <span class="h-3 w-3 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>
-            screening {pending.length} more…
-          </div>
-        {/if}
       {/if}
     </div>
 

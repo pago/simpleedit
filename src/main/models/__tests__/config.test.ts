@@ -6,6 +6,17 @@ import type { ModelConfig } from '../../../shared/ipc-types'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'simpleedit-models-test-'))
 
+// Deep-review defaults injected by config.ts (mostly-local; types/architecture off).
+const DEEP_DEFAULTS = {
+  lenses: {
+    soundness: { enabled: true },
+    intent: { enabled: true },
+    tests: { enabled: true },
+    types: { enabled: false },
+    architecture: { enabled: false },
+  },
+}
+
 vi.mock('electron', () => ({
   app: { getPath: (_: string) => tmpRoot },
 }))
@@ -25,7 +36,7 @@ beforeEach(async () => {
 
 describe('model config persistence', () => {
   it('returns defaults when no file exists', () => {
-    expect(getModelConfig()).toEqual({ defaults: {}, submenuAllowlist: [] })
+    expect(getModelConfig()).toEqual({ defaults: {}, submenuAllowlist: [], deepReview: DEEP_DEFAULTS })
   })
 
   it('round-trips a full config', () => {
@@ -36,6 +47,9 @@ describe('model config persistence', () => {
       },
       submenuAllowlist: ['qwen2.5-coder:7b', 'claude-sonnet'],
       lastUsed: { provider: 'ollama', model: 'qwen2.5-coder:7b', endpoint: 'http://localhost:11434' },
+      deepReview: {
+        lenses: { soundness: { enabled: true, model: { provider: 'anthropic', model: 'claude-sonnet' } } },
+      },
     }
     const saved = setModelConfig(cfg)
     expect(saved).toEqual(cfg)

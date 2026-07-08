@@ -7,6 +7,9 @@ type Handlers = {
   'screenprs:screening'?: (d: EventMap['screenprs:screening']) => void
   'screenprs:card'?: (d: EventMap['screenprs:card']) => void
   'screenprs:status'?: (d: EventMap['screenprs:status']) => void
+  'screenprs:deep-lens'?: (d: EventMap['screenprs:deep-lens']) => void
+  'screenprs:deep-result'?: (d: EventMap['screenprs:deep-result']) => void
+  'screenprs:deep-status'?: (d: EventMap['screenprs:deep-status']) => void
 }
 
 let handlers: Handlers
@@ -39,10 +42,15 @@ beforeEach(async () => {
 })
 
 describe('screenPrsStore ingestion', () => {
-  it('holds a screening placeholder until the card lands', () => {
+  it('seeds a queued placeholder, then screening, then the final card', () => {
     const c = ctx({ number: 1, url: 'u1' })
+    handlers['screenprs:queued']!({ refs: [c] })
+    expect(screenPrsStore.pending().map((p) => p.ref.url)).toEqual(['u1'])
+    expect(screenPrsStore.pending()[0].context).toBeUndefined()
+    expect(screenPrsStore.total()).toBe(1)
+
     handlers['screenprs:screening']!({ context: c })
-    expect(screenPrsStore.pending().map((p) => p.url)).toEqual(['u1'])
+    expect(screenPrsStore.pending()[0].context?.url).toBe('u1')
     expect(screenPrsStore.byBucket().quick).toHaveLength(0)
 
     handlers['screenprs:card']!({ card: card(c, 'low') })
@@ -80,8 +88,27 @@ describe('screenPrsStore ingestion', () => {
     expect(screenPrsStore.byBucket().attention).toHaveLength(1)
   })
 
+  it('tracks deep-review lens progress, result, and status by url', () => {
+    handlers['screenprs:deep-status']!({ url: 'u1', status: 'running' })
+    handlers['screenprs:deep-lens']!({ url: 'u1', lens: 'soundness', status: 'running' })
+    handlers['screenprs:deep-lens']!({ url: 'u1', lens: 'soundness', status: 'done' })
+    handlers['screenprs:deep-result']!({
+      url: 'u1',
+      findings: [{ lens: 'soundness', severity: 'blocking', file: 'a.ts', title: 'npe', detail: 'guard' }],
+    })
+    handlers['screenprs:deep-status']!({ url: 'u1', status: 'done' })
+
+    const d = screenPrsStore.deepFor('u1')
+    expect(d?.status).toBe('done')
+    expect(d?.lenses.soundness).toBe('done')
+    expect(d?.findings).toHaveLength(1)
+    // A different PR is unaffected.
+    expect(screenPrsStore.deepFor('other')).toBeUndefined()
+  })
+
   it('unsubscribes cleanly', () => {
     dispose()
     expect(handlers['screenprs:card']).toBeUndefined()
+    expect(handlers['screenprs:deep-status']).toBeUndefined()
   })
 })

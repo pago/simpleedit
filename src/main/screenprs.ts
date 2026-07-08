@@ -10,6 +10,7 @@ import type { ModelRef, ScreenPrsFilters, ScreenPrsRunStatus } from '../shared/i
 import type { PrContext, ScreenPrCard, TriageResult } from '../shared/screenprs'
 import { bucketOf } from '../shared/screenprs'
 import { getModelConfig } from './models/config'
+import { DEFAULT_TRIAGE_MODEL } from './models/claude-catalog'
 import { ClaudeCodeRunner, DirectRunner, type Runner } from './agent-tasks/runner'
 import { runFanout } from './agent-tasks/orchestrator'
 import { triageTask } from './tasks/triage-task'
@@ -32,8 +33,9 @@ function sendStatus(wc: WebContents, status: ScreenPrsRunStatus, extra: { error?
  * parallel for cloud; see plans/bounded-tasks.md) will own this.
  */
 function selectTriageRunner(): { runner: Runner; model?: ModelRef; concurrency: number } {
-  const def = getModelConfig().defaults.screenPrs
-  if (def?.provider === 'ollama') return { runner: new DirectRunner(), model: def, concurrency: 1 }
+  // Fall back to Haiku (not the CLI's implicit default) when unconfigured.
+  const def = getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
+  if (def.provider === 'ollama') return { runner: new DirectRunner(), model: def, concurrency: 1 }
   // Triage is self-contained (diff in the prompt), so the harness needs no real
   // worktree — a throwaway cwd is fine.
   return { runner: new ClaudeCodeRunner({ cwd: tmpdir() }), model: def, concurrency: 4 }
@@ -73,6 +75,10 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
       activeRuns.delete(webContents.id)
       return
     }
+
+    // Seed the queue immediately (before the slower context gather) so the UI
+    // shows a "Screening…" placeholder per PR the moment the search returns.
+    send(webContents, 'screenprs:queued', { refs })
 
     // Gather each PR's context (bounded), emitting a placeholder card as each
     // lands so the queue fills before the model judgments arrive.
