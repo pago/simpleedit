@@ -42,10 +42,15 @@ beforeEach(async () => {
 })
 
 describe('screenPrsStore ingestion', () => {
-  it('holds a screening placeholder until the card lands', () => {
+  it('seeds a queued placeholder, then screening, then the final card', () => {
     const c = ctx({ number: 1, url: 'u1' })
+    handlers['screenprs:queued']!({ refs: [c] })
+    expect(screenPrsStore.pending().map((p) => p.ref.url)).toEqual(['u1'])
+    expect(screenPrsStore.pending()[0].context).toBeUndefined()
+    expect(screenPrsStore.total()).toBe(1)
+
     handlers['screenprs:screening']!({ context: c })
-    expect(screenPrsStore.pending().map((p) => p.url)).toEqual(['u1'])
+    expect(screenPrsStore.pending()[0].context?.url).toBe('u1')
     expect(screenPrsStore.byBucket().quick).toHaveLength(0)
 
     handlers['screenprs:card']!({ card: card(c, 'low') })

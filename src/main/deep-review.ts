@@ -12,6 +12,7 @@ import type { ModelRef } from '../shared/ipc-types'
 import type { PrContext, DeepFinding, DeepLensId, DeepReviewStatus, DeepLensStatus } from '../shared/screenprs'
 import { DEEP_LENS_ORDER, compareDeepFindings } from '../shared/screenprs'
 import { getModelConfig } from './models/config'
+import { DEFAULT_TRIAGE_MODEL } from './models/claude-catalog'
 import { ClaudeCodeRunner, DirectRunner, type Runner } from './agent-tasks/runner'
 import { runTask } from './agent-tasks/orchestrator'
 import { withBackendGate } from './agent-tasks/gate'
@@ -38,7 +39,7 @@ async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
 /** Lenses enabled in config, in display order, with their resolved model. */
 function enabledLenses(): Array<{ lens: DeepLensId; model?: ModelRef }> {
   const config = getModelConfig()
-  const inherit = config.defaults.screenPrs
+  const inherit = config.defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
   const lensCfg = config.deepReview?.lenses ?? {}
   return DEEP_LENS_ORDER.filter((lens) => lensCfg[lens]?.enabled).map((lens) => ({
     lens,
@@ -84,7 +85,7 @@ export async function startDeepReview(ctx: PrContext, webContents: WebContents):
 
     // Synthesis reduce (local by default). If it yields nothing usable, fall back
     // to the raw findings sorted — never silently drop everything.
-    const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs
+    const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
     let curated: DeepFinding[] = []
     if (raw.length > 0) {
       try {

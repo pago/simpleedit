@@ -1,5 +1,6 @@
 <script lang="ts">
   import SessionList from './SessionList.svelte'
+  import MagnifierIcon from '../screenprs/MagnifierIcon.svelte'
   import { uiView } from '../../stores/uiView.svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
 
@@ -21,7 +22,7 @@
         {active ? 'bg-zinc-800 text-zinc-100 shadow-[inset_2px_0_0_theme(colors.blue.500)]' : 'text-zinc-300 hover:bg-zinc-800'}"
       onclick={() => uiView.show('screenprs')}
     >
-      <span class="text-sm">🔎</span>
+      <MagnifierIcon class="h-4 w-4 flex-none text-zinc-400" />
       <span class="flex-1 text-xs font-medium">Screen PRs</span>
       {#if attention > 0}
         <span class="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold tabular-nums text-white">{attention}</span>

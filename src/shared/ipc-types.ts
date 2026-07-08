@@ -5,7 +5,7 @@
  */
 
 import type { Spec } from './gen-ui-catalog'
-import type { PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus } from './screenprs'
+import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus } from './screenprs'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -307,7 +307,9 @@ export interface ScreenPrsInvokeMap {
 }
 
 export interface ScreenPrsEventMap {
-  /** A PR's context is gathered; render a placeholder card while triage runs. */
+  /** The queue is known (right after search): seed placeholders before gathering. */
+  'screenprs:queued': { refs: PrRef[] }
+  /** A PR's context is gathered; the placeholder gains size/CI/reviewers. */
   'screenprs:screening': { context: PrContext }
   /** A PR finished triage — full card with its derived bucket. */
   'screenprs:card': { card: ScreenPrCard }
