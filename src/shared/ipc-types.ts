@@ -5,6 +5,7 @@
  */
 
 import type { Spec } from './gen-ui-catalog'
+import type { PrContext, ScreenPrCard } from './screenprs'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -286,6 +287,28 @@ export interface TourInvokeMap {
   'tour:cancel': { args: [worktreePath: string, commitHash: string | null]; result: void }
   'tour:load': { args: [worktreePath: string, commitHash: string | null]; result: Tour | null }
   'tour:save-overview': { args: [worktreePath: string, commitHash: string | null, overview: string]; result: void }
+}
+
+export interface ScreenPrsFilters {
+  /** GitHub org to scope to; omitted = all orgs where the user is a reviewer. */
+  owner?: string
+  /** Only PRs updated on/after this YYYY-MM-DD (the activity cutoff). */
+  updatedSince?: string
+}
+
+export type ScreenPrsRunStatus = 'running' | 'done' | 'error'
+
+export interface ScreenPrsInvokeMap {
+  'screenprs:start': { args: [filters: ScreenPrsFilters]; result: void }
+  'screenprs:cancel': { args: []; result: void }
+}
+
+export interface ScreenPrsEventMap {
+  /** A PR's context is gathered; render a placeholder card while triage runs. */
+  'screenprs:screening': { context: PrContext }
+  /** A PR finished triage — full card with its derived bucket. */
+  'screenprs:card': { card: ScreenPrCard }
+  'screenprs:status': { status: ScreenPrsRunStatus; error?: string; total?: number }
 }
 
 export interface TourEventMap {
@@ -578,6 +601,7 @@ export type InvokeMap = WorktreeInvokeMap &
   AppInvokeMap &
   ReviewInvokeMap &
   TourInvokeMap &
+  ScreenPrsInvokeMap &
   LspInvokeMap &
   SessionInvokeMap &
   UpdateInvokeMap &
@@ -591,6 +615,7 @@ export type EventMap = WorktreeEventMap &
   GitEventMap &
   ReviewEventMap &
   TourEventMap &
+  ScreenPrsEventMap &
   LspEventMap &
   AgentPanelEventMap &
   UpdateEventMap &
