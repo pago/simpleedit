@@ -116,9 +116,14 @@ interface RawPrView {
   deletions: number
   changedFiles: number
   baseRefName: string
+  headRefOid: string
   body: string
   latestReviews?: RawReview[] | null
 }
+
+/** A PR's context minus the diff — the cheap part, always refetched so CI/reviews
+ *  stay current even on a cache hit. */
+export type PrMeta = Omit<PrContext, 'diff'>
 
 const REVIEW_STATE: Record<string, PrReviewerState> = {
   APPROVED: 'approved',
@@ -127,14 +132,8 @@ const REVIEW_STATE: Record<string, PrReviewerState> = {
   PENDING: 'pending',
 }
 
-/** Assemble a `PrContext` from the three `gh` calls' outputs (pure — for tests). */
-export function assembleContext(
-  ref: PrRef,
-  viewJson: string,
-  diff: string,
-  checksJson: string,
-  handle: string
-): PrContext {
+/** Assemble a `PrMeta` (everything but the diff) from the view + checks output. */
+export function assembleMeta(ref: PrRef, viewJson: string, checksJson: string, handle: string): PrMeta {
   const view = JSON.parse(viewJson) as RawPrView
   const reviews = view.latestReviews ?? []
   const reviewers: PrReviewer[] = reviews.map((r) => ({
@@ -146,24 +145,37 @@ export function assembleContext(
   )
   return {
     ...ref,
+    headSha: view.headRefOid ?? '',
     additions: view.additions,
     deletions: view.deletions,
     changedFiles: view.changedFiles,
     baseRefName: view.baseRefName,
     body: view.body ?? '',
-    diff,
     reviewers,
     approvedByOther,
     ...parseChecks(checksJson),
   }
 }
 
-/** Gather everything triage needs for one PR (three `gh` calls). */
-export async function getPrContext(ref: PrRef, handle: string): Promise<PrContext> {
-  const [viewJson, diff, checksJson] = await Promise.all([
-    runGh(['pr', 'view', ref.url, '--json', 'additions,deletions,changedFiles,baseRefName,body,latestReviews']),
-    runGh(['pr', 'diff', ref.url]),
+const VIEW_FIELDS = 'additions,deletions,changedFiles,baseRefName,headRefOid,body,latestReviews'
+
+/** The cheap half: metadata + CI + head SHA (no diff). Always refetched so a
+ *  cached PR still gets current CI/reviews and an accurate bucket. */
+export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
+  const [viewJson, checksJson] = await Promise.all([
+    runGh(['pr', 'view', ref.url, '--json', VIEW_FIELDS]),
     runGh(['pr', 'checks', ref.url, '--json', 'name,state,bucket'], { allowFail: true }),
   ])
-  return assembleContext(ref, viewJson, diff, checksJson, handle)
+  return assembleMeta(ref, viewJson, checksJson, handle)
+}
+
+/** The expensive-to-refetch half: the unified diff. Skipped on a cache hit. */
+export function getPrDiff(ref: PrRef): Promise<string> {
+  return runGh(['pr', 'diff', ref.url])
+}
+
+/** Gather everything triage needs for one PR (meta + diff). */
+export async function getPrContext(ref: PrRef, handle: string): Promise<PrContext> {
+  const [meta, diff] = await Promise.all([getPrMeta(ref, handle), getPrDiff(ref)])
+  return { ...meta, diff }
 }

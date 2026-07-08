@@ -72,6 +72,12 @@ export interface RunFanoutOptions {
    * parallel for cloud) may constrain it further; see plans/bounded-tasks.md.
    */
   concurrency?: number
+  /**
+   * Per-input budget in ms. A run exceeding it is aborted and reported as its own
+   * `error` event (the fan-out moves on) — so one stuck/slow model call can't
+   * freeze the whole batch. Omit for no limit.
+   */
+  timeoutMs?: number
 }
 
 /**
@@ -110,21 +116,37 @@ export async function* runFanout<Input, Ctx, Item>(
       if (index >= total) return
       const input = inputs[index]
       push({ input, index, kind: 'start' })
+      // Per-input abort: fires on the outer signal (user cancel) or the timeout.
+      const ac = new AbortController()
+      const onOuter = (): void => ac.abort()
+      opts.signal?.addEventListener('abort', onOuter, { once: true })
+      let timedOut = false
+      const timer =
+        opts.timeoutMs !== undefined
+          ? setTimeout(() => {
+              timedOut = true
+              ac.abort()
+            }, opts.timeoutMs)
+          : null
       try {
         // Deliberately not forwarding `context`: each input builds its own.
         for await (const item of runTask(task, input, {
           runner: opts.runner,
           model: opts.model,
-          signal: opts.signal,
+          signal: ac.signal,
         })) {
           push({ input, index, kind: 'item', item })
         }
         push({ input, index, kind: 'done' })
       } catch (err: unknown) {
-        // A user-initiated abort surfaces as a throw from the runner; report it
-        // as a neutral `done` (mirrors review.ts) rather than a spurious error.
+        // User cancel → neutral done (mirrors review.ts). Timeout → error (the
+        // batch moves on). Otherwise the runner's real error.
         if (opts.signal?.aborted) push({ input, index, kind: 'done' })
+        else if (timedOut) push({ input, index, kind: 'error', error: `timed out after ${opts.timeoutMs}ms` })
         else push({ input, index, kind: 'error', error: err instanceof Error ? err.message : String(err) })
+      } finally {
+        if (timer) clearTimeout(timer)
+        opts.signal?.removeEventListener('abort', onOuter)
       }
     }
   }

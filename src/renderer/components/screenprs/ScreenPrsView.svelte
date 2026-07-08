@@ -16,6 +16,9 @@
 
   let done = $derived([...Object.values(byBucket)].reduce((n, arr) => n + arr.length, 0))
   let hasAny = $derived(done > 0 || pending.length > 0)
+  // Show the actively-triaging PR first, then scheduled, then still-gathering.
+  const PHASE_ORDER = { running: 0, scheduled: 1, gathering: 2 }
+  let pendingSorted = $derived([...pending].sort((a, b) => PHASE_ORDER[a.phase] - PHASE_ORDER[b.phase]))
 
   const BUCKETS: Record<ScreenPrBucket, { label: string; sub: string; stripe: string; head: string }> = {
     attention: { label: 'Needs your attention', sub: 'critical or high-impact', stripe: 'bg-red-500', head: 'text-red-400' },
@@ -53,9 +56,9 @@
     d.setDate(d.getDate() - Number(days))
     return d.toISOString().slice(0, 10)
   }
-  function screen(): void {
+  function screen(force = false): void {
     void refreshTriageModel()
-    void screenPrsStore.start({ owner: owner.trim() || undefined, updatedSince: isoCutoff(cutoff) })
+    void screenPrsStore.start({ owner: owner.trim() || undefined, updatedSince: isoCutoff(cutoff), force })
   }
 
   const ciClass: Record<PrCiStatus, string> = {
@@ -84,7 +87,11 @@
         </span>
         <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancel()}>Stop</button>
       {:else}
-        <button class="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700" onclick={screen}>
+        <button
+          class="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700"
+          title={done > 0 ? 'Re-screen (⌥-click to ignore cache and re-run all)' : 'Screen your review queue'}
+          onclick={(e) => screen(e.altKey)}
+        >
           <MagnifierIcon class="h-3.5 w-3.5" />
           {done > 0 ? 'Re-screen' : 'Screen'}
         </button>
@@ -127,19 +134,23 @@
           {/if}
         </div>
       {:else}
-        <!-- Screening… — in-progress PRs; they move into a bucket once triaged -->
+        <!-- Screening… — in-progress PRs; the model works one at a time (local) -->
         {#if pending.length > 0}
+          {@const running = pending.filter((p) => p.phase === 'running').length}
           <div class="mb-5">
             <div class="mb-2 flex items-center gap-2">
               <span class="h-3 w-3 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>
               <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Screening…</span>
               <span class="rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{pending.length}</span>
+              <span class="text-[10px] text-zinc-600">{running} triaging · {pending.length - running} scheduled</span>
             </div>
             <div class="flex flex-col gap-2">
-              {#each pending as p (p.ref.url)}
+              {#each pendingSorted as p (p.ref.url)}
+                {@const isRun = p.phase === 'running'}
                 <button
-                  class="flex w-full flex-col gap-1.5 rounded-lg border border-dashed bg-zinc-900/50 p-3 text-left transition-colors
-                    {selectedKey === p.ref.url ? 'border-blue-500' : 'border-zinc-800 hover:border-zinc-700'}
+                  class="flex w-full flex-col gap-1.5 rounded-lg border bg-zinc-900/50 p-3 text-left transition-colors
+                    {isRun ? 'border-solid border-blue-500/50' : 'border-dashed'}
+                    {selectedKey === p.ref.url ? 'border-blue-500' : isRun ? '' : 'border-zinc-800 hover:border-zinc-700'}
                     {p.context ? '' : 'cursor-default'}"
                   disabled={!p.context}
                   title={p.context ? 'Open — diff is ready, triage still running' : 'Gathering context…'}
@@ -147,14 +158,21 @@
                 >
                   <div class="flex items-baseline gap-2">
                     <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-400">{p.ref.repo}</b>#{p.ref.number}</span>
-                    <span class="flex-1 text-[12.5px] leading-snug text-zinc-300">{p.ref.title}</span>
+                    <span class="flex-1 text-[12.5px] leading-snug {isRun ? 'text-zinc-100' : 'text-zinc-300'}">{p.ref.title}</span>
                   </div>
-                  <div class="flex items-center gap-2 text-[10.5px] text-zinc-600">
+                  <div class="flex items-center gap-2 text-[10.5px]">
                     {#if p.context}
                       <span class="tabular-nums text-zinc-400"><span class="text-emerald-400">+{p.context.additions}</span> <span class="text-red-400">−{p.context.deletions}</span> <span class="text-zinc-600">·</span> {p.context.changedFiles}f</span>
-                      <span>· gathered, judging…</span>
+                    {/if}
+                    {#if p.phase === 'running'}
+                      <span class="flex items-center gap-1.5 text-blue-300">
+                        <span class="h-2.5 w-2.5 animate-spin rounded-full border-2 border-blue-500/30 border-t-blue-400"></span>
+                        Triaging now · {triageModel}
+                      </span>
+                    {:else if p.phase === 'scheduled'}
+                      <span class="text-zinc-600">⏳ scheduled</span>
                     {:else}
-                      <span>gathering context…</span>
+                      <span class="text-zinc-600">gathering context…</span>
                     {/if}
                   </div>
                 </button>

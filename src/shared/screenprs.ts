@@ -30,6 +30,8 @@ export interface PrReviewer {
 
 /** Everything gathered for a PR in plain JS (via `gh`), before the model judges it. */
 export interface PrContext extends PrRef {
+  /** Head commit SHA — the cache key: unchanged SHA ⇒ triage/deep still valid. */
+  headSha: string
   additions: number
   deletions: number
   changedFiles: number

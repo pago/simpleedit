@@ -14,7 +14,8 @@ import { DEFAULT_TRIAGE_MODEL } from './models/claude-catalog'
 import { ClaudeCodeRunner, DirectRunner, type Runner } from './agent-tasks/runner'
 import { runFanout } from './agent-tasks/orchestrator'
 import { triageTask } from './tasks/triage-task'
-import { currentHandle, searchReviewRequestedPrs, getPrContext } from './github/gh'
+import { currentHandle, searchReviewRequestedPrs, getPrMeta, getPrDiff, type PrMeta } from './github/gh'
+import { getCached, putTriage } from './screenprs-cache'
 
 /** In-flight run per window, so a re-screen / window close can cancel cleanly. */
 const activeRuns = new Map<number, AbortController>()
@@ -80,29 +81,68 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
     // shows a "Screening…" placeholder per PR the moment the search returns.
     send(webContents, 'screenprs:queued', { refs })
 
-    // Gather each PR's context (bounded), emitting a placeholder card as each
-    // lands so the queue fills before the model judgments arrive.
-    const gathered = await mapLimit(refs, 5, (ref) => getPrContext(ref, handle))
+    // Always refetch the cheap metadata (CI/reviews/size/head SHA) — even a cached
+    // PR gets a fresh bucket. The diff + model run are what the cache saves.
+    const metas = (await mapLimit(refs, 5, (ref) => getPrMeta(ref, handle))).filter(
+      (m): m is PrMeta => m !== null
+    )
     if (controller.signal.aborted) return
-    const contexts: PrContext[] = gathered.filter((c): c is PrContext => c !== null)
-    for (const ctx of contexts) send(webContents, 'screenprs:screening', { context: ctx })
+
+    const emitCard = (ctx: PrContext, result: TriageResult): void => {
+      const card: ScreenPrCard = { ...ctx, ...result, bucket: bucketOf({ ...ctx, ...result }) }
+      send(webContents, 'screenprs:card', { card })
+    }
+
+    // Cache hit (same head SHA) → reuse the diff + triage, no model call. Miss (or
+    // ⌥-force) → gather the diff and queue it for the model.
+    const toTriage: PrMeta[] = []
+    for (const meta of metas) {
+      const cached = filters.force ? undefined : getCached(meta.url, meta.headSha)
+      if (cached) emitCard({ ...meta, diff: cached.diff }, cached.triage)
+      else toTriage.push(meta)
+    }
+
+    // Fetch diffs only for the misses, emitting each PR into the "Screening…"
+    // section as its diff lands (as "scheduled" — waiting for the model).
+    const contexts = (
+      await mapLimit(toTriage, 5, async (m) => {
+        const ctx = { ...m, diff: await getPrDiff(m) }
+        if (!controller.signal.aborted) send(webContents, 'screenprs:screening', { context: ctx })
+        return ctx
+      })
+    ).filter((c): c is PrContext => c !== null)
+    if (controller.signal.aborted) return
 
     const { runner, model, concurrency } = selectTriageRunner()
     const results: (TriageResult | null)[] = new Array(contexts.length).fill(null)
 
-    for await (const ev of runFanout(triageTask, contexts, { runner, model, concurrency, signal: controller.signal })) {
-      if (ev.kind === 'item') {
+    // Per-PR budget: a stuck/slow model call is aborted so it can't freeze the
+    // whole screen (that PR falls back to a metadata-only bucket). Generous
+    // enough for a slow local model on a large diff.
+    const TRIAGE_TIMEOUT_MS = 120_000
+    for await (const ev of runFanout(triageTask, contexts, {
+      runner,
+      model,
+      concurrency,
+      signal: controller.signal,
+      timeoutMs: TRIAGE_TIMEOUT_MS,
+    })) {
+      if (ev.kind === 'start') {
+        // The model has picked this PR up — promote it from scheduled to running.
+        send(webContents, 'screenprs:triaging', { url: ev.input.url })
+      } else if (ev.kind === 'item') {
         results[ev.index] = ev.item ?? null
       } else if (ev.kind === 'done' || ev.kind === 'error') {
         // A model failure (or empty output) still yields a card — bucketed from
         // metadata alone (impact 'low', no findings) so the PR isn't dropped.
         const result: TriageResult = results[ev.index] ?? { impact: 'low', findings: [] }
-        const card: ScreenPrCard = { ...ev.input, ...result, bucket: bucketOf({ ...ev.input, ...result }) }
-        send(webContents, 'screenprs:card', { card })
+        const ctx = ev.input
+        if (ev.kind === 'done' && results[ev.index]) putTriage(ctx.url, ctx.headSha, ctx.diff, result)
+        emitCard(ctx, result)
       }
     }
 
-    if (!controller.signal.aborted) sendStatus(webContents, 'done', { total: contexts.length })
+    if (!controller.signal.aborted) sendStatus(webContents, 'done', { total: metas.length })
   } catch (err: unknown) {
     if (!controller.signal.aborted) {
       sendStatus(webContents, 'error', { error: err instanceof Error ? err.message : String(err) })

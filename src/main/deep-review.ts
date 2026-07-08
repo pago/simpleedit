@@ -17,6 +17,7 @@ import { ClaudeCodeRunner, DirectRunner, type Runner } from './agent-tasks/runne
 import { runTask } from './agent-tasks/orchestrator'
 import { withBackendGate } from './agent-tasks/gate'
 import { makeLensTask, synthesisTask } from './tasks/deep-review-lenses'
+import { getCached, putDeep } from './screenprs-cache'
 
 const activeDeep = new Map<string, AbortController>()
 
@@ -57,6 +58,16 @@ export async function startDeepReview(ctx: PrContext, webContents: WebContents):
     send(webContents, 'screenprs:deep-status', { url: ctx.url, status, error })
 
   sendStatus('running')
+
+  // Cache hit at this head SHA → the diff hasn't changed, so the prior deep
+  // findings still hold. Serve them instantly, no model calls.
+  const cached = getCached(ctx.url, ctx.headSha)
+  if (cached?.deep) {
+    send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: cached.deep })
+    sendStatus('done')
+    activeDeep.delete(ctx.url)
+    return
+  }
 
   const lenses = enabledLenses()
   for (const { lens } of lenses) sendLens(lens, 'running')
@@ -100,6 +111,7 @@ export async function startDeepReview(ctx: PrContext, webContents: WebContents):
     if (controller.signal.aborted) return
 
     curated.sort(compareDeepFindings)
+    putDeep(ctx.url, ctx.headSha, curated)
     send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: curated })
     sendStatus('done')
   } catch (err: unknown) {
