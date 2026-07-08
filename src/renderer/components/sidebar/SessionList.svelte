@@ -7,6 +7,7 @@
   import { getClaudeStatusForTerminal } from '../../stores/claude-status.svelte'
   import { worktreeList, refreshWorktrees, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
+  import { uiView } from '../../stores/uiView.svelte'
 
   let sessions = $derived(sessionsStore.sessions())
   let activeId = $derived(sessionsStore.activeSessionId())
@@ -415,6 +416,8 @@
   }
 
   function activate(session: Session): void {
+    // Selecting a session leaves any global view (e.g. Screen PRs) for the workspace.
+    uiView.show('workspace')
     if (session.pendingResume) {
       sessionsStore.resumePlaceholder(session.id)
     } else {
