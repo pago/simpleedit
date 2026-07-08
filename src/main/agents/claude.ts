@@ -143,7 +143,7 @@ function makeCleanup(terminalId: string): () => void {
  * reuses the resumed id directly.
  */
 function buildLaunch(ctx: LaunchContext): LaunchPlan {
-  const { terminalId, resumeSessionId, bridgePort, bridgeToken, model } = ctx
+  const { terminalId, resumeSessionId, bridgePort, bridgeToken, model, initialPrompt } = ctx
 
   let command = 'claude'
   // Only `ollama` swaps the brain via an inline env override. It is prefixed
@@ -184,6 +184,13 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   if (model?.model) {
     if (!/^[A-Za-z0-9._:/-]+$/.test(model.model)) throw new Error(`Invalid model id: ${model.model}`)
     command += ` --model ${model.model}`
+  }
+
+  // Positional prompt = claude's first interactive message (seeds "Discuss with
+  // Agent" with the review brief). MUST be last. Single-quote and escape so the
+  // multi-line brief survives the login-shell `-c` string as one literal arg.
+  if (initialPrompt) {
+    command += ` '${initialPrompt.replace(/'/g, "'\\''")}'`
   }
 
   return { command, sessionId, cleanup: makeCleanup(terminalId) }

@@ -1,11 +1,67 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
+  import { onMount } from 'svelte'
   import type { ScreenPrCard, PrContext, TriageFinding, DeepSeverity } from '../../../shared/screenprs'
   import { DEEP_LENS_ORDER, DEEP_LENS_LABEL } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { parseUnifiedDiff, languageForPath, type DiffFile } from '../../lib/parseDiff'
+  import SplitButton from '../SplitButton.svelte'
+  import { loadAgentModels, type AgentModel } from '../../lib/agentModels'
+  import { uiView } from '../../stores/uiView.svelte'
+  import { sessionsStore } from '../../stores/sessions.svelte'
+  import { projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
 
   let { context, card }: { context: PrContext; card?: ScreenPrCard } = $props()
+
+  // ── Discuss with Agent: spawn a primed Claude session in the sidebar ────────
+  let agentModels = $state<AgentModel[]>([])
+  let discussModelId = $state<string | null>(null)
+  onMount(async () => {
+    agentModels = await loadAgentModels()
+    discussModelId =
+      discussModelId ??
+      agentModels.find((m) => m.id === 'anthropic:claude-sonnet-5')?.id ??
+      agentModels.find((m) => m.tier === 'cloud')?.id ??
+      agentModels[0]?.id ??
+      null
+  })
+
+  function buildBrief(): string {
+    const lines = [
+      `You are helping me review a GitHub pull request. This is a REVIEW session — the PR is NOT ours to modify unless I explicitly ask. When I'm ready, you'll post the review to GitHub yourself with \`gh pr review\` (approve / comment / request-changes). Don't post anything until I tell you to.`,
+      ``,
+      `PR: ${context.url}`,
+      `${context.repo}#${context.number} — ${context.title}  (base ${context.baseRefName}, +${context.additions}/−${context.deletions}, ${context.changedFiles} files)`,
+    ]
+    const triage = card?.findings ?? []
+    if (triage.length) {
+      lines.push('', 'Triage (diff-only) flagged:')
+      for (const f of triage) lines.push(`- [${f.label}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`)
+    }
+    const dv = deep?.findings ?? []
+    if (dv.length) {
+      lines.push('', 'Deep review flagged:')
+      for (const f of dv) lines.push(`- [${f.severity}/${f.lens}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}: ${f.detail}`)
+    }
+    lines.push(
+      '',
+      `Start by running \`gh pr diff ${context.url}\` to see the change (and \`gh pr checkout\` if you want to run it), then help me decide whether it's ready.`
+    )
+    return lines.join('\n')
+  }
+
+  function discuss(m: AgentModel): void {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (!root || !wt) return
+    const id = sessionsStore.createClaude(root, wt.path, {
+      model: m.ref,
+      initialPrompt: buildBrief(),
+      label: `review ${context.repo}#${context.number}`,
+    })
+    uiView.show('workspace')
+    sessionsStore.requestTerminalFocus(id)
+  }
 
   let deep = $derived(screenPrsStore.deepFor(context.url))
   let triageExpanded = $state(false)
@@ -110,6 +166,9 @@
       </button>
       {#if deep?.status === 'running'}
         <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancelDeep(context.url)}>Stop</button>
+      {/if}
+      {#if agentModels.length}
+        <SplitButton label="Discuss" icon="✦" models={agentModels} bind:selectedId={discussModelId} onstart={discuss} />
       {/if}
     </div>
   </div>

@@ -237,7 +237,7 @@ export const sessionsStore = {
   createClaude(
     launchDir: string,
     worktreePath: string,
-    opts: { resumeSessionId?: string; model?: ModelRef } = {},
+    opts: { resumeSessionId?: string; model?: ModelRef; initialPrompt?: string; label?: string } = {},
   ): string {
     const id = `claude-${crypto.randomUUID()}`
     const model = opts.model
@@ -246,10 +246,12 @@ export const sessionsStore = {
         id,
         kind: 'claude',
         provider: 'claude',
-        // A picked model names the session (and pins the label so OSC titles
-        // don't overwrite it); the plain cloud default keeps "Claude N".
-        label: model ? model.model : defaultLabel('claude'),
-        ...(model ? { customLabel: true as const, model } : {}),
+        // An explicit label (e.g. "review ui-pack#42") or a picked model names the
+        // session and pins the label so OSC titles don't overwrite it; the plain
+        // cloud default keeps "Claude N".
+        label: opts.label ?? (model ? model.model : defaultLabel('claude')),
+        ...(opts.label || model ? { customLabel: true as const } : {}),
+        ...(model ? { model } : {}),
         launchDir,
         worktreePath,
         touchedWorktrees: [worktreePath],
@@ -262,6 +264,7 @@ export const sessionsStore = {
       worktreePath: launchDir,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
       ...(model ? { model } : {}),
+      ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
     })
     // For cloud Claude, upgrade the raw model id to its human display name once
     // the (static) catalog resolves — best-effort, leaves the id if not found.

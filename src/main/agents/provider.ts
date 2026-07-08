@@ -21,6 +21,9 @@ export interface LaunchContext {
    * adds `--model` and keeps normal cloud auth. Absent = cloud default.
    */
   model?: ModelRef
+  /** Seed the session with this first message (appended as claude's positional
+   *  prompt arg). Fresh spawn only. */
+  initialPrompt?: string
 }
 
 /**
