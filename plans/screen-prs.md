@@ -1,99 +1,223 @@
-# Plan: screen-PRs — PR triage as a fan-out bounded task
+# Plan: Screen PRs — fan-out triage → deep review → decide
 
-Status: draft (follow-up feature; not near-term) · Branch: `feat/local-review` · Worktree: `../local-review`
+Status: **UX settled, design locked (2026-07-07)** · Branch: `feat/run-fanout` · Worktree: `../fanout`
+Reference prototype (interactive, HTML): https://claude.ai/code/artifact/a76d3a82-1c4f-4e41-b7d1-539c49abde09
 
-> A new SimpleEdit feature adapted from the `screen-prs` Claude skill: triage the review
-> queue and produce a ranked overview of *what to review next*. It is the canonical **fan-out**
-> consumer of the [bounded-tasks](./bounded-tasks.md) substrate (the part Review/Tour don't
-> exercise) and the poster child for the **cost** argument for local models. Deferred until
-> the review/diff direction has proven itself — but the architecture must support it now.
+> A SimpleEdit feature adapted from the `screen-prs` Claude skill: screen the PR review
+> queue and produce a ranked, streaming overview of *what to review next*, then carry a chosen
+> PR through a **triage → deep review → decide** pipeline without leaving the app. It is the
+> canonical **fan-out** consumer of the [bounded-tasks](./bounded-tasks.md) substrate and the
+> poster child for the **local-model cost** argument ([local-models](./local-models.md)):
+> cheap/local for the high-frequency screening, premium only where it earns its keep.
 
-## What the skill does (source of the design)
+The whole feature reduces to **two primitives** applied three ways:
+`runFanout` (fan out bounded judgments, reduce) + "spawn a primed Claude Code process on a
+worktree." Triage, deep review, and discuss are all one of those two — no third mechanism.
 
-`~/.claude/skills/screen-prs/SKILL.md`, in four steps:
+---
 
-1. **Fetch** — `gh search prs --review-requested=@me --state=open --draft=false --owner=<org>`
-   with a rolling 30-day activity cutoff. Produces the work-list.
-2. **Fan out** — one parallel sub-agent per PR. Each gathers via `gh`: size
-   (additions/deletions/files), CI status, reviews + reviewer state, base branch (to detect
-   **stacked** PRs), and the diff; reads the diff for concrete concerns (bugs, missing tests,
-   security smells, silent failures, type regressions); returns a tight **structured report**
-   (repo#num, title, url, author, base, size, CI, reviews, approved-by-other?, findings,
-   impact, verdict). Read-only, capped ~200 words.
-3. **Rank & bucket** (deterministic rules) — CI-failing → "waiting on author"; approved-by-
-   someone-else → top if critical/high-impact else bottom FYI; unapproved → by size/CI/staleness.
-4. **Overview** — buckets 🔴 Needs attention / 🟡 Quick pass / ⏳ Waiting on author / ⚪ Already
-   approved-FYI, with stacked-PR grouping and a handoff to `/deep-pr-review`.
+## 1. Scope & thesis
 
-## Why it fits the substrate exactly
+Screening N PRs' diffs just to decide *what to look at* is high-frequency, low-stakes work you
+should not burn premium cloud tokens on. So **triage is local + diff-only**, and premium models
+are reserved for the deep pass — and even there, only for the lenses that need them. The app's
+job over the CLI skill is the **workspace integration**: streaming buckets, an in-app diff, a
+primed agent session, and a real path to post a review to GitHub.
 
-The shape is `gather work-list → runFanout(prTask, prs) → deterministic reduce → render`:
+---
 
-- **Fetch** → an orchestration pre-step producing the fan-out inputs (list of PR refs).
-- **Per-PR agent** → one `Task` in `runFanout`, with the skill's report format as its `schema`.
-  Each PR is an independent, bounded judgment — exactly what fan-out is for.
-- **Rank & bucket** → a plain-code reduce over collected results (the rules are deterministic;
-  **not** an agent). This is the barrier/synthesis after the fan-out.
-- **Overview** → the render (a bucketed panel).
+## 2. The settled UX (the prototype is the reference)
 
-This validates `runFanout` — the substrate path Review/Tour (single-shot) never exercise.
+**Entry point.** A "Screen PRs" item pinned at the **bottom of the sidebar session list**
+(the sidebar is now sessions-only; the queue is org-wide, not repo-scoped, so it lives below
+the list rather than in a pane or per-repo section). It shows an attention badge (count of
+PRs still needing eyes).
 
-## Why it's the cost poster-child
+**Layout: split view** (committed — no nav/toggle). Left = the ranked queue; right = the
+detail for the selected PR.
 
-Screening 15 PRs' diffs just to decide *what to look at* is the definition of high-frequency,
-low-stakes work you should not burn premium cloud tokens on. Triage is diff-level judgment,
-not deep review — so the per-PR task runs on **`DirectRunner` + a cheap/local model**
-([local-models](./local-models.md)), reserving the premium model for the actual deep review
-the user picks afterward. This is the clearest case of "local for triage, cloud for the hard
-pass."
+**Streaming triage buckets.** On open (and on ↻ Re-screen) PRs stream in and slot into buckets
+as each is classified — no wait-for-all:
+- 🔴 **Needs your attention** — critical / high-impact / approved-but-risky
+- 🟡 **Quick pass** — small, green, uncontroversial
+- ⏳ **Waiting on author** — CI red; don't review yet
+- ⚪ **Already approved — FYI**
+Stacked PRs are grouped with dependency order ("review #645 before #648"). Green cards get a
+hover **quick-approve ✓** for the trivial one-click case.
 
-## New capability the substrate needs: a GitHub data source
+**Detail = the pipeline, made visible.** A stage rail: **Triaged → Deep review → Decide**.
+- **Triage findings** (from the diff-only pass) shown first. Once a deep review is *requested*,
+  the triage block **collapses** to `▸ N findings · superseded by deep review` (re-expandable),
+  because deep review confirms/invalidates most of them. Deep findings are labeled authoritative.
+- **Diff**: read-only `gh pr diff` by default; switches to the worktree DiffReview once checked out.
+- **Actions**: `⚡ Deep review`, and `✦ Discuss` as a **split button** (see §3.3).
+- **Decide**: the **review composer** (docked footer) — the human path to GitHub.
 
-The substrate's context primitives are currently git/LSP/file-oriented (`getDiff`,
-`expandWithLsp`). screen-PRs adds a **GitHub adapter** — shell out to `gh` (search, `pr view`,
-`pr diff`, `pr checks`) using the user's existing `gh` auth. This is the one genuinely new
-context source; note it as a substrate extension, not a screen-PRs-only hack.
+**Filters on the page**: Org (configurable, not mandatory) and Active-since cutoff. The triage
+model + parallelism are **not** on the page — they live in Settings (rarely changed); a small
+read-only note shows what's running and links there.
 
-## The part beyond logic: UI/UX (the SimpleEdit differentiator)
+---
 
-The CLI skill just prints URLs. SimpleEdit's version earns its keep by integrating with the
-workspace:
+## 3. Architecture on the substrate
 
-- **Bucketed panel** — 🔴/🟡/⏳/⚪ sections, per-PR cards showing size / CI / reviewers / verdict
-  / findings, live as fan-out results land (streaming, same event model as Review).
-- **Stacked-PR grouping** — visualize dependency order ("review #645 before #648"), not a flat
-  list.
-- **Handoff into SimpleEdit** — clicking a PR does more than open a browser tab: check it out
-  into a worktree and open its diff in the diff-review UI, and/or trigger the Review feature on
-  it. This is where triage → deep-review becomes a first-class in-app flow instead of a copy-
-  paste URL.
-- **Config** — org/repo filter and GitHub handle (the skill hardcodes `ivx`/`pago`); activity
-  cutoff; default triage model (per-feature default from the settings panel).
+### 3.1 Triage = fan-out, diff-only, local
 
-## Dependencies
+`gather PR list (gh) → runFanout(triageTask, prs) → deterministic bucket → stream cards`.
 
-- [bounded-tasks](./bounded-tasks.md) — `runFanout`, the `Task`/`Runner` layer, plus the new
-  GitHub context adapter. **screen-PRs is the reason `runFanout` exists.**
-- [local-models](./local-models.md) — the cheap/local triage model + per-feature default.
+- **Per-PR context** is gathered in **plain JS** (`gh` calls), not by the model: size, CI,
+  reviews, base branch (→ stacked detection), and the diff. Metadata is pure JSON; the model
+  only reads the diff.
+- **Per-PR judgment** is one `triageTask` (a `Task`, diff embedded in the prompt) run through
+  **`DirectRunner` + a cheap local model**. It emits `{findings[], impact}`.
+- **Bucketing is deterministic code** (a reduce over results; the skill's rules): CI-failing →
+  waiting-on-author; approved-by-other → top-if-critical else FYI; unapproved → by size/CI/
+  staleness. Verdict is *derived*, not model-assigned — keeps the local model's job tiny and the
+  ranking reproducible, and lets the renderer re-sort live as cards land.
 
-## Build order
+### 3.2 Deep review = lens fan-out + synthesis reduce
 
-After Review/diff on the substrate has proven the direction (per the roadmap in
-[agents-overview](./agents-overview.md)). screen-PRs needs UI/UX well beyond the logic, so it
-follows once the fan-out + model plumbing is real and the local-model experiment has answered
-"is a local model good enough for this kind of work?".
+**Structurally identical to triage** — `runFanout` + a reduce — but it fans out over **review
+lenses** (not PRs), and the reduce is a **synthesis Task** (an LLM pass), not deterministic code.
 
-## Open decisions
+Each lens is a bounded `Task` with its own prompt, model, and runner. **Default is mostly local**
+so a run-of-the-mill PR never spawns a fleet of premium subagents:
 
-- **Per-PR context depth** — diff-only judgment (cheap, the triage default) vs. optional
-  repo-aware pass (ClaudeCodeRunner) for a chosen PR. Lean: diff-only for triage.
-- **Handoff mechanics** — check-out-into-worktree vs. read-only diff view vs. trigger Review;
-  how deep the triage→deep-review integration goes in v1.
-- **Provider/host** — GitHub only (via `gh`), or generalize to other forges later.
-- **Scope defaults** — how the org/handle/filters are configured and persisted.
+| Lens | Needs repo? | Runner | Default model |
+|---|---|---|---|
+| Intent vs. implementation | no (diff + PR body) | DirectRunner | local |
+| Test coverage | no (diff) | DirectRunner | local |
+| Soundness / bugs | benefits | ClaudeCodeRunner | cloud (highest stakes) |
+| Type safety | yes (callers) | ClaudeCodeRunner / LSP | local *or* off — see note |
+| Architecture / design | yes | ClaudeCodeRunner | cloud, **off by default** |
+| **Synthesis / noise-kill** | no | DirectRunner | local |
 
-## Non-goals
+- Every lens is **per-lens configurable in Settings** and individually toggleable. A routine PR
+  runs the local lenses only; flag a risky PR → enable the cloud lenses.
+- **Runner follows the lens**: diff-only lenses → `DirectRunner` (local, diff in prompt);
+  repo-aware lenses → `ClaudeCodeRunner` on the checked-out worktree (real file/LSP access).
+- **Synthesis / noise-kill**: a `runTask` reduce on a **local** model — takes the union of lens
+  findings + the diff and drops findings the diff doesn't support, merges duplicates across
+  lenses, groups by file/severity, and ranks. This is the *cheap* noise control, good enough for
+  normal PRs.
+- **Type-lens note**: SimpleEdit already has LSP. A cheap/deterministic "types" signal can come
+  from **LSP diagnostics on the worktree** rather than a model — consider that instead of (or
+  before) a model lens.
 
-- Merging, commenting on, or modifying PRs — read-only triage (matches the skill).
-- Being the deep-review tool — this decides *what* to review; the review itself is the Review
-  feature / a deep pass.
+**Escalation (the expensive noise control).** For complex/dangerous PRs, the full multi-agent
+skill is the **explicit escape hatch**: `Discuss → /deep-pr-review` spawns a Claude Code session
+that runs the skill (adversarial per-finding refutation by independent verifiers + orchestrator
+ranking). We deliberately do **not** rebuild that in-app for the default path.
+
+### 3.3 Discuss with Agent = a primed TUI session (no embedded chat)
+
+SimpleEdit is terminal-first (no ACP). "Discuss" **checks out the worktree and spawns a real
+Claude session in the sidebar**, primed with the review brief (triage — or deep — findings +
+diff). No chat panel is embedded in the screen.
+
+- **Priming = a review-session brief**: the agent is told this is a *review* session, the PR is
+  **not ours to modify** unless the user explicitly asks, and that when the user is ready it
+  should **post the comments / approve / request-changes to GitHub itself** (the user's actual
+  workflow). This is why Discuss is the *primary* GitHub-write path for discussed PRs.
+- **Model selection via a split button**: main click starts with the remembered model; the
+  caret (or right-click) opens a model menu grouped Cloud / Local. You reach for Sonnet/Opus to
+  *discuss* even though triage ran local. **This split-button component is shared with the
+  sidebar "✦ Agent" button** (§4.4).
+- **Deep review resets a stale discuss session**: a deep review changes the brief, so clicking
+  `⚡ Deep review` clears any discuss session started on the triage-only brief; re-starting
+  Discuss afterward primes a fresh session with the deep findings. ("Good enough to try.")
+
+### 3.4 Decide = review composer + the GitHub write path
+
+Two paths to GitHub, matched to effort:
+- **Composer** (docked footer, the *human* path): collects line comments (from triage/deep
+  findings via `＋ review`, or your own), an overall summary, and a **verdict — Approve /
+  Comment / Request changes** → `gh pr review …`. Also the home of the standalone Approve.
+- **Agent session** (the *discussed* path): the primed agent posts the review itself when told.
+
+This makes SimpleEdit a **write** client for GitHub reviews — a deliberate step past the
+read-only skill. Guard posting behind a confirmation.
+
+---
+
+## 4. Substrate additions this feature drives
+
+### 4.1 `runFanout` (in `agent-tasks/orchestrator.ts`)
+
+`runFanout(task, inputs[], { runner, model, concurrency, signal })` → an `AsyncIterable` of
+tagged **lifecycle events** per input — `start` / `item` / `done` / `error` (richer than the
+`{input,item}` sketch, because it mirrors the single-task event model Review/Tour already emit:
+status-running + findings + status-done/error, and it's what a live card/lens UI needs).
+Used by **both** triage (over PRs) and deep review (over lenses).
+
+### 4.2 Backend concurrency gate (local-serial / cloud-parallel)
+
+Concurrency **cannot** be a per-fan-out counter, because local models are **GPU-bound** (Ollama
+serializes; parallel DirectRunner calls thrash). So a slot is requested from the **backend's**
+gate, not a local variable:
+- **Local (Ollama / DirectRunner)** → one **global serial queue** (size 1 by default,
+  user-configurable). All local bounded work — triage judgments, deep lenses, synthesis — shares
+  it, no matter which fan-out spawned it.
+- **Cloud (ClaudeCodeRunner)** → a separate **parallel cap**.
+Speed is explicitly **not** the driver; correctness + not thrashing the GPU is. See
+[bounded-tasks](./bounded-tasks.md) for where this lives.
+
+### 4.3 GitHub adapter (`src/main/github/`)
+
+Thin typed wrappers over the user's `gh` auth: `search prs`, `pr view --json`, `pr diff`,
+`pr checks`, and (write) `pr review --approve|--comment|--request-changes` with line anchors.
+The one genuinely new context source — note it as a substrate extension, not a screen-PRs hack.
+Handle comes from `gh api user`; org/cutoff are on-page filters.
+
+### 4.4 Shared split-button component
+
+Main action + caret model menu (Cloud/Local groups, current pick checked; right-click on main
+opens it too). Introduced here and **reused for the sidebar "✦ Agent" button**.
+
+---
+
+## 5. Model routing & config
+
+- **Triage**: cheap local (DirectRunner), one per-PR judgment. Model + parallelism in Settings.
+- **Deep review**: per-lens model, mostly local by default; soundness = cloud, architecture =
+  off by default, types = LSP-or-local; synthesis = local. All in Settings.
+- **Discuss**: chosen per-session via the split button (default a cloud model — you discuss on
+  Sonnet/Opus).
+- Reuses the existing per-feature default pattern (`getModelConfig().defaults.*`); add
+  `screenPrs` (already reserved in `ModelFeatureKey`) and a deep-review lens map.
+
+---
+
+## 6. Build order (target: one PR; flag if it must split)
+
+1. **`runFanout`** + backend concurrency gate + unit tests (pure substrate, no GitHub).
+2. **GitHub adapter** (`gh` read + write wrappers).
+3. **`triage-task.ts`** (diff-only per-PR, verdict schema) + deterministic bucketing (shared so
+   the renderer re-sorts live).
+4. **Deep review**: lens registry + per-lens `Task`s + the synthesis reduce task; lens→runner
+   routing; per-lens model config.
+5. **`screenprs.ts` orchestration + `screenprs:*` IPC** (per-window streaming, cancel).
+6. **Renderer**: split-view panel (streaming buckets, stacked grouping, cards), PR detail
+   (stage rail, collapsing triage, diff, deep-review section), **review composer**, the shared
+   **split button**, Discuss = primed sidebar session, checkout + Review-handoff.
+7. **Settings**: triage model + parallelism, per-lens deep-review model map.
+
+The triage + panel + discuss + composer is one coherent PR. The **multi-lens deep-review engine**
+(step 4) is the piece most likely to justify its own follow-up PR if step 6 grows large — decide
+when the code is real, per the "fewer, larger, coherent PRs" preference.
+
+---
+
+## 7. Open decisions
+
+- **Type lens**: LSP diagnostics (deterministic, no model) vs. a model lens vs. off. Lean LSP.
+- **Deep-review defaults**: confirm soundness=cloud, architecture=off, types=LSP once tried.
+- **Composer vs. agent posting**: both post to GitHub; the human uses the composer, the discussed
+  path lets the agent post. Fine as two paths — just confirm the confirmation-guard UX.
+- **Provider**: GitHub only (via `gh`) for now.
+
+## 8. Non-goals
+
+- Rebuilding the full adversarial multi-agent `/deep-pr-review` in-app — that's the escape hatch.
+- Being the deep-review tool of record for *every* PR — triage decides *what* deserves depth.
+- Merging PRs. (Reviewing/commenting/approving is in scope; merging is not.)

@@ -85,12 +85,23 @@ finding schema *is* `reviewTask.schema`.
 
 ```ts
 runTask(task, input, { runner, model }): AsyncIterable<Item>                       // Review, Tour
-runFanout(task, inputs[], { runner, model, concurrency }): AsyncIterable<{ input, item }>  // screen-PRs
+runFanout(task, inputs[], { runner, model, concurrency, signal }): AsyncIterable<FanoutEvent>  // screen-PRs
+// FanoutEvent = { input, index, kind: 'start'|'item'|'done'|'error', item?, error? }
 ```
 
 Fan-out is "many tasks, capped concurrency, emit each result as it lands" — the **same event
 stream** as single-task streaming, so the renderer treats streaming-within-a-task and
-results-across-tasks identically.
+results-across-tasks identically. The event is tagged with `kind` (start/item/done/error per
+input) rather than a bare `{input,item}`, mirroring the status+findings model Review/Tour emit
+— that's what a live card/lens UI needs. screen-PRs uses `runFanout` **twice**: over PRs (triage)
+and over review lenses (deep review); see [screen-prs](./screen-prs.md).
+
+**Concurrency is gated per backend, not per fan-out.** Local models are GPU-bound — Ollama
+serializes and parallel `DirectRunner` calls thrash — so a slot is requested from the backend's
+gate: **local = one global serial queue** (size 1 by default, user-configurable), shared by all
+local bounded work regardless of which fan-out spawned it; **cloud (`ClaudeCodeRunner`) = a
+separate parallel cap**. `concurrency` is thus an upper bound the backend gate further constrains.
+Speed is not the driver — not thrashing the GPU is.
 
 ### 4. Shared context primitives (a toolkit, not an abstraction)
 
@@ -112,7 +123,9 @@ can still chase a thread.
 - `src/main/agent-tasks/runner.ts` — `Runner` + `ClaudeCodeRunner`, `DirectRunner`.
 - `src/main/agent-tasks/orchestrator.ts` — `runTask`, `runFanout` (concurrency cap).
 - `src/main/agent-tasks/context.ts` — `getDiff`, `readFiles`, `expandWithLsp`.
-- `src/main/tasks/review-task.ts`, `tour-task.ts`, `screenprs-task.ts` — `Task` defs.
+- `src/main/tasks/review-task.ts`, `tour-task.ts` — `Task` defs.
+- screen-PRs tasks: `triage-task.ts` (diff-only per-PR) + deep-review lens tasks + a synthesis
+  reduce task — see [screen-prs](./screen-prs.md) §3.2/§6 (authoritative on the breakdown).
 
 **Modified**
 - `src/main/review.ts` — reduce to a `Task` def + `review:*` wiring over the substrate.
