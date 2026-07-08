@@ -152,7 +152,9 @@ export const screenPrsStore = {
     setEntry(keyOf(context), { context })
   },
   _onCard(card: ScreenPrCard): void {
-    setEntry(keyOf(card), { card })
+    // A card IS a full context (+bucket), so set both — a cached PR emits a card
+    // with no prior `screening` event and still needs its context for the detail.
+    setEntry(keyOf(card), { context: card, card })
   },
   _onStatus(status: ScreenPrsRunStatus, total?: number, error?: string): void {
     _status = status

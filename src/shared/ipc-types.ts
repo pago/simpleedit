@@ -294,6 +294,8 @@ export interface ScreenPrsFilters {
   owner?: string
   /** Only PRs updated on/after this YYYY-MM-DD (the activity cutoff). */
   updatedSince?: string
+  /** Bypass the triage cache and re-run every PR (⌥-click Re-screen). */
+  force?: boolean
 }
 
 export type ScreenPrsRunStatus = 'running' | 'done' | 'error'

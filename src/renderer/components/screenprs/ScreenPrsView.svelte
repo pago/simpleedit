@@ -53,9 +53,9 @@
     d.setDate(d.getDate() - Number(days))
     return d.toISOString().slice(0, 10)
   }
-  function screen(): void {
+  function screen(force = false): void {
     void refreshTriageModel()
-    void screenPrsStore.start({ owner: owner.trim() || undefined, updatedSince: isoCutoff(cutoff) })
+    void screenPrsStore.start({ owner: owner.trim() || undefined, updatedSince: isoCutoff(cutoff), force })
   }
 
   const ciClass: Record<PrCiStatus, string> = {
@@ -84,7 +84,11 @@
         </span>
         <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancel()}>Stop</button>
       {:else}
-        <button class="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700" onclick={screen}>
+        <button
+          class="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700"
+          title={done > 0 ? 'Re-screen (⌥-click to ignore cache and re-run all)' : 'Screen your review queue'}
+          onclick={(e) => screen(e.altKey)}
+        >
           <MagnifierIcon class="h-3.5 w-3.5" />
           {done > 0 ? 'Re-screen' : 'Screen'}
         </button>

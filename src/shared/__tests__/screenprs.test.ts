@@ -7,7 +7,7 @@ const suggestion: TriageFinding = { label: 'suggestion', file: 'a.ts', title: 'n
 function card(over: Partial<ScreenPrCard>): ScreenPrCard {
   const base: ScreenPrCard = {
     owner: 'ivx', repo: 'ui', number: 1, url: 'u', title: 't', author: 'a', updatedAt: '2026-07-01',
-    additions: 10, deletions: 2, changedFiles: 1, baseRefName: 'main',
+    headSha: 'sha1', additions: 10, deletions: 2, changedFiles: 1, baseRefName: 'main',
     ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '', diff: '',
     impact: 'low', findings: [], bucket: 'quick',
   }

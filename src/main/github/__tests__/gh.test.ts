@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseSearch, parseChecks, assembleContext } from '../gh'
+import { parseSearch, parseChecks, assembleMeta } from '../gh'
 import type { PrRef } from '../../../shared/screenprs'
 
 describe('parseSearch', () => {
@@ -42,32 +42,32 @@ describe('parseChecks', () => {
   })
 })
 
-describe('assembleContext', () => {
+describe('assembleMeta', () => {
   const ref: PrRef = {
     owner: 'ivx', repo: 'ui-pack', number: 7, url: 'u', title: 't', author: 'bob', updatedAt: 'd',
   }
-  it('merges view + diff + checks and computes approvedByOther', () => {
+  it('merges view + checks, captures head SHA, and computes approvedByOther', () => {
     const view = JSON.stringify({
-      additions: 100, deletions: 5, changedFiles: 3, baseRefName: 'main', body: 'desc',
+      additions: 100, deletions: 5, changedFiles: 3, baseRefName: 'main', headRefOid: 'abc123', body: 'desc',
       latestReviews: [
         { author: { login: 'carol' }, state: 'APPROVED' },
         { author: { login: 'bob' }, state: 'COMMENTED' },
       ],
     })
-    const ctx = assembleContext(ref, view, 'the diff', '[]', 'pago')
-    expect(ctx.additions).toBe(100)
-    expect(ctx.diff).toBe('the diff')
-    expect(ctx.approvedByOther).toBe(true) // carol approved, and carol !== pago
-    expect(ctx.reviewers).toEqual([
+    const meta = assembleMeta(ref, view, '[]', 'pago')
+    expect(meta.additions).toBe(100)
+    expect(meta.headSha).toBe('abc123')
+    expect(meta.approvedByOther).toBe(true) // carol approved, and carol !== pago
+    expect(meta.reviewers).toEqual([
       { login: 'carol', state: 'approved' },
       { login: 'bob', state: 'commented' },
     ])
   })
   it('does not count the current user’s own approval as approvedByOther', () => {
     const view = JSON.stringify({
-      additions: 1, deletions: 0, changedFiles: 1, baseRefName: 'main', body: '',
+      additions: 1, deletions: 0, changedFiles: 1, baseRefName: 'main', headRefOid: 'x', body: '',
       latestReviews: [{ author: { login: 'pago' }, state: 'APPROVED' }],
     })
-    expect(assembleContext(ref, view, '', '[]', 'pago').approvedByOther).toBe(false)
+    expect(assembleMeta(ref, view, '[]', 'pago').approvedByOther).toBe(false)
   })
 })
