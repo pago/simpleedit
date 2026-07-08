@@ -102,18 +102,35 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
       else toTriage.push(meta)
     }
 
-    // Fetch diffs only for the misses, then show them in the "Screening…" section.
-    const contexts = (await mapLimit(toTriage, 5, async (m) => ({ ...m, diff: await getPrDiff(m) }))).filter(
-      (c): c is PrContext => c !== null
-    )
+    // Fetch diffs only for the misses, emitting each PR into the "Screening…"
+    // section as its diff lands (as "scheduled" — waiting for the model).
+    const contexts = (
+      await mapLimit(toTriage, 5, async (m) => {
+        const ctx = { ...m, diff: await getPrDiff(m) }
+        if (!controller.signal.aborted) send(webContents, 'screenprs:screening', { context: ctx })
+        return ctx
+      })
+    ).filter((c): c is PrContext => c !== null)
     if (controller.signal.aborted) return
-    for (const ctx of contexts) send(webContents, 'screenprs:screening', { context: ctx })
 
     const { runner, model, concurrency } = selectTriageRunner()
     const results: (TriageResult | null)[] = new Array(contexts.length).fill(null)
 
-    for await (const ev of runFanout(triageTask, contexts, { runner, model, concurrency, signal: controller.signal })) {
-      if (ev.kind === 'item') {
+    // Per-PR budget: a stuck/slow model call is aborted so it can't freeze the
+    // whole screen (that PR falls back to a metadata-only bucket). Generous
+    // enough for a slow local model on a large diff.
+    const TRIAGE_TIMEOUT_MS = 120_000
+    for await (const ev of runFanout(triageTask, contexts, {
+      runner,
+      model,
+      concurrency,
+      signal: controller.signal,
+      timeoutMs: TRIAGE_TIMEOUT_MS,
+    })) {
+      if (ev.kind === 'start') {
+        // The model has picked this PR up — promote it from scheduled to running.
+        send(webContents, 'screenprs:triaging', { url: ev.input.url })
+      } else if (ev.kind === 'item') {
         results[ev.index] = ev.item ?? null
       } else if (ev.kind === 'done' || ev.kind === 'error') {
         // A model failure (or empty output) still yields a card — bucketed from

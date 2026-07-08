@@ -162,6 +162,29 @@ describe('runFanout', () => {
     expect((await done).filter((e) => e.kind === 'done')).toHaveLength(2)
   })
 
+  it('times out a stuck input, reports it, and keeps going', async () => {
+    // A runner that only finishes when aborted (models the wedged-Ollama case).
+    const slow: Runner = {
+      run<Item>(_req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item> {
+        return (async function* () {
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(resolve, 5000)
+            opts?.signal?.addEventListener('abort', () => {
+              clearTimeout(t)
+              reject(new Error('aborted'))
+            })
+          })
+          yield ('late' as unknown as Item)
+        })()
+      },
+    }
+    const events = await collect(runFanout(idTask, [1, 2], { runner: slow, concurrency: 1, timeoutMs: 20 }))
+    const errs = events.filter((e) => e.kind === 'error')
+    expect(errs).toHaveLength(2)
+    expect(errs[0].error).toMatch(/timed out after 20ms/)
+    expect(events.filter((e) => e.kind === 'start')).toHaveLength(2) // both still attempted
+  })
+
   it('an already-aborted signal produces no events', async () => {
     const controller = new AbortController()
     controller.abort()

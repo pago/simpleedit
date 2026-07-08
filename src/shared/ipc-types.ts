@@ -311,8 +311,11 @@ export interface ScreenPrsInvokeMap {
 export interface ScreenPrsEventMap {
   /** The queue is known (right after search): seed placeholders before gathering. */
   'screenprs:queued': { refs: PrRef[] }
-  /** A PR's context is gathered; the placeholder gains size/CI/reviewers. */
+  /** A PR's context is gathered; the placeholder gains size/CI/reviewers (and is
+   *  now "scheduled" — waiting for the triage model). */
   'screenprs:screening': { context: PrContext }
+  /** The triage model has *started* on this PR (vs. merely scheduled). */
+  'screenprs:triaging': { url: string }
   /** A PR finished triage — full card with its derived bucket. */
   'screenprs:card': { card: ScreenPrCard }
   'screenprs:status': { status: ScreenPrsRunStatus; error?: string; total?: number }

@@ -33,10 +33,15 @@ export interface Entry {
   card?: ScreenPrCard
 }
 
-/** What the "Screening…" section renders: the ref, plus context once available. */
+/** A still-screening PR's phase: gathering its diff, queued for the model, or
+ *  actively being judged right now. */
+export type TriagePhase = 'gathering' | 'scheduled' | 'running'
+
+/** What the "Screening…" section renders: the ref, context once available, phase. */
 export interface PendingEntry {
   ref: PrRef
   context?: PrContext
+  phase: TriagePhase
 }
 
 const keyOf = (pr: { url: string }): string => pr.url
@@ -47,6 +52,7 @@ let _error = $state<string | undefined>(undefined)
 let _total = $state<number | undefined>(undefined)
 let _selected = $state<string | null>(null)
 let _filters = $state<ScreenPrsFilters>({ owner: 'ivx' })
+let _triaging = $state<Set<string>>(new Set()) // urls the model is actively judging
 let _deep = $state<Map<string, DeepState>>(new Map())
 
 function setDeep(url: string, patch: Partial<DeepState>): void {
@@ -73,9 +79,15 @@ export const screenPrsStore = {
   selectedKey: (): string | null => _selected,
 
   entries: (): Entry[] => [..._entries.values()],
-  /** PRs still being screened (queued or gathering) — no final card yet. */
+  /** PRs still being screened (no final card yet), tagged with their phase. */
   pending: (): PendingEntry[] =>
-    [..._entries.values()].filter((e) => !e.card).map((e) => ({ ref: e.ref, context: e.context })),
+    [..._entries.values()]
+      .filter((e) => !e.card)
+      .map((e) => ({
+        ref: e.ref,
+        context: e.context,
+        phase: _triaging.has(e.ref.url) ? 'running' : e.context ? 'scheduled' : 'gathering',
+      })),
 
   /** Completed cards grouped by bucket, each group sorted worst/most-relevant first. */
   byBucket(): Record<ScreenPrBucket, ScreenPrCard[]> {
@@ -105,6 +117,7 @@ export const screenPrsStore = {
   async start(filters?: ScreenPrsFilters): Promise<void> {
     if (filters) _filters = filters
     _entries = new Map()
+    _triaging = new Set()
     _selected = null
     _error = undefined
     _total = undefined
@@ -147,14 +160,25 @@ export const screenPrsStore = {
     for (const ref of refs) next.set(keyOf(ref), { ref })
     _entries = next
     _total = refs.length
+    _triaging = new Set()
   },
   _onScreening(context: PrContext): void {
     setEntry(keyOf(context), { context })
+  },
+  _onTriaging(url: string): void {
+    const next = new Set(_triaging)
+    next.add(url)
+    _triaging = next
   },
   _onCard(card: ScreenPrCard): void {
     // A card IS a full context (+bucket), so set both — a cached PR emits a card
     // with no prior `screening` event and still needs its context for the detail.
     setEntry(keyOf(card), { context: card, card })
+    if (_triaging.has(card.url)) {
+      const next = new Set(_triaging)
+      next.delete(card.url)
+      _triaging = next
+    }
   },
   _onStatus(status: ScreenPrsRunStatus, total?: number, error?: string): void {
     _status = status
@@ -167,6 +191,7 @@ export const screenPrsStore = {
 export function initScreenPrsListeners(): () => void {
   const unsubQueued = window.api.on('screenprs:queued', (d) => screenPrsStore._onQueued(d.refs))
   const unsubScreening = window.api.on('screenprs:screening', (d) => screenPrsStore._onScreening(d.context))
+  const unsubTriaging = window.api.on('screenprs:triaging', (d) => screenPrsStore._onTriaging(d.url))
   const unsubCard = window.api.on('screenprs:card', (d) => screenPrsStore._onCard(d.card))
   const unsubStatus = window.api.on('screenprs:status', (d) => screenPrsStore._onStatus(d.status, d.total, d.error))
   const unsubDeepLens = window.api.on('screenprs:deep-lens', (d) => screenPrsStore._onDeepLens(d.url, d.lens, d.status))
@@ -175,6 +200,7 @@ export function initScreenPrsListeners(): () => void {
   return () => {
     unsubQueued()
     unsubScreening()
+    unsubTriaging()
     unsubCard()
     unsubStatus()
     unsubDeepLens()
