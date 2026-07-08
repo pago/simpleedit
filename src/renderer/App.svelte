@@ -2,8 +2,11 @@
   import { onMount } from 'svelte'
   import Sidebar from './components/sidebar/Sidebar.svelte'
   import WorkspaceManager from './components/layout/WorkspaceManager.svelte'
+  import ScreenPrsView from './components/screenprs/ScreenPrsView.svelte'
   import Welcome from './components/Welcome.svelte'
   import CommandPalette from './components/command-palette/CommandPalette.svelte'
+  import { uiView } from './stores/uiView.svelte'
+  import { initScreenPrsListeners } from './stores/screenprs.svelte'
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initClaudeStatusListeners } from './stores/claude-status.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
@@ -30,11 +33,13 @@
     if (isSettingsView) return
     const unsubStatus = initClaudeStatusListeners()
     const unsubSessions = initSessionListeners()
+    const unsubScreenPrs = initScreenPrsListeners()
     void initRepoFromMain()
     window.addEventListener('beforeunload', flushSessionSave)
     return () => {
       unsubStatus()
       unsubSessions()
+      unsubScreenPrs()
       window.removeEventListener('beforeunload', flushSessionSave)
     }
   })
@@ -193,7 +198,11 @@
       ></div>
 
       <main class="flex-1 overflow-hidden bg-zinc-950">
-        <WorkspaceManager />
+        {#if uiView.current() === 'screenprs'}
+          <ScreenPrsView />
+        {:else}
+          <WorkspaceManager />
+        {/if}
       </main>
     </div>
   </div>
