@@ -288,13 +288,16 @@ export function groupStacks(cards: ScreenPrCard[]): PrGroup[] {
   const groups: PrGroup[] = []
   for (const c of cards) {
     if (seen.has(c) || parentOf(c)) continue // skip non-roots; their ancestor emits them
+    // DFS so a branching stack (a PR with >1 dependent) keeps every descendant in
+    // the group, always parent-before-child — not just the first child.
     const chain: ScreenPrCard[] = []
-    let cur: ScreenPrCard | undefined = c
-    while (cur && !seen.has(cur)) {
-      chain.push(cur)
-      seen.add(cur)
-      cur = children.get(cur)?.[0] // linearize (deepest-first not needed: cards pre-sorted)
+    const visit = (node: ScreenPrCard): void => {
+      if (seen.has(node)) return
+      chain.push(node)
+      seen.add(node)
+      for (const child of children.get(node) ?? []) visit(child)
     }
+    visit(c)
     groups.push(chain.length > 1 ? { stackId: `${chain[0].repo}#${chain[0].number}`, cards: chain } : { cards: chain })
   }
   // Cards whose parent sits in another bucket were never rooted here — emit them

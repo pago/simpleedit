@@ -3,7 +3,7 @@ import { makeLensTask, synthesisTask, _parseFinding } from '../deep-review-lense
 import type { PrContext, DeepFinding } from '../../../shared/screenprs'
 
 const ctx: PrContext = {
-  owner: 'ivx', repo: 'ui', number: 3, url: 'u', title: 'Add retry', author: 'a', updatedAt: 'd',
+  owner: 'acme', repo: 'ui', number: 3, url: 'u', title: 'Add retry', author: 'a', updatedAt: 'd',
   additions: 20, deletions: 2, changedFiles: 2, baseRefName: 'main',
   ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false,
   body: 'adds retry to the client', diff: 'diff --git a/x b/x\n+ retry()',

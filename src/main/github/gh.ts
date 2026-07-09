@@ -123,7 +123,7 @@ interface RawPrView {
   deletions: number
   changedFiles: number
   baseRefName: string
-  headRefName: string
+  headRefName?: string
   headRefOid: string
   body: string
   latestReviews?: RawReview[] | null
@@ -223,7 +223,11 @@ export async function postReview(pr: PrReviewTarget, payload: GithubReviewPayloa
   try {
     return { reviewUrl: htmlUrlOf(await post(payload)), foldedComments: false }
   } catch (err) {
-    if (payload.comments.length === 0) throw err
+    // Only the anchor-rejection case is recoverable by folding. A 422 is GitHub
+    // saying a comment's line isn't part of the diff; any other failure (auth,
+    // network, 5xx) would just fail again — rethrow so the real error surfaces.
+    const msg = err instanceof Error ? err.message : String(err)
+    if (payload.comments.length === 0 || !/\b422\b|unprocessable/i.test(msg)) throw err
     const folded = foldCommentsIntoBody(payload)
     return { reviewUrl: htmlUrlOf(await post(folded)), foldedComments: true }
   }

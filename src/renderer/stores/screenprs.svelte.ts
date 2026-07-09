@@ -54,7 +54,7 @@ let _status = $state<ScreenStatus>('idle')
 let _error = $state<string | undefined>(undefined)
 let _total = $state<number | undefined>(undefined)
 let _selected = $state<string | null>(null)
-let _filters = $state<ScreenPrsFilters>({ owner: 'ivx' })
+let _filters = $state<ScreenPrsFilters>({}) // no org scope by default — all orgs where you're a reviewer
 let _triaging = $state<Set<string>>(new Set()) // urls the model is actively judging
 let _deep = $state<Map<string, DeepState>>(new Map())
 

@@ -34,7 +34,7 @@ describe('parseTriage', () => {
 
 describe('triageTask', () => {
   const ctx: PrContext = {
-    owner: 'ivx', repo: 'ui', number: 1, url: 'u', title: 'Add widget', author: 'a', updatedAt: 'd',
+    owner: 'acme', repo: 'ui', number: 1, url: 'u', title: 'Add widget', author: 'a', updatedAt: 'd',
     headSha: 'sha1', additions: 5, deletions: 1, changedFiles: 1, baseRefName: 'main',
     ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false,
     body: 'implements the widget', diff: 'diff --git a/x b/x\n+code',

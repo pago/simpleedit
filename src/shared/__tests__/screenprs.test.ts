@@ -20,7 +20,7 @@ const suggestion: TriageFinding = { label: 'suggestion', file: 'a.ts', title: 'n
 
 function card(over: Partial<ScreenPrCard>): ScreenPrCard {
   const base: ScreenPrCard = {
-    owner: 'ivx', repo: 'ui', number: 1, url: 'u', title: 't', author: 'a', updatedAt: '2026-07-01',
+    owner: 'acme', repo: 'ui', number: 1, url: 'u', title: 't', author: 'a', updatedAt: '2026-07-01',
     headSha: 'sha1', additions: 10, deletions: 2, changedFiles: 1, baseRefName: 'main', headRefName: 'feat/x',
     ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '', diff: '',
     impact: 'low', findings: [], bucket: 'quick',
@@ -204,5 +204,15 @@ describe('groupStacks', () => {
     const groups = groupStacks([dependent])
     expect(groups).toHaveLength(1)
     expect(groups[0].stackId).toBeUndefined()
+  })
+  it('keeps all descendants of a branching stack (parent before children)', () => {
+    const root = card({ number: 1, headRefName: 'root', baseRefName: 'main' })
+    const childA = card({ number: 2, headRefName: 'a', baseRefName: 'root' })
+    const childB = card({ number: 3, headRefName: 'b', baseRefName: 'root' })
+    const groups = groupStacks([root, childA, childB])
+    expect(groups).toHaveLength(1)
+    // all three in one stack; neither dependent is dropped to standalone
+    expect(groups[0].cards.map((c) => c.number)).toEqual([1, 2, 3])
+    expect(groups[0].cards[0].number).toBe(1) // root first
   })
 })
