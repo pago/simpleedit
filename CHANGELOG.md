@@ -1,5 +1,59 @@
 # simpleedit
 
+## 0.18.0
+
+### Minor Changes
+
+- [#146](https://github.com/pago/simpleedit/pull/146) [`4aeac5c`](https://github.com/pago/simpleedit/commit/4aeac5c7fc334ae0359cfb87d562e80db0d0c607) Thanks [@pago](https://github.com/pago)! - Dependency maintenance sweep.
+
+  - Upgraded Electron 35 → 42, picking up several HIGH-severity Chromium/Electron
+    security fixes (use-after-free in offscreen paint, permission callbacks, and
+    PowerMonitor). Bundled Node goes 22 → 24; node-pty is rebuilt for the new ABI.
+  - Upgraded the build toolchain to Vite 7 (electron-vite 5, vite-plugin-svelte 6).
+  - Upgraded TypeScript 6, xterm 6, chokidar 5, vscode-jsonrpc 9, monaco-editor
+    0.55, and @json-render/svelte 0.19.
+  - Refreshed all in-range dependencies, including security fixes for simple-git
+    (RCE), vitest (dev-only), and dompurify; removed the unused @anthropic-ai/sdk.
+
+- [#148](https://github.com/pago/simpleedit/pull/148) [`6e85bfa`](https://github.com/pago/simpleedit/commit/6e85bfa48a724f5320917970fe48f43737e947a7) Thanks [@pago](https://github.com/pago)! - Local & alternate model support. A new Settings window lets you discover, install (with hardware-aware recommendations), and pick Ollama or Claude models, and set per-feature default models for Review and Tour. Under the hood the hardwired Claude integration is generalized into an `AgentProvider` abstraction, and Review and Tour now run on a shared bounded-task substrate that can target a chosen model — cloud via Claude Code, or a local model via Ollama's native API. Interactive local sessions via Claude Code are intentionally disabled pending an upstream Ollama fix ([#13949](https://github.com/pago/simpleedit/issues/13949)); local models power the Review/Tour tasks instead.
+
+- [#150](https://github.com/pago/simpleedit/pull/150) [`c3af3f9`](https://github.com/pago/simpleedit/commit/c3af3f9bce14612b7161afa3d0971467fa74d8d6) Thanks [@pago](https://github.com/pago)! - Add `runFanout` to the bounded-task orchestrator: run a task over N inputs with
+  capped concurrency, streaming per-input lifecycle events (`start`/`item`/`done`/
+  `error`) as they land. This is the fan-out substrate the upcoming Screen PRs
+  feature is built on; a single input's failure is isolated to its own `error`
+  event and never rejects the whole stream. Also lands the Screen PRs design docs.
+
+- [#153](https://github.com/pago/simpleedit/pull/153) [`5bda32a`](https://github.com/pago/simpleedit/commit/5bda32a2e3148f081657b3f49740e0f2806d9551) Thanks [@pago](https://github.com/pago)! - Screen PRs — deep-review engine. A chosen PR can now run a thorough, multi-lens
+  review: focused lenses (soundness, intent-vs-impl, test coverage, and optional
+  type/architecture) run in parallel, then a synthesis pass dedups/ranks/drops
+  noise. Mostly local by default (each lens inherits the triage model unless
+  escalated to cloud in Settings); soundness/intent/tests on by default,
+  type/architecture opt-in. Concurrency is gated per backend (local-serial for the
+  GPU, cloud-parallel). The PR detail gains a Deep review action with live lens
+  progress and a curated, severity-ranked findings list; triage collapses once
+  deep review supersedes it. Findings are diff-only for now (repo-aware pass on a
+  checked-out worktree follows with Discuss/handoff).
+
+- [#155](https://github.com/pago/simpleedit/pull/155) [`8baad0b`](https://github.com/pago/simpleedit/commit/8baad0bc90538600b40029584619bab2e8bd472f) Thanks [@pago](https://github.com/pago)! - Screen PRs: review composer — the in-app path to post a GitHub review. Collect line comments from triage/deep findings (＋ review) or write your own, add a summary, pick a verdict (Approve / Comment / Request changes), and post via a confirm dialog. Adds a quick-approve ✓ on queue cards and stacks related PRs (base→head) so you review them in order. First write surface: line comments anchor to the diff where possible and fold into the summary otherwise; the post is guarded by a confirmation.
+
+- [#151](https://github.com/pago/simpleedit/pull/151) [`acb6084`](https://github.com/pago/simpleedit/commit/acb6084f5e68e86215488df872182c455c067edd) Thanks [@pago](https://github.com/pago)! - Screen PRs — triage logic layer (main process). Adds the GitHub read adapter
+  (`gh` search / view / diff / checks), the diff-only per-PR triage task (cheap
+  local model via DirectRunner), deterministic bucketing (shared, so the renderer
+  re-sorts as cards stream), and the fan-out orchestration + `screenprs:*` IPC that
+  gathers the review queue, judges each PR, and streams bucketed cards. The
+  split-view panel UI follows.
+
+- [#152](https://github.com/pago/simpleedit/pull/152) [`a82af81`](https://github.com/pago/simpleedit/commit/a82af815bb5665736a34f69f22f5123edb80dbf9) Thanks [@pago](https://github.com/pago)! - Screen PRs — the triage view. Adds a "Screen PRs" entry pinned at the bottom of
+  the sidebar (with an attention badge) that takes over the main area with a
+  split-view: a streaming, bucketed queue (Needs attention / Quick pass / Waiting
+  on author / Approved-FYI) that fills as each PR is triaged, and a PR detail pane
+  showing the triage findings + a read-only diff. Deep review, Discuss, and the
+  GitHub review composer follow.
+
+### Patch Changes
+
+- [#149](https://github.com/pago/simpleedit/pull/149) [`6f51166`](https://github.com/pago/simpleedit/commit/6f51166fd9aeb8b89f761b3220b185d32c3073f6) Thanks [@pago](https://github.com/pago)! - Enable interactive local (Ollama) coding sessions. Claude Code's `count_tokens` probe was hanging Ollama's Anthropic-compatible endpoint (Ollama [#13949](https://github.com/pago/simpleedit/issues/13949)); setting `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` on the local spawn sidesteps it, so tool-capable local models are now startable interactively from the model picker (on by default).
+
 ## 0.17.1
 
 ### Patch Changes
