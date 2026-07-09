@@ -4,7 +4,7 @@
  * lands), and derives the bucketed, sorted queue. Bucketing/sorting is the
  * shared pure logic (screenprs.ts), so this store never re-implements the rules.
  */
-import type { ScreenPrsFilters, ScreenPrsRunStatus } from '../../shared/ipc-types'
+import type { ScreenPrsFilters, ScreenPrsRunStatus, SubmitReviewResult } from '../../shared/ipc-types'
 import type {
   PrRef,
   PrContext,
@@ -14,8 +14,11 @@ import type {
   DeepLensId,
   DeepReviewStatus,
   DeepLensStatus,
+  PrReviewDraft,
+  PrReviewComment,
+  PrReviewVerdict,
 } from '../../shared/screenprs'
-import { BUCKET_ORDER, compareInBucket } from '../../shared/screenprs'
+import { BUCKET_ORDER, compareInBucket, emptyReviewDraft, reviewSubmitError } from '../../shared/screenprs'
 
 export interface DeepState {
   status: DeepReviewStatus
@@ -54,6 +57,25 @@ let _selected = $state<string | null>(null)
 let _filters = $state<ScreenPrsFilters>({ owner: 'ivx' })
 let _triaging = $state<Set<string>>(new Set()) // urls the model is actively judging
 let _deep = $state<Map<string, DeepState>>(new Map())
+
+// ── review composer ──
+/** Confirmation that a review was posted to GitHub (keyed by PR url). GitHub
+ *  can't retract a submitted review, so this is a terminal, local record — not
+ *  an "undo"able draft. */
+export interface SubmittedReview {
+  verdict: PrReviewVerdict
+  reviewUrl?: string
+  foldedComments: boolean
+}
+let _drafts = $state<Map<string, PrReviewDraft>>(new Map())
+let _submitted = $state<Map<string, SubmittedReview>>(new Map())
+let _submitting = $state<Set<string>>(new Set())
+
+function setDraft(url: string, patch: Partial<PrReviewDraft>): void {
+  const next = new Map(_drafts)
+  next.set(url, { ...(next.get(url) ?? emptyReviewDraft()), ...patch })
+  _drafts = next
+}
 
 function setDeep(url: string, patch: Partial<DeepState>): void {
   const next = new Map(_deep)
@@ -142,6 +164,71 @@ export const screenPrsStore = {
   },
   async cancelDeep(url: string): Promise<void> {
     await window.api.invoke('screenprs:deep-cancel', url)
+  },
+
+  // ── review composer (the GitHub write path) ──
+  draftFor(url: string): PrReviewDraft {
+    return _drafts.get(url) ?? emptyReviewDraft()
+  },
+  submittedFor(url: string): SubmittedReview | undefined {
+    return _submitted.get(url)
+  },
+  isSubmitting(url: string): boolean {
+    return _submitting.has(url)
+  },
+  /** Why the current draft can't be posted, or null — mirrors the main-process guard. */
+  draftError(url: string): string | null {
+    return reviewSubmitError(_drafts.get(url) ?? emptyReviewDraft())
+  },
+  addComment(url: string, c: PrReviewComment): void {
+    const cur = _drafts.get(url) ?? emptyReviewDraft()
+    // Dedupe: the same finding shouldn't stack up if ＋review is clicked twice.
+    if (cur.comments.some((x) => x.text === c.text && x.file === c.file && x.line === c.line)) return
+    setDraft(url, { comments: [...cur.comments, c] })
+  },
+  removeComment(url: string, index: number): void {
+    const cur = _drafts.get(url)
+    if (!cur) return
+    setDraft(url, { comments: cur.comments.filter((_, i) => i !== index) })
+  },
+  setSummary(url: string, summary: string): void {
+    setDraft(url, { summary })
+  },
+  setVerdict(url: string, verdict: PrReviewVerdict): void {
+    setDraft(url, { verdict })
+  },
+  /** Post `draft` to GitHub. `pr` carries the routing fields (owner/repo/number/url). */
+  async submitReview(
+    pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>,
+    draft: PrReviewDraft
+  ): Promise<SubmitReviewResult> {
+    const url = pr.url
+    _submitting = new Set(_submitting).add(url)
+    try {
+      const res = await window.api.invoke('screenprs:submit-review', {
+        // Plain literals + snapshot — no $state proxy may cross IPC (structured clone throws).
+        pr: { owner: pr.owner, repo: pr.repo, number: pr.number, url: pr.url },
+        draft: $state.snapshot(draft),
+      })
+      if (res.ok) {
+        const next = new Map(_submitted)
+        next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, foldedComments: res.foldedComments })
+        _submitted = next
+      }
+      return res
+    } finally {
+      const s = new Set(_submitting)
+      s.delete(url)
+      _submitting = s
+    }
+  },
+  /** Clear the local "submitted" marker so a follow-up review can be composed.
+   *  Does NOT retract the posted review — GitHub has no such API. */
+  resetSubmitted(url: string): void {
+    const next = new Map(_submitted)
+    next.delete(url)
+    _submitted = next
+    setDraft(url, emptyReviewDraft())
   },
   _onDeepLens(url: string, lens: DeepLensId, status: DeepLensStatus): void {
     const cur = _deep.get(url)

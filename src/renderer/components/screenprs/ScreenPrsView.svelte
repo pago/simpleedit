@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
-  import type { ScreenPrCard, ScreenPrBucket, PrCiStatus } from '../../../shared/screenprs'
-  import { BUCKET_ORDER } from '../../../shared/screenprs'
+  import type { ScreenPrCard, ScreenPrBucket, PrCiStatus, PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
+  import { BUCKET_ORDER, groupStacks, emptyReviewDraft } from '../../../shared/screenprs'
   import PrDetail from './PrDetail.svelte'
   import MagnifierIcon from './MagnifierIcon.svelte'
+  import ConfirmReviewModal from './ConfirmReviewModal.svelte'
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
@@ -71,7 +72,84 @@
     if (c.ci === 'pending') return 'CI pending'
     return c.ciFailing.length ? `CI: ${c.ciFailing.join(', ')}` : 'CI failing'
   }
+
+  // ── quick-approve ✓: one-click Approve straight from a card, still guarded by
+  // the same confirm modal the composer uses (this writes to GitHub too).
+  let quickTarget = $state<ScreenPrCard | null>(null)
+  let quickDraft = $state<PrReviewDraft>(emptyReviewDraft())
+  let quickError = $state<string | null>(null)
+  let quickSubmitting = $derived(quickTarget != null && screenPrsStore.isSubmitting(quickTarget.url))
+
+  function quickApprove(c: ScreenPrCard): void {
+    quickError = null
+    quickDraft = { ...emptyReviewDraft(), verdict: 'approve' }
+    quickTarget = c
+  }
+  async function confirmQuick(): Promise<void> {
+    if (!quickTarget) return
+    quickError = null
+    try {
+      const res = await screenPrsStore.submitReview(quickTarget, quickDraft)
+      if (res.ok) quickTarget = null
+      else quickError = res.error // keep the modal open so the failure is visible
+    } catch (e) {
+      quickError = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  const VERDICT_PILL: Record<PrReviewVerdict, { label: string; cls: string }> = {
+    approve: { label: 'approved', cls: 'bg-emerald-500/15 text-emerald-300' },
+    comment: { label: 'commented', cls: 'bg-blue-500/15 text-blue-300' },
+    request_changes: { label: 'changes requested', cls: 'bg-red-500/15 text-red-300' },
+  }
 </script>
+
+<!-- One queue card. `order` is set when the card sits inside a stack (its 1-based
+     position), so the reviewer sees the review order. Quick-approve ✓ is a sibling
+     (not nested in the card button — that'd be invalid HTML) revealed on hover. -->
+{#snippet prCard(c: ScreenPrCard, order: { n: number; of: number } | null)}
+  {@const issues = c.findings.filter((f) => f.label === 'issue').length}
+  {@const suggestions = c.findings.filter((f) => f.label === 'suggestion').length}
+  {@const sub = screenPrsStore.submittedFor(c.url)}
+  <div class="group relative">
+    <button
+      class="flex w-full flex-col gap-2 rounded-lg border bg-zinc-900 p-3 text-left transition-colors hover:bg-zinc-800/60
+        {selectedKey === c.url ? 'border-blue-500' : sub ? 'border-emerald-500/25' : 'border-zinc-800 hover:border-zinc-700'}"
+      onclick={() => screenPrsStore.select(c.url)}
+    >
+      <div class="flex items-baseline gap-2 pr-6">
+        {#if order}<span class="flex-none rounded bg-violet-500/15 px-1 text-[9px] font-bold tabular-nums text-violet-300">{order.n}/{order.of}</span>{/if}
+        <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-300">{c.repo}</b>#{c.number}</span>
+        <span class="flex-1 text-[12.5px] font-medium leading-snug {sub ? 'text-zinc-400' : 'text-zinc-100'}">{c.title}</span>
+      </div>
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px]">
+        <span class="tabular-nums text-zinc-400"><b class="text-emerald-400">+{c.additions}</b> <b class="text-red-400">−{c.deletions}</b> <span class="text-zinc-600">·</span> {c.changedFiles}f</span>
+        <span class={ciClass[c.ci]}>{ciLabel(c)}</span>
+        {#if c.reviewers.length}
+          <span class="text-zinc-500">{c.reviewers.map((r) => `${r.login}:${r.state}`).join(', ')}</span>
+        {/if}
+      </div>
+      {#if sub}
+        <div class="flex flex-wrap gap-1.5">
+          <span class="rounded px-1.5 py-0.5 text-[10px] font-semibold {VERDICT_PILL[sub.verdict].cls}">✓ you: {VERDICT_PILL[sub.verdict].label}</span>
+        </div>
+      {:else if c.impact === 'high' || issues || suggestions}
+        <div class="flex flex-wrap gap-1.5">
+          {#if c.impact === 'high'}<span class="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-300">▲ high impact</span>{/if}
+          {#if issues}<span class="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-300">{issues} issue{issues > 1 ? 's' : ''}</span>{/if}
+          {#if suggestions}<span class="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-300">{suggestions} suggestion{suggestions > 1 ? 's' : ''}</span>{/if}
+        </div>
+      {/if}
+    </button>
+    {#if !sub}
+      <button
+        class="absolute right-2 top-2 flex h-[22px] w-[22px] items-center justify-center rounded-md border border-zinc-700 bg-zinc-800 text-[12px] text-zinc-400 opacity-0 transition-opacity hover:border-emerald-500 hover:bg-emerald-500/18 hover:text-emerald-300 group-hover:opacity-100"
+        title="Quick approve — post an Approve review to GitHub"
+        onclick={() => quickApprove(c)}
+      >✓</button>
+    {/if}
+  </div>
+{/snippet}
 
 <div class="flex h-full flex-col bg-zinc-950">
   <!-- Header + filters -->
@@ -192,33 +270,19 @@
                 <span class="text-[10px] italic text-zinc-600">{BUCKETS[b].sub}</span>
               </div>
               <div class="flex flex-col gap-2">
-                {#each cards as c (c.url)}
-                  {@const issues = c.findings.filter((f) => f.label === 'issue').length}
-                  {@const suggestions = c.findings.filter((f) => f.label === 'suggestion').length}
-                  <button
-                    class="flex w-full flex-col gap-2 rounded-lg border bg-zinc-900 p-3 text-left transition-colors hover:bg-zinc-800/60
-                      {selectedKey === c.url ? 'border-blue-500' : 'border-zinc-800 hover:border-zinc-700'}"
-                    onclick={() => screenPrsStore.select(c.url)}
-                  >
-                    <div class="flex items-baseline gap-2">
-                      <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-300">{c.repo}</b>#{c.number}</span>
-                      <span class="flex-1 text-[12.5px] font-medium leading-snug text-zinc-100">{c.title}</span>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px]">
-                      <span class="tabular-nums text-zinc-400"><b class="text-emerald-400">+{c.additions}</b> <b class="text-red-400">−{c.deletions}</b> <span class="text-zinc-600">·</span> {c.changedFiles}f</span>
-                      <span class={ciClass[c.ci]}>{ciLabel(c)}</span>
-                      {#if c.reviewers.length}
-                        <span class="text-zinc-500">{c.reviewers.map((r) => `${r.login}:${r.state}`).join(', ')}</span>
-                      {/if}
-                    </div>
-                    {#if c.impact === 'high' || issues || suggestions}
-                      <div class="flex flex-wrap gap-1.5">
-                        {#if c.impact === 'high'}<span class="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-300">▲ high impact</span>{/if}
-                        {#if issues}<span class="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-300">{issues} issue{issues > 1 ? 's' : ''}</span>{/if}
-                        {#if suggestions}<span class="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-300">{suggestions} suggestion{suggestions > 1 ? 's' : ''}</span>{/if}
+                {#each groupStacks(cards) as g (g.cards[0].url)}
+                  {#if g.stackId}
+                    <div class="rounded-r-md border-l-2 border-violet-500/70 pl-2">
+                      <div class="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-violet-300">⛓ stack · review top → bottom</div>
+                      <div class="flex flex-col gap-1.5">
+                        {#each g.cards as c, i (c.url)}
+                          {@render prCard(c, { n: i + 1, of: g.cards.length })}
+                        {/each}
                       </div>
-                    {/if}
-                  </button>
+                    </div>
+                  {:else}
+                    {@render prCard(g.cards[0], null)}
+                  {/if}
                 {/each}
               </div>
             </div>
@@ -234,3 +298,15 @@
     {/if}
   </div>
 </div>
+
+{#if quickTarget}
+  <ConfirmReviewModal
+    repo={quickTarget.repo}
+    number={quickTarget.number}
+    draft={quickDraft}
+    submitting={quickSubmitting}
+    error={quickError}
+    onconfirm={confirmQuick}
+    oncancel={() => (quickTarget = null)}
+  />
+{/if}

@@ -70,4 +70,15 @@ describe('assembleMeta', () => {
     })
     expect(assembleMeta(ref, view, '[]', 'pago').approvedByOther).toBe(false)
   })
+  it('captures headRefName for stacked-PR detection (falls back to empty)', () => {
+    const withHead = JSON.stringify({
+      additions: 1, deletions: 0, changedFiles: 1, baseRefName: 'feat/base', headRefName: 'feat/child',
+      headRefOid: 'x', body: '', latestReviews: [],
+    })
+    expect(assembleMeta(ref, withHead, '[]', 'pago').headRefName).toBe('feat/child')
+    const noHead = JSON.stringify({
+      additions: 1, deletions: 0, changedFiles: 1, baseRefName: 'main', headRefOid: 'x', body: '', latestReviews: [],
+    })
+    expect(assembleMeta(ref, noHead, '[]', 'pago').headRefName).toBe('')
+  })
 })
