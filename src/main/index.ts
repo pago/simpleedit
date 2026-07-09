@@ -54,8 +54,10 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions, ScreenPrsFilters } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult } from '../shared/ipc-types'
 import type { PrContext } from '../shared/screenprs'
+import { buildReviewPayload } from '../shared/screenprs'
+import { postReview } from './github/gh'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -554,6 +556,15 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('screenprs:deep-cancel', (_event, url: string) => {
     cancelDeepReview(url)
+  })
+
+  ipcMain.handle('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
+    try {
+      const { reviewUrl, foldedComments } = await postReview(request.pr, buildReviewPayload(request.draft))
+      return { ok: true, reviewUrl, foldedComments }
+    } catch (err: unknown) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 
   // ── Tour ───────────────────────────────────────────────

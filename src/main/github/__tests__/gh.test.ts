@@ -8,14 +8,14 @@ describe('parseSearch', () => {
       {
         number: 42,
         title: 'Fix thing',
-        url: 'https://github.com/ivx/ui-pack/pull/42',
+        url: 'https://github.com/acme/ui-pack/pull/42',
         updatedAt: '2026-07-05T10:00:00Z',
         author: { login: 'alice' },
-        repository: { name: 'ui-pack', nameWithOwner: 'ivx/ui-pack' },
+        repository: { name: 'ui-pack', nameWithOwner: 'acme/ui-pack' },
       },
     ])
     const [pr] = parseSearch(json)
-    expect(pr).toMatchObject({ owner: 'ivx', repo: 'ui-pack', number: 42, author: 'alice' })
+    expect(pr).toMatchObject({ owner: 'acme', repo: 'ui-pack', number: 42, author: 'alice' })
   })
   it('tolerates missing author/repository', () => {
     const [pr] = parseSearch(JSON.stringify([{ number: 1, title: 't', url: 'u', updatedAt: 'd' }]))
@@ -44,7 +44,7 @@ describe('parseChecks', () => {
 
 describe('assembleMeta', () => {
   const ref: PrRef = {
-    owner: 'ivx', repo: 'ui-pack', number: 7, url: 'u', title: 't', author: 'bob', updatedAt: 'd',
+    owner: 'acme', repo: 'ui-pack', number: 7, url: 'u', title: 't', author: 'bob', updatedAt: 'd',
   }
   it('merges view + checks, captures head SHA, and computes approvedByOther', () => {
     const view = JSON.stringify({
@@ -69,5 +69,16 @@ describe('assembleMeta', () => {
       latestReviews: [{ author: { login: 'pago' }, state: 'APPROVED' }],
     })
     expect(assembleMeta(ref, view, '[]', 'pago').approvedByOther).toBe(false)
+  })
+  it('captures headRefName for stacked-PR detection (falls back to empty)', () => {
+    const withHead = JSON.stringify({
+      additions: 1, deletions: 0, changedFiles: 1, baseRefName: 'feat/base', headRefName: 'feat/child',
+      headRefOid: 'x', body: '', latestReviews: [],
+    })
+    expect(assembleMeta(ref, withHead, '[]', 'pago').headRefName).toBe('feat/child')
+    const noHead = JSON.stringify({
+      additions: 1, deletions: 0, changedFiles: 1, baseRefName: 'main', headRefOid: 'x', body: '', latestReviews: [],
+    })
+    expect(assembleMeta(ref, noHead, '[]', 'pago').headRefName).toBe('')
   })
 })

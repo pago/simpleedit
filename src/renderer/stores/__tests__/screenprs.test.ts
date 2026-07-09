@@ -17,7 +17,7 @@ let dispose: () => void
 
 function ctx(over: Partial<PrContext> & { number: number; url: string }): PrContext {
   return {
-    owner: 'ivx', repo: 'ui', title: 't', author: 'a', updatedAt: '2026-07-01',
+    owner: 'acme', repo: 'ui', title: 't', author: 'a', updatedAt: '2026-07-01',
     headSha: 'sha1', additions: 10, deletions: 1, changedFiles: 1, baseRefName: 'main',
     ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '', diff: '',
     ...over,

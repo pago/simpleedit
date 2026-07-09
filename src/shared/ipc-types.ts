@@ -5,7 +5,7 @@
  */
 
 import type { Spec } from './gen-ui-catalog'
-import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus } from './screenprs'
+import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus, PrReviewDraft } from './screenprs'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -309,7 +309,19 @@ export interface ScreenPrsInvokeMap {
   /** Run a deep review on one PR (full context is passed — triage doesn't retain it). */
   'screenprs:deep-start': { args: [context: PrContext]; result: void }
   'screenprs:deep-cancel': { args: [url: string]; result: void }
+  /** Post a review to GitHub — the composer's write path (guarded by a confirm). */
+  'screenprs:submit-review': { args: [request: SubmitReviewRequest]; result: SubmitReviewResult }
 }
+
+/** Identify the PR + the composed review to post. */
+export interface SubmitReviewRequest {
+  pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>
+  draft: PrReviewDraft
+}
+
+export type SubmitReviewResult =
+  | { ok: true; reviewUrl?: string; foldedComments: boolean }
+  | { ok: false; error: string }
 
 export interface ScreenPrsEventMap {
   /** The queue is known (right after search): seed placeholders before gathering. */

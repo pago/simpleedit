@@ -29,17 +29,31 @@ context, `config-set`, and the Discuss model ref.
 **Operational:** qwen3.6:27b (27B reasoning) **wedged Ollama** during triage — too heavy; use Haiku
 (cloud, parallel) or gpt-oss:20b for triage. The `timeoutMs` guard now bounds this.
 
+**Built (2026-07-09, branch `feat/screen-prs-composer`) — the GitHub WRITE path:**
+1. **Review composer** — docked footer in `PrDetail` (`ReviewComposer.svelte`): collect line
+   comments from triage/deep findings (`＋ review`) or free-typed, a summary, and a verdict
+   (Approve / Comment / Request changes) → posts one review. Guarded by an in-app confirm modal
+   (`ConfirmReviewModal.svelte`) that previews verdict + anchored/folded comment counts + body.
+   Write goes through `gh api POST /repos/{o}/{r}/pulls/{n}/reviews --input -` (the `gh pr review`
+   CLI can't attach per-line comments) — `postReview` in `github/gh.ts`, with a 422 fallback that
+   folds un-anchorable comments into the body. Payload/anchor logic is pure in `shared/screenprs.ts`
+   (`buildReviewPayload`/`parseLineAnchor`/`foldCommentsIntoBody`/`reviewSubmitError`), unit-tested.
+3. **Stacked-PR grouping** — `headRefName` added to the gh adapter/`PrContext`; `groupStacks`
+   (pure, tested) chains base→head within a bucket; `ScreenPrsView` renders stacks with a "review
+   top → bottom" affordance and per-card order badges.
+4. **Quick-approve ✓** — one-click Approve on a queue card (hover), routed through the same confirm
+   modal (it writes too). Reviewed cards show a "✓ you: approved/commented/changes requested" pill.
+
 **REMAINING (next sessions):**
-1. **Review composer** — the in-app *human* path: collect line comments (from findings / diff
-   clicks / own) + summary + verdict → `gh pr review --approve|--comment|--request-changes` with a
-   **confirm-guard**. First thing that WRITES to GitHub. (The `gh` write wrappers go in `github/gh.ts`.)
 2. Repo-aware deep-review lenses on a **checked-out worktree** (diff-only today).
-3. Stacked-PR grouping (needs `headRefName` in the gh adapter/context).
-4. Quick-approve ✓ on cards (one-click approve, no detail).
 5. **Reuse SplitButton for the sidebar ✦ Agent button** — attempted, reverted: it regressed the
    accessible agent-view menu (e2e `agent-view-menu*` drive keyboard nav + `menuitem` roles + a
    "New Claude session" item). Redo needs SplitButton's menu to be a proper keyboard-navigable
    menu (roles + arrow/Enter) plus updating those e2e tests.
+
+> **Not yet driven live** — the composer's `gh` write path is unit-tested (mocked) + typechecks +
+> builds, but posting to a real PR must be verified by pago against a throwaway PR before the PR
+> goes ready (first outward-facing write).
 
 > A SimpleEdit feature adapted from the `screen-prs` Claude skill: screen the PR review
 > queue and produce a ranked, streaming overview of *what to review next*, then carry a chosen

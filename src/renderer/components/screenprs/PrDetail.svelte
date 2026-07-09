@@ -1,10 +1,11 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
   import { onMount } from 'svelte'
-  import type { ScreenPrCard, PrContext, TriageFinding, DeepSeverity } from '../../../shared/screenprs'
+  import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity } from '../../../shared/screenprs'
   import { DEEP_LENS_ORDER, DEEP_LENS_LABEL } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { parseUnifiedDiff, languageForPath, type DiffFile } from '../../lib/parseDiff'
+  import ReviewComposer from './ReviewComposer.svelte'
   import SplitButton from '../SplitButton.svelte'
   import { loadAgentModels, type AgentModel } from '../../lib/agentModels'
   import { uiView } from '../../stores/uiView.svelte'
@@ -134,6 +135,19 @@
   let activeLenses = $derived(DEEP_LENS_ORDER.filter((l) => deep?.lenses[l]))
   let lensesRunning = $derived(activeLenses.some((l) => deep?.lenses[l] === 'running'))
 
+  // ＋ review: lift a finding into the composer draft as a line comment.
+  function addTriageComment(f: TriageFinding): void {
+    screenPrsStore.addComment(context.url, { source: 'triage', file: f.file, line: f.line, text: f.title })
+  }
+  function addDeepComment(f: DeepFinding): void {
+    screenPrsStore.addComment(context.url, {
+      source: 'deep',
+      file: f.file,
+      line: f.line,
+      text: f.detail ? `${f.title} — ${f.detail}` : f.title,
+    })
+  }
+
   function openExternal(): void {
     void window.api.invoke('app:open-external', context.url)
   }
@@ -201,12 +215,17 @@
           <div class="px-3 py-3 text-[11px] text-zinc-500">No concrete concerns surfaced in triage.</div>
         {:else}
           {#each card.findings as f (f.file + f.title)}
-            <div class="flex gap-2.5 border-b border-zinc-800/60 px-3 py-2 last:border-b-0">
+            <div class="group flex items-start gap-2.5 border-b border-zinc-800/60 px-3 py-2 last:border-b-0">
               <span class="h-fit rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase {LABEL_CLASS[f.label]}">{f.label}</span>
-              <div class="min-w-0">
+              <div class="min-w-0 flex-1">
                 <div class="text-xs text-zinc-100">{f.title}</div>
                 <div class="font-mono text-[10px] text-zinc-500">{f.file}{f.line ? ':' + f.line : ''}</div>
               </div>
+              <button
+                class="flex-none self-center rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 opacity-0 transition-opacity hover:border-blue-500 hover:bg-blue-500/15 hover:text-blue-200 group-hover:opacity-100"
+                title="Add to the review composer as a line comment"
+                onclick={() => addTriageComment(f)}
+              >＋ review</button>
             </div>
           {/each}
         {/if}
@@ -245,13 +264,18 @@
           <div class="px-3 py-3 text-[11px] text-zinc-500">Deep review found nothing worth flagging.</div>
         {:else}
           {#each deep.findings as f (f.lens + f.file + f.title)}
-            <div class="flex gap-2.5 border-b border-zinc-800/60 px-3 py-2.5 last:border-b-0">
+            <div class="group flex gap-2.5 border-b border-zinc-800/60 px-3 py-2.5 last:border-b-0">
               <span class="h-fit rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase {SEVERITY_CLASS[f.severity]}">{f.severity}</span>
               <div class="min-w-0 flex-1">
                 <div class="text-xs font-medium text-zinc-100">{f.title}</div>
                 <div class="font-mono text-[10px] text-zinc-500">{f.file}{f.line ? ':' + f.line : ''} · {DEEP_LENS_LABEL[f.lens]}</div>
                 <div class="mt-1 text-[11px] leading-relaxed text-zinc-400">{f.detail}</div>
               </div>
+              <button
+                class="flex-none self-start rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 opacity-0 transition-opacity hover:border-blue-500 hover:bg-blue-500/15 hover:text-blue-200 group-hover:opacity-100"
+                title="Add to the review composer as a line comment"
+                onclick={() => addDeepComment(f)}
+              >＋ review</button>
             </div>
           {/each}
         {/if}
@@ -294,4 +318,7 @@
       {/if}
     </div>
   </div>
+
+  <!-- Decide: the review composer — the human path to GitHub (docked footer) -->
+  <ReviewComposer {context} />
 </div>
