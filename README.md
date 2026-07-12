@@ -50,6 +50,28 @@ We're using SimpleEdit to build SimpleEdit, which helps us find and fix the shar
 
 ---
 
+## Installing
+
+Grab the latest build for your platform from the [Releases page](https://github.com/pago/simpleedit/releases).
+
+### macOS
+
+SimpleEdit is ad-hoc signed but not yet notarized by Apple, so the first launch needs a one-time approval:
+
+1. Open the `.dmg` and drag **SimpleEdit** to Applications.
+2. Double-click SimpleEdit. macOS will refuse to open it the first time.
+3. Go to **System Settings → Privacy & Security**, scroll to the note about SimpleEdit being blocked, and click **Open Anyway**.
+
+Alternatively, clear the download quarantine flag from a terminal and launch normally:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SimpleEdit.app
+```
+
+> If you see **"SimpleEdit is damaged and can't be opened"** on an older build, it predates ad-hoc signing — download the latest release, or run the `xattr` command above.
+
+---
+
 ## Getting started
 
 ```bash

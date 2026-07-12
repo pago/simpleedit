@@ -19,7 +19,13 @@ extraResources:
 asarUnpack:
   - "node_modules/node-pty/**"
 
+# Disable electron-builder's own signing; scripts/mac-adhoc-sign.cjs ad-hoc
+# signs the fully-assembled bundle in afterPack so the signature covers the
+# node-pty and mcp-server payloads and is the last write before dmg/zip.
+afterPack: scripts/mac-adhoc-sign.cjs
+
 mac:
+  identity: null
   category: public.app-category.developer-tools
   target:
     - target: dmg
