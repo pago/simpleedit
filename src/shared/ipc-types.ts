@@ -139,6 +139,13 @@ export type ClaudeStatus = 'idle' | 'running' | 'waiting' | 'error'
 export interface ClaudeSpawnOptions extends PtySpawnOptions {
   /** When set, claude is launched with `--resume <id>` to restore a prior session. */
   resumeSessionId?: string
+  /**
+   * Full-context in-place fork: with `resumeSessionId`, launch a FRESH session
+   * id that forks the source (`--session-id <new> --resume <src> --fork-session`)
+   * instead of appending to it. Distinct from a plain resume, which reuses the
+   * source id and continues it. Requires `resumeSessionId`.
+   */
+  forkSession?: boolean
   /** Seed the session with this first message (positional prompt) — e.g. a PR
    *  review brief for "Discuss with Agent". Fresh spawn only. */
   initialPrompt?: string
@@ -160,32 +167,6 @@ export interface ClaudeInvokeMap {
   'claude:spawn-agents': { args: [options: PtySpawnOptions]; result: void }
   'claude:attach': { args: [terminalId: string, worktreePath: string]; result: void }
   'claude:detach': { args: [terminalId: string]; result: void }
-  /**
-   * Fork a Claude session into another worktree of the same repo. Copies the
-   * source session's JSONL (and any subagent subdir) into the target's project
-   * dir, then spawns a new PTY there with --resume + --fork-session + a
-   * pre-minted forkUuid. Caller pre-creates a placeholder tab and listens on
-   * `claude:fork-result` for success/failure.
-   */
-  'claude:fork': {
-    args: [options: ClaudeForkOptions]
-    result: void
-  }
-}
-
-export interface ClaudeForkOptions {
-  /** Terminal id of the source Claude tab being forked from. */
-  sourceTerminalId: string
-  /** Source session id, used as the --resume arg. */
-  sourceSessionId: string
-  /** Source worktree path (where the source JSONL lives). */
-  sourceWorktreePath: string
-  /** Target worktree path where the new PTY will run. */
-  targetWorktreePath: string
-  /** SimpleEdit-minted UUID for the new (forked) session. */
-  forkUuid: string
-  /** Terminal id the placeholder tab is using; the new PTY uses this id. */
-  placeholderTabId: string
 }
 
 export interface ClaudeEventMap {
@@ -224,14 +205,6 @@ export interface ClaudeEventMap {
     worktreePath: string
     repoPath: string | null
   }
-  /**
-   * Fork operation outcome. `placeholderTabId` matches the id the renderer
-   * used in `claude:fork`, so it can locate the placeholder tab to transition
-   * (success) or mark errored (failure).
-   */
-  'claude:fork-result':
-    | { placeholderTabId: string; ok: true }
-    | { placeholderTabId: string; ok: false; error: string }
 }
 
 // ── Review ────────────────────────────────────────────────
@@ -406,6 +379,15 @@ export interface SerializedAgentSession {
    * when standalone. Members of a group are kept contiguous in `sessions`.
    */
   groupId?: string
+  /**
+   * The session's opening prompt (`createClaude`'s `initialPrompt`), so the
+   * handoff composer can recover the GOAL of a restored session without
+   * re-reading the JSONL transcript. Absent for sessions launched with no seed
+   * prompt. Eviction is structural: the blob is rebuilt from the live
+   * persistable sessions on each save, so a closed session's seed prompt drops
+   * out on the next save — it is never retained past the session's lifetime.
+   */
+  seedPrompt?: string
   tabs: SerializedTab[]
   activeTabId: string | null
   unread: string[]
@@ -618,6 +600,34 @@ export interface AgentPanelEventMap {
     sourceTerminalId: string
     worktreePath: string
     commitHash: string | null
+  }
+  /**
+   * `spawn_session` MCP tool: create a NEW primary Claude session seeded with an
+   * agent-authored brief (to hand off or fan out work). Unlike the other
+   * agent-* events this creates a session rather than acting on the caller's
+   * workspace, so it's handled by the global session listener, not
+   * SessionWorkspace. Fire-and-forget: the bridge is one-way, so no session id
+   * is returned to the caller.
+   */
+  'agent-session:spawn': {
+    /** Terminal id of the session that called the tool (for model inheritance). */
+    sourceTerminalId: string
+    /** Becomes the new session's `initialPrompt` / persisted seed prompt. */
+    brief: string
+    /** Optional sidebar label for the new session. */
+    label?: string
+    /** Optional model id override; when absent the caller's model is inherited. */
+    model?: string
+    /**
+     * Worktree the new session's workspace points at, validated against the
+     * repo main-side. Absent = inherit the caller's current workspace worktree.
+     */
+    worktreePath?: string
+    /**
+     * 'new-pane' (default) = open alongside the caller (fan-out). 'replace' =
+     * dispose the caller and take its slot (the in-place reset / hand-off).
+     */
+    target?: 'new-pane' | 'replace'
   }
 }
 

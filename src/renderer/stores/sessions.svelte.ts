@@ -17,7 +17,10 @@ import {
   worktreeListFor,
   refreshWorktreesFor,
   primaryRepo,
+  projectRoot,
+  mainWorktree,
 } from './worktrees.svelte'
+import { loadAgentModels } from '../lib/agentModels'
 
 export type SessionKind = 'claude' | 'agents' | 'terminal'
 
@@ -80,16 +83,20 @@ export interface Session {
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
   claudeSessionId?: string
   /**
+   * The opening prompt this session was launched with (`createClaude`'s
+   * `initialPrompt`). Kept on the record — not merely forwarded to the PTY — so
+   * the handoff composer can recover the session's GOAL without re-reading the
+   * JSONL transcript (the anti-pattern the session-spawn design forbids).
+   * Absent for sessions launched with no seed prompt.
+   */
+  seedPrompt?: string
+  /**
    * The brain this session was launched against (cloud Claude or local Ollama).
    * Absent = cloud default. Resume/fork re-applying this is a deferred follow-up.
    */
   model?: ModelRef
   /** Restored-from-disk placeholder: no live PTY until the user clicks Resume. */
   pendingResume?: { sessionId: string }
-  /** Fork-in-flight placeholder until the new PTY emits its first byte. */
-  forking?: { sourceLabel: string }
-  /** Fork failed: short-lived error chip; auto-cleared after ~6s. */
-  forkError?: string
   /**
    * The PTY exited with a non-zero code (spawn failure or crash). The entry
    * stays in the inbox with the terminal buffer intact so the user can read
@@ -131,8 +138,6 @@ let _visitedIds = $state<string[]>([])
 let nextClaudeIndex = 1
 let nextAgentsIndex = 1
 let nextTerminalIndex = 1
-
-const forkErrorDismissTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function defaultLabel(kind: SessionKind): string {
   switch (kind) {
@@ -237,32 +242,55 @@ export const sessionsStore = {
   createClaude(
     launchDir: string,
     worktreePath: string,
-    opts: { resumeSessionId?: string; model?: ModelRef; initialPrompt?: string; label?: string } = {},
+    opts: {
+      resumeSessionId?: string
+      /** With `resumeSessionId`, fork the source into a fresh full-context
+       *  session (`--fork-session`) instead of continuing it. See `forkClaude`. */
+      forkSession?: boolean
+      model?: ModelRef
+      initialPrompt?: string
+      label?: string
+      /**
+       * Where to place the new session. Omitted = prepend as a standalone
+       * session (the default). Provided = splice in at `index` and adopt
+       * `groupId` — used by the in-place "replace" reset so the successor takes
+       * the outgoing session's slot/group. See `replaceWithClaude`.
+       */
+      target?: { groupId?: string; index: number }
+    } = {},
   ): string {
     const id = `claude-${crypto.randomUUID()}`
     const model = opts.model
-    _sessions = [
-      {
-        id,
-        kind: 'claude',
-        provider: 'claude',
-        // An explicit label (e.g. "review ui-pack#42") or a picked model names the
-        // session and pins the label so OSC titles don't overwrite it; the plain
-        // cloud default keeps "Claude N".
-        label: opts.label ?? (model ? model.model : defaultLabel('claude')),
-        ...(opts.label || model ? { customLabel: true as const } : {}),
-        ...(model ? { model } : {}),
-        launchDir,
-        worktreePath,
-        touchedWorktrees: [worktreePath],
-      },
-      ..._sessions,
-    ]
+    const newSession: Session = {
+      id,
+      kind: 'claude',
+      provider: 'claude',
+      // An explicit label (e.g. "review ui-pack#42") or a picked model names the
+      // session and pins the label so OSC titles don't overwrite it; the plain
+      // cloud default keeps "Claude N".
+      label: opts.label ?? (model ? model.model : defaultLabel('claude')),
+      ...(opts.label || model ? { customLabel: true as const } : {}),
+      ...(model ? { model } : {}),
+      ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
+      ...(opts.target?.groupId ? { groupId: opts.target.groupId } : {}),
+      launchDir,
+      worktreePath,
+      touchedWorktrees: [worktreePath],
+    }
+    if (opts.target) {
+      const at = Math.min(Math.max(opts.target.index, 0), _sessions.length)
+      _sessions = [..._sessions.slice(0, at), newSession, ..._sessions.slice(at)]
+      // Keep the adopted group's members contiguous (no-op when standalone).
+      if (opts.target.groupId) normalizeGroups()
+    } else {
+      _sessions = [newSession, ..._sessions]
+    }
     select(id)
     void window.api.invoke('claude:spawn', {
       id,
       worktreePath: launchDir,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
+      ...(opts.forkSession ? { forkSession: true } : {}),
       // $state.snapshot: `model` may be a Svelte proxy (e.g. an element of a
       // $state model list) — Electron IPC structured-clone rejects proxies.
       ...(model ? { model: $state.snapshot(model) } : {}),
@@ -270,7 +298,9 @@ export const sessionsStore = {
     })
     // For cloud Claude, upgrade the raw model id to its human display name once
     // the (static) catalog resolves — best-effort, leaves the id if not found.
-    if (model?.provider === 'anthropic') {
+    // Skip when the caller gave an explicit label: the upgrade only prettifies
+    // the default (model-id) label, it must not clobber a chosen name.
+    if (model?.provider === 'anthropic' && !opts.label) {
       const anthropicModel = model.model
       void window.api
         .invoke('models:claude')
@@ -307,6 +337,34 @@ export const sessionsStore = {
     return id
   },
 
+  /**
+   * Replace a session in place: spawn a fresh Claude session at the outgoing
+   * session's slot (and group), then dispose the outgoing one. This is the
+   * in-place "reset" — escape a bloated context and start clean without losing
+   * your position in the sidebar. Returns the new session id, or null if the
+   * outgoing session no longer exists.
+   *
+   * Ordering matters: we spawn (and `select`) the successor first, THEN close
+   * the outgoing session — so the active selection lands on the new session and
+   * the outgoing's group (if any) never drops below two members mid-swap.
+   */
+  replaceWithClaude(
+    outgoingId: string,
+    launchDir: string,
+    worktreePath: string,
+    opts: { model?: ModelRef; initialPrompt?: string; label?: string } = {},
+  ): string | null {
+    const outgoing = findSession(outgoingId)
+    if (!outgoing) return null
+    const index = _sessions.findIndex((s) => s.id === outgoingId)
+    const newId = this.createClaude(launchDir, worktreePath, {
+      ...opts,
+      target: { groupId: outgoing.groupId, index },
+    })
+    this.close(outgoingId)
+    return newId
+  },
+
   // ── lifecycle ────────────────────────────────────────────────────────────
 
   /**
@@ -318,14 +376,8 @@ export const sessionsStore = {
     const session = findSession(id)
     if (!session) return
 
-    const dismiss = forkErrorDismissTimers.get(id)
-    if (dismiss !== undefined) {
-      clearTimeout(dismiss)
-      forkErrorDismissTimers.delete(id)
-    }
-
     const hasLivePty =
-      !session.pendingResume && !session.forking && !session.exited && !opts.ptyAlreadyDead
+      !session.pendingResume && !session.exited && !opts.ptyAlreadyDead
     if (hasLivePty) {
       if (session.kind === 'claude') {
         void window.api.invoke('claude:detach', id)
@@ -551,46 +603,38 @@ export const sessionsStore = {
   // ── fork ─────────────────────────────────────────────────────────────────
 
   /**
-   * Insert a fork placeholder session. Returns the placeholder id the caller
-   * passes to `claude:fork` as placeholderTabId so fork-result routes back.
+   * Full-context in-place fork: branch a live Claude session into a fresh,
+   * independent session carrying the whole forked conversation. Goes through
+   * the same `createClaude` → `claude:spawn` → `buildLaunch` path as any spawn,
+   * with `forkSession` set so `buildLaunch` mints a fresh id and adds
+   * `--fork-session` (the source is left intact). No JSONL copy: an in-place
+   * fork stays at the source's project root, where its transcript already lives.
+   *
+   * Grouping: the fork joins the source's group if it has one, else a fresh
+   * group is formed pairing the two — a lone session has no group to inherit,
+   * so the fork must create one to keep the pair visually together.
+   *
+   * Returns the new session id, or null if the source isn't a forkable Claude
+   * session (no captured session id yet — e.g. still initializing, or Agent View).
    */
-  addForkPlaceholder(sourceLabel: string, targetWorktreePath: string): string {
-    const id = `claude-fork-${crypto.randomUUID()}`
-    _sessions = [
-      {
-        id,
-        kind: 'claude',
-        provider: 'claude',
-        label: defaultLabel('claude'),
-        // Forks are explicitly "into worktree": the fork lives there, so it
-        // launches there too (not at the project root).
-        launchDir: targetWorktreePath,
-        worktreePath: targetWorktreePath,
-        touchedWorktrees: [targetWorktreePath],
-        forking: { sourceLabel },
-      },
-      ..._sessions,
-    ]
-    select(id)
-    return id
-  },
+  forkClaude(sourceId: string): string | null {
+    const source = findSession(sourceId)
+    if (!source || source.kind !== 'claude' || !source.claudeSessionId) return null
 
-  /**
-   * Mark a fork as failed: error chip on the placeholder, auto-dismissed
-   * (session closed) after ~6s unless the user closes it first.
-   */
-  failFork(placeholderId: string, message: string): void {
-    const session = findSession(placeholderId)
-    if (!session) return
-    this.update(placeholderId, { forking: undefined, forkError: message })
-    const existing = forkErrorDismissTimers.get(placeholderId)
-    if (existing !== undefined) clearTimeout(existing)
-    const t = setTimeout(() => {
-      forkErrorDismissTimers.delete(placeholderId)
-      const still = findSession(placeholderId)
-      if (still?.forkError) this.close(placeholderId)
-    }, 6_000)
-    forkErrorDismissTimers.set(placeholderId, t)
+    const index = _sessions.findIndex((s) => s.id === sourceId)
+    const newId = this.createClaude(source.launchDir, source.worktreePath, {
+      resumeSessionId: source.claudeSessionId,
+      forkSession: true,
+      // Deliberately no `model`: the resumed session already carries its own,
+      // and re-applying it is a separate deferred concern (see Session.model).
+      label: `${source.label} (fork)`,
+      // Sit right after the source; adopt its group when it has one.
+      target: { groupId: source.groupId, index: index + 1 },
+    })
+    // A standalone source has no group to inherit (groups dissolve below two
+    // members), so form one pairing the origin and its fork.
+    if (!source.groupId) this.createGroup([sourceId, newId], 'Fork')
+    return newId
   },
 
   // ── persistence hooks ────────────────────────────────────────────────────
@@ -606,6 +650,7 @@ export const sessionsStore = {
     touchedWorktrees?: string[]
     sessionId?: string
     groupId?: string
+    seedPrompt?: string
   }): string | null {
     // Restore the persisted trail; fall back to the workspace worktree so the
     // current location still shows in the pickers for pre-trail blobs.
@@ -649,6 +694,7 @@ export const sessionsStore = {
         ...(input.repoPath ? { repoPath: input.repoPath } : {}),
         touchedWorktrees,
         ...(input.groupId ? { groupId: input.groupId } : {}),
+        ...(input.seedPrompt ? { seedPrompt: input.seedPrompt } : {}),
         pendingResume: { sessionId: input.sessionId },
       },
     ]
@@ -671,8 +717,6 @@ export const sessionsStore = {
 
   /** Reset everything (switching repos). */
   reset(): void {
-    for (const t of forkErrorDismissTimers.values()) clearTimeout(t)
-    forkErrorDismissTimers.clear()
     _sessions = []
     _activeId = null
     _groups = []
@@ -709,6 +753,46 @@ export function touchedWorktreesForRepo(
 ): string[] {
   const key = repoPath ?? primaryRepo()
   return session.touchedWorktrees.filter((wt) => repoKeyForWorktree(wt) === key)
+}
+
+/**
+ * Handle a `spawn_session` MCP call: create a fresh primary Claude session
+ * seeded with the agent-authored brief. Launches at the project root (shared
+ * Claude memory, like every Claude session); the workspace points at the named
+ * worktree, else the caller's current worktree, else the main worktree. When
+ * the caller didn't override the model, the new session inherits the caller's
+ * (the bridge only knows the terminal id — model is renderer state).
+ */
+async function spawnSessionFromAgent(
+  data: import('../../shared/ipc-types').AgentPanelEventMap['agent-session:spawn'],
+): Promise<void> {
+  const caller = findSession(data.sourceTerminalId)
+  const worktreePath = data.worktreePath ?? caller?.worktreePath ?? mainWorktree()?.path
+  if (!worktreePath) return
+  const launchDir = projectRoot() ?? worktreePath
+
+  let model: ModelRef | undefined = caller?.model
+  if (data.model) {
+    const agentModels = await loadAgentModels().catch(() => [])
+    const hit = agentModels.find((m) => m.ref?.model === data.model || m.id === data.model)
+    // Fall back to inheriting the caller's model if the id doesn't resolve.
+    model = hit?.ref ?? model
+  }
+
+  const spawnOpts = {
+    initialPrompt: data.brief,
+    ...(data.label ? { label: data.label } : {}),
+    ...(model ? { model } : {}),
+  }
+
+  // 'replace' = the caller asked to reset itself: spawn the successor in the
+  // caller's slot and dispose the caller. Falls back to a plain new-pane spawn
+  // when the caller can't be located (nothing to replace).
+  if (data.target === 'replace' && caller) {
+    sessionsStore.replaceWithClaude(caller.id, launchDir, worktreePath, spawnOpts)
+  } else {
+    sessionsStore.createClaude(launchDir, worktreePath, spawnOpts)
+  }
 }
 
 /**
@@ -776,15 +860,9 @@ export function initSessionListeners(): () => void {
     })()
   })
 
-  // Fork placeholder goes live on the new PTY's first byte.
-  const offData = window.api.on('pty:data', ({ id }) => {
-    const session = sessionsStore.get(id)
-    if (session?.forking) sessionsStore.update(id, { forking: undefined })
-  })
-
-  const offForkResult = window.api.on('claude:fork-result', (payload) => {
-    if (payload.ok) return // success surfaces via pty:data above
-    sessionsStore.failFork(payload.placeholderTabId, payload.error)
+  // spawn_session MCP call: an agent asked to start a fresh primary session.
+  const offSpawn = window.api.on('agent-session:spawn', (data) => {
+    void spawnSessionFromAgent(data)
   })
 
   return () => {
@@ -792,7 +870,6 @@ export function initSessionListeners(): () => void {
     offSessionId()
     offCwd()
     offRepoTouch()
-    offData()
-    offForkResult()
+    offSpawn()
   }
 }

@@ -100,7 +100,10 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await expect(close).not.toBeDisabled()
 
     // Fork is always visible; disabled state depends on per-tab session-id capture.
-    await expect(menu.getByRole('menuitem', { name: 'Fork into worktree…' })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Fork' })).toBeVisible()
+
+    // Hand off… (Claude sessions only) opens the brief composer.
+    await expect(menu.getByRole('menuitem', { name: 'Hand off…' })).toBeVisible()
 
     // Esc dismisses without action.
     await window.keyboard.press('Escape')
@@ -512,7 +515,7 @@ test.describe('Fork item disable behavior', () => {
     const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
-    const fork = window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork into worktree…' })
+    const fork = window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork' })
     await expect(fork).toBeVisible()
     await expect(fork).not.toBeDisabled()
   })
@@ -524,24 +527,17 @@ test.describe('Fork item disable behavior', () => {
   // session Fork is already enabled (proven by the test above). There is no
   // disabled-Fork state left to exercise for a Claude session.
 
-  test('typing a new name in the picker surfaces a "Create new worktree" row (#27)', async () => {
+  test('clicking Fork branches the session in place (no worktree picker)', async () => {
     await spawnClaudeTab()
     const claudeTab = window.locator('[role="option"]:has-text("Claude")').first()
     await claudeTab.click({ button: 'right' })
 
-    // Open the worktree picker from the (enabled) Fork item.
-    await window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork into worktree…' }).click()
+    // Fork is now an in-place full-context fork — no worktree targeting. It
+    // spawns a paired "(fork)" session immediately; no picker dialog opens.
+    await window.getByRole('menu').first().getByRole('menuitem', { name: 'Fork' }).click()
 
-    const picker = window.getByRole('dialog', { name: 'Fork into worktree' })
-    await expect(picker).toBeVisible({ timeout: 5_000 })
-
-    // A name that doesn't match any existing worktree branch.
-    await picker.getByPlaceholder('filter worktrees…').fill('totally-new-branch')
-
-    const createRow = picker.getByRole('button', { name: /Create new worktree/ })
-    await expect(createRow).toBeVisible()
-    await expect(createRow).toContainText('totally-new-branch')
-    await expect(createRow).toBeEnabled()
+    await expect(window.locator('[role="option"]:has-text("(fork)")').first()).toBeVisible({ timeout: 5_000 })
+    await expect(window.getByRole('dialog')).toHaveCount(0)
   })
 })
 
@@ -626,7 +622,7 @@ test.describe('Fork item parity and persistence', () => {
     const menu = w.getByRole('menu').first()
     await expect(menu).toBeVisible()
 
-    const fork = menu.getByRole('menuitem', { name: 'Fork into worktree…' })
+    const fork = menu.getByRole('menuitem', { name: 'Fork' })
     await expect(fork).toBeVisible()
     await expect(fork).toBeDisabled()
     // Agent View tabs get a dedicated tooltip so users understand the disable
@@ -635,7 +631,7 @@ test.describe('Fork item parity and persistence', () => {
     await expect(fork).toHaveAttribute('title', 'Agent View sessions cannot be forked')
   })
 
-  test('Shift+F10 + ArrowDown + Enter activates Rename via keyboard nav', async () => {
+  test('Shift+F10 + ArrowDown×2 + Enter activates Rename via keyboard nav', async () => {
     await launch()
     const w = window!
     await spawnClaudeTab(w)
@@ -647,9 +643,11 @@ test.describe('Fork item parity and persistence', () => {
     const menu = w.getByRole('menu').first()
     await expect(menu).toBeVisible()
 
-    // Menu order: Fork, Rename, Close. Post-#102 Fork is enabled (session-id
-    // captured synchronously at spawn), so initial focus lands on Fork.
-    // ArrowDown moves to Rename; Enter opens the modal.
+    // Menu order for a Claude session: Fork, Hand off…, Rename, Close. Post-#102
+    // Fork is enabled (session-id captured synchronously at spawn), so initial
+    // focus lands on Fork. Two ArrowDowns move past Hand off… to Rename; Enter
+    // opens the modal.
+    await w.keyboard.press('ArrowDown')
     await w.keyboard.press('ArrowDown')
     await w.keyboard.press('Enter')
 
