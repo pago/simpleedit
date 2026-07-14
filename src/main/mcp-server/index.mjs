@@ -303,5 +303,62 @@ server.registerTool(
   },
 )
 
+// ── spawn_session: start a fresh primary Claude session ────────────────────
+
+server.registerTool(
+  'spawn_session',
+  {
+    description: [
+      'Start a NEW primary Claude Code session in SimpleEdit, seeded with an opening brief you write.',
+      'This is the tool to reach for whenever the user wants to spin up, spawn, start, kick off, or open a fresh session or a new agent — e.g. "spawn a new session", "start a fresh session on the timeline bug", "kick off a new agent to rebase this PR", "hand this off to a new session". Use it without being told to; if the ask is to begin new work in a separate session, this is how.',
+      '',
+      'Two reasons to use it:',
+      '- HAND OFF: this conversation has grown long and expensive to carry. Start a fresh session on the remaining work so it runs on a clean, cheap context instead of dragging the whole history along.',
+      '- FAN OUT: kick off an independent piece of work in its own session so it can proceed in parallel with what you are doing now. The current session keeps running — the new one opens alongside it.',
+      '',
+      'The `brief` becomes the new session\'s first message, so write it as a direct instruction to the new agent: what to do, plus POINTERS to the current state it needs — files/paths to look at, the PLAN doc, the open PR, what is already done and what is left.',
+      'CRITICAL: do NOT paste file contents, diffs, or transcript into the brief. The entire point is to start the new session on a small context; re-embedding bulk defeats it. Reference where things are; let the new session read them if it needs to.',
+      '',
+      'Fire-and-forget: the new session opens in the SimpleEdit sidebar. This call returns immediately and does NOT give you the new session\'s id, and you do not wait for it — you cannot talk to it from here.',
+    ].join('\n'),
+    inputSchema: {
+      brief: z
+        .string()
+        .min(1)
+        .describe(
+          'The new session\'s opening message: what it should do + pointers to current state (files, PLAN, PR, what is done/left). No pasted file contents or diffs.',
+        ),
+      label: z
+        .string()
+        .optional()
+        .describe('Optional short sidebar name for the new session (e.g. "rebase #42"). Defaults to an auto label.'),
+      model: z
+        .string()
+        .optional()
+        .describe('Optional model id for the new session (e.g. "claude-opus-4-8"). Omit to inherit this session\'s model.'),
+      worktree: z
+        .string()
+        .optional()
+        .describe('Optional absolute worktree path for the new session\'s workspace. Omit to use the current workspace worktree.'),
+      target: z
+        .enum(['new-pane', 'replace'])
+        .optional()
+        .describe(
+          'Where the new session goes. "new-pane" (default) opens it alongside THIS session, which keeps running (fan-out). ' +
+            '"replace" hands off: it takes this session\'s place in the sidebar and closes THIS session — use it when you are resetting yourself onto a fresh context and do not intend to keep going here.',
+        ),
+    },
+  },
+  async ({ brief, label, model, worktree, target }) => {
+    const result = await postToBridge('spawn_session', { brief, label, model, worktree, target })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    const note =
+      target === 'replace'
+        ? 'New session started in SimpleEdit, replacing this one — this session is being closed.'
+        : 'New session started in SimpleEdit. It opens in the sidebar; you cannot interact with it from here.'
+    return okResult(note)
+  },
+)
+
 const transport = new StdioServerTransport()
 await server.connect(transport)

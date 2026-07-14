@@ -4,7 +4,7 @@ import { existsSync } from 'fs'
 import type { ClaudeSpawnOptions as ClaudeSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
 import { getProvider, type LaunchPlan } from './agents/provider'
-import { buildForkLaunch, buildAgentsLaunch } from './agents/claude'
+import { buildAgentsLaunch } from './agents/claude'
 
 type IPty = pty.IPty
 
@@ -126,15 +126,15 @@ function getPtyOptions(
 }
 
 /**
- * Shared spawn path for provider-driven agent terminals (Claude, forks, Agent
- * View). Runs the plan's command in a login shell, records the backlog, taps
- * PTY data for the stream parser, and wires exit cleanup — the same wiring the
- * hardwired Claude spawns used, now parameterised by the LaunchPlan.
+ * Shared spawn path for provider-driven agent terminals (Claude + Agent View).
+ * Runs the plan's command in a login shell, records the backlog, taps PTY data
+ * for the stream parser, and wires exit cleanup — the same wiring the hardwired
+ * Claude spawns used, now parameterised by the LaunchPlan.
  *
- * `emitSessionId` fires `claude:session-id` at spawn (fresh Claude tabs — forks
- * emit it themselves after attaching, see claude-fork.ts). `clearStatusOnExit`
- * sends the worktree's Claude status back to 'idle' on exit (Claude + forks;
- * Agent View has no status signal).
+ * `emitSessionId` fires `claude:session-id` at spawn (Claude tabs, including
+ * in-place forks, whose fresh id is known up front). `clearStatusOnExit` sends
+ * the worktree's Claude status back to 'idle' on exit (Claude; Agent View has
+ * no status signal).
  *
  * Callers MUST run the `terminals.has(id)` / `guardCwd` checks before building
  * the plan — a provider's `buildLaunch` can have side effects (writing temp
@@ -223,7 +223,7 @@ export function spawnClaudeTerminal(
   options: ClaudeSpawnOptions,
   webContents: WebContents
 ): void {
-  const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, model, initialPrompt } = options
+  const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt } = options
 
   if (terminals.has(id)) return
   if (!guardCwd(id, worktreePath, webContents)) return
@@ -232,6 +232,7 @@ export function spawnClaudeTerminal(
     terminalId: id,
     worktreePath,
     ...(resumeSessionId ? { resumeSessionId } : {}),
+    ...(forkSession ? { forkSession } : {}),
     ...(bridgePort != null ? { bridgePort } : {}),
     ...(bridgeToken != null ? { bridgeToken } : {}),
     ...(model ? { model } : {}),
@@ -239,64 +240,6 @@ export function spawnClaudeTerminal(
   })
 
   spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: true, clearStatusOnExit: true }, webContents)
-}
-
-/**
- * Spawn a forked Claude session in `targetWorktreePath`, resuming from
- * `sourceSessionId` and pinning the new session to `forkUuid`.
- *
- * The CLI silently no-ops (just appends to the source) if forkUuid ===
- * sourceSessionId — the caller (handler in index.ts) MUST verify they differ
- * before invoking us. We assert defensively here too.
- *
- * No MCP bridge is wired up: the fork's session id is already known (it's
- * `forkUuid`), so the renderer skips the broken-on-2.1.148 stream-json
- * session-id scrape entirely and populates sessionRestoreStore directly.
- * The stream parser IS attached by the caller (claude-fork.ts:performFork
- * via attachToTerminal) so OSC-title status events still drive the
- * worktree's Claude status indicator — see #103.
- */
-export function spawnForkedClaudeTerminal(
-  args: {
-    placeholderTabId: string
-    sourceSessionId: string
-    targetWorktreePath: string
-    forkUuid: string
-    bridgePort?: number
-    bridgeToken?: string
-  },
-  webContents: WebContents,
-): void {
-  const { placeholderTabId, sourceSessionId, targetWorktreePath, forkUuid, bridgePort, bridgeToken } = args
-
-  if (forkUuid === sourceSessionId) {
-    // Programmer error — would silently append to the source instead of
-    // forking. Caller has primary responsibility, but defending here too.
-    throw new Error(
-      `spawnForkedClaudeTerminal: forkUuid must differ from sourceSessionId (${forkUuid})`,
-    )
-  }
-  if (terminals.has(placeholderTabId)) return
-  if (!guardCwd(placeholderTabId, targetWorktreePath, webContents)) return
-
-  const plan = buildForkLaunch({
-    placeholderTabId,
-    sourceSessionId,
-    forkUuid,
-    ...(bridgePort != null ? { bridgePort } : {}),
-    ...(bridgeToken != null ? { bridgeToken } : {}),
-  })
-
-  // No `claude:session-id` at spawn: the fork's session id is already known
-  // (`forkUuid`), and claude-fork.ts:performFork emits it after attaching the
-  // stream parser (#87/#103).
-  spawnAgentTerminal(
-    placeholderTabId,
-    targetWorktreePath,
-    plan,
-    { emitSessionId: false, clearStatusOnExit: true },
-    webContents,
-  )
 }
 
 /**

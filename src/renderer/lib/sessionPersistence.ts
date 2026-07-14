@@ -53,7 +53,6 @@ export function serializeSession(repoPath: string): SerializedSession {
 
   for (const session of sessionsStore.sessions()) {
     if (session.kind === 'terminal') continue
-    if (session.forking || session.forkError) continue
     // Crash/spawn-failure entries are ephemeral error surfaces, not
     // resumable work — a claude that never started has no transcript.
     if (session.exited) continue
@@ -85,6 +84,7 @@ export function serializeSession(repoPath: string): SerializedSession {
         ? { touchedWorktrees: [...session.touchedWorktrees] }
         : {}),
       ...(session.groupId ? { groupId: session.groupId } : {}),
+      ...(session.seedPrompt ? { seedPrompt: session.seedPrompt } : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
       unread,
@@ -185,6 +185,7 @@ export function hydrateSession(session: SerializedSession): {
       ...(s.touchedWorktrees ? { touchedWorktrees: s.touchedWorktrees } : {}),
       ...(s.sessionId ? { sessionId: s.sessionId } : {}),
       ...(s.groupId ? { groupId: s.groupId } : {}),
+      ...(s.seedPrompt ? { seedPrompt: s.seedPrompt } : {}),
     })
     if (s.repoPath) trailRepos.add(s.repoPath)
     if (!newId) {

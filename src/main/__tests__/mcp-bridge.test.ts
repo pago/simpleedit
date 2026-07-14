@@ -561,6 +561,50 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
       detachFromTerminal('term-attached')
     }
   })
+
+  it('spawn_session emits agent-session:spawn with the brief and caller terminal', async () => {
+    const res = await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'fix the timeline reducer' } })
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ ok: true })
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+      sourceTerminalId: 'term-1',
+      brief: 'fix the timeline reducer',
+      target: 'new-pane',
+    })
+  })
+
+  it('spawn_session forwards label, model, a validated worktree, and target', async () => {
+    const res = await post({
+      tool: 'spawn_session',
+      terminalId: 'term-1',
+      args: { brief: 'rebase #42', label: 'rebase', model: 'claude-opus-4-8', worktree: '/repo/feature', target: 'replace' },
+    })
+    expect(res.status).toBe(200)
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+      sourceTerminalId: 'term-1',
+      brief: 'rebase #42',
+      label: 'rebase',
+      model: 'claude-opus-4-8',
+      worktreePath: '/repo/feature',
+      target: 'replace',
+    })
+  })
+
+  it('spawn_session defaults an unknown/absent target to new-pane', async () => {
+    await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'x', target: 'bogus' } })
+    expect(wc.send).toHaveBeenLastCalledWith('agent-session:spawn', expect.objectContaining({ target: 'new-pane' }))
+  })
+
+  it('spawn_session returns 400 for a missing/blank brief', async () => {
+    expect((await post({ tool: 'spawn_session', terminalId: 'term-1', args: {} })).status).toBe(400)
+    expect((await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: '   ' } })).status).toBe(400)
+  })
+
+  it('spawn_session rejects a worktree that is not in the repo', async () => {
+    const res = await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'x', worktree: '/evil/path' } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toContain('No worktree matches')
+  })
 })
 
 // These tests spawn the real built MCP server (out/mcp-server/index.mjs) and
@@ -703,5 +747,51 @@ describe.skipIf(!runIntegration)('MCP Server → Bridge integration', () => {
         }),
       })
     )
+  }, 15000)
+
+  it('MCP server spawn_session call flows through to bridge IPC', async () => {
+    mcpProc = spawn('node', [MCP_SERVER_PATH], {
+      env: {
+        ...process.env,
+        SIMPLEEDIT_BRIDGE_PORT: String(port),
+        SIMPLEEDIT_BRIDGE_TOKEN: token,
+        SIMPLEEDIT_TERMINAL_ID: 'spawn-test-term',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 500))
+
+    await sendMcpMessage(mcpProc, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0.0' } },
+    })
+    mcpProc.stdin!.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // tools/list must advertise spawn_session so an agent can discover it.
+    const listResponse = await sendMcpMessage(mcpProc, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
+    const tools = (listResponse['result'] as { tools: Array<{ name: string }> }).tools
+    expect(tools.map((t) => t.name)).toContain('spawn_session')
+
+    const toolResponse = await sendMcpMessage(mcpProc, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'spawn_session', arguments: { brief: 'rebase and land PR #42', label: 'rebase' } },
+    })
+
+    expect(toolResponse['id']).toBe(3)
+    const content = (toolResponse['result'] as { content: Array<{ text: string }> }).content
+    expect(content[0].text).toContain('New session started')
+
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+      sourceTerminalId: 'spawn-test-term',
+      brief: 'rebase and land PR #42',
+      label: 'rebase',
+      target: 'new-pane',
+    })
   }, 15000)
 })
