@@ -1,8 +1,14 @@
 import { app, autoUpdater as squirrel, BrowserWindow, ipcMain } from 'electron'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { autoUpdater } from 'electron-updater'
+import { BREW_UPGRADE_COMMAND } from '../shared/ipc-types'
 import type { UpdateErrorPhase, UpdateInfo, UpdateInstallResult } from '../shared/ipc-types'
 
 const isMac = process.platform === 'darwin'
+
+// Homebrew's two standard prefixes — Apple silicon and Intel.
+const CASKROOM_DIRS = ['/opt/homebrew/Caskroom/simpleedit', '/usr/local/Caskroom/simpleedit']
 
 // Squirrel fetches the update from electron-updater's local proxy, so staging is
 // a localhost copy plus an unzip and a signature check. Nothing in MacUpdater
@@ -22,6 +28,26 @@ const STAGING_TIMEOUT_MS = 120_000
 let staged = !isMac
 let pending: UpdateInfo | null = null
 let stagingTimer: NodeJS.Timeout | undefined
+let homebrewManaged = false
+
+/**
+ * Whether `brew` owns this copy of the app.
+ *
+ * A cask install moves SimpleEdit.app into /Applications but leaves a
+ * `Caskroom/simpleedit/<version>` directory behind, so a directory matching the
+ * running version is the cheapest reliable signal — no shelling out to `brew`,
+ * which isn't on the app's PATH when it launches from Finder. Matching on the
+ * version rather than the bare cask directory also means a copy the user later
+ * replaced by hand stops counting as Homebrew-managed.
+ *
+ * The `isPackaged` guard matters beyond correctness: without it, a developer who
+ * has the cask installed at the version in package.json would see `pnpm dev` and
+ * the e2e suite take the Homebrew path.
+ */
+function isHomebrewManaged(): boolean {
+  if (!isMac || !app.isPackaged) return false
+  return CASKROOM_DIRS.some((dir) => existsSync(join(dir, app.getVersion())))
+}
 
 function broadcastToAllWindows(channel: string, data: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -32,7 +58,8 @@ function broadcastToAllWindows(channel: string, data: unknown): void {
 function toUpdateInfo(info: { version: string; releaseNotes?: unknown }): UpdateInfo {
   return {
     version: info.version,
-    releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined
+    releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+    managedByHomebrew: homebrewManaged || undefined
   }
 }
 
@@ -43,8 +70,12 @@ function reportError(message: string, phase: UpdateErrorPhase): void {
 }
 
 export function initAutoUpdater(): void {
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  // A Homebrew copy is upgraded with `brew upgrade --cask`, so downloading a
+  // bundle Squirrel will refuse to stage only burns bandwidth. We still check,
+  // so the banner can say a new version exists.
+  homebrewManaged = isHomebrewManaged()
+  autoUpdater.autoDownload = !homebrewManaged
+  autoUpdater.autoInstallOnAppQuit = !homebrewManaged
 
   autoUpdater.on('update-available', (info) => {
     // A fresh cycle: the previously staged bundle says nothing about this one.
@@ -88,6 +119,9 @@ export function initAutoUpdater(): void {
   })
 
   ipcMain.handle('update:install', (): UpdateInstallResult => {
+    if (homebrewManaged) {
+      return { ok: false, error: `Run \`${BREW_UPGRADE_COMMAND}\` to update this copy.` }
+    }
     if (!app.isPackaged) {
       return { ok: false, error: 'Updates can only be installed from a packaged build.' }
     }
