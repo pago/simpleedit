@@ -304,8 +304,18 @@ Use `patch` for bug fixes, `minor` for new features, `major` for breaking change
   2. On merge to `main`, the `version.yml` workflow creates/updates a "Version Packages" PR
      that bumps the version in `package.json` and updates `CHANGELOG.md`
   3. Merging that PR triggers `changeset tag` → creates a `v*` git tag
-  4. The tag triggers `release.yml` → builds all platforms → creates a draft GitHub Release
-  5. **Publishing** that draft triggers `homebrew.yml` → renders the cask → pushes it to the tap
+  4. `version.yml` then **calls** `release.yml` → builds all platforms → creates the
+     GitHub Release, which ends up published (no draft to approve, despite
+     `draft: true` — verify with `gh release view <tag> --json isDraft`, and note
+     that `publishedAt` is backdated to the tag commit and proves nothing)
+  5. `version.yml` then **calls** `homebrew.yml` → renders the cask → pushes it to the tap
+
+**Nothing in this chain is event-driven, and it must stay that way.** GitHub does
+not let events created with `GITHUB_TOKEN` start new workflow runs, so neither the
+pushed `v*` tag nor the created release triggers anything — confirmed by
+`gh run list --json event`, which has never once shown a `release` event for this
+repo. Each stage is therefore an explicit `uses:` call from `version.yml`. Wiring
+a new stage to `on: release` or `on: push: tags:` will silently never run.
 - Local packaging: `pnpm package` (all), or `pnpm package:mac` / `package:win` / `package:linux`
 - macOS builds are ad-hoc signed only (`scripts/mac-adhoc-sign.cjs`), never notarized
 
@@ -317,8 +327,9 @@ The cask's source of truth is `scripts/homebrew/simpleedit.rb.template`;
 (a separate repo — it holds generated output only, so never hand-edit it).
 
 Three things about this are easy to get wrong:
-- It hangs off the release being **published**, not the `v*` tag. A draft
-  release's assets are not downloadable, so a tag-triggered job would 404.
+- It is **called** by `version.yml`, not triggered by an event — see the release
+  flow above. It also accepts `workflow_dispatch` with a `tag`, which is how you
+  backfill the tap for a release that predates this wiring.
 - Pushing cross-repo needs the `HOMEBREW_TAP_SSH_KEY` secret (a write-enabled
   deploy key on the tap); the built-in `GITHUB_TOKEN` cannot write to the tap.
 - Homebrew 6 requires non-official taps to be trusted. The only exemption is

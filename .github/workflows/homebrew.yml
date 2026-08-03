@@ -2,9 +2,17 @@ name: Homebrew Cask
 
 # Publishes the rendered cask to the pago/homebrew-simpleedit tap so that
 # `brew install --cask pago/simpleedit/simpleedit` and `brew upgrade` pick up a
-# release. release.yml creates the GitHub Release as a *draft*, and a draft's
-# assets are not downloadable, so this hangs off `released` rather
-# than the v* tag: it runs when you publish the draft by hand.
+# release.
+#
+# Invoked by version.yml via `workflow_call`, straight after the release job. It
+# cannot hang off the `release` event instead: GitHub does not let events created
+# with GITHUB_TOKEN trigger further workflow runs, and the release is created by
+# softprops/action-gh-release using GITHUB_TOKEN — so no `release` event ever
+# reaches Actions in this repo. (That same rule is why version.yml calls
+# release.yml directly rather than relying on the pushed v* tag.)
+#
+# The `released` trigger is kept only for the case it genuinely covers: a release
+# published by hand. Re-running for a version already on the tap is a no-op.
 #
 # Requires:
 #   - a HOMEBREW_TAP_SSH_KEY secret holding the private half of a write-enabled
@@ -20,19 +28,28 @@ name: Homebrew Cask
 # branch — GitHub does not offer it for workflows that live only on a branch.
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to publish to the tap (e.g. v0.19.0)
+        required: true
+        type: string
   release:
     types: [released]
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to publish to the tap (e.g. v0.18.1)
+        description: Release tag to publish to the tap (e.g. v0.19.0)
         required: true
 
 jobs:
   cask:
-    # Pre-releases stay off the tap; brew users track stable versions only.
-    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    # Pre-releases stay off the tap; brew users track stable versions only. Any
+    # other trigger (call or dispatch) is an explicit request, so it just runs.
+    if: github.event_name != 'release' || github.event.release.prerelease == false
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v6
