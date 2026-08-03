@@ -327,10 +327,32 @@ Three things about this are easy to get wrong:
   the README tells users to `brew trust pago/simpleedit` once.
 
 Because notarization is what Squirrel's signature check wants, macOS copies
-cannot self-update. `auto-update.ts` detects a Homebrew install (a
-`Caskroom/simpleedit/<running version>` directory exists), turns off
-`autoDownload`, and flags the update with `managedByHomebrew` so `UpdateBanner`
-offers the brew command instead of a dead restart button.
+cannot self-update through electron-updater. `homebrew.ts` detects a Homebrew
+install (a `Caskroom/simpleedit/<running version>` directory exists),
+`auto-update.ts` turns off `autoDownload`, and the update is flagged
+`managedByHomebrew` so `UpdateBanner` takes the brew path.
+
+### Why the Homebrew upgrade runs detached
+**Do not** make `update:install` run `brew upgrade` as a child process, and do
+not add `uninstall quit:` to the cask. SimpleEdit is a terminal: `brew upgrade`
+started from inside it is a descendant of the bundle being replaced, and
+`before-quit` → `killAllTerminals` (`index.ts`) would kill brew mid-upgrade —
+after Homebrew moved the old bundle to its backup and before the new one is in
+place, leaving no app in /Applications.
+
+So `startHomebrewUpgrade` writes `UPGRADE_SCRIPT` to userData and spawns it with
+`detached: true` + `unref()`, giving it its own session. The helper waits for the
+app's pid to exit, double-checks no instance was reopened (`pgrep -f` on the
+bundle's executable path), runs the upgrade, and relaunches with `open`. It runs
+brew with stdin from /dev/null so a sudo prompt fails fast instead of hanging
+forever with no terminal to answer it.
+
+The helper has no window to report to, so it writes a verdict JSON that
+`takeUpgradeResult` picks up on the next launch and reports as
+`update:homebrew-failed` — otherwise a failed background upgrade would be
+entirely silent. `UPGRADE_SCRIPT` is exported and exercised against a stub `brew`
+in `homebrew-script.test.ts`; a bug in it would otherwise only appear during a
+real upgrade.
 
 ## What's deferred to v2
 - AI narration ("Narrate this changeset" via Anthropic API)

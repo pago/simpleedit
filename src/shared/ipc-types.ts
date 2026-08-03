@@ -666,6 +666,7 @@ export interface UpdateInstallResult {
 export type UpdateErrorPhase = 'check' | 'prepare' | 'install'
 
 export interface UpdateInvokeMap {
+  'update:open-log': { args: []; result: void }
   'update:check': { args: []; result: void }
   'update:install': { args: []; result: UpdateInstallResult }
 }
@@ -674,6 +675,12 @@ export interface UpdateEventMap {
   'update:available': UpdateInfo
   'update:downloaded': UpdateInfo
   'update:error': { message: string; phase: UpdateErrorPhase }
+  /**
+   * A detached `brew upgrade` finished badly while the app was closed. Reported
+   * on the next launch, since there was no window to report it to at the time —
+   * without this a failed background upgrade would be completely silent.
+   */
+  'update:homebrew-failed': { version: string; message: string }
 }
 
 // ── Aggregate maps for type-safe IPC helpers ──────────────
