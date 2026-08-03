@@ -42,11 +42,26 @@ Each window tracks its own bare repo path. The main process stores a
 When opening without `SIMPLEEDIT_REPO`, a Welcome screen shows recent repos
 and a directory picker. Recent repos are stored in Electron's userData dir.
 
-### Per-pane state (not global stores)
-Each WorktreePane owns its open files, active file, and modified state locally.
-This allows two panes side-by-side with completely independent editor state.
-The global stores (`worktrees.svelte.ts`, `diffReview.svelte.ts`) are only for
-state that genuinely crosses component boundaries (sidebar ↔ pane).
+### Sessions are the primary entity (agent-first UI)
+The sidebar is a flat list of **sessions** (`SessionList.svelte`), not worktrees.
+A session is one PTY — Claude, an Agent View, or a plain terminal — plus the
+workspace state that hangs off it. The session registry
+(`stores/sessions.svelte.ts`, `Session` type) is the primary navigation store;
+its `id` doubles as the PTY terminal id in main, so `pty:*` / `claude:*` IPC
+routes work unchanged. Sessions can be organised into named, collapsible
+**groups** (`SessionGroup`, browser-tab-group style): grouping is purely an
+ordering invariant — every group's members are kept contiguous in the list by
+`normalizeGroups`. Sessions are durable: restored-from-disk entries are
+`pendingResume` placeholders with no live PTY until the user clicks Resume.
+
+### Per-session workspace state (not global stores)
+Each session owns its editor tabs (`tabsStore` keyed by session id), its
+selected worktree, and its editor layout, all rendered by
+`SessionWorkspace.svelte`. `WorkspaceManager.svelte` keeps every visited
+workspace mounted (hidden, not destroyed) so switching sessions never loses
+tabs, scroll positions, or the xterm buffer. Global stores
+(`worktrees.svelte.ts`, `diffReview.svelte.ts`) are only for state that
+genuinely crosses component boundaries (sidebar ↔ workspace).
 
 ### IPC namespace convention
 All IPC channels use a `namespace:action` pattern. Each namespace maps to a
@@ -55,24 +70,46 @@ main-process module:
 - `worktree:` — git worktree management (`worktree.ts`)
 - `pty:` — terminal/PTY management (`pty.ts`)
 - `fs:` — file system operations (`file-watcher.ts`)
-- `editor:` — file read/write for the editor (uses `file-watcher.ts`)
+- `editor:` — file read/write + per-file watching for the editor (`editor-watcher.ts`)
 - `git:` — git log, diff, commit inspection (`git-operations.ts`)
-- `claude:` — Claude Code stream parser + PTY spawn (`claude-stream.ts`, `pty.ts`)
+- `claude:` — Claude session spawn + stream parser (`agents/claude.ts`,
+  `claude-stream.ts`, `pty.ts`)
 
-### Claude Code integration
+### Claude Code integration (provider architecture)
 The "✦ Claude" button in terminal tabs spawns `claude --output-format stream-json`
-in a PTY and auto-attaches the stream parser. The parser reads PTY output line by
-line, tries `JSON.parse`, and emits:
-- `claude:status` — idle/running/waiting/error (shown in worktree sidebar)
+Interactive-agent launches go through a pluggable **provider** abstraction
+(`main/agents/provider.ts`); Claude Code is the first and today only provider
+(`main/agents/claude.ts`, which self-registers on import). A provider owns
+everything agent-specific about a launch — the binary + flags, the
+`--session-id`/`--resume`/`--fork-session` branching, the MCP gen-UI bridge
+(`--mcp-config`) and the location-tracking hooks (`--settings`) — and produces a
+`LaunchPlan` for the generic PTY layer (`pty.ts`).
+
+Sessions are created from `WorkspaceManager.svelte` (Start Claude / Agents /
+Terminal). `createClaude` in `sessions.svelte.ts` invokes `claude:spawn`;
+Claude sessions launch at the **project root** (beside the bare repo) so all
+sessions share one Claude memory, while the workspace viewer defaults to the
+main worktree. The stream parser (`claude-stream.ts`) taps PTY output and reads
+OSC titles for status, emitting:
+- `claude:status` — idle/running/waiting/error (shown per session in the sidebar)
 - `claude:file-touch` — file paths from Write/Edit/Read tool uses (highlighted in file tree)
 
-The "Ask Claude" bar in the diff review sends contextual questions (with commit/file
-info) directly to the Claude terminal's PTY input.
+**Fork** (in place, `sessionsStore.forkClaude`): branches a live session's whole
+conversation into a fresh one via the normal spawn path — `buildLaunch` mints a
+new id and adds `--fork-session` when `forkSession` is set (a fresh full-context
+session, source left intact). No JSONL copy: the fork stays at the source's
+project root, where the transcript already lives. Origin + fork are paired in a
+group. **Hand off** (`HandoffComposer` + `session-brief.ts`) instead resets a
+session onto a *fresh* context: it assembles a thin brief (goal + changed-file
+summary + pointers, never file bodies) and spawns with `target: 'replace'`,
+disposing the source. Agents reach the same primitive via the `spawn_session`
+MCP tool.
 
 ### Session location & repo trail (hook-based)
-Each spawned Claude session is launched with a `--settings` file (`pty.ts`
-`writeHookSettings`) wiring `UserPromptSubmit` + `PostToolUse` HTTP hooks to the
-per-window bridge's `/<token>/hooks` endpoint. `mcp-bridge.ts` `handleHook`
+Each spawned Claude session is launched with a `--settings` file
+(`agents/claude.ts` `writeHookSettings`) wiring `UserPromptSubmit` +
+`PostToolUse` HTTP hooks to the per-window bridge's `/<token>/hooks` endpoint.
+`mcp-bridge.ts` `handleHook`
 parses the body (`cwd-tracker.ts` `parseHookBody`) and drives the session's
 "touched repos" trail — which feeds the **repo picker dropdown**
 (`RepoPicker.svelte` → `touchedReposForSession`) and the worktree picker.
@@ -93,75 +130,114 @@ only track `cwd`, cross-repo file reads/edits silently never appear in the
 picker — that was the original bug (`e2e/session-repo-trail.test.ts`).
 
 ### Diff review flow
-GitLog sidebar → click commit → `diffReviewStore` → WorktreePane shows DiffReview.
-DiffReview uses Monaco's `createDiffEditor` for inline diffs. "Uncommitted changes"
-entry compares working tree against HEAD.
+GitLog (in the session workspace) → click commit → `openDiffTab`
+(`diffReview.svelte.ts`) → the session's `SessionWorkspace` opens a **diff tab**
+rendering `DiffReview`. DiffReview uses Monaco's `createDiffEditor` for inline
+diffs. "Uncommitted changes" entry compares working tree against HEAD.
 
 ### Layout
+The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
+that session's `SessionWorkspace` (all others stay mounted but hidden). A
+workspace starts as a **full-bleed terminal**; opening its viewer splits it into
+an editor area (tabs + Monaco / diff / markdown / composed panels) with the file
+tree and git log docked on the right, over a bottom terminal strip.
+
 ```
 ┌─ Title bar (drag region, repo name) ─────────────────────┐
-├─ Sidebar ─┬─ Pane (primary) ──────┬─ Pane (secondary)? ──┤
-│ Worktrees  │ Editor / DiffReview   │ Editor / DiffReview   │
-│ Git Log    │ ──── resize ────────  │ ──── resize ────────  │
-│            │ File Tree (right)     │ File Tree (right)     │
-│            │ ════ resize ════════  │ ════ resize ════════  │
-│            │ Terminal Tabs         │ Terminal Tabs         │
-└────────────┴──────────────────────┴───────────────────────┘
+├─ Sidebar ──┬─ SessionWorkspace (active session) ─────────┤
+│ Sessions   │ Editor tabs (PaneTabBar + TabContainer)  │ F │
+│ (grouped)  │ ──── file tree / git log docked right ─── │ T │
+│ + Screen   │ ════════════ resize ════════════════════  │ + │
+│   PRs view │ Terminal (full-bleed until viewer opens)   │Git│
+└────────────┴─────────────────────────────────────────────┘
 ```
 File tree is on the right (unusual but intentional — editor is the primary focus).
-All splits are user-resizable.
+All splits are user-resizable. (`ScreenPrsView` replaces the workspace area when
+the screen-PRs view is active — `uiView` store.)
 
 ## File structure
+
+Key modules only — not exhaustive; `ls src/` for the full tree.
 
 ```
 src/
   main/
     index.ts           ← App lifecycle, IPC registration, per-window routing
     pty.ts             ← node-pty manager (spawn, write, resize, kill)
+    agents/
+      provider.ts      ← Pluggable interactive-agent provider interface
+      claude.ts        ← Claude Code provider (flags, resume/fork, MCP + hooks)
+    claude-stream.ts   ← stream/OSC parser, PTY data tap, status
+    claude-paths.ts    ← Claude project/JSONL path helpers
+    cwd-tracker.ts     ← Parses hook bodies → session cwd / repo-touch trail
+    mcp-bridge.ts      ← Per-window HTTP bridge: MCP tool-calls + hook endpoint
+    mcp-server/
+      index.mjs        ← Stdio MCP server ("simpleedit" tools) → posts to bridge
     worktree.ts        ← simple-git worktree operations
+    worktree-watcher.ts ← Watches for worktree add/remove
     file-watcher.ts    ← chokidar + file I/O
+    editor-watcher.ts  ← Per-editor file change watching
     git-operations.ts  ← commit log, diff, file-at-commit, staging
-    claude-stream.ts   ← stream-json parser, PTY data tap
+    github/gh.ts       ← gh CLI wrapper (screen-PRs)
+    screenprs.ts, screenprs-cache.ts ← Screen-PRs data + cache
+    review.ts, deep-review.ts, tour.ts ← Review/tour features
+    tasks/, agent-tasks/ ← Bounded agent-task orchestration (gate, runner)
+    models/            ← Model catalog (Claude cloud + Ollama) + recommendations
+    lsp-manager.ts     ← Language-server management
+    session-store.ts   ← Session persistence (durable sessions)
     recent-repos.ts    ← Recently opened repos (persisted JSON)
   preload/
     index.ts           ← Typed contextBridge (invoke, on, once)
     index.d.ts         ← Global window.api type declaration
   renderer/
-    App.svelte         ← Root: Welcome screen or IDE layout
+    App.svelte         ← Root: Welcome screen or Sidebar + WorkspaceManager
     main.ts            ← Svelte mount + Monaco worker setup
     app.css            ← Tailwind import + drag-region CSS
     monaco-setup.ts    ← Monaco web worker registration
     components/
       Welcome.svelte          ← Repo picker + recent repos
       sidebar/
-        Sidebar.svelte        ← WorktreeList + GitLog
-        WorktreeList.svelte   ← Worktree listing with Claude status
-        GitLog.svelte         ← Commit list + staging entry
+        Sidebar.svelte        ← SessionList + screen-PRs toggle
+        SessionList.svelte    ← Flat, groupable list of sessions (primary nav)
+        HandoffComposer.svelte ← "Hand off…" brief editor → replace-in-place spawn
+        WorktreeList.svelte, GitLog.svelte ← Worktree list + commit log
       layout/
-        PaneManager.svelte    ← 1 or 2 panes side-by-side
-        WorktreePane.svelte   ← Self-contained pane (editor+tree+terminal)
-        MainPanel.svelte      ← (legacy, superseded by PaneManager)
+        WorkspaceManager.svelte ← Switches/keeps-alive per-session workspaces
+        SessionWorkspace.svelte ← One session's editor + tree + git log + terminal
+        TabContainer.svelte     ← Renders the active tab's body (editor/diff/…)
+        PaneTabBar.svelte       ← Editor tab bar (reorder, pin, close)
+        TabActions.svelte, TabIcon.svelte ← Tab chrome
+        RepoPicker.svelte       ← Repo/worktree picker (touched-repos trail)
+        ViewModeToggle.svelte
       editor/
-        CodeEditor.svelte     ← Monaco editor wrapper
-        EditorTabs.svelte     ← Open file tabs with modified indicator
-        DiffReview.svelte     ← Commit/staging review with file list
-        MonacoDiffEditor.svelte ← Monaco diff editor wrapper
-        DiffViewer.svelte     ← (legacy, superseded by DiffReview)
+        CodeEditor.svelte       ← Monaco editor wrapper
+        DiffReview.svelte       ← Commit/staging review with file list
+        MonacoDiffEditor.svelte, CompactDiffEditor.svelte ← Monaco diff wrappers
+        MarkdownView.svelte, MarkdownPreview.svelte ← Markdown rendering
+        AgentPopover.svelte, ReviewPanel.svelte, TourPanel.svelte
       terminal/
-        Terminal.svelte       ← xterm.js instance
-        TerminalTabs.svelte   ← Tab bar with + and ✦ Claude buttons
+        Terminal.svelte         ← xterm.js instance
       filetree/
-        FileTree.svelte       ← Root tree + chokidar watcher
-        FileNode.svelte       ← Recursive file/dir entry
+        FileTree.svelte, FileNode.svelte, FileTreeContextMenu.svelte
+      composed/               ← Gen-UI composed panels (agent-authored) + registry
+      screenprs/              ← ScreenPrsView, PrDetail, ReviewComposer, …
+      settings/               ← SettingsWindow, ModelsPane, DefaultModelPane, …
+      command-palette/        ← CommandPalette + input/results
     stores/
-      worktrees.svelte.ts     ← Global worktree list + active worktree
-      activeFile.svelte.ts    ← (legacy, used by MainPanel only)
-      diffReview.svelte.ts    ← Per-worktree diff review target
-      claude-status.svelte.ts ← Per-worktree Claude status + touched files
-      diffViewer.svelte.ts    ← (legacy, unused)
+      sessions.svelte.ts      ← Session registry + groups (PRIMARY nav store)
+      tabsStore.svelte.ts     ← Per-session editor tabs (keyed by session id)
+      worktrees.svelte.ts     ← Worktree list, project root, repo routing
+      diffReview.svelte.ts    ← Diff/tour tab opening
+      claude-status.svelte.ts ← Per-session Claude status + touched files
+      agentTerminals.svelte.ts ← "Discuss with Agent" targets (live Claude sessions)
+      screenprs.svelte.ts, reviewStore.svelte.ts ← Screen-PRs + review state
+      uiView.svelte.ts, commandPalette.svelte.ts, tourStore.svelte.ts
+      markdownView.svelte.ts, fsRefresh.svelte.ts
+    lib/                      ← sessionPersistence, session-brief, agent-message, branchName, …
   shared/
     ipc-types.ts       ← All IPC channel type definitions
     git-types.ts       ← Re-exports from ipc-types
+    gen-ui-catalog.ts, screenprs.ts ← Shared gen-UI + screen-PRs types
 ```
 
 ## E2E repro workflow

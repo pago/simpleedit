@@ -62,7 +62,7 @@
   let agentTargets = $derived.by((): AgentTabInfo[] => {
     const claude = sessionsStore
       .sessions()
-      .filter((s) => s.kind === 'claude' && !s.pendingResume && !s.forking && !s.forkError)
+      .filter((s) => s.kind === 'claude' && !s.pendingResume)
       .map((s) => ({ id: s.id, label: s.label }))
     return claude.sort((a, b) => (a.id === sessionId ? -1 : b.id === sessionId ? 1 : 0))
   })
@@ -516,16 +516,6 @@
             Resume {session.label}
           </button>
           <p class="text-[10px] text-zinc-600">session id {session.pendingResume.sessionId.slice(0, 8)}…</p>
-        </div>
-      {:else if session.forking}
-        <div class="flex h-full flex-col items-center justify-center gap-2 text-zinc-400">
-          <p class="text-xs italic">Forking from {session.forking.sourceLabel}…</p>
-          <p class="text-[10px] text-zinc-600">Copying session transcript and starting Claude</p>
-        </div>
-      {:else if session.forkError}
-        <div class="flex h-full flex-col items-center justify-center gap-2 text-red-400">
-          <p class="text-xs">Fork failed</p>
-          <p class="max-w-md text-[10px] text-zinc-500">{session.forkError}</p>
         </div>
       {:else}
         <Terminal

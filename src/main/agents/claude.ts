@@ -11,10 +11,8 @@ import { writeFileSync, unlinkSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import type { WebContents } from 'electron'
-import type { ClaudeForkOptions, ClaudeStatus } from '../../shared/ipc-types'
+import type { ClaudeStatus } from '../../shared/ipc-types'
 import { extractOscTitles, statusFromTitle } from '../claude-stream'
-import { performFork } from '../claude-fork'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import { registerProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './provider'
 
@@ -141,9 +139,16 @@ function makeCleanup(terminalId: string): () => void {
  * `--session-id <new>` alongside `--resume <existing>` unless `--fork-session`
  * is also passed; the resume path therefore does not set `--session-id` and
  * reuses the resumed id directly.
+ *
+ * The FORK branch (`forkSession` + `resumeSessionId`) is deliberately distinct
+ * from resume: it mints a FRESH id AND adds `--fork-session`, so the source
+ * session is branched into a new, independent, full-context session with the
+ * source left intact. Reusing the resume branch (id = source, `--resume` alone)
+ * would silently APPEND to the source and corrupt the parent — so this must
+ * never fall through to it.
  */
 function buildLaunch(ctx: LaunchContext): LaunchPlan {
-  const { terminalId, resumeSessionId, bridgePort, bridgeToken, model, initialPrompt } = ctx
+  const { terminalId, resumeSessionId, forkSession, bridgePort, bridgeToken, model, initialPrompt } = ctx
 
   let command = 'claude'
   // Only `ollama` swaps the brain via an inline env override. It is prefixed
@@ -168,8 +173,14 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
 
   let sessionId: string
   let sessionFlag: string
-  if (resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)) {
-    sessionId = resumeSessionId
+  const validResume = !!resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)
+  if (forkSession && validResume) {
+    // Fork: fresh id forks the source. NOT the resume/append branch — mixing
+    // them up corrupts the parent (see the doc comment above).
+    sessionId = randomUUID()
+    sessionFlag = ` --session-id ${sessionId} --resume ${resumeSessionId} --fork-session`
+  } else if (validResume) {
+    sessionId = resumeSessionId!
     sessionFlag = ` --resume ${resumeSessionId}`
   } else {
     sessionId = randomUUID()
@@ -197,36 +208,6 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
 }
 
 /**
- * Build the launch plan for a forked session in the target worktree, resuming
- * from `sourceSessionId` and pinning the new session to `forkUuid`.
- *
- * Flag order verified empirically on CLI 2.1.148 (critic's pre-PR4 audit §4):
- * all three orderings of --session-id / --resume / --fork-session work. Using
- * the form that reads "fork the source session as a new id". MCP config +
- * location-tracking hooks are wired the same as a fresh spawn — the fork's
- * session id is `forkUuid`, registered for hook routing (#87).
- */
-export function buildForkLaunch(args: {
-  placeholderTabId: string
-  sourceSessionId: string
-  forkUuid: string
-  bridgePort?: number
-  bridgeToken?: string
-}): LaunchPlan {
-  const { placeholderTabId, sourceSessionId, forkUuid, bridgePort, bridgeToken } = args
-
-  const bridgeFlags = buildBridgeFlags(placeholderTabId, forkUuid, bridgePort, bridgeToken)
-
-  const command =
-    `claude --session-id ${forkUuid}` +
-    ` --resume ${sourceSessionId}` +
-    ` --fork-session` +
-    bridgeFlags
-
-  return { command, sessionId: forkUuid, cleanup: makeCleanup(placeholderTabId) }
-}
-
-/**
  * Build the launch plan for `claude agents` — the interactive TUI for
  * inspecting / managing Claude Code agents. Unlike a normal Claude spawn this
  * wires no MCP bridge, no hooks, and captures no session id: agents is purely
@@ -246,9 +227,6 @@ export const claudeProvider: AgentProvider = {
       if (s !== null) status = s
     }
     return status
-  },
-  fork(options: ClaudeForkOptions, webContents: WebContents): Promise<void> {
-    return performFork(options, webContents)
   },
   capabilities: {
     status: 'osc',

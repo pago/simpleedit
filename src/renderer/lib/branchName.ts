@@ -1,7 +1,6 @@
 /**
  * Strip characters illegal in git branch names (see git-check-ref-format).
- * Used for both the sidebar's "new worktree" form and the fork picker's
- * create-new-worktree field so the two surfaces sanitize identically.
+ * Used by the sidebar's "new worktree" form.
  */
 export function sanitizeBranchName(input: string): string {
   return input

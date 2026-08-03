@@ -1,11 +1,11 @@
 <script lang="ts">
   import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
-  import ForkWorktreePicker, { type ForkTarget } from '../terminal/ForkWorktreePicker.svelte'
   import PromptModal from '../PromptModal.svelte'
+  import HandoffComposer from './HandoffComposer.svelte'
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
   import type { ModelRef } from '../../../shared/ipc-types'
   import { getClaudeStatusForTerminal } from '../../stores/claude-status.svelte'
-  import { worktreeList, refreshWorktrees, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
+  import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
 
@@ -162,9 +162,7 @@
   let sessionMenu: { sessionId: string; x: number; y: number } | null = $state(null)
   let menuButtonEls: Map<string, HTMLElement> = $state(new Map())
   let renameTarget: { id: string; currentLabel: string } | null = $state(null)
-  let forkPicker:
-    | { sessionId: string; sourceLabel: string; sourceSessionId: string; x: number; y: number }
-    | null = $state(null)
+  let handoffTarget: Session | null = $state(null)
 
   function buildMenuItems(session: Session | undefined): ContextMenuItem[] {
     const items: ContextMenuItem[] = []
@@ -180,12 +178,19 @@
         forkDisabled = true
         forkTooltip = 'Waiting for Claude to initialize…'
       }
+      // Full-context fork, in place: branches the conversation into a fresh
+      // session paired with this one (no worktree targeting).
       items.push({
         id: 'fork',
-        label: 'Fork into worktree…',
+        label: 'Fork',
         disabled: forkDisabled,
         disabledTooltip: forkTooltip,
       })
+      // Hand off: reset onto a fresh context in place (Claude sessions only —
+      // agents have no seed prompt / brief to carry).
+      if (session?.kind === 'claude') {
+        items.push({ id: 'handoff', label: 'Hand off…' })
+      }
     }
     items.push({ id: 'rename', label: 'Rename…' })
 
@@ -254,16 +259,11 @@
       if (sessionMenu) partnerPicker = { sessionId: session.id, x: sessionMenu.x, y: sessionMenu.y }
       sessionMenu = null
     } else if (id === 'fork') {
-      if (!session.claudeSessionId || !sessionMenu) return
-      forkPicker = {
-        sessionId: session.id,
-        sourceLabel: session.label,
-        sourceSessionId: session.claudeSessionId,
-        x: sessionMenu.x,
-        y: sessionMenu.y,
-      }
-      // ContextMenu's onpick fires before onclose; null it here so the picker
-      // isn't drawn under a still-open menu in the next paint.
+      if (!session.claudeSessionId) return
+      sessionsStore.forkClaude(session.id)
+      sessionMenu = null
+    } else if (id === 'handoff') {
+      handoffTarget = session
       sessionMenu = null
     }
   }
@@ -320,80 +320,6 @@
     if (!partnerPicker) return
     const partnerId = id.slice('partner:'.length)
     sessionsStore.createGroup([partnerPicker.sessionId, partnerId])
-  }
-
-  function forkPickerBack(): void {
-    if (!forkPicker) return
-    sessionMenu = { sessionId: forkPicker.sessionId, x: forkPicker.x, y: forkPicker.y }
-    forkPicker = null
-  }
-
-  function forkPickerClose(): void {
-    const targetId = forkPicker?.sessionId
-    forkPicker = null
-    if (targetId) menuButtonEls.get(targetId)?.focus()
-  }
-
-  function forkPickerPick(target: ForkTarget): void {
-    if (!forkPicker) return
-    const { sessionId, sourceLabel, sourceSessionId } = forkPicker
-    const sourceWorktreePath = sessions.find((s) => s.id === sessionId)?.worktreePath
-    forkPicker = null
-    if (!sourceWorktreePath) return
-
-    // Pre-mint the fork's session-id — passing it at spawn time eliminates
-    // the race vs scraping claude's init line.
-    const forkUuid = crypto.randomUUID()
-
-    function runFork(targetWorktreePath: string): void {
-      const placeholderId = sessionsStore.addForkPlaceholder(sourceLabel, targetWorktreePath)
-      window.api
-        .invoke('claude:fork', {
-          sourceTerminalId: sessionId,
-          sourceSessionId,
-          sourceWorktreePath,
-          targetWorktreePath,
-          forkUuid,
-          placeholderTabId: placeholderId,
-        })
-        .catch(() => {
-          // The IPC handler emits claude:fork-result on its own error path; if
-          // the invoke itself rejects (e.g. main crashed), surface a generic
-          // error so the placeholder doesn't hang.
-          sessionsStore.failFork(placeholderId, 'fork IPC failed')
-        })
-    }
-
-    if (target.kind === 'existing') {
-      runFork(target.worktreePath)
-      return
-    }
-
-    // Create the worktree first, then fork into its path. The placeholder
-    // points at the source worktree until the new one exists.
-    const placeholderId = sessionsStore.addForkPlaceholder(sourceLabel, sourceWorktreePath)
-    window.api
-      .invoke('worktree:create', target.name)
-      .then((created) => {
-        void refreshWorktrees()
-        sessionsStore.update(placeholderId, { worktreePath: created.path })
-        window.api
-          .invoke('claude:fork', {
-            sourceTerminalId: sessionId,
-            sourceSessionId,
-            sourceWorktreePath,
-            targetWorktreePath: created.path,
-            forkUuid,
-            placeholderTabId: placeholderId,
-          })
-          .catch(() => {
-            sessionsStore.failFork(placeholderId, 'fork IPC failed')
-          })
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err)
-        sessionsStore.failFork(placeholderId, `could not create worktree: ${message}`)
-      })
   }
 
   function submitRename(value: string): void {
@@ -584,8 +510,6 @@
   function dotClass(session: Session): string {
     if (session.exited) return 'bg-red-500'
     if (session.pendingResume) return 'bg-zinc-600'
-    if (session.forkError) return 'bg-red-500'
-    if (session.forking) return 'bg-zinc-500 animate-pulse'
     if (session.kind === 'terminal') return 'bg-zinc-600'
     const status = getClaudeStatusForTerminal(session.id)
     switch (status) {
@@ -603,8 +527,6 @@
   function statusTitle(session: Session): string {
     if (session.exited) return `Process exited with code ${session.exited.exitCode} — output preserved in the terminal`
     if (session.pendingResume) return 'Resumable — click to resume'
-    if (session.forkError) return `Fork failed: ${session.forkError}`
-    if (session.forking) return `Forking… (from ${session.forking.sourceLabel})`
     if (session.kind === 'terminal') return 'Terminal'
     const status = getClaudeStatusForTerminal(session.id)
     switch (status) {
@@ -634,8 +556,7 @@
   <div
     class="group flex items-center gap-2 rounded px-2 py-1.5 text-left transition-colors cursor-pointer
       {isActive ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}
-      {session.pendingResume || session.forking ? 'italic opacity-70' : ''}
-      {session.forkError ? 'text-red-400' : ''}
+      {session.pendingResume ? 'italic opacity-70' : ''}
       {isDragged ? 'opacity-40' : ''}
       {dropTargetId === session.id && dropMode === 'before' ? 'border-t-2 border-t-blue-500' : ''}
       {dropTargetId === session.id && dropMode === 'after' ? 'border-b-2 border-b-blue-500' : ''}
@@ -662,7 +583,7 @@
     </span>
     <span class="min-w-0 flex-1">
       <span class="block truncate text-xs">
-        {session.label}{session.pendingResume ? ' (resume)' : ''}{session.forking ? '…' : ''}{session.forkError ? ' (failed)' : ''}{session.exited ? ' (exited)' : ''}
+        {session.label}{session.pendingResume ? ' (resume)' : ''}{session.exited ? ' (exited)' : ''}
       </span>
       <span class="block truncate text-[10px] text-zinc-500">{worktreeBranch(session)}</span>
     </span>
@@ -845,17 +766,6 @@
       onclose={() => (partnerPicker = null)}
     />
   {/if}
-
-  {#if forkPicker}
-    <ForkWorktreePicker
-      x={forkPicker.x}
-      y={forkPicker.y}
-      sourceWorktreePath={sessions.find((s) => s.id === forkPicker?.sessionId)?.worktreePath ?? ''}
-      onpick={forkPickerPick}
-      onback={forkPickerBack}
-      onclose={forkPickerClose}
-    />
-  {/if}
 </div>
 
 {#if renameTarget}
@@ -880,4 +790,8 @@
     onsubmit={submitGroupRename}
     oncancel={() => (groupRenameTarget = null)}
   />
+{/if}
+
+{#if handoffTarget}
+  <HandoffComposer session={handoffTarget} onclose={() => (handoffTarget = null)} />
 {/if}

@@ -256,6 +256,48 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
     return { status: 200, body: { ok: true } }
   }
 
+  if (tool === 'spawn_session') {
+    const brief = typeof args['brief'] === 'string' ? (args['brief'] as string).trim() : ''
+    if (!brief) {
+      return { status: 400, body: { error: 'spawn_session requires a non-empty brief in args' } }
+    }
+    const label = typeof args['label'] === 'string' ? (args['label'] as string) : undefined
+    const model = typeof args['model'] === 'string' ? (args['model'] as string) : undefined
+    // Default 'new-pane'; only 'replace' is the other accepted value.
+    const target = args['target'] === 'replace' ? 'replace' : 'new-pane'
+
+    // The worktree is optional (renderer defaults to the caller's workspace).
+    // When the agent names one, validate it against the repo like show_diff so
+    // a typo gets actionable feedback instead of a silent wrong-target spawn.
+    let worktreePath: string | undefined
+    if (typeof args['worktree'] === 'string' && args['worktree']) {
+      const requested = args['worktree'] as string
+      const worktrees = await resolveWorktrees(webContents.id)
+      if (worktrees.length > 0 && !worktrees.some((w) => w.path === requested)) {
+        return {
+          status: 400,
+          body: {
+            error: `No worktree matches ${requested}`,
+            worktrees: worktrees.map((w) => w.path),
+          },
+        }
+      }
+      worktreePath = requested
+    }
+
+    if (!webContents.isDestroyed()) {
+      webContents.send('agent-session:spawn', {
+        sourceTerminalId: terminalId,
+        brief,
+        ...(label ? { label } : {}),
+        ...(model ? { model } : {}),
+        ...(worktreePath ? { worktreePath } : {}),
+        target,
+      })
+    }
+    return { status: 200, body: { ok: true } }
+  }
+
   return { status: 400, body: { error: `Unknown tool: ${tool}` } }
 }
 

@@ -5,14 +5,19 @@
  * UI can degrade gracefully. Claude Code is the first (and, today, only)
  * provider — see `claude.ts`, which self-registers on import.
  */
-import type { WebContents } from 'electron'
-import type { ClaudeStatus, ClaudeForkOptions, ModelRef } from '../../shared/ipc-types'
+import type { ClaudeStatus, ModelRef } from '../../shared/ipc-types'
 
 /** Inputs for a fresh (or resumed) agent launch. */
 export interface LaunchContext {
   terminalId: string
   worktreePath: string
   resumeSessionId?: string
+  /**
+   * Full-context fork: with `resumeSessionId`, mint a fresh session id that
+   * forks the source (`--fork-session`) rather than continuing it. Distinct
+   * from a plain resume. Ignored without `resumeSessionId`.
+   */
+  forkSession?: boolean
   bridgePort?: number
   bridgeToken?: string
   /**
@@ -53,12 +58,6 @@ export interface AgentProvider {
   buildLaunch(ctx: LaunchContext): LaunchPlan
   /** Turn a raw PTY output chunk into a status, or null when unrecognised. */
   detectStatus?(chunk: string): ClaudeStatus | null
-  /**
-   * Fork an existing session into another worktree. Typed with the Claude-
-   * specific options today; the shape will generalize once a second provider
-   * with fork support lands.
-   */
-  fork?(options: ClaudeForkOptions, webContents: WebContents): Promise<void>
   capabilities: AgentCapabilities
 }
 
