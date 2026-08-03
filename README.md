@@ -96,6 +96,18 @@ Because Apple notarization is what Squirrel's signature check wants, a manually
 installed copy can download an update but not install it. The in-app updater
 therefore only offers a restart on Windows and Linux; on macOS, prefer Homebrew.
 
+### Updating a Homebrew install
+
+A Homebrew copy updates itself: the banner offers **Update & Restart**, which
+quits SimpleEdit, runs the upgrade, and reopens it. If it fails, the next launch
+says so and offers the log.
+
+If you would rather run it by hand, use a terminal **other than SimpleEdit**.
+`brew upgrade` replaces the app bundle, and run from inside SimpleEdit the
+upgrade is a child of the app being replaced — quitting the app would kill the
+upgrade partway through. The **Update & Restart** button exists precisely because
+it sidesteps that.
+
 ### Windows / Linux
 
 Grab the `.exe` (Windows) or `.AppImage` / `.deb` (Linux) from the

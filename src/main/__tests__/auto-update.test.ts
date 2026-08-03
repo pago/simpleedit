@@ -11,17 +11,24 @@ const updater = Object.assign(new EventEmitter(), {
   checkForUpdates: vi.fn().mockResolvedValue(null),
   quitAndInstall: vi.fn()
 })
-const electronApp = { isPackaged: true, getVersion: () => '1.0.0' }
+const electronApp = { isPackaged: true, getVersion: () => '1.0.0', quit: vi.fn() }
 
-// Paths that exist for the fs mock — a Caskroom entry marks a brew-managed copy.
-let existingPaths: string[] = []
+// Detection and the detached helper are homebrew.ts's job and tested there; here
+// we only care that the updater routes to them.
+const homebrew = {
+  isHomebrewManaged: vi.fn(() => false),
+  startHomebrewUpgrade: vi.fn((_version: string): { ok: boolean; error?: string } => ({ ok: true })),
+  takeUpgradeResult: vi.fn((): unknown => null),
+  upgradeLogPath: vi.fn(() => '/userData/homebrew-update.log')
+}
 
-vi.mock('node:fs', () => ({
-  existsSync: (path: string) => existingPaths.includes(path)
-}))
+vi.mock('../homebrew', () => homebrew)
+
+const openPath = vi.fn()
 
 vi.mock('electron', () => ({
   app: electronApp,
+  shell: { openPath },
   autoUpdater: squirrel,
   BrowserWindow: {
     getAllWindows: () => [{ webContents: { send: (channel: string, data: unknown) => sent.push({ channel, data }) } }]
@@ -58,7 +65,12 @@ beforeEach(() => {
   vi.useFakeTimers()
   sent.length = 0
   handlers.clear()
-  existingPaths = []
+  openPath.mockClear()
+  electronApp.quit.mockClear()
+  for (const fn of Object.values(homebrew)) fn.mockClear()
+  homebrew.isHomebrewManaged.mockReturnValue(false)
+  homebrew.startHomebrewUpgrade.mockReturnValue({ ok: true })
+  homebrew.takeUpgradeResult.mockReturnValue(null)
   squirrel.removeAllListeners()
   updater.removeAllListeners()
   updater.quitAndInstall.mockClear()
@@ -209,22 +221,21 @@ describe('initAutoUpdater on other platforms', () => {
 })
 
 // A cask install is replaced by `brew upgrade`, and electron-updater could not
-// replace it anyway: Squirrel rejects the ad-hoc signature.
+// replace it anyway: Squirrel rejects the ad-hoc signature. Detection and the
+// helper itself live in homebrew.ts — these cover the routing.
 describe('initAutoUpdater on a Homebrew install', () => {
-  const ARM_CASKROOM = '/opt/homebrew/Caskroom/simpleedit/1.0.0'
-  const INTEL_CASKROOM = '/usr/local/Caskroom/simpleedit/1.0.0'
+  beforeEach(() => {
+    homebrew.isHomebrewManaged.mockReturnValue(true)
+  })
 
   it('does not download an update it cannot stage', async () => {
-    existingPaths = [ARM_CASKROOM]
-
     await initOn('darwin')
 
     expect(updater.autoDownload).toBe(false)
     expect(updater.autoInstallOnAppQuit).toBe(false)
   })
 
-  it('flags the update so the banner can offer the brew command', async () => {
-    existingPaths = [ARM_CASKROOM]
+  it('flags the update so the banner can offer the brew path', async () => {
     await initOn('darwin')
 
     updater.emit('update-available', { version: '2.0.0' })
@@ -235,53 +246,101 @@ describe('initAutoUpdater on a Homebrew install', () => {
     })
   })
 
-  it('points a stray install request at brew instead of restarting', async () => {
-    existingPaths = [ARM_CASKROOM]
+  // Quitting is the point: brew cannot replace a bundle whose own process tree is
+  // running the upgrade, so the helper waits for us to be gone.
+  it('hands the upgrade to the detached helper and quits', async () => {
     await initOn('darwin')
+    updater.emit('update-available', { version: '2.0.0' })
 
-    expect(install()).toEqual({
-      ok: false,
-      error: 'Run `brew upgrade --cask pago/simpleedit/simpleedit` to update this copy.'
-    })
+    expect(install()).toEqual({ ok: true })
+
+    expect(homebrew.startHomebrewUpgrade).toHaveBeenCalledWith('2.0.0')
+    expect(electronApp.quit).toHaveBeenCalled()
     expect(updater.quitAndInstall).not.toHaveBeenCalled()
   })
 
-  it('recognises the Intel Homebrew prefix too', async () => {
-    existingPaths = [INTEL_CASKROOM]
+  it('stays put when the helper could not be started', async () => {
+    homebrew.startHomebrewUpgrade.mockReturnValue({ ok: false, error: 'no brew' })
     await initOn('darwin')
-
-    expect(updater.autoDownload).toBe(false)
-  })
-
-  // Matching the running version is what stops a stale Caskroom entry — left by
-  // a cask install the user has since replaced by hand — from disabling the
-  // in-app updater for a copy brew no longer owns.
-  it('ignores a Caskroom entry for a different version', async () => {
-    existingPaths = ['/opt/homebrew/Caskroom/simpleedit/0.9.0']
-    await initOn('darwin')
-
     updater.emit('update-available', { version: '2.0.0' })
 
-    expect(updater.autoDownload).toBe(true)
-    expect(sent.at(-1)?.data).not.toMatchObject({ managedByHomebrew: true })
+    expect(install()).toEqual({ ok: false, error: 'no brew' })
+    expect(electronApp.quit).not.toHaveBeenCalled()
   })
 
-  // Otherwise a developer with the cask installed at the version in package.json
-  // would see `pnpm dev` and the e2e suite take the Homebrew path.
-  it('ignores the Caskroom for an unpackaged build', async () => {
-    existingPaths = [ARM_CASKROOM]
-    electronApp.isPackaged = false
+  it('refuses to upgrade to nothing', async () => {
     await initOn('darwin')
 
-    expect(updater.autoDownload).toBe(true)
-    expect(install().error).toMatch(/packaged build/)
+    expect(install()).toEqual({ ok: false, error: 'No update is pending.' })
+    expect(homebrew.startHomebrewUpgrade).not.toHaveBeenCalled()
+    expect(electronApp.quit).not.toHaveBeenCalled()
   })
 
-  it('never treats a non-macOS install as Homebrew-managed', async () => {
-    existingPaths = [ARM_CASKROOM, INTEL_CASKROOM]
+  it('opens the helper log on request', async () => {
+    await initOn('darwin')
+
+    await handlers.get('update:open-log')!()
+
+    expect(openPath).toHaveBeenCalledWith('/userData/homebrew-update.log')
+  })
+})
+
+// The helper runs with no window to talk to, so a failure it recorded on disk is
+// reported on the next launch. Without this it would be completely silent.
+describe('reporting a failed background upgrade', () => {
+  it('raises the failure once a window is up', async () => {
+    homebrew.takeUpgradeResult.mockReturnValue({
+      ok: false,
+      stage: 'upgrade',
+      version: '2.0.0',
+      detail: 'brew exited with status 17'
+    })
+    await initOn('darwin')
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(sent).toContainEqual({
+      channel: 'update:homebrew-failed',
+      data: { version: '2.0.0', message: 'brew exited with status 17' }
+    })
+  })
+
+  it('says something even when the helper left no detail', async () => {
+    homebrew.takeUpgradeResult.mockReturnValue({
+      ok: false,
+      stage: 'wait',
+      version: '2.0.0',
+      detail: ''
+    })
+    await initOn('darwin')
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(sent.find((e) => e.channel === 'update:homebrew-failed')?.data).toMatchObject({
+      message: 'The Homebrew update did not complete.'
+    })
+  })
+
+  // A success needs no announcement — the version now running is the evidence.
+  it('stays quiet about a successful upgrade', async () => {
+    homebrew.takeUpgradeResult.mockReturnValue({
+      ok: true,
+      stage: 'done',
+      version: '2.0.0',
+      detail: ''
+    })
+    await initOn('darwin')
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(channels()).not.toContain('update:homebrew-failed')
+  })
+
+  it('does not look for a result off macOS', async () => {
     await initOn('linux')
 
-    expect(updater.autoDownload).toBe(true)
-    expect(install()).toEqual({ ok: true })
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(homebrew.takeUpgradeResult).not.toHaveBeenCalled()
   })
 })

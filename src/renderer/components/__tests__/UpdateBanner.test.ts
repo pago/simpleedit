@@ -160,8 +160,12 @@ describe('UpdateBanner', () => {
   })
 
   describe('on a Homebrew install', () => {
+    const COMMAND = 'brew upgrade --cask pago/simpleedit/simpleedit'
+
+    const upgradeButton = (): ReturnType<typeof screen.getByRole> =>
+      screen.getByRole('button', { name: 'Update & Restart' })
     const copyButton = (): ReturnType<typeof screen.getByRole> =>
-      screen.getByRole('button', { name: 'Copy' })
+      screen.getByRole('button', { name: 'Copy command' })
 
     // Spy rather than stub the whole navigator: these run in a real Chromium.
     beforeEach(() => {
@@ -172,38 +176,58 @@ describe('UpdateBanner', () => {
       vi.restoreAllMocks()
     })
 
-    it('offers the brew command instead of a restart', async () => {
+    async function announceUpdate(): Promise<void> {
       render(UpdateBanner)
-
       emit('update:available', { version: '1.2.3', managedByHomebrew: true })
+      await waitFor(() => upgradeButton())
+    }
 
-      await waitFor(() => {
-        expect(screen.getByText(/Version 1\.2\.3 is available/)).toBeInTheDocument()
-        expect(screen.getByText('brew upgrade --cask pago/simpleedit/simpleedit')).toBeInTheDocument()
-      })
+    it('offers a real action, not just a command to copy', async () => {
+      await announceUpdate()
+
+      expect(screen.getByText(/Version 1\.2\.3 is available via Homebrew/)).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Restart & Update' })).not.toBeInTheDocument()
     })
 
-    it('copies the command and confirms it', async () => {
-      render(UpdateBanner)
-      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
-      await waitFor(() => copyButton())
+    // The invoke never resolves on success — the app is quitting — so the banner
+    // has to say what is happening rather than sit there looking idle.
+    it('reports that it is quitting to update', async () => {
+      vi.mocked(window.api.invoke).mockReturnValue(new Promise(() => {}))
+      await announceUpdate()
+
+      await fireEvent.click(upgradeButton())
+
+      await waitFor(() =>
+        expect(screen.getByText(/Quitting to update via Homebrew/)).toBeInTheDocument()
+      )
+      expect(window.api.invoke).toHaveBeenCalledWith('update:install')
+    })
+
+    it('surfaces a helper that could not be started', async () => {
+      vi.mocked(window.api.invoke).mockResolvedValue({ ok: false, error: 'Could not find brew' })
+      await announceUpdate()
+
+      await fireEvent.click(upgradeButton())
+
+      await waitFor(() =>
+        expect(screen.getByText(/could not be installed: Could not find brew/)).toBeInTheDocument()
+      )
+    })
+
+    it('still lets the user run the upgrade themselves', async () => {
+      await announceUpdate()
 
       await fireEvent.click(copyButton())
 
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('brew upgrade --cask pago/simpleedit/simpleedit')
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(COMMAND)
       await waitFor(() =>
         expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
       )
     })
 
-    // The command is spelled out in the banner, so a denied clipboard is not
-    // worth turning the banner red over.
     it('survives a rejected clipboard write', async () => {
       vi.mocked(navigator.clipboard.writeText).mockRejectedValue(new Error('denied'))
-      render(UpdateBanner)
-      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
-      await waitFor(() => copyButton())
+      await announceUpdate()
 
       await fireEvent.click(copyButton())
 
@@ -211,17 +235,31 @@ describe('UpdateBanner', () => {
       expect(screen.queryByText(/could not be/)).not.toBeInTheDocument()
     })
 
-    // A brew-managed copy never attempts an install, so there is no failed
-    // install to report — the banner must keep pointing at brew.
-    it('keeps the brew command in place if a stray error arrives', async () => {
+    // Reported on launch, after the app was closed for the upgrade — so it has to
+    // raise the banner on its own, with no update event preceding it.
+    it('raises a failed background upgrade by itself, with the log and a fallback', async () => {
       render(UpdateBanner)
-      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
-      await waitFor(() => copyButton())
 
-      emit('update:error', { message: 'signature did not pass validation', phase: 'prepare' })
+      emit('update:homebrew-failed', { version: '1.2.3', message: 'brew exited with status 17' })
 
-      await waitFor(() => expect(copyButton()).toBeInTheDocument())
-      expect(screen.queryByText(/could not be prepared/)).not.toBeInTheDocument()
+      await waitFor(() =>
+        expect(screen.getByText(/could not be installed: brew exited with status 17/)).toBeInTheDocument()
+      )
+      expect(screen.getByText(COMMAND)).toBeInTheDocument()
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
+      expect(window.api.invoke).toHaveBeenCalledWith('update:open-log')
+    })
+
+    // The log button is only meaningful when a helper actually ran and wrote one.
+    it('offers no log for an upgrade that never started', async () => {
+      vi.mocked(window.api.invoke).mockResolvedValue({ ok: false, error: 'Could not find brew' })
+      await announceUpdate()
+
+      await fireEvent.click(upgradeButton())
+
+      await waitFor(() => expect(screen.getByText(/could not be installed/)).toBeInTheDocument())
+      expect(screen.queryByRole('button', { name: 'Show log' })).not.toBeInTheDocument()
     })
   })
 

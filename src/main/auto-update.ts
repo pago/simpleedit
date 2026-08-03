@@ -1,14 +1,14 @@
-import { app, autoUpdater as squirrel, BrowserWindow, ipcMain } from 'electron'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { app, autoUpdater as squirrel, BrowserWindow, ipcMain, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { BREW_UPGRADE_COMMAND } from '../shared/ipc-types'
+import {
+  isHomebrewManaged,
+  startHomebrewUpgrade,
+  takeUpgradeResult,
+  upgradeLogPath
+} from './homebrew'
 import type { UpdateErrorPhase, UpdateInfo, UpdateInstallResult } from '../shared/ipc-types'
 
 const isMac = process.platform === 'darwin'
-
-// Homebrew's two standard prefixes — Apple silicon and Intel.
-const CASKROOM_DIRS = ['/opt/homebrew/Caskroom/simpleedit', '/usr/local/Caskroom/simpleedit']
 
 // Squirrel fetches the update from electron-updater's local proxy, so staging is
 // a localhost copy plus an unzip and a signature check. Nothing in MacUpdater
@@ -29,25 +29,6 @@ let staged = !isMac
 let pending: UpdateInfo | null = null
 let stagingTimer: NodeJS.Timeout | undefined
 let homebrewManaged = false
-
-/**
- * Whether `brew` owns this copy of the app.
- *
- * A cask install moves SimpleEdit.app into /Applications but leaves a
- * `Caskroom/simpleedit/<version>` directory behind, so a directory matching the
- * running version is the cheapest reliable signal — no shelling out to `brew`,
- * which isn't on the app's PATH when it launches from Finder. Matching on the
- * version rather than the bare cask directory also means a copy the user later
- * replaced by hand stops counting as Homebrew-managed.
- *
- * The `isPackaged` guard matters beyond correctness: without it, a developer who
- * has the cask installed at the version in package.json would see `pnpm dev` and
- * the e2e suite take the Homebrew path.
- */
-function isHomebrewManaged(): boolean {
-  if (!isMac || !app.isPackaged) return false
-  return CASKROOM_DIRS.some((dir) => existsSync(join(dir, app.getVersion())))
-}
 
 function broadcastToAllWindows(channel: string, data: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -118,9 +99,19 @@ export function initAutoUpdater(): void {
     })
   })
 
+  ipcMain.handle('update:open-log', async () => {
+    await shell.openPath(upgradeLogPath())
+  })
+
   ipcMain.handle('update:install', (): UpdateInstallResult => {
+    // Hand a Homebrew copy to a detached helper and get out of its way: brew
+    // cannot replace a bundle whose own process tree is running the upgrade.
     if (homebrewManaged) {
-      return { ok: false, error: `Run \`${BREW_UPGRADE_COMMAND}\` to update this copy.` }
+      if (!pending) return { ok: false, error: 'No update is pending.' }
+      const started = startHomebrewUpgrade(pending.version)
+      if (!started.ok) return started
+      app.quit()
+      return { ok: true }
     }
     if (!app.isPackaged) {
       return { ok: false, error: 'Updates can only be installed from a packaged build.' }
@@ -138,10 +129,31 @@ export function initAutoUpdater(): void {
     }
   })
 
-  // Check for updates shortly after launch
+  // Check for updates shortly after launch. The delay also gives the first
+  // window time to mount its listeners, which is why the report of a failed
+  // background upgrade rides along here rather than firing immediately.
   setTimeout(() => {
+    reportFailedBackgroundUpgrade()
     autoUpdater.checkForUpdates().catch((err: Error) => {
       console.error('[AutoUpdate] Initial check failed:', err.message)
     })
   }, 5_000)
+}
+
+/**
+ * A detached upgrade runs with no window to talk to, so its outcome is left on
+ * disk and picked up here on the next launch. Only failures are surfaced — a
+ * success speaks for itself, in the form of the version now running.
+ */
+function reportFailedBackgroundUpgrade(): void {
+  if (!isMac) return
+
+  const result = takeUpgradeResult()
+  if (!result || result.ok) return
+
+  console.error('[AutoUpdate] Homebrew upgrade failed:', result.stage, result.detail)
+  broadcastToAllWindows('update:homebrew-failed', {
+    version: result.version,
+    message: result.detail || 'The Homebrew update did not complete.'
+  })
 }
