@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       published: ${{ steps.changesets.outputs.published }}
+      version: ${{ steps.pkg.outputs.version }}
 
     steps:
       - uses: actions/checkout@v6
@@ -44,6 +45,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Read after changesets: when this run is a merged "Version Packages" PR,
+      # package.json is already at the released version, which is the tag
+      # `changeset tag` just pushed. Only consumed when published == 'true'.
+      - name: Read the released version
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
   release:
     needs: version
     if: needs.version.outputs.published == 'true'
@@ -51,3 +59,17 @@ jobs:
     secrets: inherit
     permissions:
       contents: write
+
+  # Chained explicitly rather than triggered by the `release` event: the release
+  # is created with GITHUB_TOKEN, and GitHub does not let those events start new
+  # workflow runs. This is the same reason `release` above is called rather than
+  # left to the pushed v* tag.
+  homebrew:
+    needs: [version, release]
+    if: needs.version.outputs.published == 'true'
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      tag: v${{ needs.version.outputs.version }}
+    secrets: inherit
+    permissions:
+      contents: read
