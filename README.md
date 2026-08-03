@@ -52,11 +52,33 @@ We're using SimpleEdit to build SimpleEdit, which helps us find and fix the shar
 
 ## Installing
 
-Grab the latest build for your platform from the [Releases page](https://github.com/pago/simpleedit/releases).
+### macOS — Homebrew (recommended)
 
-### macOS
+```bash
+brew trust pago/simpleedit
+brew install --cask pago/simpleedit/simpleedit
+```
 
-SimpleEdit is ad-hoc signed but not yet notarized by Apple, so the first launch needs a one-time approval:
+Then, to update:
+
+```bash
+brew upgrade --cask simpleedit
+```
+
+The cask clears the download quarantine flag for you, so there is no Gatekeeper
+detour — SimpleEdit launches straight away.
+
+Both lines matter. Homebrew 6 refuses to load casks from non-official taps
+unless you either trust the tap or name it in full on the command line, so
+without `brew trust` a plain `brew upgrade` **silently skips SimpleEdit** rather
+than updating it. You only ever run it once.
+
+### macOS — manual download
+
+Grab the latest `.dmg` from the [Releases page](https://github.com/pago/simpleedit/releases).
+
+SimpleEdit is ad-hoc signed but not notarized by Apple, so a downloaded copy
+needs a one-time approval:
 
 1. Open the `.dmg` and drag **SimpleEdit** to Applications.
 2. Double-click SimpleEdit. macOS will refuse to open it the first time.
@@ -69,6 +91,16 @@ xattr -dr com.apple.quarantine /Applications/SimpleEdit.app
 ```
 
 > If you see **"SimpleEdit is damaged and can't be opened"** on an older build, it predates ad-hoc signing — download the latest release, or run the `xattr` command above.
+
+Because Apple notarization is what Squirrel's signature check wants, a manually
+installed copy can download an update but not install it. The in-app updater
+therefore only offers a restart on Windows and Linux; on macOS, prefer Homebrew.
+
+### Windows / Linux
+
+Grab the `.exe` (Windows) or `.AppImage` / `.deb` (Linux) from the
+[Releases page](https://github.com/pago/simpleedit/releases). These builds
+self-update in place — the banner's **Restart & Update** button works.
 
 ---
 

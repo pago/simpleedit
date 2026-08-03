@@ -305,11 +305,35 @@ Use `patch` for bug fixes, `minor` for new features, `major` for breaking change
      that bumps the version in `package.json` and updates `CHANGELOG.md`
   3. Merging that PR triggers `changeset tag` → creates a `v*` git tag
   4. The tag triggers `release.yml` → builds all platforms → creates a draft GitHub Release
+  5. **Publishing** that draft triggers `homebrew.yml` → renders the cask → pushes it to the tap
 - Local packaging: `pnpm package` (all), or `pnpm package:mac` / `package:win` / `package:linux`
-- Builds are currently unsigned (acceptable for alpha)
+- macOS builds are ad-hoc signed only (`scripts/mac-adhoc-sign.cjs`), never notarized
+
+### Homebrew distribution (macOS)
+`brew install --cask pago/simpleedit/simpleedit` is the recommended macOS install.
+The cask's source of truth is `scripts/homebrew/simpleedit.rb.template`;
+`scripts/render-cask.mjs` fills in the version and both dmg digests, and
+`homebrew.yml` pushes the rendered file to the **pago/homebrew-simpleedit** tap
+(a separate repo — it holds generated output only, so never hand-edit it).
+
+Three things about this are easy to get wrong:
+- It hangs off the release being **published**, not the `v*` tag. A draft
+  release's assets are not downloadable, so a tag-triggered job would 404.
+- Pushing cross-repo needs the `HOMEBREW_TAP_SSH_KEY` secret (a write-enabled
+  deploy key on the tap); the built-in `GITHUB_TOKEN` cannot write to the tap.
+- Homebrew 6 requires non-official taps to be trusted. The only exemption is
+  naming the cask or tap in full in the command, which is why
+  `BREW_UPGRADE_COMMAND` (`shared/ipc-types.ts`) is fully qualified — and why
+  the README tells users to `brew trust pago/simpleedit` once.
+
+Because notarization is what Squirrel's signature check wants, macOS copies
+cannot self-update. `auto-update.ts` detects a Homebrew install (a
+`Caskroom/simpleedit/<running version>` directory exists), turns off
+`autoDownload`, and flags the update with `managedByHomebrew` so `UpdateBanner`
+offers the brew command instead of a dead restart button.
 
 ## What's deferred to v2
 - AI narration ("Narrate this changeset" via Anthropic API)
-- Distribution via Homebrew (GitHub Releases for v1)
+- Windows/Linux package managers (winget, scoop, apt repo)
 - Keyboard shortcuts for pane navigation
-- Code signing and notarization
+- Code signing and notarization (Homebrew covers the macOS install/update gap)

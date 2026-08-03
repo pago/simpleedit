@@ -1,0 +1,112 @@
+name: Homebrew Cask
+
+# Publishes the rendered cask to the pago/homebrew-simpleedit tap so that
+# `brew install --cask pago/simpleedit/simpleedit` and `brew upgrade` pick up a
+# release. release.yml creates the GitHub Release as a *draft*, and a draft's
+# assets are not downloadable, so this hangs off `released` rather
+# than the v* tag: it runs when you publish the draft by hand.
+#
+# Requires:
+#   - a HOMEBREW_TAP_SSH_KEY secret holding the private half of a write-enabled
+#     deploy key on pago/homebrew-simpleedit. A deploy key rather than a PAT
+#     because it is scoped to that one repository and never expires; the built-in
+#     GITHUB_TOKEN cannot push to another repository at all.
+#   - pago/homebrew-simpleedit to exist with at least one commit (create it with
+#     a README). Cloning a repository with no commits leaves HEAD unborn, and the
+#     push below would have nothing to fast-forward.
+#
+# Use the workflow_dispatch input to backfill the tap for an existing release.
+# Note that workflow_dispatch only appears once this file is on the default
+# branch — GitHub does not offer it for workflows that live only on a branch.
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish to the tap (e.g. v0.18.1)
+        required: true
+
+jobs:
+  cask:
+    # Pre-releases stay off the tap; brew users track stable versions only.
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the tap deploy key is configured
+        env:
+          TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+        run: |
+          if [ -z "$TAP_SSH_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_SSH_KEY is not set — see the header of this workflow."
+            exit 1
+          fi
+
+      - name: Resolve the release tag
+        id: rel
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the macOS disk images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dmg \
+            --pattern "SimpleEdit-$VERSION.dmg" \
+            --pattern "SimpleEdit-$VERSION-arm64.dmg"
+
+      - name: Render the cask
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/render-cask.mjs \
+            --version "$VERSION" \
+            --arm64 "$(sha256sum "dmg/SimpleEdit-$VERSION-arm64.dmg" | cut -d ' ' -f 1)" \
+            --x64 "$(sha256sum "dmg/SimpleEdit-$VERSION.dmg" | cut -d ' ' -f 1)" \
+            --out rendered/Casks/simpleedit.rb
+          cat rendered/Casks/simpleedit.rb
+
+      - name: Push the cask to the tap
+        env:
+          TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Keep the key out of the command line (and so out of `ps`) by pointing
+          # git at it via GIT_SSH_COMMAND. IdentitiesOnly stops ssh from offering
+          # any agent identity the runner might already have.
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$TAP_SSH_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+
+          git clone git@github.com:pago/homebrew-simpleedit.git tap
+          mkdir -p tap/Casks
+          cp rendered/Casks/simpleedit.rb tap/Casks/simpleedit.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/simpleedit.rb
+          # Re-running the workflow for a release already on the tap is a no-op,
+          # not a failure — `git commit` would exit non-zero on an empty diff.
+          if git diff --cached --quiet; then
+            echo "Tap already carries simpleedit $VERSION — nothing to push."
+            exit 0
+          fi
+          git commit -m "simpleedit $VERSION"
+          git push

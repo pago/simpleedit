@@ -54,6 +54,18 @@ test('the dev-build guard reports why it cannot install', async ({ app, window }
   await expect(window.getByRole('button', { name: 'Download manually' })).toBeVisible()
 })
 
+// A Homebrew copy is replaced by `brew upgrade`, so the banner must not offer a
+// restart it cannot perform. The command is spelled out in full because Homebrew
+// only loads casks from non-official taps when they are named in full.
+test('a Homebrew install is pointed at brew instead of a restart', async ({ app, window }) => {
+  await sendUpdateEvent(app, 'update:available', { version: '9.9.9', managedByHomebrew: true })
+
+  await expect(window.getByText(/Version 9\.9\.9 is available/)).toBeVisible()
+  await expect(window.getByText('brew upgrade --cask pago/simpleedit/simpleedit')).toBeVisible()
+  await expect(window.getByRole('button', { name: 'Restart & Update' })).toHaveCount(0)
+  await expect(window.getByRole('button', { name: 'Copy' })).toBeVisible()
+})
+
 test('a staging failure replaces the dead restart button', async ({ app, window }) => {
   await sendUpdateEvent(app, 'update:downloaded', { version: '9.9.9' })
   await expect(window.getByRole('button', { name: 'Restart & Update' })).toBeVisible()

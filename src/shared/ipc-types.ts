@@ -632,9 +632,25 @@ export interface AgentPanelEventMap {
 }
 
 // ── Auto-update ──────────────────────────────────────────
+/**
+ * Deliberately spelled with the fully-qualified cask name. Homebrew 6 requires
+ * non-official taps to be trusted before it will load them, and the *only*
+ * exemption is naming the cask (or its tap) explicitly on the command line — so
+ * `brew upgrade --cask simpleedit` fails for anyone who skipped
+ * `brew trust pago/simpleedit`, while this form always works.
+ */
+export const BREW_UPGRADE_COMMAND = 'brew upgrade --cask pago/simpleedit/simpleedit'
+
 export interface UpdateInfo {
   version: string
   releaseNotes?: string
+  /**
+   * Present only when this copy was installed by Homebrew. Such a copy can't be
+   * replaced by electron-updater — Squirrel rejects the ad-hoc signature — and
+   * `brew upgrade --cask simpleedit` owns it anyway, so the banner offers that
+   * command instead of a restart.
+   */
+  managedByHomebrew?: boolean
 }
 
 export interface UpdateInstallResult {

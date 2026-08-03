@@ -159,6 +159,72 @@ describe('UpdateBanner', () => {
     expect(screen.queryByText(/could not be prepared/)).not.toBeInTheDocument()
   })
 
+  describe('on a Homebrew install', () => {
+    const copyButton = (): ReturnType<typeof screen.getByRole> =>
+      screen.getByRole('button', { name: 'Copy' })
+
+    // Spy rather than stub the whole navigator: these run in a real Chromium.
+    beforeEach(() => {
+      vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('offers the brew command instead of a restart', async () => {
+      render(UpdateBanner)
+
+      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
+
+      await waitFor(() => {
+        expect(screen.getByText(/Version 1\.2\.3 is available/)).toBeInTheDocument()
+        expect(screen.getByText('brew upgrade --cask pago/simpleedit/simpleedit')).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('button', { name: 'Restart & Update' })).not.toBeInTheDocument()
+    })
+
+    it('copies the command and confirms it', async () => {
+      render(UpdateBanner)
+      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
+      await waitFor(() => copyButton())
+
+      await fireEvent.click(copyButton())
+
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('brew upgrade --cask pago/simpleedit/simpleedit')
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+      )
+    })
+
+    // The command is spelled out in the banner, so a denied clipboard is not
+    // worth turning the banner red over.
+    it('survives a rejected clipboard write', async () => {
+      vi.mocked(navigator.clipboard.writeText).mockRejectedValue(new Error('denied'))
+      render(UpdateBanner)
+      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
+      await waitFor(() => copyButton())
+
+      await fireEvent.click(copyButton())
+
+      await waitFor(() => expect(copyButton()).toBeInTheDocument())
+      expect(screen.queryByText(/could not be/)).not.toBeInTheDocument()
+    })
+
+    // A brew-managed copy never attempts an install, so there is no failed
+    // install to report — the banner must keep pointing at brew.
+    it('keeps the brew command in place if a stray error arrives', async () => {
+      render(UpdateBanner)
+      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
+      await waitFor(() => copyButton())
+
+      emit('update:error', { message: 'signature did not pass validation', phase: 'prepare' })
+
+      await waitFor(() => expect(copyButton()).toBeInTheDocument())
+      expect(screen.queryByText(/could not be prepared/)).not.toBeInTheDocument()
+    })
+  })
+
   it('announces state changes to assistive tech', async () => {
     render(UpdateBanner)
     emit('update:downloaded', { version: '1.2.3' })

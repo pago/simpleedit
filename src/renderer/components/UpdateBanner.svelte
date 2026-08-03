@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { BREW_UPGRADE_COMMAND } from '../../shared/ipc-types'
 
   const RELEASES_URL = 'https://github.com/pago/simpleedit/releases/latest'
 
   // A successful install quits the app, so the invoke never resolves. If we're
   // still alive after this long, the restart didn't take.
   const INSTALL_TIMEOUT_MS = 10_000
+  const COPIED_FEEDBACK_MS = 2_000
 
   let updateVersion = $state<string | null>(null)
   let downloaded = $state(false)
@@ -13,8 +15,11 @@
   let error = $state<string | null>(null)
   let errorPhase = $state<'prepare' | 'install'>('install')
   let dismissed = $state(false)
+  let homebrew = $state(false)
+  let copied = $state(false)
 
   let installTimer: ReturnType<typeof setTimeout> | undefined
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined
 
   function fail(message: string, phase: 'prepare' | 'install'): void {
     clearTimeout(installTimer)
@@ -26,9 +31,11 @@
   onMount(() => {
     const offAvailable = window.api.on('update:available', (info) => {
       updateVersion = info.version
+      homebrew = info.managedByHomebrew === true
     })
     const offDownloaded = window.api.on('update:downloaded', (info) => {
       updateVersion = info.version
+      homebrew = info.managedByHomebrew === true
       downloaded = true
       // A stage that lands after a reported failure (or after our staging
       // timeout gave up on it) makes the update installable again.
@@ -44,8 +51,21 @@
       offDownloaded()
       offError()
       clearTimeout(installTimer)
+      clearTimeout(copiedTimer)
     }
   })
+
+  async function copyUpgradeCommand() {
+    try {
+      await navigator.clipboard.writeText(BREW_UPGRADE_COMMAND)
+      copied = true
+      clearTimeout(copiedTimer)
+      copiedTimer = setTimeout(() => (copied = false), COPIED_FEEDBACK_MS)
+    } catch {
+      // The command is spelled out in the banner, so a denied clipboard just
+      // means the user selects it by hand — nothing worth an error state.
+    }
+  }
 
   async function install() {
     error = null
@@ -75,11 +95,23 @@
   <!-- pl-[78px] clears the macOS traffic lights, which float over this banner
        because it renders above the title bar. -->
   <div
-    class="flex min-h-9 flex-none items-center gap-2 border-b py-1.5 pr-3 pl-[78px] text-xs {error
+    class="flex min-h-9 flex-none items-center gap-2 border-b py-1.5 pr-3 pl-[78px] text-xs {error &&
+    !homebrew
       ? 'border-rose-800 bg-rose-950 text-rose-200'
       : 'border-emerald-800 bg-emerald-950 text-emerald-200'}"
   >
-    {#if error}
+    <!-- Homebrew wins over `error`: a brew-managed copy never attempts an
+         install, so there is no failed install to report on. -->
+    {#if homebrew}
+      <span role="status" aria-live="polite">
+        Version {updateVersion} is available. Update with
+        <code class="rounded bg-emerald-900 px-1 py-0.5">{BREW_UPGRADE_COMMAND}</code>
+      </span>
+      <button
+        class="rounded bg-emerald-700 px-2 py-0.5 text-white hover:bg-emerald-600"
+        onclick={copyUpgradeCommand}
+      >{copied ? 'Copied' : 'Copy'}</button>
+    {:else if error}
       <span role="alert"
         >Update {updateVersion} could not be {errorPhase === 'prepare'
           ? 'prepared'

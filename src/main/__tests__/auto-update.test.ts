@@ -11,7 +11,14 @@ const updater = Object.assign(new EventEmitter(), {
   checkForUpdates: vi.fn().mockResolvedValue(null),
   quitAndInstall: vi.fn()
 })
-const electronApp = { isPackaged: true }
+const electronApp = { isPackaged: true, getVersion: () => '1.0.0' }
+
+// Paths that exist for the fs mock — a Caskroom entry marks a brew-managed copy.
+let existingPaths: string[] = []
+
+vi.mock('node:fs', () => ({
+  existsSync: (path: string) => existingPaths.includes(path)
+}))
 
 vi.mock('electron', () => ({
   app: electronApp,
@@ -51,9 +58,12 @@ beforeEach(() => {
   vi.useFakeTimers()
   sent.length = 0
   handlers.clear()
+  existingPaths = []
   squirrel.removeAllListeners()
   updater.removeAllListeners()
   updater.quitAndInstall.mockClear()
+  updater.autoDownload = false
+  updater.autoInstallOnAppQuit = false
   electronApp.isPackaged = true
 })
 
@@ -194,6 +204,84 @@ describe('initAutoUpdater on other platforms', () => {
     updater.emit('update-downloaded', { version: '2.0.0' })
 
     expect(sent.at(-1)?.channel).toBe('update:downloaded')
+    expect(install()).toEqual({ ok: true })
+  })
+})
+
+// A cask install is replaced by `brew upgrade`, and electron-updater could not
+// replace it anyway: Squirrel rejects the ad-hoc signature.
+describe('initAutoUpdater on a Homebrew install', () => {
+  const ARM_CASKROOM = '/opt/homebrew/Caskroom/simpleedit/1.0.0'
+  const INTEL_CASKROOM = '/usr/local/Caskroom/simpleedit/1.0.0'
+
+  it('does not download an update it cannot stage', async () => {
+    existingPaths = [ARM_CASKROOM]
+
+    await initOn('darwin')
+
+    expect(updater.autoDownload).toBe(false)
+    expect(updater.autoInstallOnAppQuit).toBe(false)
+  })
+
+  it('flags the update so the banner can offer the brew command', async () => {
+    existingPaths = [ARM_CASKROOM]
+    await initOn('darwin')
+
+    updater.emit('update-available', { version: '2.0.0' })
+
+    expect(sent.at(-1)).toEqual({
+      channel: 'update:available',
+      data: { version: '2.0.0', releaseNotes: undefined, managedByHomebrew: true }
+    })
+  })
+
+  it('points a stray install request at brew instead of restarting', async () => {
+    existingPaths = [ARM_CASKROOM]
+    await initOn('darwin')
+
+    expect(install()).toEqual({
+      ok: false,
+      error: 'Run `brew upgrade --cask pago/simpleedit/simpleedit` to update this copy.'
+    })
+    expect(updater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
+  it('recognises the Intel Homebrew prefix too', async () => {
+    existingPaths = [INTEL_CASKROOM]
+    await initOn('darwin')
+
+    expect(updater.autoDownload).toBe(false)
+  })
+
+  // Matching the running version is what stops a stale Caskroom entry — left by
+  // a cask install the user has since replaced by hand — from disabling the
+  // in-app updater for a copy brew no longer owns.
+  it('ignores a Caskroom entry for a different version', async () => {
+    existingPaths = ['/opt/homebrew/Caskroom/simpleedit/0.9.0']
+    await initOn('darwin')
+
+    updater.emit('update-available', { version: '2.0.0' })
+
+    expect(updater.autoDownload).toBe(true)
+    expect(sent.at(-1)?.data).not.toMatchObject({ managedByHomebrew: true })
+  })
+
+  // Otherwise a developer with the cask installed at the version in package.json
+  // would see `pnpm dev` and the e2e suite take the Homebrew path.
+  it('ignores the Caskroom for an unpackaged build', async () => {
+    existingPaths = [ARM_CASKROOM]
+    electronApp.isPackaged = false
+    await initOn('darwin')
+
+    expect(updater.autoDownload).toBe(true)
+    expect(install().error).toMatch(/packaged build/)
+  })
+
+  it('never treats a non-macOS install as Homebrew-managed', async () => {
+    existingPaths = [ARM_CASKROOM, INTEL_CASKROOM]
+    await initOn('linux')
+
+    expect(updater.autoDownload).toBe(true)
     expect(install()).toEqual({ ok: true })
   })
 })
