@@ -1,5 +1,44 @@
 # simpleedit
 
+## 0.19.0
+
+### Minor Changes
+
+- [#162](https://github.com/pago/simpleedit/pull/162) [`cccfd26`](https://github.com/pago/simpleedit/commit/cccfd2666c8a5a8f840b733da31ca758184512a2) Thanks [@pago](https://github.com/pago)! - Install and update SimpleEdit on macOS with Homebrew: `brew install --cask pago/simpleedit/simpleedit`. The cask clears the download quarantine flag, so there is no Gatekeeper detour on first launch, and `homebrew.yml` publishes each released version to the tap automatically.
+
+  A Homebrew-installed copy can't be replaced by the in-app updater — Squirrel rejects the ad-hoc signature — so it no longer tries. The update banner now recognises a Homebrew install and offers the `brew upgrade` command instead of a restart button that could never work.
+
+- [#163](https://github.com/pago/simpleedit/pull/163) [`fe9aad6`](https://github.com/pago/simpleedit/commit/fe9aad604cccda12b44b7f4e114bbb06fd332bcf) Thanks [@pago](https://github.com/pago)! - Homebrew installs can now update themselves. The update banner offers **Update & Restart**, which quits SimpleEdit, runs `brew upgrade`, and reopens it — the first working one-click update on macOS, where Squirrel's signature check has always rejected the ad-hoc signed bundle.
+
+  The upgrade runs in a detached helper rather than as a child process, which matters because SimpleEdit is a terminal. A `brew upgrade` started from inside SimpleEdit is a descendant of the bundle being replaced, so quitting the app would kill the upgrade midway — after Homebrew moved the old bundle aside and before the new one was in place. The helper instead waits for the app to exit, verifies no instance was reopened, then upgrades and relaunches.
+
+  Because it runs with no window open, a failed background upgrade is reported on the next launch, with a button to open the helper's log.
+
+- [#161](https://github.com/pago/simpleedit/pull/161) [`9d19e4a`](https://github.com/pago/simpleedit/commit/9d19e4a96f9a69bb97b0fabae937112a617f5a49) Thanks [@pago](https://github.com/pago)! - Offer Opus 5 (`claude-opus-5`) instead of Opus 4.8 in the Claude model picker.
+  Stored preferences pointing at the retired `claude-opus-4-8` are remapped to
+  Opus 5 on read, so a saved default keeps working instead of rendering blank in
+  Settings.
+
+- [#159](https://github.com/pago/simpleedit/pull/159) [`fd2930c`](https://github.com/pago/simpleedit/commit/fd2930ce5fae941481f7a1438f0a183a9e1faa7a) Thanks [@pago](https://github.com/pago)! - Add session spawn & hand-off — one primitive surfaced as three actions for escaping a bloated agent context:
+
+  - **`spawn_session` MCP tool** — an agent can start a fresh primary Claude session seeded with a brief, to hand off (`target: 'replace'`) or fan out (`target: 'new-pane'`) work. Fire-and-forget; inherits the caller's model/worktree unless overridden.
+  - **Hand off…** — a sidebar action that assembles an editable brief (the session's goal, a changed-file summary, touched repos, and PLAN/PR pointers — never file contents) and resets the session in place onto a clean context.
+  - **Fork** — the old "Fork into worktree" is now an in-place full-context fork: it branches the conversation into a fresh session paired with the origin, with no JSONL copy or worktree targeting. The worktree-fork machinery (placeholder state, worktree picker, JSONL copy) is removed.
+
+  The session's seed prompt is now persisted on the session record (and across restarts) so hand-off can recover the goal without re-reading the transcript.
+
+### Patch Changes
+
+- [#161](https://github.com/pago/simpleedit/pull/161) [`1b5e292`](https://github.com/pago/simpleedit/commit/1b5e292c287d848ddc930ac4bb88dcfddf42d4d3) Thanks [@pago](https://github.com/pago)! - Fix the update banner's dead "Restart & Update" button on macOS. electron-updater
+  reports `update-downloaded` as soon as its local proxy is listening, before
+  Squirrel has fetched and signature-checked the bundle, so the banner offered a
+  restart that silently waited forever for a staging event that never arrived
+  (ad-hoc signed builds fail Squirrel's signature check). The banner now waits for
+  Squirrel to actually stage the update, reports updater failures — worded by which
+  step failed, and ignoring routine check failures — with a manual download link,
+  and always gives feedback on a click. Also pad the banner clear of the macOS
+  traffic lights, which float over it.
+
 ## 0.18.1
 
 ### Patch Changes
