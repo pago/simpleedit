@@ -627,15 +627,27 @@ export interface UpdateInfo {
   releaseNotes?: string
 }
 
+export interface UpdateInstallResult {
+  ok: boolean
+  error?: string
+}
+
+/**
+ * Which step failed. The renderer words the banner from this and ignores
+ * `check` failures outright — a failed poll for updates is not something the
+ * user asked for, so it must not claim an update "could not be installed".
+ */
+export type UpdateErrorPhase = 'check' | 'prepare' | 'install'
+
 export interface UpdateInvokeMap {
   'update:check': { args: []; result: void }
-  'update:install': { args: []; result: void }
+  'update:install': { args: []; result: UpdateInstallResult }
 }
 
 export interface UpdateEventMap {
   'update:available': UpdateInfo
   'update:downloaded': UpdateInfo
-  'update:error': { message: string }
+  'update:error': { message: string; phase: UpdateErrorPhase }
 }
 
 // ── Aggregate maps for type-safe IPC helpers ──────────────
