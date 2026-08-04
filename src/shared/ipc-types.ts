@@ -580,8 +580,18 @@ export interface AgentPanelEventMap {
   'agent-panel:open': {
     spec: Spec
     title: string
+    /**
+     * Worktree the panel's actions were validated against. The renderer routes
+     * panels purely by `sourceTerminalId` and takes its git context from the
+     * owning session, so this is currently informational on this side.
+     */
     worktreePath: string
     sourceTerminalId: string
+    /**
+     * Agent-supplied panel identity. Distinct ids from one session coexist as
+     * separate tabs; absent means replace-the-session's-panel-in-place.
+     */
+    panelId?: string
   }
   /**
    * `open_worktree` MCP tool: repoint the calling session's workspace at a

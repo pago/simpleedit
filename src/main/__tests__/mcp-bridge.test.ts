@@ -605,6 +605,135 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
     expect(res.status).toBe(400)
     expect(res.body.error).toContain('No worktree matches')
   })
+
+  describe('show_panel', () => {
+    const SPEC = {
+      root: 'r',
+      elements: { r: { type: 'ProseBlock', props: { content: 'hi' } } },
+    }
+
+    it('prefers the agent-supplied worktreePath over the frozen terminal mapping', async () => {
+      // The terminal→worktree map is written once at session start, so trusting
+      // it first silently rendered cross-repo panels against the wrong worktree.
+      attachToTerminal('term-panel', '/repo/main', wc as never)
+      try {
+        const res = await post({
+          tool: 'show_panel',
+          terminalId: 'term-panel',
+          args: { worktreePath: '/repo/feature', spec: SPEC },
+        })
+        expect(res.status).toBe(200)
+        expect(wc.send).toHaveBeenCalledWith(
+          'agent-panel:open',
+          expect.objectContaining({ worktreePath: '/repo/feature', sourceTerminalId: 'term-panel' }),
+        )
+      } finally {
+        detachFromTerminal('term-panel')
+      }
+    })
+
+    it('falls back to the terminal mapping when no worktreePath is given', async () => {
+      attachToTerminal('term-panel', '/repo/main', wc as never)
+      try {
+        const res = await post({ tool: 'show_panel', terminalId: 'term-panel', args: { spec: SPEC } })
+        expect(res.status).toBe(200)
+        expect(wc.send).toHaveBeenCalledWith(
+          'agent-panel:open',
+          expect.objectContaining({ worktreePath: '/repo/main' }),
+        )
+      } finally {
+        detachFromTerminal('term-panel')
+      }
+    })
+
+    it('rejects a worktreePath outside the window union and returns the available list', async () => {
+      const res = await post({
+        tool: 'show_panel',
+        terminalId: 'term-1',
+        args: { worktreePath: '/evil/path', spec: SPEC },
+      })
+      expect(res.status).toBe(400)
+      expect(res.body.error).toContain('not a worktree')
+      expect(res.body.worktrees).toEqual(['/repo/main', '/repo/feature'])
+      expect(wc.send).not.toHaveBeenCalled()
+    })
+
+    it('forwards an agent-supplied panelId so panels can coexist', async () => {
+      const res = await post({
+        tool: 'show_panel',
+        terminalId: 'term-1',
+        args: { worktreePath: '/repo/main', panelId: 'tour-1', spec: SPEC },
+      })
+      expect(res.status).toBe(200)
+      expect(wc.send).toHaveBeenCalledWith(
+        'agent-panel:open',
+        expect.objectContaining({ panelId: 'tour-1' }),
+      )
+    })
+
+    it('omits panelId entirely when absent (replace-in-place stays the default)', async () => {
+      await post({ tool: 'show_panel', terminalId: 'term-1', args: { worktreePath: '/repo/main', spec: SPEC } })
+      const payload = wc.send.mock.calls.at(-1)![1] as Record<string, unknown>
+      expect('panelId' in payload).toBe(false)
+    })
+
+    it('rejects a panelId that would not survive as a tab id', async () => {
+      const res = await post({
+        tool: 'show_panel',
+        terminalId: 'term-1',
+        args: { worktreePath: '/repo/main', panelId: 'tour/../../etc', spec: SPEC },
+      })
+      expect(res.status).toBe(400)
+      expect(res.body.error).toContain('panelId')
+    })
+
+    it('rejects an action naming a worktree outside the union', async () => {
+      const res = await post({
+        tool: 'show_panel',
+        terminalId: 'term-1',
+        args: {
+          worktreePath: '/repo/main',
+          spec: {
+            root: 'b',
+            elements: {
+              b: {
+                type: 'ActionButton',
+                props: {
+                  label: 'open',
+                  action: { type: 'open_file', worktree: '/evil/repo', path: 'a.ts' },
+                },
+              },
+            },
+          },
+        },
+      })
+      expect(res.status).toBe(400)
+      expect(res.body.issues).toBeDefined()
+    })
+
+    it('accepts an action scoped to another worktree of the window', async () => {
+      const res = await post({
+        tool: 'show_panel',
+        terminalId: 'term-1',
+        args: {
+          worktreePath: '/repo/main',
+          spec: {
+            root: 'b',
+            elements: {
+              b: {
+                type: 'ActionButton',
+                props: {
+                  label: 'open',
+                  action: { type: 'open_file', worktree: '/repo/feature', path: 'a.ts' },
+                },
+              },
+            },
+          },
+        },
+      })
+      expect(res.status).toBe(200)
+    })
+  })
 })
 
 // These tests spawn the real built MCP server (out/mcp-server/index.mjs) and

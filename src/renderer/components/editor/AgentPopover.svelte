@@ -54,6 +54,9 @@
       const file = ctx.finding.file.split('/').at(-1) ?? ctx.finding.file
       return `${file} · ${ctx.finding.label}`
     }
+    if (ctx.kind === 'block') {
+      return `panel · ${ctx.blockType} · ${ctx.blockId}`
+    }
     const file = ctx.filePath.split('/').at(-1) ?? ctx.filePath
     const lines = `lines ${ctx.lineRange[0]}-${ctx.lineRange[1]}`
     if (ctx.kind === 'editor') {

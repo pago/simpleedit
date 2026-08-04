@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { validateSpec } from '../gen-ui-validate'
+import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { validateSpec, validateSpecActions } from '../gen-ui-validate'
+import type { Spec } from '../../shared/gen-ui-catalog'
 
 describe('validateSpec — schema layer', () => {
   it('accepts a minimal valid spec rooted at a known primitive', () => {
@@ -149,5 +153,197 @@ describe('validateSpec — schema layer', () => {
     expect(validateSpec(null).ok).toBe(false)
     expect(validateSpec({ root: 'r' }).ok).toBe(false)
     expect(validateSpec({ elements: {} }).ok).toBe(false)
+  })
+})
+
+const SAMPLE_DIFF = [
+  'diff --git a/src/client.ts b/src/client.ts',
+  'index 1111111..2222222 100644',
+  '--- a/src/client.ts',
+  '+++ b/src/client.ts',
+  '@@ -1,2 +1,3 @@',
+  ' const a = 1',
+  '+const b = 2',
+].join('\n')
+
+describe('validateSpec — DiffBlock', () => {
+  it('accepts a DiffBlock carrying diff text', () => {
+    const result = validateSpec({
+      root: 'd',
+      elements: { d: { type: 'DiffBlock', props: { diff: SAMPLE_DIFF } } },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('accepts title, language override and per-file actions', () => {
+    const result = validateSpec({
+      root: 'd',
+      elements: {
+        d: {
+          type: 'DiffBlock',
+          props: {
+            diff: SAMPLE_DIFF,
+            title: 'Step 1',
+            language: 'shell',
+            fileActions: [
+              {
+                path: 'src/client.ts',
+                label: 'open',
+                action: { type: 'open_file', path: 'src/client.ts', line: 2 },
+              },
+            ],
+          },
+        },
+      },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects a DiffBlock with no diff content', () => {
+    const result = validateSpec({
+      root: 'd',
+      elements: { d: { type: 'DiffBlock', props: { diff: '' } } },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.issues.some((i) => i.path === 'elements.d.props.diff')).toBe(true)
+    }
+  })
+
+  it('rejects a fileActions entry whose action is not a known ActionRef', () => {
+    const result = validateSpec({
+      root: 'd',
+      elements: {
+        d: {
+          type: 'DiffBlock',
+          props: {
+            diff: SAMPLE_DIFF,
+            fileActions: [{ path: 'src/client.ts', action: { type: 'rm_rf', path: '/' } }],
+          },
+        },
+      },
+    })
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe('validateSpecActions — per-action worktree', () => {
+  // These paths only need to resolve, not exist — open_file gating is pure path math.
+  const MAIN = '/repo/main'
+  const OTHER = '/repo/feature'
+  const UNION = [MAIN, OTHER]
+
+  function specWithAction(action: Record<string, unknown>): Spec {
+    return {
+      root: 'b',
+      elements: { b: { type: 'ActionButton', props: { label: 'go', action } } },
+    }
+  }
+
+  it('validates open_file against the panel worktree when no action worktree is given', async () => {
+    const inside = await validateSpecActions(
+      specWithAction({ type: 'open_file', path: 'src/a.ts' }),
+      MAIN,
+      UNION,
+    )
+    expect(inside).toEqual([])
+
+    const outside = await validateSpecActions(
+      specWithAction({ type: 'open_file', path: '../../etc/passwd' }),
+      MAIN,
+      UNION,
+    )
+    expect(outside).toHaveLength(1)
+    expect(outside[0].message).toContain('outside the active worktree')
+  })
+
+  it('accepts an action worktree that is a member of the window union', async () => {
+    const issues = await validateSpecActions(
+      specWithAction({ type: 'open_file', worktree: OTHER, path: 'src/b.ts' }),
+      MAIN,
+      UNION,
+    )
+    expect(issues).toEqual([])
+  })
+
+  it('rejects an action worktree outside the window union', async () => {
+    const issues = await validateSpecActions(
+      specWithAction({ type: 'open_file', worktree: '/somewhere/else', path: 'src/b.ts' }),
+      MAIN,
+      UNION,
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0].path).toBe('elements.b.props.action.worktree')
+    expect(issues[0].message).toContain('not a worktree this window has registered')
+  })
+
+  it('rejects a path escaping the action worktree even when the worktree is allowed', async () => {
+    const issues = await validateSpecActions(
+      specWithAction({ type: 'open_file', worktree: OTHER, path: '../main/secret.ts' }),
+      MAIN,
+      UNION,
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0].message).toContain(`outside worktree "${OTHER}"`)
+  })
+
+  it('does not enforce union membership when the caller supplies no union', async () => {
+    const issues = await validateSpecActions(
+      specWithAction({ type: 'open_file', worktree: OTHER, path: 'src/b.ts' }),
+      MAIN,
+    )
+    expect(issues).toEqual([])
+  })
+
+  it('reports an unreachable show_diff commit against the worktree the action named', async () => {
+    // Real directories that are not git repos: `cat-file` fails, so every hash
+    // is unreachable — enough to prove the commit was checked in the action's
+    // own worktree rather than the panel's.
+    const root = mkdtempSync(join(tmpdir(), 'gen-ui-validate-'))
+    const panel = join(root, 'panel')
+    const named = join(root, 'named')
+    mkdirSync(panel)
+    mkdirSync(named)
+    try {
+      const issues = await validateSpecActions(
+        specWithAction({ type: 'show_diff', worktree: named, commitHash: 'deadbeef' }),
+        panel,
+        [panel, named],
+      )
+      expect(issues).toHaveLength(1)
+      expect(issues[0].message).toContain(named)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('skips the git check entirely when the named worktree is rejected', async () => {
+    const issues = await validateSpecActions(
+      specWithAction({ type: 'show_diff', worktree: '/not/a/worktree', commitHash: 'deadbeef' }),
+      MAIN,
+      UNION,
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0].message).toContain('not a worktree this window has registered')
+  })
+
+  it('finds actions nested inside DiffBlock fileActions', async () => {
+    const spec: Spec = {
+      root: 'd',
+      elements: {
+        d: {
+          type: 'DiffBlock',
+          props: {
+            diff: SAMPLE_DIFF,
+            fileActions: [
+              { path: 'src/client.ts', action: { type: 'open_file', worktree: '/nope', path: 'src/client.ts' } },
+            ],
+          },
+        },
+      },
+    }
+    const issues = await validateSpecActions(spec, MAIN, UNION)
+    expect(issues).toHaveLength(1)
+    expect(issues[0].path).toContain('fileActions')
   })
 })

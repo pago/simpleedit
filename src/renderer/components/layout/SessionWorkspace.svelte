@@ -96,15 +96,18 @@
     return unsub
   })
 
-  // Agent-composed panel from show_panel MCP call. One panel per source
-  // session — re-opens replace the existing tab in place via tabsStore's
-  // identity-based reuse.
+  // Agent-composed panel from show_panel MCP call. Panels are keyed by the
+  // agent's `panelId` so a tour and a decision panel from the same session
+  // coexist as separate tabs; without one, the session gets a single panel that
+  // re-opens replace in place via tabsStore's identity-based reuse.
   $effect(() => {
     const sid = sessionId
     const unsub = window.api.on('agent-panel:open', (data) => {
       if (data.sourceTerminalId !== sid) return
 
-      const composedId = `panel-${data.sourceTerminalId}`
+      const composedId = data.panelId
+        ? `panel-${data.sourceTerminalId}-${data.panelId}`
+        : `panel-${data.sourceTerminalId}`
       const tabId = tabIdFor({ kind: 'composed', id: composedId })
       const tab: ComposedTab = {
         kind: 'composed',
