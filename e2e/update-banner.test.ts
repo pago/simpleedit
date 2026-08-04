@@ -78,6 +78,10 @@ test('a background upgrade failure surfaces on the next launch', async ({ app, w
 
   await expect(window.getByText(/could not be installed: brew exited with status 17/)).toBeVisible()
   await expect(window.getByRole('button', { name: 'Show log' })).toBeVisible()
+  // Nothing else clears this error — a Homebrew copy never downloads, so
+  // `update:downloaded` never arrives — which makes the retry the only way back
+  // to an installable banner without restarting the app.
+  await expect(window.getByRole('button', { name: 'Try again' })).toBeVisible()
   // The command stays available as the manual fallback.
   await expect(window.getByText('brew upgrade --cask pago/simpleedit/simpleedit')).toBeVisible()
 })

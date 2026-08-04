@@ -52,6 +52,15 @@
 
   onMount(() => {
     const offAvailable = window.api.on('update:available', (info) => {
+      // A failure belongs to the version it was reported for. Once a different
+      // one is announced the old message would be rendered against the new
+      // version — and on the Homebrew path it would also keep the error branch
+      // up, hiding the button that offers the new update.
+      if (info.version !== updateVersion) {
+        clearTimeout(installTimer)
+        error = null
+        hasLog = false
+      }
       updateVersion = info.version
       homebrew = info.managedByHomebrew === true
     })
@@ -132,6 +141,14 @@
   >
     {#if homebrew && error}
       <span role="alert">Update {updateVersion} could not be installed: {error}</span>
+      <!-- Without this the Homebrew path has no way out of the error state: the
+           "Update & Restart" button lives in the branch below, and the event that
+           clears the error elsewhere (`update:downloaded`) never fires for a
+           Homebrew copy, because `autoDownload` is off for it. -->
+      <button
+        class="rounded bg-rose-700 px-2 py-0.5 text-white hover:bg-rose-600"
+        onclick={brewUpgrade}
+      >Try again</button>
       {#if hasLog}
         <button
           class="rounded bg-rose-700 px-2 py-0.5 text-white hover:bg-rose-600"

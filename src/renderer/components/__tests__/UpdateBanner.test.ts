@@ -251,6 +251,63 @@ describe('UpdateBanner', () => {
       expect(window.api.invoke).toHaveBeenCalledWith('update:open-log')
     })
 
+    // Nothing else can clear this error: `update:downloaded` never fires for a
+    // Homebrew copy (autoDownload is off), so without a retry here the banner is
+    // stuck reporting the failure until the app is restarted.
+    it('lets the user retry a failed upgrade', async () => {
+      vi.mocked(window.api.invoke).mockResolvedValue({ ok: false, error: 'Could not find brew' })
+      await announceUpdate()
+      await fireEvent.click(upgradeButton())
+      await waitFor(() => expect(screen.getByText(/could not be installed/)).toBeInTheDocument())
+
+      vi.mocked(window.api.invoke).mockReturnValue(new Promise(() => {}))
+      await fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+      await waitFor(() =>
+        expect(screen.getByText(/Quitting to update via Homebrew/)).toBeInTheDocument()
+      )
+      expect(screen.queryByText(/could not be installed/)).not.toBeInTheDocument()
+    })
+
+    // The launch-time report is the case that would otherwise dead-end: it raises
+    // the error before the check that finds the update even runs.
+    it('can retry an upgrade that failed while the app was closed', async () => {
+      render(UpdateBanner)
+      emit('update:homebrew-failed', { version: '1.2.3', message: 'brew exited with status 17' })
+      await waitFor(() => expect(screen.getByText(/status 17/)).toBeInTheDocument())
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+      expect(window.api.invoke).toHaveBeenCalledWith('update:install')
+    })
+
+    // The failure was about 1.2.3; reporting it against 1.2.4 is just wrong, and
+    // it would bury the button that installs the version now on offer.
+    it('drops a stale failure once a newer version is announced', async () => {
+      render(UpdateBanner)
+      emit('update:homebrew-failed', { version: '1.2.3', message: 'brew exited with status 17' })
+      await waitFor(() => expect(screen.getByText(/status 17/)).toBeInTheDocument())
+
+      emit('update:available', { version: '1.2.4', managedByHomebrew: true })
+
+      await waitFor(() => expect(upgradeButton()).toBeInTheDocument())
+      expect(screen.getByText(/Version 1\.2\.4 is available via Homebrew/)).toBeInTheDocument()
+      expect(screen.queryByText(/status 17/)).not.toBeInTheDocument()
+    })
+
+    // ...but the same version still on offer means the last attempt's failure is
+    // exactly the thing the user needs to see.
+    it('keeps the failure up when the same version is re-announced', async () => {
+      render(UpdateBanner)
+      emit('update:homebrew-failed', { version: '1.2.3', message: 'brew exited with status 17' })
+      await waitFor(() => expect(screen.getByText(/status 17/)).toBeInTheDocument())
+
+      emit('update:available', { version: '1.2.3', managedByHomebrew: true })
+
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Show log' })).toBeInTheDocument())
+      expect(screen.getByText(/status 17/)).toBeInTheDocument()
+    })
+
     // The log button is only meaningful when a helper actually ran and wrote one.
     it('offers no log for an upgrade that never started', async () => {
       vi.mocked(window.api.invoke).mockResolvedValue({ ok: false, error: 'Could not find brew' })
