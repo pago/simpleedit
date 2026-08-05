@@ -11,6 +11,7 @@
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
+  import { providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import {
     projectRoot,
@@ -176,8 +177,7 @@
   function sendToAgent(terminalId: string | 'new', message: string): string | undefined {
     if (terminalId === 'new') {
       const target = session?.target ?? { provider: 'claude' as const }
-      const launchDir = target.provider === 'codex' ? worktreePath : (projectRoot() ?? worktreePath)
-      const id = sessionsStore.createAgent(target, launchDir, worktreePath, {
+      const id = sessionsStore.createAgent(target, projectRoot() ?? worktreePath, worktreePath, {
         initialPrompt: message,
         ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),
       })
@@ -512,7 +512,7 @@
       {/if}
       {#if session.pendingResume}
         <div class="flex h-full flex-col items-center justify-center gap-3 text-zinc-400">
-          <p class="text-xs">{session.provider === 'codex' ? 'Codex' : 'Claude'} session from your last visit</p>
+          <p class="text-xs">{providerLabel(session.provider)} session from your last visit</p>
           <button
             class="rounded border border-orange-500/40 bg-orange-500/10 px-3 py-1 text-xs text-orange-300 hover:bg-orange-500/20"
             onclick={resumeSession}
@@ -525,7 +525,6 @@
         <Terminal
           terminalId={sessionId}
           active={sessionsStore.activeSessionId() === sessionId}
-          isClaude={session.kind !== 'terminal'}
           provider={session.provider}
           ontitlechange={(title) => sessionsStore.applyOscTitle(sessionId, title)}
         />

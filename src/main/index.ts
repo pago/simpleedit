@@ -55,7 +55,7 @@ import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asse
 import { initAutoUpdater } from './auto-update'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
-import { getProvider } from './agents/provider'
+import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels } from './models/codex-catalog'
 import type { PrContext } from '../shared/screenprs'
@@ -484,6 +484,7 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('agent:capabilities', (_event, provider: AgentProviderId) => getProvider(provider).capabilities)
   ipcMain.handle('agent:available', (_event, provider: AgentProviderId) => isExecutableAvailable(provider))
+  ipcMain.handle('agent:providers', () => registeredProviderIds())
 
   // ── Git ─────────────────────────────────────────────────
   ipcMain.handle('git:log', (_event, worktreePath: string, count?: number) => {

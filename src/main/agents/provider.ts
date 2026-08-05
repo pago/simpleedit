@@ -68,3 +68,13 @@ export function getProvider(id: string): AgentProvider {
   }
   return provider
 }
+
+/**
+ * Every provider that has registered itself. The renderer reads this at startup
+ * to discover which agents exist and cache their capabilities, so a new
+ * provider module surfaces in the UI purely by importing it in `pty.ts` — no
+ * renderer-side list to keep in sync.
+ */
+export function registeredProviderIds(): AgentProviderId[] {
+  return [...providers.keys()] as AgentProviderId[]
+}

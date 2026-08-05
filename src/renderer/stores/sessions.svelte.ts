@@ -8,6 +8,7 @@
  * `pty:*` and `agent:*` IPC routes address the same identifier.
  */
 import { untrack } from 'svelte'
+import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
 import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, ReasoningEffort } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
@@ -108,7 +109,12 @@ export interface Session {
    * what happened; only zero-code (graceful) exits auto-close.
    */
   exited?: { exitCode: number }
-  /** Codex hook trust has not produced a precise lifecycle signal yet. */
+  /**
+   * This provider's reporting needs a one-time grant from the user
+   * (`capabilities.reportingSetup === 'user-granted'`) and hasn't reported
+   * yet, so status and tracking are still on coarse PTY signals. Clears as
+   * soon as the first provider-native signal arrives.
+   */
   reportingSetupNeeded?: boolean
   /**
    * The group this session belongs to (a `SessionGroup.id`), or undefined when
@@ -151,14 +157,22 @@ let _pendingFocusId = $state<string | null>(null)
 /** Sessions whose workspace has been mounted — kept alive across switches. */
 let _visitedIds = $state<string[]>([])
 
-let nextClaudeIndex = 1
 let nextAgentsIndex = 1
 let nextTerminalIndex = 1
 
-function defaultLabel(kind: SessionKind): string {
+/**
+ * Per-provider counters so each agent numbers its own sessions ("Claude",
+ * "Claude 2", "Codex", …) rather than sharing one "Claude" sequence.
+ */
+const nextAgentIndex = new Map<string, number>()
+
+function defaultLabel(kind: SessionKind, providerName = 'Claude'): string {
   switch (kind) {
-    case 'agent':
-      return nextClaudeIndex++ === 1 ? 'Claude' : `Claude ${nextClaudeIndex - 1}`
+    case 'agent': {
+      const n = (nextAgentIndex.get(providerName) ?? 0) + 1
+      nextAgentIndex.set(providerName, n)
+      return n === 1 ? providerName : `${providerName} ${n}`
+    }
     case 'agents':
       return nextAgentsIndex++ === 1 ? 'Agents' : `Agents ${nextAgentsIndex - 1}`
     case 'terminal':
@@ -263,24 +277,30 @@ export const sessionsStore = {
   ): string {
     const id = `agent-${target.provider}-${crypto.randomUUID()}`
     const model = opts.model ?? (target.provider === 'claude' ? target.model : undefined)
-    const providerLabel = target.provider === 'codex' ? 'Codex' : 'Claude'
+    const caps = capabilitiesFor(target.provider)
+    const name = providerLabel(target.provider)
+    // The model id, when the target names one — Claude carries a ModelRef,
+    // Codex a bare id.
+    const modelId = target.provider === 'codex' ? target.model : model?.model
+    // `customLabel` means "a human or a model chose this name", nothing more.
+    // Whether a provider's OSC titles may rename a session is a provider
+    // property, decided in `applyOscTitle` when the title actually arrives —
+    // deciding it here would race the async capability fetch.
+    const pinned = !!opts.label || !!modelId
     const newSession: Session = {
       id,
       kind: 'agent',
       provider: target.provider,
       target,
-      // An explicit label (e.g. "review ui-pack#42") or a picked model names the
-      // session and pins the label so OSC titles don't overwrite it; the plain
-      // cloud default keeps "Claude N".
-      label: opts.label ?? (target.provider === 'codex' ? (target.model ?? providerLabel) : (model ? model.model : defaultLabel('agent'))),
-      ...(opts.label || model || target.provider === 'codex' ? { customLabel: true as const } : {}),
+      label: opts.label ?? modelId ?? defaultLabel('agent', name),
+      ...(pinned ? { customLabel: true as const } : {}),
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
       ...(opts.target?.groupId ? { groupId: opts.target.groupId } : {}),
       launchDir,
       worktreePath,
       touchedWorktrees: [worktreePath],
-      ...(target.provider === 'codex' ? { reportingSetupNeeded: true } : {}),
+      ...(caps?.reportingSetup === 'user-granted' ? { reportingSetupNeeded: true } : {}),
     }
     if (opts.target) {
       const at = Math.min(Math.max(opts.target.index, 0), _sessions.length)
@@ -513,6 +533,12 @@ export const sessionsStore = {
   applyOscTitle(id: string, rawTitle: string): void {
     const session = findSession(id)
     if (!session || session.customLabel) return
+    // Some agents put the working directory (plus a spinner) in the OSC title
+    // rather than a conversation name — renaming the session to that on every
+    // turn would be worse than useless. Only providers that explicitly report a
+    // directory title are blocked, so plain terminals keep their shell-set
+    // titles and an unknown provider stays permissive.
+    if (capabilitiesFor(session.provider)?.oscTitle === 'directory') return
     const firstCp = rawTitle.codePointAt(0) ?? 0
     const hasPrefix = firstCp === 0x2733 || (firstCp >= 0x2800 && firstCp <= 0x28ff)
     const label = hasPrefix
@@ -767,7 +793,7 @@ export const sessionsStore = {
     _groups = []
     _pendingFocusId = null
     _visitedIds = []
-    nextClaudeIndex = 1
+    nextAgentIndex.clear()
     nextAgentsIndex = 1
     nextTerminalIndex = 1
   },

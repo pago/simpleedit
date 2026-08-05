@@ -5,6 +5,7 @@
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
   import type { InteractiveTarget } from '../../../shared/ipc-types'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
+  import { capabilitiesFor, providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
@@ -170,7 +171,7 @@
       if (!target) return
       const wt = mainWorktree()
       const root = projectRoot() ?? wt?.path
-      if (root && wt) sessionsStore.createAgent(target, target.provider === 'codex' ? wt.path : root, wt.path, {
+      if (root && wt) sessionsStore.createAgent(target, root, wt.path, {
         ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),
       })
     }
@@ -199,9 +200,12 @@
       } else if (session.kind === 'agents') {
         forkDisabled = true
         forkTooltip = 'Agent View sessions cannot be forked'
+      } else if (!capabilitiesFor(session.provider)?.fork) {
+        forkDisabled = true
+        forkTooltip = `${providerLabel(session.provider)} sessions cannot be forked`
       } else if (!session.providerSessionId) {
         forkDisabled = true
-        forkTooltip = 'Waiting for Claude to initialize…'
+        forkTooltip = `Waiting for ${providerLabel(session.provider)} to initialize…`
       }
       // Full-context fork, in place: branches the conversation into a fresh
       // session paired with this one (no worktree targeting).

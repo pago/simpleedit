@@ -9,6 +9,7 @@
   import { initScreenPrsListeners } from './stores/screenprs.svelte'
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
+  import { initAgentCapabilities } from './stores/agent-capabilities.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
   import { hydrateSession, serializeSession } from './lib/sessionPersistence'
@@ -34,6 +35,9 @@
     const unsubStatus = initAgentStatusListeners()
     const unsubSessions = initSessionListeners()
     const unsubScreenPrs = initScreenPrsListeners()
+    // Cache every provider's capabilities up front: the session store reads
+    // them synchronously when naming and labelling a new session.
+    void initAgentCapabilities()
     void initRepoFromMain()
     window.addEventListener('beforeunload', flushSessionSave)
     return () => {

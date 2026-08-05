@@ -269,8 +269,13 @@ export const claudeProvider: AgentProvider = {
     mcp: true,
     modelOverride: 'env',
     shiftEnter: 'escape-newline',
-    droppedPath: 'shell-escaped',
+    // Claude parses dropped paths by regex and accepts a newline-separated
+    // list — it does NOT want shell escaping, which the descriptor used to say.
+    droppedPath: 'newline-list',
     gracefulShutdown: true,
+    displayName: 'Claude',
+    oscTitle: 'session-label',
+    reportingSetup: 'automatic',
   },
 }
 

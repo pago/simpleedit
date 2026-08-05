@@ -122,6 +122,16 @@ export const codexProvider: AgentProvider = {
     shiftEnter: 'native',
     droppedPath: 'at-reference',
     gracefulShutdown: true,
+    displayName: 'Codex',
+    // Codex's OSC title is the working directory (prefixed with a braille
+    // spinner while busy), not a conversation name — verified against
+    // codex-cli 0.146.0. Letting it through would rename the session to the
+    // directory on every turn.
+    oscTitle: 'directory',
+    // Codex will not run our hooks until the user trusts their command hash
+    // once (and trusts the project directory once). Until then reporting
+    // falls back to coarse PTY signals.
+    reportingSetup: 'user-granted',
   },
 }
 

@@ -176,8 +176,16 @@ export interface AgentInvokeMap {
   'agent:detach': { args: [terminalId: string]; result: void }
   'agent:capabilities': { args: [provider: AgentProviderId]; result: AgentCapabilities }
   'agent:available': { args: [provider: AgentProviderId]; result: boolean }
+  /** Ids of every registered provider, for capability discovery at startup. */
+  'agent:providers': { args: []; result: AgentProviderId[] }
 }
 
+/**
+ * What a provider's agent can do, so the UI adapts without naming providers.
+ * Every renderer branch that would otherwise read `provider === 'codex'`
+ * belongs here instead — that is what lets a new provider (OpenCode, …) drop in
+ * by registering a descriptor rather than by editing components.
+ */
 export interface AgentCapabilities {
   status: 'precise' | 'osc' | 'basic'
   resume: boolean
@@ -185,9 +193,36 @@ export interface AgentCapabilities {
   tracking: 'full' | 'cwd-only' | 'none'
   mcp: boolean
   modelOverride: 'env' | 'native' | 'none'
+  /**
+   * How Shift+Enter must reach the agent. `escape-newline` needs the CSI-u
+   * sequence written to the PTY (the agent would otherwise submit the turn);
+   * `native` means the agent's own TUI already handles it, so don't intercept.
+   */
   shiftEnter: 'native' | 'escape-newline'
-  droppedPath: 'at-reference' | 'shell-escaped'
+  /**
+   * How dropped file paths should be formatted for the agent's prompt.
+   * `at-reference` = `@path` space-joined; `newline-list` = newline-joined
+   * (parsed by regex); `shell-escaped` = quoted and space-joined, for a plain
+   * shell where a literal newline would submit.
+   */
+  droppedPath: 'at-reference' | 'newline-list' | 'shell-escaped'
   gracefulShutdown: boolean
+  /** Human-facing provider name for labels, tooltips and empty states. */
+  displayName: string
+  /**
+   * What the agent puts in the terminal's OSC title. `session-label` means it's
+   * a meaningful name we can show as the session's label (Claude writes the
+   * conversation name); `directory` means it's just the cwd — possibly with a
+   * spinner glyph — so it must NOT overwrite the session label.
+   */
+  oscTitle: 'session-label' | 'directory'
+  /**
+   * Whether lifecycle reporting works as soon as we launch, or needs a one-time
+   * grant from the user. Codex is `user-granted`: it refuses to run our hooks
+   * until their command hash is trusted, so status, session identity and cwd
+   * tracking stay degraded until the user allows them once.
+   */
+  reportingSetup: 'automatic' | 'user-granted'
 }
 
 export interface AgentEventMap {
