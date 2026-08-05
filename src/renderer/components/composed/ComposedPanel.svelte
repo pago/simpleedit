@@ -6,6 +6,7 @@
   import { tabsStore, tabIdFor, type FileTab } from '../../stores/tabsStore.svelte'
   import type { AgentContext } from '../../lib/agent-message'
   import { stampBlockIds, describeBlock } from './block-context'
+  import { focusBlock } from './focus-block'
 
   interface Props {
     spec: Spec
@@ -98,11 +99,26 @@
     onclose?.()
   }
 
-  // set_state is handled by json-render's StateProvider directly via the
-  // panel's local $bindState scope; we pass a no-op here as the host hook
-  // because the framework already owns that path.
-  function handleSetState(_params: Record<string, unknown>): void {
-    /* json-render owns state mutation through the provider context. */
+  /**
+   * The one action that resolves inside the panel rather than across a process
+   * boundary — main already rejected any spec whose target is not an element
+   * here, so a miss means the block is present but hidden.
+   */
+  async function handleFocusBlock(params: Record<string, unknown>): Promise<void> {
+    const blockId = typeof params['blockId'] === 'string' ? params['blockId'] : ''
+    if (!blockId || !panelEl) return
+    const landed = await focusBlock(panelEl, spec, blockId)
+    if (!landed) {
+      console.warn(`[gen-ui] focus_block target "${blockId}" is not rendered; nothing to focus.`)
+    }
+  }
+
+  // Inputs bound with `$bindState` write to the StateProvider on their own, so
+  // this hook only covers an explicit `set_state` ActionRef. Reaching the store
+  // means being *inside* the provider, which this component is not — so the
+  // action stays a no-op for now rather than pretending to have mutated state.
+  function handleSetState(params: Record<string, unknown>): void {
+    console.warn('[gen-ui] set_state is not wired to the panel store yet; ignoring.', params)
   }
 
   // -- "Discuss this" on a selection ----------------------------------------
@@ -180,6 +196,7 @@
     show_diff: handleShowDiff,
     dismiss_panel: handleDismiss,
     set_state: handleSetState,
+    focus_block: handleFocusBlock,
   }
 </script>
 
@@ -191,7 +208,10 @@
   onkeyup={updateSelection}
   onscroll={() => (pill = null)}
 >
-  <JsonUIProvider state={initialState} actions={actionHandlers}>
+  <!-- The prop names matter: JsonUIProvider takes `initialState`/`handlers`.
+       Passing `state`/`actions` type-checks (Svelte lets extra props through)
+       and silently leaves every action unhandled — "No handler registered". -->
+  <JsonUIProvider {initialState} handlers={actionHandlers}>
     <Renderer spec={renderSpec} {registry} />
   </JsonUIProvider>
 </div>

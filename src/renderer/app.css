@@ -10,6 +10,44 @@
   border-left: 2px solid rgba(234, 179, 8, 0.5);
 }
 
+/* Where a composed panel's `focus_block` landed. Outline rather than border so
+   the jump costs no layout shift in a panel the reader is scrolling. */
+.panel-block-flash {
+  outline: 2px solid rgba(249, 115, 22, 0.7);
+  outline-offset: 2px;
+  animation: panel-block-flash 1.4s ease-out;
+}
+
+@keyframes panel-block-flash {
+  from {
+    background-color: rgba(249, 115, 22, 0.16);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-block-flash {
+    animation: none;
+  }
+}
+
+/* A Callout body renders markdown, but the typography plugin would repaint it
+   in prose's own palette and size — both belong to the callout variant. */
+.callout-prose {
+  font-size: 0.75rem;
+  --tw-prose-invert-body: currentColor;
+  --tw-prose-invert-headings: currentColor;
+  --tw-prose-invert-bold: currentColor;
+  --tw-prose-invert-links: currentColor;
+  --tw-prose-invert-code: currentColor;
+  --tw-prose-invert-bullets: currentColor;
+  --tw-prose-invert-counters: currentColor;
+  --tw-prose-invert-quotes: currentColor;
+  --tw-prose-invert-quote-borders: currentColor;
+}
+
 .drag-region button,
 .drag-region input,
 .drag-region [role="separator"] {

@@ -172,6 +172,12 @@ function* findActionsIn(value: unknown, at: string): Generator<{ action: ActionR
  * Verify every ActionRef in a spec is safe to expose:
  *  - `open_file` paths must resolve inside their worktree (no `..` escape).
  *  - `show_diff` commit hashes must be reachable in their worktree's history.
+ *  - `focus_block` targets must name an element of this same spec.
+ *
+ * `focus_block` is the odd one out: it is panel-local, so it needs neither a
+ * worktree nor the file system. It is checked here anyway because `spec.elements`
+ * is an id-keyed map, which makes a dead link statically knowable — and a tour
+ * whose "read this next" row silently does nothing is worse than a rejected spec.
  *
  * An action may name its own `worktree` — a single tour legitimately spans
  * repos, and the panel-level `worktreePath` is really just the default
@@ -196,6 +202,16 @@ export async function validateSpecActions(
   const commitsByWorktree = new Map<string, Set<string>>()
 
   for (const { action, at } of iterateActions(spec)) {
+    if (action.type === 'focus_block') {
+      if (!(action.blockId in spec.elements)) {
+        issues.push({
+          path: `${at}.blockId`,
+          message: `focus_block target "${action.blockId}" is not an element of this spec`,
+        })
+      }
+      continue
+    }
+
     if (action.type !== 'open_file' && action.type !== 'show_diff') continue
 
     let root = panelRoot

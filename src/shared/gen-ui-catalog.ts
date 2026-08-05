@@ -57,6 +57,17 @@ export const ActionRefSchema = z.discriminatedUnion('type', [
     key: z.string().min(1),
     value: z.unknown(),
   }),
+  z.object({
+    type: z.literal('focus_block'),
+    /**
+     * Key of another element in the same `spec.elements`. The only
+     * panel-local action: it never crosses the MCP bridge or the IPC
+     * boundary, it just moves the reader inside the panel they are already
+     * looking at. Validated against the elements map, so a dead link is a
+     * spec error rather than a click that does nothing.
+     */
+    blockId: z.string().min(1),
+  }),
 ])
 export type ActionRef = z.infer<typeof ActionRefSchema>
 
@@ -67,6 +78,10 @@ export type ActionRef = z.infer<typeof ActionRefSchema>
 const FileListItemSchema = z.object({
   path: z.string().min(1),
   status: z.enum(['added', 'modified', 'deleted', 'renamed', 'error', 'ok']).optional(),
+  /**
+   * Why this file is in the list. Rendered below the path and wrapped in full,
+   * so a sentence-length clause survives — it is not a truncated chip.
+   */
   detail: z.string().optional(),
   action: ActionRefSchema.optional(),
 })
@@ -208,6 +223,8 @@ const GraphEdgeSchema = z.object({
 const GraphDiagramSchema = z
   .object({
     kind: z.literal('graph'),
+    /** Heading drawn above the diagram, so naming one costs no extra block. */
+    title: z.string().optional(),
     nodes: z.array(GraphNodeSchema).min(1),
     edges: z.array(GraphEdgeSchema),
     layout: z.enum(['layered', 'force', 'tree']).optional(),
@@ -247,6 +264,8 @@ const SequenceMessageSchema = z.object({
 const SequenceDiagramSchema = z
   .object({
     kind: z.literal('sequence'),
+    /** Heading drawn above the diagram. See `GraphDiagramSchema.title`. */
+    title: z.string().optional(),
     actors: z.array(SequenceActorSchema).min(1),
     messages: z.array(SequenceMessageSchema).min(1),
   })
@@ -289,7 +308,8 @@ export const catalog = defineCatalog(schema, {
       props: FileListProps,
       slots: [],
       description:
-        'Clickable list of files with optional status chips. Use for tour topics, test results, change-impact views, handoff state.',
+        'Clickable list of files with optional status chips and a wrapping `detail` clause per row. ' +
+        'Use for tour topics, test results, change-impact views, handoff state.',
     },
     CodeSnippet: {
       props: CodeSnippetProps,
@@ -352,7 +372,8 @@ export const catalog = defineCatalog(schema, {
       props: CalloutProps,
       slots: [],
       description:
-        'Highlighted info/warn/error/success banner with optional title. Use for warnings or out-of-flow emphasis.',
+        'Highlighted info/warn/error/success banner with optional title. The body is markdown, so a callout ' +
+        'can carry several paragraphs or a list. Use for warnings or out-of-flow emphasis.',
     },
     Row: {
       props: RowProps,
@@ -364,7 +385,7 @@ export const catalog = defineCatalog(schema, {
       props: DiagramProps,
       slots: [],
       description:
-        'Architecture / flowchart / sequence diagram. Discriminated by kind: ' +
+        'Architecture / flowchart / sequence diagram, with an optional `title` heading. Discriminated by kind: ' +
         '"graph" {nodes,edges,layout?} renders via Svelte Flow + ELK; ' +
         '"sequence" {actors,messages} renders via mermaid (compiled from your typed JSON — you never write mermaid DSL).',
     },
@@ -405,6 +426,14 @@ export const catalog = defineCatalog(schema, {
         value: z.unknown(),
       }),
       description: 'Mutate the panel local $bindState scope. Local-only; cannot escape the panel.',
+    },
+    focus_block: {
+      params: z.object({
+        blockId: z.string(),
+      }),
+      description:
+        'Scroll another block of this same panel into view and flash it, expanding any collapsed ' +
+        'Section it sits in. Resolved entirely inside the rendered panel — no file system, no repo.',
     },
   },
 })

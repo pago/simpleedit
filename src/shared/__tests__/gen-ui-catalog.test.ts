@@ -23,6 +23,7 @@ describe('ActionRefSchema', () => {
     expect(ActionRefSchema.safeParse({ type: 'show_diff', commitHash: 'abc' }).success).toBe(true)
     expect(ActionRefSchema.safeParse({ type: 'dismiss_panel' }).success).toBe(true)
     expect(ActionRefSchema.safeParse({ type: 'set_state', key: 'k', value: 1 }).success).toBe(true)
+    expect(ActionRefSchema.safeParse({ type: 'focus_block', blockId: 'diff' }).success).toBe(true)
   })
 
   it('rejects unknown action types and missing required fields', () => {
@@ -32,6 +33,8 @@ describe('ActionRefSchema', () => {
     expect(ActionRefSchema.safeParse({ type: 'open_file', path: '', line: 1 }).success).toBe(false)
     expect(ActionRefSchema.safeParse({ type: 'open_file', path: 'a.ts', line: 0 }).success).toBe(false)
     expect(ActionRefSchema.safeParse({ type: 'show_diff' }).success).toBe(false)
+    expect(ActionRefSchema.safeParse({ type: 'focus_block' }).success).toBe(false)
+    expect(ActionRefSchema.safeParse({ type: 'focus_block', blockId: '' }).success).toBe(false)
   })
 })
 
@@ -155,6 +158,25 @@ describe('primitive prop schemas — rejections', () => {
           { id: 's', label: 'Server' },
         ],
         messages: [{ from: 'u', to: 's', label: 'request', kind: 'sync' }],
+      }).success,
+    ).toBe(true)
+  })
+
+  it('accepts an optional title on either Diagram variant', () => {
+    expect(
+      DiagramProps.safeParse({
+        kind: 'graph',
+        title: 'Request path',
+        nodes: [{ id: 'a', label: 'A' }],
+        edges: [],
+      }).success,
+    ).toBe(true)
+    expect(
+      DiagramProps.safeParse({
+        kind: 'sequence',
+        title: 'Handshake',
+        actors: [{ id: 'u', label: 'User' }],
+        messages: [{ from: 'u', to: 'u', label: 'self' }],
       }).success,
     ).toBe(true)
   })

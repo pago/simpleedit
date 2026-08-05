@@ -201,7 +201,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
       return {
         status: 400,
         body: {
-          error: 'spec actions reference content outside the active worktree',
+          error: 'spec actions reference content this panel cannot reach',
           issues: actionIssues,
         },
       }

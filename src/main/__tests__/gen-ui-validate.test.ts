@@ -327,6 +327,62 @@ describe('validateSpecActions — per-action worktree', () => {
     expect(issues[0].message).toContain('not a worktree this window has registered')
   })
 
+  it('leaves focus_block alone when it targets an element of the same spec', async () => {
+    const spec: Spec = {
+      root: 'sec',
+      elements: {
+        sec: { type: 'Section', props: { title: 'Step 1' }, children: ['jump', 'diff'] },
+        jump: { type: 'ActionButton', props: { label: 'go', action: { type: 'focus_block', blockId: 'diff' } } },
+        diff: { type: 'DiffBlock', props: { diff: SAMPLE_DIFF } },
+      },
+    }
+    expect(await validateSpecActions(spec, MAIN, UNION)).toEqual([])
+  })
+
+  it('rejects a focus_block pointing at a block id the spec does not define', async () => {
+    const issues = await validateSpecActions(
+      specWithAction({ type: 'focus_block', blockId: 'ghost' }),
+      MAIN,
+      UNION,
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0].path).toBe('elements.b.props.action.blockId')
+    expect(issues[0].message).toContain('"ghost"')
+  })
+
+  it('rejects a dead focus_block nested inside a FileList item action', async () => {
+    const spec: Spec = {
+      root: 'files',
+      elements: {
+        files: {
+          type: 'FileList',
+          props: {
+            title: 'Read in this order',
+            items: [
+              { path: 'src/client.ts', action: { type: 'focus_block', blockId: 'diff' } },
+              { path: 'src/server.ts', action: { type: 'focus_block', blockId: 'nowhere' } },
+            ],
+          },
+        },
+        diff: { type: 'DiffBlock', props: { diff: SAMPLE_DIFF } },
+      },
+    }
+    const issues = await validateSpecActions(spec, MAIN, UNION)
+    expect(issues).toHaveLength(1)
+    expect(issues[0].path).toBe('elements.files.props.items.1.action.blockId')
+    expect(issues[0].message).toContain('"nowhere"')
+  })
+
+  it('checks focus_block without touching the worktree or the file system', async () => {
+    // No panel worktree, no union — a panel-local action must still validate.
+    const issues = await validateSpecActions(
+      specWithAction({ type: 'focus_block', blockId: 'ghost' }),
+      '',
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0].message).toContain('not an element of this spec')
+  })
+
   it('finds actions nested inside DiffBlock fileActions', async () => {
     const spec: Spec = {
       root: 'd',
