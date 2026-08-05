@@ -8,8 +8,8 @@
  * `pty:*` / `claude:*` IPC routes work unchanged.
  */
 import { untrack } from 'svelte'
-import type { ModelRef } from '../../shared/ipc-types'
-import { clearClaudeStatusForTerminal } from './claude-status.svelte'
+import type { AgentPeer, ModelRef } from '../../shared/ipc-types'
+import { clearClaudeStatusForTerminal, getClaudeStatusForTerminal } from './claude-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
   repoForWorktree,
@@ -788,11 +788,41 @@ async function spawnSessionFromAgent(
   // 'replace' = the caller asked to reset itself: spawn the successor in the
   // caller's slot and dispose the caller. Falls back to a plain new-pane spawn
   // when the caller can't be located (nothing to replace).
-  if (data.target === 'replace' && caller) {
-    sessionsStore.replaceWithClaude(caller.id, launchDir, worktreePath, spawnOpts)
-  } else {
-    sessionsStore.createClaude(launchDir, worktreePath, spawnOpts)
+  const newId =
+    data.target === 'replace' && caller
+      ? sessionsStore.replaceWithClaude(caller.id, launchDir, worktreePath, spawnOpts)
+      : sessionsStore.createClaude(launchDir, worktreePath, spawnOpts)
+
+  // Hand the minted id back so the waiting `spawn_session` tool call can return
+  // an addressable handle — main never sees this id otherwise.
+  if (data.correlationId && newId) {
+    const created = sessionsStore.get(newId)
+    void window.api.invoke('agent-bus:spawned', data.correlationId, {
+      terminalId: newId,
+      label: created?.label ?? newId,
+      provider: created?.provider ?? 'claude',
+      worktreePath: created?.worktreePath ?? worktreePath,
+      status: 'unknown',
+    })
   }
+}
+
+/**
+ * The peer set the messaging bus exposes to agents. Only live agent-backed
+ * sessions qualify: a plain terminal has nothing to talk to, and a
+ * pendingResume/exited entry has no process behind it, so addressing one would
+ * queue mail that can never be delivered.
+ */
+function peerSnapshot(): AgentPeer[] {
+  return _sessions
+    .filter((s) => s.kind === 'claude' && !s.pendingResume && !s.exited)
+    .map((s) => ({
+      terminalId: s.id,
+      label: s.label,
+      provider: s.provider ?? 'claude',
+      worktreePath: s.worktreePath,
+      status: getClaudeStatusForTerminal(s.id),
+    }))
 }
 
 /**
@@ -865,11 +895,21 @@ export function initSessionListeners(): () => void {
     void spawnSessionFromAgent(data)
   })
 
+  // Keep the messaging bus's peer list current. Labels, provider and status live
+  // here, so main can't derive them — this pushes a fresh snapshot whenever any
+  // of them changes. $effect.root because this runs outside a component.
+  const stopPeerSync = $effect.root(() => {
+    $effect(() => {
+      void window.api.invoke('agent-bus:sync', peerSnapshot())
+    })
+  })
+
   return () => {
     offExit()
     offSessionId()
     offCwd()
     offRepoTouch()
     offSpawn()
+    stopPeerSync()
   }
 }

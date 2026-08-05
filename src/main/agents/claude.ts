@@ -70,10 +70,14 @@ function cleanupMcpConfig(terminalId: string): void {
 function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: string): string {
   const settingsPath = join(tmpdir(), `simpleedit-hooks-${terminalId}.json`)
   const endpoint = { type: 'http', url: `http://127.0.0.1:${bridgePort}/${bridgeToken}/hooks`, timeout: 5 }
+  // Stop carries the agent-messaging channel (see agent-bus.ts): its response
+  // body can deliver queued peer mail, and its `last_assistant_message` is how
+  // the turn's answer gets routed back to whoever asked.
   const settings = {
     hooks: {
       UserPromptSubmit: [{ hooks: [endpoint] }],
       PostToolUse: [{ hooks: [endpoint] }],
+      Stop: [{ hooks: [endpoint] }],
     },
   }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
@@ -204,7 +208,26 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
     command += ` '${initialPrompt.replace(/'/g, "'\\''")}'`
   }
 
-  return { command, sessionId, cleanup: makeCleanup(terminalId) }
+  return { command, sessionId, env: messagingEnv(), cleanup: makeCleanup(terminalId) }
+}
+
+/**
+ * Env the agent-messaging channel needs.
+ *
+ * `MCP_TOOL_TIMEOUT` — `send_message(wait_for_reply)` parks up to
+ * MAX_REPLY_WAIT_S (600s) waiting on a peer's turn to finish, which far exceeds
+ * the CLI's default tool timeout; without this the call is killed mid-wait.
+ *
+ * `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` — each delivery consumes one consecutive
+ * Stop-hook block, and the default cap is 8. Raising it keeps a long exchange
+ * from tripping the CLI's runaway-hook guard. It only ever fires when a hook
+ * blocks repeatedly, which for us means real queued mail.
+ */
+function messagingEnv(): Record<string, string> {
+  return {
+    MCP_TOOL_TIMEOUT: String(660_000),
+    CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '32',
+  }
 }
 
 /**

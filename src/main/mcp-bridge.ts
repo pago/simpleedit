@@ -1,5 +1,5 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
-import { randomBytes } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { dirname } from 'path'
 import type { WebContents } from 'electron'
 import type { Tour, WorktreeInfo } from '../shared/ipc-types'
@@ -7,6 +7,18 @@ import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
 import { validateSpec, validateSpecActions } from './gen-ui-validate'
 import { parseHookBody, matchWorktree, terminalForSession } from './cwd-tracker'
+import {
+  awaitSpawn,
+  captureImplicitReplies,
+  drain,
+  enqueue,
+  formatForDelivery,
+  listPeers,
+  pendingCount,
+  senderOf,
+  waitForReply,
+  type Message,
+} from './agent-bus'
 
 interface BridgeInstance {
   server: Server
@@ -71,6 +83,41 @@ interface ToolCallPayload {
   tool: string
   args: Record<string, unknown>
   terminalId: string
+}
+
+/**
+ * How long `send_message(wait_for_reply)` parks. Must stay comfortably under the
+ * agent's own MCP tool timeout (we raise `MCP_TOOL_TIMEOUT` at spawn) so a slow
+ * peer surfaces as our explanatory `timed_out` result rather than the CLI
+ * killing the tool call with a generic error.
+ */
+const DEFAULT_REPLY_WAIT_S = 300
+const MAX_REPLY_WAIT_S = 600
+
+/**
+ * How long to wait for the renderer to report a spawned session's real id. This
+ * is a local IPC round-trip plus a store insert (sub-100ms in practice), so the
+ * budget is generous — but bounded, because on the degraded path the agent is
+ * sitting in a tool call and we would rather hand it the "use list_sessions"
+ * fallback quickly than stall it.
+ */
+const SPAWN_HANDLE_WAIT_MS = 1500
+
+/**
+ * Mirror every message to the renderer so the exchange is visible to the user.
+ * Two agents talking with no UI trace is the failure mode to avoid.
+ */
+function notifyMessage(webContents: WebContents, message: Message): void {
+  if (webContents.isDestroyed()) return
+  webContents.send('agent-message:sent', {
+    messageId: message.id,
+    from: message.from,
+    fromLabel: message.fromLabel,
+    to: message.to,
+    text: message.text,
+    expectsReply: message.expectsReply,
+    ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+  })
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -323,17 +370,122 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
       worktreePath = requested
     }
 
-    if (!webContents.isDestroyed()) {
-      webContents.send('agent-session:spawn', {
-        sourceTerminalId: terminalId,
-        brief,
-        ...(label ? { label } : {}),
-        ...(model ? { model } : {}),
-        ...(worktreePath ? { worktreePath } : {}),
-        target,
-      })
+    if (webContents.isDestroyed()) {
+      return { status: 400, body: { error: 'Window is gone; cannot spawn a session' } }
     }
-    return { status: 200, body: { ok: true } }
+
+    // The renderer mints the terminal id, so the handle can only come back from
+    // it. Correlate the request so the caller can address what it just spawned.
+    const correlationId = randomUUID()
+    webContents.send('agent-session:spawn', {
+      sourceTerminalId: terminalId,
+      brief,
+      correlationId,
+      ...(label ? { label } : {}),
+      ...(model ? { model } : {}),
+      ...(worktreePath ? { worktreePath } : {}),
+      target,
+    })
+
+    // 'replace' disposes the caller, so there is nobody left to use a handle —
+    // waiting would only delay this session's own teardown.
+    if (target === 'replace') return { status: 200, body: { ok: true } }
+
+    const peer = await awaitSpawn(correlationId, SPAWN_HANDLE_WAIT_MS)
+    if (!peer) {
+      return {
+        status: 200,
+        body: { ok: true, note: 'New session started in SimpleEdit, but its session_id did not come back in time. Use list_sessions to find it before messaging it.' },
+      }
+    }
+    return { status: 200, body: { ok: true, session_id: peer.terminalId, label: peer.label } }
+  }
+
+  if (tool === 'list_sessions') {
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        sessions: listPeers(terminalId).map((p) => ({
+          session_id: p.terminalId,
+          label: p.label,
+          provider: p.provider ?? 'unknown',
+          worktree: p.worktreePath,
+          status: p.status,
+          unread: p.unread,
+        })),
+      },
+    }
+  }
+
+  if (tool === 'send_message') {
+    const to = typeof args['to'] === 'string' ? args['to'] : ''
+    const text = typeof args['text'] === 'string' ? args['text'] : ''
+    if (!to) return { status: 400, body: { error: 'send_message requires `to`' } }
+
+    const result = enqueue({ from: terminalId, to, text, expectsReply: args['wait_for_reply'] === true })
+    if ('error' in result) return { status: 400, body: { error: result.error } }
+    const { message } = result
+
+    notifyMessage(webContents, message)
+
+    if (!message.expectsReply) {
+      return { status: 200, body: { ok: true, message_id: message.id, delivered_to: message.to } }
+    }
+
+    const requested = typeof args['timeout_seconds'] === 'number' ? args['timeout_seconds'] : DEFAULT_REPLY_WAIT_S
+    const waitMs = Math.min(Math.max(requested, 10), MAX_REPLY_WAIT_S) * 1000
+    const reply = await waitForReply(message.id, waitMs)
+    if (!reply) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          message_id: message.id,
+          delivered_to: message.to,
+          timed_out: true,
+          note: 'No reply yet. It will arrive as a message on your next turn — do not resend.',
+        },
+      }
+    }
+    return {
+      status: 200,
+      body: { ok: true, message_id: message.id, delivered_to: message.to, reply: { from: reply.from, from_label: reply.fromLabel, text: reply.text } },
+    }
+  }
+
+  if (tool === 'reply') {
+    const toMessageId = typeof args['to_message_id'] === 'string' ? args['to_message_id'] : ''
+    const text = typeof args['text'] === 'string' ? args['text'] : ''
+    if (!toMessageId) return { status: 400, body: { error: 'reply requires `to_message_id`' } }
+
+    const origin = senderOf(toMessageId)
+    if (!origin) {
+      return { status: 400, body: { error: `Unknown message id "${toMessageId}". Use the id from the message you are answering.` } }
+    }
+
+    const result = enqueue({ from: terminalId, to: origin, text, replyTo: toMessageId })
+    if ('error' in result) return { status: 400, body: { error: result.error } }
+    notifyMessage(webContents, result.message)
+    return { status: 200, body: { ok: true, message_id: result.message.id, delivered_to: result.message.to } }
+  }
+
+  if (tool === 'check_inbox') {
+    const messages = drain(terminalId)
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        count: messages.length,
+        messages: messages.map((m) => ({
+          message_id: m.id,
+          from: m.from,
+          from_label: m.fromLabel,
+          text: m.text,
+          expects_reply: m.expectsReply,
+        })),
+      },
+    }
   }
 
   return { status: 400, body: { error: `Unknown tool: ${tool}` } }
@@ -380,18 +532,18 @@ async function locateWorktree(
  * paid once per new repo per window. A pathological path (network FS, huge
  * repo) would stall the CLI's hook here.
  */
-async function handleHook(body: string, webContents: WebContents): Promise<void> {
+async function handleHook(body: string, webContents: WebContents): Promise<Record<string, unknown>> {
   let parsed: unknown
   try {
     parsed = JSON.parse(body)
   } catch {
-    return
+    return {}
   }
   const signal = parseHookBody(parsed)
-  if (!signal) return
+  if (!signal) return {}
 
   const terminalId = terminalForSession(signal.sessionId)
-  if (!terminalId) return
+  if (!terminalId) return {}
 
   const worktrees = await resolveWorktrees(webContents.id)
   const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
@@ -407,16 +559,56 @@ async function handleHook(body: string, webContents: WebContents): Promise<void>
 
   // A touched file outside the cwd's worktree means the agent worked in another
   // worktree/repo without moving its cwd there — record it on the trail too.
-  if (!signal.filePath) return
-  const file = await locateWorktree(webContents.id, dirname(signal.filePath), worktrees)
-  if (!file.worktreePath || file.worktreePath === cwd.worktreePath) return
+  if (signal.filePath) {
+    const file = await locateWorktree(webContents.id, dirname(signal.filePath), worktrees)
+    if (file.worktreePath && file.worktreePath !== cwd.worktreePath && !webContents.isDestroyed()) {
+      webContents.send('session:repo-touch', {
+        terminalId,
+        worktreePath: file.worktreePath,
+        repoPath: file.repoPath,
+      })
+    }
+  }
+
+  return handleTurnEnd(signal, terminalId, webContents)
+}
+
+/**
+ * `Stop`/`SubagentStop` is both halves of the messaging channel:
+ *
+ *  - the turn's final assistant text is the implicit REPLY to whatever we
+ *    delivered last, so a peer answers without needing to call any tool;
+ *  - and if mail is queued, answering `{decision:'block'}` DELIVERS it, because
+ *    both CLIs continue the turn with `reason` as input.
+ *
+ * Never block when `stop_hook_active` is set: that stop already belongs to a
+ * turn a hook continued, and blocking again prevents the agent ever going idle.
+ */
+function handleTurnEnd(
+  signal: { eventName: string | null; lastAssistantMessage: string | null; stopHookActive: boolean },
+  terminalId: string,
+  webContents: WebContents,
+): Record<string, unknown> {
+  if (signal.eventName !== 'Stop' && signal.eventName !== 'SubagentStop') return {}
+
+  if (signal.lastAssistantMessage) {
+    for (const reply of captureImplicitReplies(terminalId, signal.lastAssistantMessage)) {
+      notifyMessage(webContents, reply)
+    }
+  }
+
+  if (signal.stopHookActive || pendingCount(terminalId) === 0) return {}
+
+  const messages = drain(terminalId)
+  if (messages.length === 0) return {}
+
   if (!webContents.isDestroyed()) {
-    webContents.send('session:repo-touch', {
+    webContents.send('agent-message:delivered', {
       terminalId,
-      worktreePath: file.worktreePath,
-      repoPath: file.repoPath,
+      messageIds: messages.map((m) => m.id),
     })
   }
+  return { decision: 'block', reason: formatForDelivery(messages) }
 }
 
 function createBridgeServer(token: string, webContents: WebContents): Server {
@@ -428,13 +620,17 @@ function createBridgeServer(token: string, webContents: WebContents): Server {
     // Location-tracking hook endpoint (Stage 2). Token-authed via the path,
     // same scheme as tool-call. Body = the raw hook input JSON from the CLI.
     if (req.method === 'POST' && req.url === hooksPath) {
+      // The response body is a real channel back into the agent (a Stop hook
+      // delivery), so it must carry handleHook's result — but a throw here must
+      // still degrade to an inert 200 rather than stalling the CLI's hook.
+      let hookResult: Record<string, unknown> = {}
       try {
         const body = await readBody(req)
-        await handleHook(body, webContents)
+        hookResult = await handleHook(body, webContents)
       } catch {
-        /* never let hook handling surface an error to the CLI */
+        hookResult = {}
       }
-      jsonResponse(res, 200, { ok: true })
+      jsonResponse(res, 200, hookResult)
       return
     }
 

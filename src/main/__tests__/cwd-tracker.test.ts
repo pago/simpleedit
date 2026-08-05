@@ -23,17 +23,27 @@ describe('parseHookBody', () => {
       sessionId: 'abc',
       cwd: '/x/y',
       filePath: null,
+      eventName: 'PostToolUse',
+      lastAssistantMessage: null,
+      stopHookActive: false,
     })
   })
 
-  it('ignores fields it does not use (event kind, Bash command, etc.)', () => {
+  it('ignores fields it does not use (Bash command, tool name, etc.)', () => {
     const body = {
       session_id: 's',
       cwd: '/p',
       tool_name: 'Bash',
       tool_input: { command: 'cd /q' },
     }
-    expect(parseHookBody(body)).toEqual({ sessionId: 's', cwd: '/p', filePath: null })
+    expect(parseHookBody(body)).toEqual({
+      sessionId: 's',
+      cwd: '/p',
+      filePath: null,
+      eventName: null,
+      lastAssistantMessage: null,
+      stopHookActive: false,
+    })
   })
 
   it('surfaces an absolute file_path from a file tool (Read/Write/Edit)', () => {
@@ -47,6 +57,9 @@ describe('parseHookBody', () => {
       sessionId: 's',
       cwd: '/repo/main',
       filePath: '/other-repo/backend/src/app.ts',
+      eventName: null,
+      lastAssistantMessage: null,
+      stopHookActive: false,
     })
   })
 
@@ -84,6 +97,34 @@ describe('parseHookBody', () => {
     expect(parseHookBody(null)).toBeNull()
     expect(parseHookBody('string')).toBeNull()
     expect(parseHookBody(42)).toBeNull()
+  })
+
+  // Agent messaging rides on these three: the event kind selects the Stop path,
+  // last_assistant_message is the reply channel, and stop_hook_active is what
+  // stops a delivered turn from being re-blocked forever.
+  it('surfaces the Stop fields used by agent messaging', () => {
+    expect(
+      parseHookBody({
+        session_id: 's',
+        cwd: '/p',
+        hook_event_name: 'Stop',
+        stop_hook_active: true,
+        last_assistant_message: 'the answer',
+      }),
+    ).toEqual({
+      sessionId: 's',
+      cwd: '/p',
+      filePath: null,
+      eventName: 'Stop',
+      lastAssistantMessage: 'the answer',
+      stopHookActive: true,
+    })
+  })
+
+  it('treats an absent stop_hook_active as false, not missing', () => {
+    const signal = parseHookBody({ session_id: 's', cwd: '/p', hook_event_name: 'Stop' })
+    expect(signal?.stopHookActive).toBe(false)
+    expect(signal?.lastAssistantMessage).toBeNull()
   })
 })
 

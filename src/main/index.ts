@@ -53,7 +53,8 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer } from '../shared/ipc-types'
+import { syncPeers, resolveSpawn } from './agent-bus'
 import type { PrContext } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
 import { postReview } from './github/gh'
@@ -656,6 +657,15 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('session:clear', (_event, repoPath: string) => {
     clearSession(repoPath)
+  })
+
+  // ── Agent-to-agent messaging ────────────────────────────
+  ipcMain.handle('agent-bus:sync', (_event, peers: AgentPeer[]) => {
+    syncPeers(peers)
+  })
+
+  ipcMain.handle('agent-bus:spawned', (_event, correlationId: string, peer: AgentPeer) => {
+    resolveSpawn(correlationId, peer)
   })
 }
 

@@ -616,14 +616,20 @@ export interface AgentPanelEventMap {
    * agent-authored brief (to hand off or fan out work). Unlike the other
    * agent-* events this creates a session rather than acting on the caller's
    * workspace, so it's handled by the global session listener, not
-   * SessionWorkspace. Fire-and-forget: the bridge is one-way, so no session id
-   * is returned to the caller.
+   * SessionWorkspace. The renderer reports the new session back via
+   * `agent-bus:spawned` so the tool call can return an addressable handle.
    */
   'agent-session:spawn': {
     /** Terminal id of the session that called the tool (for model inheritance). */
     sourceTerminalId: string
     /** Becomes the new session's `initialPrompt` / persisted seed prompt. */
     brief: string
+    /**
+     * Echoed back through `agent-bus:spawned` to match the created session to
+     * the waiting tool call. The renderer mints the terminal id, so this is the
+     * only way the id can reach the caller.
+     */
+    correlationId?: string
     /** Optional sidebar label for the new session. */
     label?: string
     /** Optional model id override; when absent the caller's model is inherited. */
@@ -638,6 +644,49 @@ export interface AgentPanelEventMap {
      * dispose the caller and take its slot (the in-place reset / hand-off).
      */
     target?: 'new-pane' | 'replace'
+  }
+}
+
+// ── Agent-to-agent messaging ──────────────────────────────
+
+/** One session addressable by another agent (renderer → main sync). */
+export interface AgentPeer {
+  terminalId: string
+  label: string
+  provider?: string
+  worktreePath: string
+  status: ClaudeStatus | 'unknown'
+}
+
+export interface AgentBusInvokeMap {
+  /**
+   * Push the current session list to the bus. The renderer owns labels,
+   * provider and status, so main can't derive the peer list itself; this is
+   * called whenever those change (and is idempotent — it replaces the set).
+   */
+  'agent-bus:sync': { args: [peers: AgentPeer[]]; result: void }
+  /**
+   * Report a session created for a `spawn_session` tool call, matching the
+   * `correlationId` the bridge sent, so that call can return a usable handle.
+   */
+  'agent-bus:spawned': { args: [correlationId: string, peer: AgentPeer]; result: void }
+}
+
+export interface AgentBusEventMap {
+  /** A message was sent between sessions — mirrored so the UI can show it. */
+  'agent-message:sent': {
+    messageId: string
+    from: string
+    fromLabel: string
+    to: string
+    text: string
+    expectsReply: boolean
+    replyTo?: string
+  }
+  /** Queued mail was handed to a session via its Stop hook. */
+  'agent-message:delivered': {
+    terminalId: string
+    messageIds: string[]
   }
 }
 
@@ -707,7 +756,8 @@ export type InvokeMap = WorktreeInvokeMap &
   LspInvokeMap &
   SessionInvokeMap &
   UpdateInvokeMap &
-  ModelsInvokeMap
+  ModelsInvokeMap &
+  AgentBusInvokeMap
 
 export type SendMap = LspSendMap
 
@@ -720,6 +770,7 @@ export type EventMap = WorktreeEventMap &
   ScreenPrsEventMap &
   LspEventMap &
   AgentPanelEventMap &
+  AgentBusEventMap &
   UpdateEventMap &
   EditorEventMap &
   ModelsEventMap

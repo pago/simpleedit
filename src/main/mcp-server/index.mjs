@@ -34,7 +34,18 @@ async function postToBridge(tool, args) {
       return { ok: false, error: `Bridge returned ${res.status}: ${body}` }
     }
 
-    return { ok: true }
+    // The messaging tools need the bridge's payload (peer lists, replies), not
+    // just success — the older tools simply ignore `data`.
+    const text = await res.text()
+    let data = {}
+    if (text.trim()) {
+      try {
+        data = JSON.parse(text)
+      } catch {
+        /* non-JSON body: treat as a bare success */
+      }
+    }
+    return { ok: true, data }
   } catch (err) {
     return { ok: false, error: `Failed to connect to SimpleEdit bridge at 127.0.0.1:${BRIDGE_PORT}: ${err.message}` }
   }
@@ -386,7 +397,8 @@ server.registerTool(
       'The `brief` becomes the new session\'s first message, so write it as a direct instruction to the new agent: what to do, plus POINTERS to the current state it needs — files/paths to look at, the PLAN doc, the open PR, what is already done and what is left.',
       'CRITICAL: do NOT paste file contents, diffs, or transcript into the brief. The entire point is to start the new session on a small context; re-embedding bulk defeats it. Reference where things are; let the new session read them if it needs to.',
       '',
-      'Fire-and-forget: the new session opens in the SimpleEdit sidebar. This call returns immediately and does NOT give you the new session\'s id, and you do not wait for it — you cannot talk to it from here.',
+      'The new session opens in the SimpleEdit sidebar and this call returns its `session_id`, so you CAN talk to it: pass that id to `send_message` to ask it questions or collect its result. Delegating a piece of work and then asking for the outcome is the intended pattern.',
+      'Note the split of duties: `spawn_session` starts work on a FRESH context; `send_message` talks to a session that already exists. Do not spawn a new session just to ask an existing one something.',
     ].join('\n'),
     inputSchema: {
       brief: z
@@ -419,11 +431,151 @@ server.registerTool(
   async ({ brief, label, model, worktree, target }) => {
     const result = await postToBridge('spawn_session', { brief, label, model, worktree, target })
     if (!result.ok) return errorResult(`Error: ${result.error}`)
-    const note =
-      target === 'replace'
-        ? 'New session started in SimpleEdit, replacing this one — this session is being closed.'
-        : 'New session started in SimpleEdit. It opens in the sidebar; you cannot interact with it from here.'
-    return okResult(note)
+    if (target === 'replace') {
+      return okResult('New session started in SimpleEdit, replacing this one — this session is being closed.')
+    }
+    const id = result.data?.session_id
+    if (!id) return okResult(result.data?.note ?? 'New session started in SimpleEdit.')
+    return okResult(
+      `New session started: session_id "${id}" (label "${result.data.label}"). ` +
+        `You can now message it with send_message(to: "${id}", …).`,
+    )
+  },
+)
+
+// ── Agent-to-agent messaging ───────────────────────────────────────────────
+
+server.registerTool(
+  'list_sessions',
+  {
+    description: [
+      'List the OTHER agent sessions open in SimpleEdit right now, so you can message one.',
+      'Returns for each: `session_id` (use this to address it), `label` (what the user sees),',
+      '`provider` (e.g. claude, codex), `worktree`, `status` (idle/running/…), and `unread`.',
+      '',
+      'Use this before send_message when you do not already have a session id — e.g. the user says',
+      '"ask the other agent", "check with the session working on the parser", or you want to know',
+      'who is available. A session that is `running` can still be messaged: delivery happens when',
+      'its current turn ends.',
+    ].join('\n'),
+    inputSchema: {},
+  },
+  async () => {
+    const result = await postToBridge('list_sessions', {})
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    const sessions = result.data?.sessions ?? []
+    if (sessions.length === 0) {
+      return okResult('No other agent sessions are open. Use spawn_session to start one.')
+    }
+    return okResult(JSON.stringify(sessions, null, 2))
+  },
+)
+
+server.registerTool(
+  'send_message',
+  {
+    description: [
+      'Send a message to ANOTHER agent session in SimpleEdit and optionally wait for its answer.',
+      'This is real agent-to-agent communication: the recipient may be Claude Code or Codex, in a',
+      'different worktree, and it receives your message as input when its current turn ends.',
+      '',
+      'Reach for this when you want a peer to do or answer something: "ask the other session whether',
+      'the migration landed", "tell the reviewer session to look at PR 42", "get the Codex session\'s',
+      'opinion on this API shape". Pair it with spawn_session to delegate and then collect a result.',
+      '',
+      'CRITICAL — send POINTERS, not payloads. Do not paste file contents, diffs, or transcripts.',
+      'The recipient pays for every byte in its own context and can read files itself. Reference',
+      `paths, PR numbers, commit SHAs, doc names. Messages over ${8000} characters are rejected.`,
+      '',
+      'With `wait_for_reply: true` this call BLOCKS until the peer answers (it is mid-turn, so this',
+      'can take minutes) and returns the reply as your tool result. Without it, the call returns',
+      'immediately and any reply arrives on a later turn. If the wait times out, the reply is not',
+      'lost — it will be delivered to you later, so do NOT resend.',
+    ].join('\n'),
+    inputSchema: {
+      to: z
+        .string()
+        .min(1)
+        .describe('Target session: its `session_id` from list_sessions, or its exact label if unambiguous.'),
+      text: z
+        .string()
+        .min(1)
+        .describe('The message. Written for another agent: what you need, plus pointers to where the state lives.'),
+      wait_for_reply: z
+        .boolean()
+        .optional()
+        .describe('Block until the peer answers and return the reply as this tool\'s result. Default false.'),
+      timeout_seconds: z
+        .number()
+        .optional()
+        .describe('How long to wait when wait_for_reply is set (10–600, default 300).'),
+    },
+  },
+  async ({ to, text, wait_for_reply, timeout_seconds }) => {
+    const result = await postToBridge('send_message', { to, text, wait_for_reply, timeout_seconds })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    const data = result.data ?? {}
+    if (data.reply) {
+      return okResult(`Reply from "${data.reply.from_label}" (${data.reply.from}):\n\n${data.reply.text}`)
+    }
+    if (data.timed_out) {
+      return okResult(
+        `Message ${data.message_id} delivered to ${data.delivered_to}, but no reply yet. ${data.note} Continue with other work.`,
+      )
+    }
+    return okResult(
+      `Message ${data.message_id} queued for ${data.delivered_to}. It is delivered when that session's current turn ends.`,
+    )
+  },
+)
+
+server.registerTool(
+  'reply',
+  {
+    description: [
+      'Answer a message another agent session sent you. Use the `message_id` you were given with',
+      'that message. If the sender is blocked waiting, your reply is what unblocks it — so reply',
+      'promptly and make the answer self-contained.',
+      '',
+      'You often do NOT need this tool: when you were asked something and simply answer in your',
+      'normal response, that final message is relayed back automatically. Use `reply` when you want',
+      'to answer explicitly, or to answer one specific message out of several.',
+    ].join('\n'),
+    inputSchema: {
+      to_message_id: z.string().min(1).describe('The `message_id` of the message you are answering.'),
+      text: z.string().min(1).describe('Your answer. Self-contained; pointers rather than pasted content.'),
+    },
+  },
+  async ({ to_message_id, text }) => {
+    const result = await postToBridge('reply', { to_message_id, text })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(`Reply sent to ${result.data?.delivered_to ?? 'the sender'}.`)
+  },
+)
+
+server.registerTool(
+  'check_inbox',
+  {
+    description: [
+      'Read messages other agent sessions have sent you, and clear them from your inbox.',
+      'You normally do not need this: queued messages are delivered to you automatically when your',
+      'turn ends. Use it to check explicitly mid-turn — e.g. before a long task, or when the user',
+      'asks whether another session has replied yet.',
+    ].join('\n'),
+    inputSchema: {},
+  },
+  async () => {
+    const result = await postToBridge('check_inbox', {})
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    const data = result.data ?? {}
+    if (!data.count) return okResult('Inbox is empty.')
+    const rendered = (data.messages ?? [])
+      .map(
+        (m) =>
+          `--- from "${m.from_label}" (${m.from}), message_id ${m.message_id}${m.expects_reply ? ' — SENDER IS WAITING for your reply' : ''} ---\n${m.text}`,
+      )
+      .join('\n\n')
+    return okResult(`${data.count} message(s):\n\n${rendered}`)
   },
 )
 
