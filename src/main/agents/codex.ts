@@ -27,31 +27,54 @@ function tomlInlineTable(values: Record<string, string>): string {
     .join(', ')} }`
 }
 
+/** Lifecycle events we ask Codex to report. Order fixes the trust-key indices. */
+export const HOOK_EVENTS = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'PermissionRequest',
+  'PostToolUse',
+  'Stop',
+  'SessionEnd',
+] as const
+
+/**
+ * The hook command Codex is asked to run, and the ONLY thing its trust hash
+ * covers. It must stay byte-identical across launches: Codex gates hook
+ * execution on `trustStatus`, and trust is recorded as a sha256 of the command
+ * under `[hooks.state."<source>:<snake_event>:<group>:<handler>"]`. Anything
+ * session-specific in here (bridge port, token, terminal id) changes the hash
+ * on every launch, so the grant the user just made never applies again — which
+ * is why the reporter takes its bridge coordinates from the environment
+ * instead. Verified against codex-cli 0.146.0: identical command ⇒ identical
+ * `currentHash` across sessions with differing bridge env.
+ */
+export function hookCommand(serverPath: string): string {
+  return `node ${shellQuote(serverPath)} --codex-hook-reporter`
+}
+
+/** The bridge coordinates the hook reporter and MCP server both need. */
+function bridgeEnvFor(ctx: LaunchContext): Record<string, string> {
+  return {
+    SIMPLEEDIT_BRIDGE_PORT: String(ctx.bridgePort),
+    SIMPLEEDIT_BRIDGE_TOKEN: String(ctx.bridgeToken),
+    SIMPLEEDIT_TERMINAL_ID: ctx.terminalId,
+  }
+}
+
 function bridgeArgs(ctx: LaunchContext): string[] {
   if (ctx.bridgePort == null || ctx.bridgeToken == null) return []
 
   const server = mcpServerPath()
-  const bridgeEnv = {
-    SIMPLEEDIT_BRIDGE_PORT: String(ctx.bridgePort),
-    SIMPLEEDIT_BRIDGE_TOKEN: ctx.bridgeToken,
-    SIMPLEEDIT_TERMINAL_ID: ctx.terminalId,
-  }
   const args = [
     ...config('mcp_servers.simpleedit.command', tomlString('node')),
     ...config('mcp_servers.simpleedit.args', JSON.stringify([server])),
-    ...config('mcp_servers.simpleedit.env', tomlInlineTable(bridgeEnv)),
+    ...config('mcp_servers.simpleedit.env', tomlInlineTable(bridgeEnvFor(ctx))),
   ]
 
-  const reporter = [
-    `SIMPLEEDIT_BRIDGE_PORT=${shellQuote(String(ctx.bridgePort))}`,
-    `SIMPLEEDIT_BRIDGE_TOKEN=${shellQuote(ctx.bridgeToken)}`,
-    `SIMPLEEDIT_TERMINAL_ID=${shellQuote(ctx.terminalId)}`,
-    'node',
-    shellQuote(server),
-    '--codex-hook-reporter',
-  ].join(' ')
-  const hook = `[{ hooks = [{ type = "command", command = ${tomlString(reporter)}, timeout = 5 }] }]`
-  for (const event of ['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PostToolUse', 'Stop', 'SessionEnd']) {
+  // timeout 3, not 5: Codex clamps SessionEnd to 3s and warns about anything
+  // higher, and a uniform value keeps every event's trust hash identical.
+  const hook = `[{ hooks = [{ type = "command", command = ${tomlString(hookCommand(server))}, timeout = 3 }] }]`
+  for (const event of HOOK_EVENTS) {
     args.push(...config(`hooks.${event}`, hook))
   }
   return args
@@ -76,7 +99,14 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   }
   if (ctx.initialPrompt) args.push(ctx.initialPrompt)
 
-  return { executable: 'codex', args }
+  // The bridge coordinates ride in the env rather than the hook command so the
+  // command — and therefore its trust hash — stays stable (see hookCommand).
+  // `renderLaunchCommand` prefixes these inline at the login-shell boundary, so
+  // a user's ~/.zshrc cannot clobber them, and Codex's hook subprocesses
+  // inherit them.
+  const env = ctx.bridgePort != null && ctx.bridgeToken != null ? bridgeEnvFor(ctx) : undefined
+
+  return { executable: 'codex', args, ...(env ? { env } : {}) }
 }
 
 export const codexProvider: AgentProvider = {
