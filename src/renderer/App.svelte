@@ -8,7 +8,7 @@
   import { uiView } from './stores/uiView.svelte'
   import { initScreenPrsListeners } from './stores/screenprs.svelte'
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
-  import { initClaudeStatusListeners } from './stores/claude-status.svelte'
+  import { initAgentStatusListeners } from './stores/agent-status.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
   import { hydrateSession, serializeSession } from './lib/sessionPersistence'
@@ -31,7 +31,7 @@
 
   onMount(() => {
     if (isSettingsView) return
-    const unsubStatus = initClaudeStatusListeners()
+    const unsubStatus = initAgentStatusListeners()
     const unsubSessions = initSessionListeners()
     const unsubScreenPrs = initScreenPrsListeners()
     void initRepoFromMain()
@@ -137,8 +137,12 @@
       const root = projectRoot() ?? wt?.path
       if (!root || !wt) return
       e.preventDefault()
-      const id = sessionsStore.createClaude(root, wt.path)
-      sessionsStore.requestTerminalFocus(id)
+      void window.api.invoke('models:config-get').then((config) => {
+        const id = config.lastUsed?.provider === 'openai'
+          ? sessionsStore.createCodex(wt.path, { model: config.lastUsed.model, reasoningEffort: config.lastUsed.reasoningEffort })
+          : sessionsStore.createClaude(root, wt.path)
+        sessionsStore.requestTerminalFocus(id)
+      })
     }
   }
 

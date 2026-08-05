@@ -49,11 +49,20 @@ function fixture(repoPath = '/tmp/test-repo.git'): SerializedSession {
 }
 
 describe('session-store', () => {
-  it('round-trips a saved session', () => {
+  it('migrates a saved v2 Claude session to provider-aware v4', () => {
     const payload = fixture()
     saveSession(payload)
     const loaded = loadSession(payload.repoPath)
-    expect(loaded).toEqual(payload)
+    expect(loaded).toEqual({
+      ...payload,
+      version: 4,
+      sessions: payload.sessions.map((session) => ({
+        ...session,
+        kind: 'agent',
+        provider: 'claude',
+        target: { provider: 'claude' },
+      })),
+    })
   })
 
   it('returns null for an unknown repo', () => {

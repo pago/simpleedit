@@ -5,6 +5,28 @@ import { z } from 'zod'
 const BRIDGE_PORT = process.env.SIMPLEEDIT_BRIDGE_PORT
 const BRIDGE_TOKEN = process.env.SIMPLEEDIT_BRIDGE_TOKEN
 const TERMINAL_ID = process.env.SIMPLEEDIT_TERMINAL_ID
+const CODEX_HOOK_REPORTER = process.argv.includes('--codex-hook-reporter')
+
+async function reportCodexHook() {
+  let input = ''
+  for await (const chunk of process.stdin) input += chunk
+  let payload
+  try {
+    payload = JSON.parse(input)
+  } catch {
+    return
+  }
+  if (!BRIDGE_PORT || !BRIDGE_TOKEN || !TERMINAL_ID) return
+  try {
+    await fetch(`http://127.0.0.1:${BRIDGE_PORT}/${BRIDGE_TOKEN}/hooks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, simpleedit_terminal_id: TERMINAL_ID }),
+    })
+  } catch {
+    // Reporting is advisory. Never change Codex behavior when SimpleEdit exits.
+  }
+}
 
 const server = new McpServer(
   { name: 'simpleedit', version: '1.0.0' },
@@ -381,13 +403,14 @@ server.registerTool(
   },
 )
 
-// ── spawn_session: start a fresh primary Claude session ────────────────────
+// ── spawn_session: start a fresh interactive agent session ─────────────────
 
 server.registerTool(
   'spawn_session',
   {
     description: [
-      'Start a NEW primary Claude Code session in SimpleEdit, seeded with an opening brief you write.',
+      'Start a NEW interactive Claude Code or Codex session in SimpleEdit, seeded with an opening brief you write.',
+      'Omit provider/model/reasoningEffort to inherit the caller\'s complete target. For requests such as "new Codex Sol session", explicitly pass provider="codex" and the canonical model id.',
       'This is the tool to reach for whenever the user wants to spin up, spawn, start, kick off, or open a fresh session or a new agent — e.g. "spawn a new session", "start a fresh session on the timeline bug", "kick off a new agent to rebase this PR", "hand this off to a new session". Use it without being told to; if the ask is to begin new work in a separate session, this is how.',
       '',
       'Two reasons to use it:',
@@ -414,7 +437,15 @@ server.registerTool(
       model: z
         .string()
         .optional()
-        .describe('Optional model id for the new session (e.g. "claude-opus-4-8"). Omit to inherit this session\'s model.'),
+        .describe('Optional model id for the new session. Omit to inherit this session\'s model.'),
+      provider: z
+        .enum(['claude', 'codex'])
+        .optional()
+        .describe('Optional runtime provider. Omit to inherit; set explicitly for cross-provider delegation.'),
+      reasoningEffort: z
+        .enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+        .optional()
+        .describe('Optional Codex reasoning effort. Valid only with provider="codex" or an inherited Codex target.'),
       worktree: z
         .string()
         .optional()
@@ -428,8 +459,8 @@ server.registerTool(
         ),
     },
   },
-  async ({ brief, label, model, worktree, target }) => {
-    const result = await postToBridge('spawn_session', { brief, label, model, worktree, target })
+  async ({ brief, label, provider, model, reasoningEffort, worktree, target }) => {
+    const result = await postToBridge('spawn_session', { brief, label, provider, model, reasoningEffort, worktree, target })
     if (!result.ok) return errorResult(`Error: ${result.error}`)
     if (target === 'replace') {
       return okResult('New session started in SimpleEdit, replacing this one — this session is being closed.')
@@ -579,5 +610,9 @@ server.registerTool(
   },
 )
 
-const transport = new StdioServerTransport()
-await server.connect(transport)
+if (CODEX_HOOK_REPORTER) {
+  await reportCodexHook()
+} else {
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+}

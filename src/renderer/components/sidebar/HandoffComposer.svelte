@@ -9,12 +9,32 @@
 
   let { session, onclose }: Props = $props()
 
+  function initialProvider(): 'claude' | 'codex' {
+    return session.provider ?? 'claude'
+  }
+
+  function initialReasoningEffort(): string {
+    return session.target?.provider === 'codex' ? (session.target.reasoningEffort ?? '') : ''
+  }
+
+  function initialClaudeModel(): string {
+    return session.target?.provider === 'claude' ? (session.target.model?.model ?? '') : ''
+  }
+
+  function initialCodexModel(): string {
+    return session.target?.provider === 'codex' ? (session.target.model ?? '') : ''
+  }
+
   // The human writes the directive (what the successor should DO — the reason
   // for the reset); the composer prefills the supporting context. Net brief =
   // directive + context. See plans/session-spawn.md §3.
   let directive = $state('')
   let context = $state('Assembling context…')
   let directiveEl: HTMLTextAreaElement | undefined = $state()
+  let provider = $state<'claude' | 'codex'>(initialProvider())
+  let claudeModel = $state(initialClaudeModel())
+  let codexModel = $state(initialCodexModel())
+  let reasoningEffort = $state(initialReasoningEffort())
 
   let canSubmit = $derived(directive.trim().length > 0)
 
@@ -49,10 +69,13 @@
     const initialPrompt = `${directive.trim()}\n\n${context.trim()}`
     // 'replace': hand off in place — the successor takes this session's slot and
     // the current (fat) session is closed. That's the whole point of a hand-off.
-    sessionsStore.replaceWithClaude(session.id, session.launchDir, session.worktreePath, {
+    const target = provider === 'codex'
+      ? { provider: 'codex' as const, ...(codexModel ? { model: codexModel } : {}), ...(reasoningEffort ? { reasoningEffort: reasoningEffort as import('../../../shared/ipc-types').ReasoningEffort } : {}) }
+      : { provider: 'claude' as const, ...(claudeModel ? { model: { provider: 'anthropic' as const, model: claudeModel } } : {}) }
+    sessionsStore.replaceWithAgent(session.id, target, provider === 'codex' ? session.worktreePath : session.launchDir, session.worktreePath, {
       initialPrompt,
       label: session.label,
-      ...(session.model ? { model: session.model } : {}),
+      ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),
     })
     onclose()
   }
@@ -87,6 +110,30 @@
       placeholder="e.g. Rebase this PR onto main and get CI green."
       class="w-full resize-none rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-blue-500"
     ></textarea>
+
+    <div class="mt-3 grid grid-cols-3 gap-2">
+      <label class="text-xs text-zinc-400">Provider
+        <select bind:value={provider} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <label class="col-span-2 text-xs text-zinc-400">Model <span class="text-zinc-600">(default when blank)</span>
+        {#if provider === 'codex'}
+          <input bind:value={codexModel} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200" placeholder="gpt-5.6-sol" />
+        {:else}
+          <input bind:value={claudeModel} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200" placeholder="claude-opus-5" />
+        {/if}
+      </label>
+      {#if provider === 'codex'}
+        <label class="text-xs text-zinc-400">Reasoning
+          <select bind:value={reasoningEffort} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200">
+            <option value="">Model default</option>
+            {#each ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as effort}<option value={effort}>{effort}</option>{/each}
+          </select>
+        </label>
+      {/if}
+    </div>
 
     <label for="handoff-context" class="mt-3 mb-1 block text-xs text-zinc-400">Context (editable)</label>
     <textarea

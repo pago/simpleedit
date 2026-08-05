@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import type {
     ClaudeModel,
+    CodexModel,
     ModelConfig,
     ModelDescriptor,
     ModelFeatureKey,
@@ -17,13 +18,14 @@
 
   let claudeOptions = $state<Option[]>([])
   let localOptions = $state<Option[]>([])
+  let codexOptions = $state<Option[]>([])
   let defaults = $state<Partial<Record<ModelFeatureKey, ModelRef>>>({})
   let loading = $state(true)
 
   // Every option, for resolving a selected key back to its ModelRef.
   const byKey = $derived(
     new Map<string, ModelRef>(
-      [...claudeOptions, ...localOptions].map((o) => [o.key, o.ref])
+      [...claudeOptions, ...codexOptions, ...localOptions].map((o) => [o.key, o.ref])
     )
   )
 
@@ -35,9 +37,10 @@
   onMount(() => {
     let cancelled = false
     void (async () => {
-      const [claude, installed, config]: [ClaudeModel[], ModelDescriptor[], ModelConfig] =
+      const [claude, codex, installed, config]: [ClaudeModel[], CodexModel[], ModelDescriptor[], ModelConfig] =
         await Promise.all([
           window.api.invoke('models:claude'),
+          window.api.invoke('models:codex').catch(() => [] as CodexModel[]),
           window.api.invoke('models:installed').catch(() => [] as ModelDescriptor[]),
           window.api.invoke('models:config-get'),
         ])
@@ -46,6 +49,16 @@
         const ref: ModelRef = { provider: 'anthropic', model: m.model }
         return { key: refKey(ref), label: m.displayName, ref }
       })
+      codexOptions = [
+        { key: refKey({ provider: 'openai' }), label: 'Configured default', ref: { provider: 'openai' } },
+        ...codex.flatMap((m) => {
+          const efforts = m.supportedReasoningEfforts.length ? [undefined, ...m.supportedReasoningEfforts] : [undefined]
+          return efforts.map((effort) => {
+            const ref: ModelRef = { provider: 'openai', model: m.model, ...(effort ? { reasoningEffort: effort } : {}) }
+            return { key: refKey(ref), label: `${m.displayName}${effort ? ` · ${effort}` : ''}`, ref }
+          })
+        }),
+      ]
       // Bounded tasks don't need tool-calling, so review-only models are eligible too.
       localOptions = installed.map((m) => {
         const ref: ModelRef = { provider: 'ollama', model: m.name }
@@ -110,6 +123,9 @@
                   {/each}
                 </optgroup>
               {/if}
+              <optgroup label="Codex (cloud)">
+                {#each codexOptions as opt (opt.key)}<option value={opt.key}>{opt.label}</option>{/each}
+              </optgroup>
               {#if localOptions.length}
                 <optgroup label="Local (Ollama)">
                   {#each localOptions as opt (opt.key)}

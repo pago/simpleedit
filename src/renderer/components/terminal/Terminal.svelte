@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { AgentProviderId } from '../../../shared/ipc-types'
   import { Terminal } from '@xterm/xterm'
   import { FitAddon } from '@xterm/addon-fit'
   import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -9,10 +10,11 @@
     terminalId: string
     active?: boolean
     isClaude?: boolean
+    provider?: AgentProviderId
     ontitlechange?: (title: string) => void
   }
 
-  let { terminalId, active = true, isClaude = false, ontitlechange }: Props = $props()
+  let { terminalId, active = true, isClaude = false, provider, ontitlechange }: Props = $props()
 
   let containerEl: HTMLDivElement | undefined = $state()
   let isDropTarget = $state(false)
@@ -99,7 +101,7 @@
     // For regular shells: just let Enter through normally (Shift has no meaning).
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.key === 'Enter' && e.shiftKey) {
-        if (e.type === 'keydown' && isClaude) {
+        if (e.type === 'keydown' && (provider ?? (isClaude ? 'claude' : undefined)) === 'claude') {
           e.preventDefault()
           window.api.invoke('pty:write', id, '\x1b[13;2u')
         }
@@ -227,7 +229,8 @@
   }
 
   function formatPaths(paths: string[]): string {
-    if (isClaude) return paths.join('\n')
+    if (provider === 'codex') return paths.map((p) => `@${p}`).join(' ')
+    if (isClaude || provider === 'claude') return paths.join('\n')
     return paths.map(shellEscape).join(' ')
   }
 

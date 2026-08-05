@@ -1,7 +1,8 @@
 import type { WebContents } from 'electron'
 import type { ReviewFinding, ReviewStatus, ModelRef } from '../shared/ipc-types'
 import { getModelConfig } from './models/config'
-import { ClaudeCodeRunner, DirectRunner, type Runner } from './agent-tasks/runner'
+import type { Runner } from './agent-tasks/runner'
+import { createTaskExecution, targetFromModelRef } from './agent-tasks/registry'
 import { runTask } from './agent-tasks/orchestrator'
 import { reviewTask, type ReviewContext } from './tasks/review-task'
 
@@ -31,10 +32,8 @@ function sendFinding(wc: WebContents, key: string, finding: ReviewFinding): void
  */
 export function selectRunner(worktreePath: string): { runner: Runner; model?: ModelRef } {
   const def = getModelConfig().defaults.review
-  if (def?.provider === 'ollama') {
-    return { runner: new DirectRunner(), model: def }
-  }
-  return { runner: new ClaudeCodeRunner({ cwd: worktreePath }), model: def }
+  const { runner, model } = createTaskExecution(targetFromModelRef(def), { cwd: worktreePath })
+  return { runner, model }
 }
 
 export async function startReview(

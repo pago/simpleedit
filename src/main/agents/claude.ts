@@ -11,7 +11,7 @@ import { writeFileSync, unlinkSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import type { ClaudeStatus } from '../../shared/ipc-types'
+import type { AgentStatus } from '../../shared/ipc-types'
 import { extractOscTitles, statusFromTitle } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import { registerProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './provider'
@@ -98,22 +98,22 @@ function cleanupHookSettings(terminalId: string): void {
  * extra CLI flags to append. No-op (empty string) when no bridge is available
  * (e.g. tests, or a window whose bridge failed to start).
  */
-function buildBridgeFlags(
+function buildBridgeArgs(
   terminalId: string,
   sessionId: string,
   bridgePort: number | undefined,
   bridgeToken: string | undefined,
-): string {
-  if (bridgePort == null || bridgeToken == null) return ''
-  let flags = ''
+): string[] {
+  if (bridgePort == null || bridgeToken == null) return []
+  const args: string[] = []
   const configPath = writeMcpConfig(terminalId, bridgePort, bridgeToken)
   mcpConfigPaths.set(terminalId, configPath)
-  flags += ` --mcp-config ${configPath}`
+  args.push('--mcp-config', configPath)
   const settingsPath = writeHookSettings(terminalId, bridgePort, bridgeToken)
   hookSettingsPaths.set(terminalId, settingsPath)
-  flags += ` --settings ${settingsPath}`
+  args.push('--settings', settingsPath)
   registerSession(sessionId, terminalId)
-  return flags
+  return args
 }
 
 /**
@@ -154,7 +154,7 @@ function makeCleanup(terminalId: string): () => void {
 function buildLaunch(ctx: LaunchContext): LaunchPlan {
   const { terminalId, resumeSessionId, forkSession, bridgePort, bridgeToken, model, initialPrompt } = ctx
 
-  let command = 'claude'
+  const env: Record<string, string> = {}
   // Only `ollama` swaps the brain via an inline env override. It is prefixed
   // INLINE on the command string (not the pty env object) so a login shell's
   // ~/.zshrc can't clobber ANTHROPIC_BASE_URL/API_KEY after the env is set.
@@ -172,43 +172,53 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
     if (!/^https?:\/\/[A-Za-z0-9._:-]+(?:\/[A-Za-z0-9._~/-]*)?$/.test(endpoint)) {
       throw new Error(`Invalid Ollama endpoint: ${endpoint}`)
     }
-    command = `ANTHROPIC_BASE_URL=${endpoint} ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude`
+    env['ANTHROPIC_BASE_URL'] = endpoint
+    env['ANTHROPIC_AUTH_TOKEN'] = 'ollama'
+    env['ANTHROPIC_API_KEY'] = ''
+    env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1'
   }
 
   let sessionId: string
-  let sessionFlag: string
+  let sessionArgs: string[]
   const validResume = !!resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)
   if (forkSession && validResume) {
     // Fork: fresh id forks the source. NOT the resume/append branch — mixing
     // them up corrupts the parent (see the doc comment above).
     sessionId = randomUUID()
-    sessionFlag = ` --session-id ${sessionId} --resume ${resumeSessionId} --fork-session`
+    sessionArgs = ['--session-id', sessionId, '--resume', resumeSessionId!, '--fork-session']
   } else if (validResume) {
     sessionId = resumeSessionId!
-    sessionFlag = ` --resume ${resumeSessionId}`
+    sessionArgs = ['--resume', resumeSessionId!]
   } else {
     sessionId = randomUUID()
-    sessionFlag = ` --session-id ${sessionId}`
+    sessionArgs = ['--session-id', sessionId]
   }
 
   // MCP config + location-tracking hooks (Stage 2). Registers the
   // session_id → terminalId mapping so hook POSTs route back here.
-  command += buildBridgeFlags(terminalId, sessionId, bridgePort, bridgeToken)
-  command += sessionFlag
+  const args = [...buildBridgeArgs(terminalId, sessionId, bridgePort, bridgeToken), ...sessionArgs]
 
   if (model?.model) {
     if (!/^[A-Za-z0-9._:/-]+$/.test(model.model)) throw new Error(`Invalid model id: ${model.model}`)
-    command += ` --model ${model.model}`
+    args.push('--model', model.model)
   }
 
   // Positional prompt = claude's first interactive message (seeds "Discuss with
   // Agent" with the review brief). MUST be last. Single-quote and escape so the
   // multi-line brief survives the login-shell `-c` string as one literal arg.
   if (initialPrompt) {
-    command += ` '${initialPrompt.replace(/'/g, "'\\''")}'`
+    args.push(initialPrompt)
   }
 
-  return { command, sessionId, env: messagingEnv(), cleanup: makeCleanup(terminalId) }
+  return {
+    executable: 'claude',
+    args,
+    // Messaging env always applies; the Ollama override (when present) is
+    // layered on top — they don't overlap.
+    env: { ...messagingEnv(), ...env },
+    sessionId,
+    cleanup: makeCleanup(terminalId),
+  }
 }
 
 /**
@@ -236,15 +246,15 @@ function messagingEnv(): Record<string, string> {
  * wires no MCP bridge, no hooks, and captures no session id: agents is purely
  * TUI-driven and emits no machine-readable stream.
  */
-export function buildAgentsLaunch(): { command: string } {
-  return { command: 'claude agents' }
+export function buildAgentsLaunch(): Pick<LaunchPlan, 'executable' | 'args'> {
+  return { executable: 'claude', args: ['agents'] }
 }
 
 export const claudeProvider: AgentProvider = {
   id: 'claude',
   buildLaunch,
-  detectStatus(chunk: string): ClaudeStatus | null {
-    let status: ClaudeStatus | null = null
+  detectStatus(chunk: string): AgentStatus | null {
+    let status: AgentStatus | null = null
     for (const title of extractOscTitles(chunk)) {
       const s = statusFromTitle(title)
       if (s !== null) status = s
@@ -258,6 +268,9 @@ export const claudeProvider: AgentProvider = {
     tracking: 'full',
     mcp: true,
     modelOverride: 'env',
+    shiftEnter: 'escape-newline',
+    droppedPath: 'shell-escaped',
+    gracefulShutdown: true,
   },
 }
 

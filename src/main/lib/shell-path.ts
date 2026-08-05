@@ -7,8 +7,34 @@ function defaultShell(): string {
   return process.env['SHELL'] ?? '/bin/zsh'
 }
 
-let cachedClaudePath: string | null = null
-let resolvePromise: Promise<string> | null = null
+const cachedPaths = new Map<string, string | null>()
+const resolvePromises = new Map<string, Promise<string | null>>()
+
+export type AgentExecutable = 'claude' | 'codex'
+
+export function resolveExecutable(name: AgentExecutable): Promise<string | null> {
+  if (cachedPaths.has(name)) return Promise.resolve(cachedPaths.get(name) ?? null)
+  const pending = resolvePromises.get(name)
+  if (pending) return pending
+  if (process.platform === 'win32') return Promise.resolve(name)
+
+  const shell = defaultShell()
+  const promise = new Promise<string | null>((resolve) => {
+    execFile(shell, ['-i', '-l', '-c', `command -v ${name}`], (err, stdout) => {
+      const path = stdout.trim()
+      const result = !err && path ? path : null
+      cachedPaths.set(name, result)
+      resolvePromises.delete(name)
+      resolve(result)
+    })
+  })
+  resolvePromises.set(name, promise)
+  return promise
+}
+
+export async function isExecutableAvailable(name: AgentExecutable): Promise<boolean> {
+  return (await resolveExecutable(name)) !== null
+}
 
 /**
  * Resolve the full path to the `claude` binary by running `which claude` inside
@@ -17,28 +43,9 @@ let resolvePromise: Promise<string> | null = null
  * Result is cached — subsequent calls return immediately.
  */
 export function resolveClaudePath(): Promise<string> {
-  if (cachedClaudePath) return Promise.resolve(cachedClaudePath)
-  if (resolvePromise) return resolvePromise
+  return resolveExecutable('claude').then((path) => path ?? 'claude')
+}
 
-  if (process.platform === 'win32') {
-    cachedClaudePath = 'claude'
-    return Promise.resolve(cachedClaudePath)
-  }
-
-  const shell = defaultShell()
-  resolvePromise = new Promise<string>((resolve) => {
-    execFile(shell, ['-i', '-l', '-c', 'which claude'], (err, stdout) => {
-      const path = stdout.trim()
-      if (!err && path) {
-        cachedClaudePath = path
-        resolve(path)
-      } else {
-        // Fall back to bare name and let spawn fail with a clear error
-        cachedClaudePath = 'claude'
-        resolve('claude')
-      }
-    })
-  })
-
-  return resolvePromise
+export function resolveCodexPath(): Promise<string> {
+  return resolveExecutable('codex').then((path) => path ?? 'codex')
 }

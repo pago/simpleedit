@@ -158,7 +158,7 @@ test.describe('Claude sessions', () => {
     const before: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
     const claudeBefore = before.filter((id) => id.startsWith('claude-'))
 
-    await window.getByRole('button', { name: 'New Claude session' }).first().click()
+    await window.getByRole('button', { name: 'New agent session' }).first().click()
     await window.waitForTimeout(1000)
 
     const after: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))

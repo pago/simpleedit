@@ -32,7 +32,7 @@ describe('createClaude seed prompt', () => {
 
   it('still forwards the prompt to the PTY spawn as initialPrompt', () => {
     sessionsStore.createClaude(PRIMARY, MAIN_WT, { initialPrompt: 'fix the timeline reducer' })
-    const spawn = invoke.mock.calls.find(([channel]) => channel === 'claude:spawn')
+    const spawn = invoke.mock.calls.find(([channel]) => channel === 'agent:spawn')
     expect(spawn?.[1]).toMatchObject({ initialPrompt: 'fix the timeline reducer' })
   })
 
@@ -45,8 +45,8 @@ describe('createClaude seed prompt', () => {
 describe('seed prompt persistence', () => {
   it('survives a serialize → hydrate round-trip on the restored placeholder', () => {
     const id = sessionsStore.createClaude(PRIMARY, MAIN_WT, { initialPrompt: 'rebase the PR and land it' })
-    // A Claude session is only persistable once its uuid is pinned (claude:session-id).
-    sessionsStore.update(id, { claudeSessionId: 'uuid-1' })
+    // An agent session is only persistable once its provider identity is known.
+    sessionsStore.update(id, { providerSessionId: 'uuid-1' })
 
     const blob = serializeSession(PRIMARY)
     expect(blob.sessions[0].seedPrompt).toBe('rebase the PR and land it')
@@ -58,7 +58,7 @@ describe('seed prompt persistence', () => {
 
   it('is evicted from the persisted blob once its session is closed', () => {
     const id = sessionsStore.createClaude(PRIMARY, MAIN_WT, { initialPrompt: 'the goal' })
-    sessionsStore.update(id, { claudeSessionId: 'uuid-1' })
+    sessionsStore.update(id, { providerSessionId: 'uuid-1' })
     expect(serializeSession(PRIMARY).sessions).toHaveLength(1)
 
     sessionsStore.close(id)

@@ -1,5 +1,5 @@
 import type { WebContents } from 'electron'
-import type { ClaudeStatus } from '../shared/ipc-types'
+import type { AgentStatus } from '../shared/ipc-types'
 
 interface TerminalAttachment {
   worktreePath: string
@@ -75,7 +75,7 @@ export function extractOscTitles(data: string): string[] {
  * Derive Claude status from a terminal title emitted by Claude Code.
  * Returns null if the title is unrecognised (e.g. a shell title).
  */
-export function statusFromTitle(title: string): ClaudeStatus | null {
+export function statusFromTitle(title: string): AgentStatus | null {
   const firstCp = title.codePointAt(0) ?? 0
   if (firstCp === 0x2733) {
     // ✳ U+2733 eight-spoked asterisk — Claude's idle indicator
@@ -92,10 +92,10 @@ function sendStatus(
   webContents: WebContents,
   terminalId: string,
   worktreePath: string,
-  status: ClaudeStatus
+  status: AgentStatus
 ): void {
   if (!webContents.isDestroyed()) {
-    webContents.send('claude:status', { worktreePath, status, terminalId })
+    webContents.send('agent:status', { worktreePath, status, terminalId, precise: true })
   }
 }
 

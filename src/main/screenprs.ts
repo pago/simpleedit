@@ -5,17 +5,20 @@
  * fanned out over PRs (plans/screen-prs.md §3.1).
  */
 import { tmpdir } from 'os'
+import { mkdtempSync, rmSync } from 'fs'
+import { join } from 'path'
 import type { WebContents } from 'electron'
 import type { ModelRef, ScreenPrsFilters, ScreenPrsRunStatus } from '../shared/ipc-types'
 import type { PrContext, ScreenPrCard, TriageResult } from '../shared/screenprs'
 import { bucketOf } from '../shared/screenprs'
 import { getModelConfig } from './models/config'
 import { DEFAULT_TRIAGE_MODEL } from './models/claude-catalog'
-import { ClaudeCodeRunner, DirectRunner, type Runner } from './agent-tasks/runner'
+import type { Runner } from './agent-tasks/runner'
+import { createTaskExecution, targetFromModelRef } from './agent-tasks/registry'
 import { runFanout } from './agent-tasks/orchestrator'
-import { triageTask } from './tasks/triage-task'
+import { triageTask, TRIAGE_PROMPT_VERSION } from './tasks/triage-task'
 import { currentHandle, searchReviewRequestedPrs, getPrMeta, getPrDiff, type PrMeta } from './github/gh'
-import { getCached, putTriage } from './screenprs-cache'
+import { analysisFingerprint, getCached, putTriage } from './screenprs-cache'
 
 /** In-flight run per window, so a re-screen / window close can cancel cleanly. */
 const activeRuns = new Map<number, AbortController>()
@@ -33,13 +36,15 @@ function sendStatus(wc: WebContents, status: ScreenPrsRunStatus, extra: { error?
  * here is provisional — the eventual per-backend gate (local-serial for the GPU,
  * parallel for cloud; see plans/bounded-tasks.md) will own this.
  */
-function selectTriageRunner(): { runner: Runner; model?: ModelRef; concurrency: number } {
+function selectTriageRunner(cwd = tmpdir()): { runner: Runner; model?: ModelRef; concurrency: number } {
   // Fall back to Haiku (not the CLI's implicit default) when unconfigured.
   const def = getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
-  if (def.provider === 'ollama') return { runner: new DirectRunner(), model: def, concurrency: 1 }
-  // Triage is self-contained (diff in the prompt), so the harness needs no real
-  // worktree — a throwaway cwd is fine.
-  return { runner: new ClaudeCodeRunner({ cwd: tmpdir() }), model: def, concurrency: 4 }
+  return createTaskExecution(targetFromModelRef(def), { cwd, selfContained: true })
+}
+
+function currentTriageFingerprint(): string {
+  const model = getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
+  return analysisFingerprint({ target: targetFromModelRef(model), promptVersion: TRIAGE_PROMPT_VERSION, schemaVersion: 1 })
 }
 
 /** Run async `fn` over `items`, at most `limit` at once; failures resolve to null. */
@@ -95,9 +100,10 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
 
     // Cache hit (same head SHA) → reuse the diff + triage, no model call. Miss (or
     // ⌥-force) → gather the diff and queue it for the model.
+    const triageFingerprint = currentTriageFingerprint()
     const toTriage: PrMeta[] = []
     for (const meta of metas) {
-      const cached = filters.force ? undefined : getCached(meta.url, meta.headSha)
+      const cached = filters.force ? undefined : getCached(meta.url, meta.headSha, triageFingerprint)
       if (cached) emitCard({ ...meta, diff: cached.diff }, cached.triage)
       else toTriage.push(meta)
     }
@@ -113,33 +119,40 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
     ).filter((c): c is PrContext => c !== null)
     if (controller.signal.aborted) return
 
-    const { runner, model, concurrency } = selectTriageRunner()
+    const analysisDir = mkdtempSync(join(tmpdir(), 'simpleedit-triage-'))
+    const { runner, model, concurrency } = selectTriageRunner(analysisDir)
     const results: (TriageResult | null)[] = new Array(contexts.length).fill(null)
 
     // Per-PR budget: a stuck/slow model call is aborted so it can't freeze the
     // whole screen (that PR falls back to a metadata-only bucket). Generous
     // enough for a slow local model on a large diff.
     const TRIAGE_TIMEOUT_MS = 120_000
-    for await (const ev of runFanout(triageTask, contexts, {
-      runner,
-      model,
-      concurrency,
-      signal: controller.signal,
-      timeoutMs: TRIAGE_TIMEOUT_MS,
-    })) {
-      if (ev.kind === 'start') {
-        // The model has picked this PR up — promote it from scheduled to running.
-        send(webContents, 'screenprs:triaging', { url: ev.input.url })
-      } else if (ev.kind === 'item') {
-        results[ev.index] = ev.item ?? null
-      } else if (ev.kind === 'done' || ev.kind === 'error') {
-        // A model failure (or empty output) still yields a card — bucketed from
-        // metadata alone (impact 'low', no findings) so the PR isn't dropped.
-        const result: TriageResult = results[ev.index] ?? { impact: 'low', findings: [] }
-        const ctx = ev.input
-        if (ev.kind === 'done' && results[ev.index]) putTriage(ctx.url, ctx.headSha, ctx.diff, result)
-        emitCard(ctx, result)
+    try {
+      for await (const ev of runFanout(triageTask, contexts, {
+        runner,
+        model,
+        concurrency,
+        signal: controller.signal,
+        timeoutMs: TRIAGE_TIMEOUT_MS,
+      })) {
+        if (ev.kind === 'start') {
+          // The model has picked this PR up — promote it from scheduled to running.
+          send(webContents, 'screenprs:triaging', { url: ev.input.url })
+        } else if (ev.kind === 'item') {
+          results[ev.index] = ev.item ?? null
+        } else if (ev.kind === 'done' || ev.kind === 'error') {
+          // A model failure (or empty output) still yields a card — bucketed from
+          // metadata alone (impact 'low', no findings) so the PR isn't dropped.
+          const result: TriageResult = results[ev.index] ?? { impact: 'low', findings: [] }
+          const ctx = ev.input
+          if (ev.kind === 'done' && results[ev.index]) {
+            putTriage(ctx.url, ctx.headSha, ctx.diff, result, triageFingerprint)
+          }
+          emitCard(ctx, result)
+        }
       }
+    } finally {
+      rmSync(analysisDir, { recursive: true, force: true })
     }
 
     if (!controller.signal.aborted) sendStatus(webContents, 'done', { total: metas.length })

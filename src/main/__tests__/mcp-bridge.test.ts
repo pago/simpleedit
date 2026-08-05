@@ -142,7 +142,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
       ],
     }
 
-    it('emits tour:from-claude with commitHash=null when commitHash omitted', async () => {
+    it('emits tour:from-agent with commitHash=null when commitHash omitted', async () => {
       const res = await post(`/${token}/tool-call`, {
         tool: 'complete_task',
         terminalId: 'term-42',
@@ -156,7 +156,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
       expect(res.status).toBe(200)
       expect(res.body).toEqual({ ok: true })
       expect(wc.send).toHaveBeenCalledWith(
-        'tour:from-claude',
+        'tour:from-agent',
         expect.objectContaining({
           key: '/test/repo:staging',
           terminalId: 'term-42',
@@ -170,7 +170,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
       )
     })
 
-    it('emits tour:from-claude with the provided commitHash', async () => {
+    it('emits tour:from-agent with the provided commitHash', async () => {
       const res = await post(`/${token}/tool-call`, {
         tool: 'complete_task',
         terminalId: 'term-7',
@@ -183,7 +183,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
 
       expect(res.status).toBe(200)
       expect(wc.send).toHaveBeenCalledWith(
-        'tour:from-claude',
+        'tour:from-agent',
         expect.objectContaining({
           key: '/test/repo:abc123',
           terminalId: 'term-7',
@@ -206,7 +206,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
       })
 
       expect(wc.send).toHaveBeenCalledWith(
-        'tour:from-claude',
+        'tour:from-agent',
         expect.objectContaining({
           tour: expect.not.objectContaining({ openQuestions: expect.anything() }),
         })
@@ -225,7 +225,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
       })
 
       expect(wc.send).toHaveBeenCalledWith(
-        'tour:from-claude',
+        'tour:from-agent',
         expect.objectContaining({ commitHash: null, key: '/test/repo:staging' })
       )
     })
@@ -277,7 +277,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
 
         expect(res.status).toBe(200)
         expect(wc.send).toHaveBeenCalledWith(
-          'tour:from-claude',
+          'tour:from-agent',
           expect.objectContaining({
             worktreePath: '/authoritative/worktree',
             key: '/authoritative/worktree:staging',
@@ -304,7 +304,7 @@ describe('MCP Bridge — HTTP endpoints', () => {
         },
       })
 
-      const call = wc.send.mock.calls.find((c: unknown[]) => c[0] === 'tour:from-claude')
+      const call = wc.send.mock.calls.find((c: unknown[]) => c[0] === 'tour:from-agent')
       expect(call).toBeDefined()
       const payload = call![1] as { tour: { topics: Array<{ id: string }> } }
       expect(payload.tour.topics).toHaveLength(2)
@@ -628,6 +628,29 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
     expect(wc.send).toHaveBeenLastCalledWith('agent-session:spawn', expect.objectContaining({ target: 'new-pane' }))
   })
 
+  it('spawn_session forwards an explicit Codex target and reasoning effort', async () => {
+    const res = await post({
+      tool: 'spawn_session',
+      terminalId: 'term-1',
+      args: { brief: 'continue in Codex', provider: 'codex', model: 'gpt-5.6-sol', reasoningEffort: 'ultra' },
+    })
+    expect(res.status).toBe(200)
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+      sourceTerminalId: 'term-1',
+      brief: 'continue in Codex',
+      provider: 'codex',
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'ultra',
+      target: 'new-pane',
+    })
+  })
+
+  it('spawn_session rejects invalid model syntax and Claude reasoning overrides', async () => {
+    expect((await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'x', model: 'bad;id' } })).status).toBe(400)
+    expect((await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'x', provider: 'claude', reasoningEffort: 'high' } })).status).toBe(400)
+    expect((await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'x', provider: 'unknown' } })).status).toBe(400)
+  })
+
   it('spawn_session returns 400 for a missing/blank brief', async () => {
     expect((await post({ tool: 'spawn_session', terminalId: 'term-1', args: {} })).status).toBe(400)
     expect((await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: '   ' } })).status).toBe(400)
@@ -897,7 +920,7 @@ describe.skipIf(!runIntegration)('MCP Server → Bridge integration', () => {
     expect(content[0].text).toContain('Tour delivered')
 
     expect(wc.send).toHaveBeenCalledWith(
-      'tour:from-claude',
+      'tour:from-agent',
       expect.objectContaining({
         key: '/integration/repo:staging',
         terminalId: 'tour-test-term',

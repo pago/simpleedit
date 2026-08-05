@@ -56,7 +56,7 @@ test.describe('Issue #100: rename persists across restart', () => {
   test('a renamed Claude tab label comes back after relaunch', async () => {
     await launch()
 
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
     const tab = window.locator('[role="option"]:has-text("Claude")').first()

@@ -71,7 +71,16 @@ base.describe('session save/restore — IPC round-trip', () => {
       async (r) => (window as unknown as ApiOnly).api.invoke('session:load', r),
       repo
     )
-    expect(loaded).toEqual(payload)
+    expect(loaded).toEqual({
+      ...payload,
+      version: 4,
+      sessions: payload.sessions.map((session) => ({
+        ...session,
+        kind: 'agent',
+        provider: 'claude',
+        target: { provider: 'claude' },
+      })),
+    })
 
     // Cleanup so subsequent runs aren't polluted.
     await window.evaluate(

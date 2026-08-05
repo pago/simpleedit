@@ -87,7 +87,7 @@ test.describe('session save/restore — Claude session does not loop or break IP
     // The repro trigger — creating another Claude session kicks off the
     // debounced session save (both old errors fired on this path). The new
     // session takes focus; switch back to the first workspace afterwards.
-    await window.getByRole('button', { name: 'New Claude session' }).first().click()
+    await window.getByRole('button', { name: 'New agent session' }).first().click()
     await window.waitForTimeout(1500)
     await sessionOptions().nth(1).click() // claude sessions prepend — original is now second
     await window.waitForTimeout(300)
@@ -106,7 +106,7 @@ test.describe('session save/restore — Claude session does not loop or break IP
 
   test('switching worktrees still works after opening a Claude session', async () => {
     // A second Claude session — the worktree selection below repoints it.
-    await window.getByRole('button', { name: 'New Claude session' }).first().click()
+    await window.getByRole('button', { name: 'New agent session' }).first().click()
     await window.waitForTimeout(1500)
 
     // Worktrees live in the workspace header popover (f1e6062).

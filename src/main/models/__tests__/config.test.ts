@@ -44,11 +44,13 @@ describe('model config persistence', () => {
       defaults: {
         review: { provider: 'ollama', model: 'qwen2.5-coder:7b' },
         interactive: { provider: 'anthropic', model: 'claude-sonnet' },
+        tour: { provider: 'openai', model: 'gpt-5.6-sol', reasoningEffort: 'high' },
       },
       submenuAllowlist: ['qwen2.5-coder:7b', 'claude-sonnet'],
-      lastUsed: { provider: 'ollama', model: 'qwen2.5-coder:7b', endpoint: 'http://localhost:11434' },
+      lastUsed: { provider: 'openai', model: 'gpt-5.6-sol', reasoningEffort: 'xhigh' },
       deepReview: {
         lenses: { soundness: { enabled: true, model: { provider: 'anthropic', model: 'claude-sonnet' } } },
+        synthesisModel: { provider: 'openai' },
       },
     }
     const saved = setModelConfig(cfg)

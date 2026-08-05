@@ -17,46 +17,42 @@ vi.mock('electron', () => ({
 
 import { claudeProvider } from '../claude'
 
-function launch(model?: import('../../../shared/ipc-types').ModelRef): string {
+function launch(model?: import('../../../shared/ipc-types').ModelRef) {
   return claudeProvider.buildLaunch({
     terminalId: 'term-1',
     worktreePath: '/repo',
     ...(model ? { model } : {}),
-  }).command
+  })
 }
 
 describe('claude provider buildLaunch — model application', () => {
   it('ollama model prefixes the inline env override and appends --model', () => {
-    const command = launch({ provider: 'ollama', model: 'gpt-oss:20b' })
-    expect(command.startsWith(
-      'ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude',
-    )).toBe(true)
+    const plan = launch({ provider: 'ollama', model: 'gpt-oss:20b' })
+    expect(plan.executable).toBe('claude')
+    expect(plan.env).toMatchObject({ ANTHROPIC_BASE_URL: 'http://localhost:11434', ANTHROPIC_AUTH_TOKEN: 'ollama', ANTHROPIC_API_KEY: '', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' })
     // The disable-nonessential-traffic flag is what suppresses Claude Code's
     // /v1/messages/count_tokens probe that otherwise hangs Ollama (#13949).
-    expect(command).toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1')
-    expect(command.endsWith(' --model gpt-oss:20b')).toBe(true)
+    expect(plan.args.slice(-2)).toEqual(['--model', 'gpt-oss:20b'])
   })
 
   it('ollama honours a custom endpoint', () => {
-    const command = launch({ provider: 'ollama', model: 'llama3.1', endpoint: 'http://192.168.1.5:11434' })
-    expect(command.startsWith('ANTHROPIC_BASE_URL=http://192.168.1.5:11434 ')).toBe(true)
+    const plan = launch({ provider: 'ollama', model: 'llama3.1', endpoint: 'http://192.168.1.5:11434' })
+    expect(plan.env?.['ANTHROPIC_BASE_URL']).toBe('http://192.168.1.5:11434')
   })
 
   it('anthropic model adds --model with NO env override (normal cloud auth)', () => {
-    const command = launch({ provider: 'anthropic', model: 'claude-opus-4' })
-    expect(command).not.toContain('ANTHROPIC_BASE_URL')
-    expect(command).not.toContain('ANTHROPIC_AUTH_TOKEN')
-    expect(command).toContain(' --model claude-opus-4')
-    expect(command.startsWith('claude ')).toBe(true)
+    const plan = launch({ provider: 'anthropic', model: 'claude-opus-4' })
+    expect(plan.env).toBeUndefined()
+    expect(plan.args.slice(-2)).toEqual(['--model', 'claude-opus-4'])
   })
 
   it('no model leaves the command unchanged from the cloud default', () => {
-    const command = launch()
-    expect(command.startsWith('claude ')).toBe(true)
-    expect(command).not.toContain('--model')
-    expect(command).not.toContain('ANTHROPIC_BASE_URL')
+    const plan = launch()
+    expect(plan.executable).toBe('claude')
+    expect(plan.args).not.toContain('--model')
+    expect(plan.env).toBeUndefined()
     // Fresh spawn (no resume): a pinned --session-id and nothing else.
-    expect(command).toMatch(/^claude --session-id [0-9a-f-]+$/)
+    expect(plan.args).toEqual(['--session-id', expect.stringMatching(/^[0-9a-f-]+$/)])
   })
 
   it('rejects an ollama endpoint that is not an http(s) URL', () => {

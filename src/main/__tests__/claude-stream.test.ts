@@ -56,10 +56,11 @@ describe('attachToTerminal — OSC title parsing', () => {
     const wc = makeWebContents()
     attachToTerminal('ta1', '/repo/worktree', wc as never)
     emitPtyData('ta1', '\x1b]0;✳ Claude Code\x07')
-    expect(wc.send).toHaveBeenCalledWith('claude:status', {
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
       worktreePath: '/repo/worktree',
       status: 'idle',
-      terminalId: 'ta1'
+      terminalId: 'ta1',
+      precise: true
     })
   })
 
@@ -68,10 +69,11 @@ describe('attachToTerminal — OSC title parsing', () => {
     attachToTerminal('ta2', '/repo/worktree', wc as never)
     // ⠂ U+2802 is in the braille block
     emitPtyData('ta2', '\x1b]0;⠂ Claude Code\x07')
-    expect(wc.send).toHaveBeenCalledWith('claude:status', {
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
       worktreePath: '/repo/worktree',
       status: 'running',
-      terminalId: 'ta2'
+      terminalId: 'ta2',
+      precise: true
     })
   })
 
@@ -81,10 +83,11 @@ describe('attachToTerminal — OSC title parsing', () => {
       const wc = makeWebContents()
       attachToTerminal(`ta-spin-${spinner}`, '/repo', wc as never)
       emitPtyData(`ta-spin-${spinner}`, `\x1b]0;${spinner} Claude Code\x07`)
-      expect(wc.send).toHaveBeenCalledWith('claude:status', {
+      expect(wc.send).toHaveBeenCalledWith('agent:status', {
         worktreePath: '/repo',
         status: 'running',
-        terminalId: `ta-spin-${spinner}`
+        terminalId: `ta-spin-${spinner}`,
+        precise: true
       })
     }
   })
@@ -102,15 +105,17 @@ describe('attachToTerminal — OSC title parsing', () => {
     attachToTerminal('ta4', '/repo', wc as never)
     emitPtyData('ta4', '\x1b]0;⠂ Claude Code\x07some output\x1b]0;✳ Claude Code\x07')
     expect(wc.send).toHaveBeenCalledTimes(2)
-    expect(wc.send).toHaveBeenNthCalledWith(1, 'claude:status', {
+    expect(wc.send).toHaveBeenNthCalledWith(1, 'agent:status', {
       worktreePath: '/repo',
       status: 'running',
-      terminalId: 'ta4'
+      terminalId: 'ta4',
+      precise: true
     })
-    expect(wc.send).toHaveBeenNthCalledWith(2, 'claude:status', {
+    expect(wc.send).toHaveBeenNthCalledWith(2, 'agent:status', {
       worktreePath: '/repo',
       status: 'idle',
-      terminalId: 'ta4'
+      terminalId: 'ta4',
+      precise: true
     })
   })
 
@@ -141,11 +146,11 @@ describe('attachToTerminal — OSC title parsing', () => {
     const wc = makeWebContents()
     attachToTerminal('ta8', '/repo', wc as never)
     emitPtyData('ta8', '\x1b]0;✳ Claude Code\x1b\\')
-    expect(wc.send).toHaveBeenCalledWith('claude:status', {
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
       worktreePath: '/repo',
       status: 'idle',
-      terminalId: 'ta8'
+      terminalId: 'ta8',
+      precise: true
     })
   })
 })
-

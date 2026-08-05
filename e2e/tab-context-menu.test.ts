@@ -74,7 +74,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
   // Helper: spawn a Claude tab via the ✦ button's left-click.
   async function spawnClaudeTab(): Promise<void> {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
     await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
@@ -323,7 +323,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
   test('Close session menu item closes the tab', async () => {
     // Spawn two Claude tabs so closing one leaves something behind.
     await spawnClaudeTab()
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await claudeButton.click()
     await expect(window.locator('[role="option"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
 
@@ -339,7 +339,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
   test('Close session keyboard activation (Enter) closes the tab', async () => {
     await spawnClaudeTab()
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await claudeButton.click()
     await expect(window.locator('[role="option"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
 
@@ -361,7 +361,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
   test('Close session on Agent View tab closes it without trying to detach a stream parser', async () => {
     // Open an Agent View tab via the ✦ button context menu, then close it.
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await claudeButton.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'New Agent View session' }).click()
     await expect(window.locator('[role="option"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })
@@ -413,7 +413,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
     await expect(window.locator('[role="option"]:has-text("Terminal 1")').first()).toBeVisible()
 
     // ✦ Agent button still works — spawn another Claude session.
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await claudeButton.click()
     await expect(
       window.locator('[role="option"]:has-text("Claude")').first()
@@ -422,7 +422,7 @@ test.describe('Issue #87 PR1: tab context menu + rename', () => {
 
   test('legacy × close button on a Claude tab still works after Close session is wired', async () => {
     await spawnClaudeTab()
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await claudeButton.click()
     await expect(window.locator('[role="option"]:has-text("Claude 2")').first()).toBeVisible({ timeout: 5_000 })
 
@@ -480,10 +480,7 @@ test.describe('Fork item disable behavior', () => {
   test.beforeEach(async () => {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: {
-        ...process.env,
-        SIMPLEEDIT_REPO: bareRepoPath,
-      },
+      env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath }),
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -500,7 +497,7 @@ test.describe('Fork item disable behavior', () => {
   })
 
   async function spawnClaudeTab(): Promise<void> {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
     await expect(window.locator('[role="option"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
@@ -580,7 +577,7 @@ test.describe('Fork item parity and persistence', () => {
   async function launch(): Promise<void> {
     app = await electron.launch({
       args: [MAIN, ...SANDBOX_ARGS],
-      env: { ...process.env, SIMPLEEDIT_REPO: bareRepoPath },
+      env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath }),
     })
     window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -601,7 +598,7 @@ test.describe('Fork item parity and persistence', () => {
   })
 
   async function spawnClaudeTab(w: Page): Promise<void> {
-    const claudeButton = w.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = w.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
     await expect(w.locator('[role="option"]:has-text("Claude")').first()).toBeVisible({ timeout: 5_000 })
@@ -611,7 +608,7 @@ test.describe('Fork item parity and persistence', () => {
     await launch()
     const w = window!
 
-    const claudeButton = w.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = w.getByRole('button', { name: 'New agent session' }).first()
     await claudeButton.click({ button: 'right' })
     await w.getByRole('menuitem', { name: 'New Agent View session' }).click()
 
@@ -705,9 +702,10 @@ test.describe('Fork item parity and persistence', () => {
     const agents = sessions.find((s) => s.label === 'Agents')!
     expect(agents.kind).toBe('agents')
     expect(agents.sessionId).toBeUndefined()
-    // The Claude entry keeps kind 'claude' + its sessionId.
+    // The legacy Claude entry migrates to the provider-aware agent shape.
     const claude = sessions.find((s) => s.label === 'Claude')!
-    expect(claude.kind).toBe('claude')
+    expect(claude.kind).toBe('agent')
+    expect((claude as typeof claude & { provider: string }).provider).toBe('claude')
     expect(claude.sessionId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
 
     // Cleanup so we don't leave the saved session for later tests.

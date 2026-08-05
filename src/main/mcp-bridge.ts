@@ -141,7 +141,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
 
   if (tool === 'complete_task') {
     const tour = args['tour'] as Tour | undefined
-    const claudeWorktreePath = args['worktreePath'] as string | undefined
+    const agentWorktreePath = args['worktreePath'] as string | undefined
     const commitHashArg = args['commitHash']
     const openQuestions = args['openQuestions'] as string[] | undefined
 
@@ -149,7 +149,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
       return { status: 400, body: { error: 'complete_task requires tour in args' } }
     }
 
-    const worktreePath = getWorktreeForTerminal(terminalId) ?? claudeWorktreePath
+    const worktreePath = getWorktreeForTerminal(terminalId) ?? agentWorktreePath
     if (!worktreePath) {
       return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
     }
@@ -172,7 +172,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
 
     const key = tourKey(worktreePath, commitHash)
     if (!webContents.isDestroyed()) {
-      webContents.send('tour:from-claude', {
+      webContents.send('tour:from-agent', {
         key,
         terminalId,
         worktreePath,
@@ -180,14 +180,14 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
         tour: persistedTour,
       })
     } else {
-      console.warn(`[MCP Bridge] webContents is destroyed, cannot send tour:from-claude IPC`)
+      console.warn(`[MCP Bridge] webContents is destroyed, cannot send tour:from-agent IPC`)
     }
 
     return { status: 200, body: { ok: true } }
   }
 
   if (tool === 'show_panel') {
-    const claudeWorktreePath = typeof args['worktreePath'] === 'string' ? (args['worktreePath'] as string) : undefined
+    const agentWorktreePath = typeof args['worktreePath'] === 'string' ? (args['worktreePath'] as string) : undefined
     const title = typeof args['title'] === 'string' ? (args['title'] as string) : 'Agent panel'
 
     // Agent argument first, then validate against the window's registered
@@ -197,7 +197,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
     // rendered the panel against the wrong one. The registered-repo union is
     // the trust boundary instead; it grows at runtime as the agent touches
     // files in sibling repos (PostToolUse hook → discoverRepo).
-    const worktreePath = claudeWorktreePath ?? getWorktreeForTerminal(terminalId)
+    const worktreePath = agentWorktreePath ?? getWorktreeForTerminal(terminalId)
     if (!worktreePath) {
       return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
     }
@@ -312,8 +312,8 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
       return { status: 400, body: { error: 'show_diff commitHash must be a string' } }
     }
 
-    const claudeWorktreePath = typeof args['worktreePath'] === 'string' ? (args['worktreePath'] as string) : undefined
-    const worktreePath = claudeWorktreePath ?? getWorktreeForTerminal(terminalId)
+    const agentWorktreePath = typeof args['worktreePath'] === 'string' ? (args['worktreePath'] as string) : undefined
+    const worktreePath = agentWorktreePath ?? getWorktreeForTerminal(terminalId)
     if (!worktreePath) {
       return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
     }
@@ -348,6 +348,21 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
     }
     const label = typeof args['label'] === 'string' ? (args['label'] as string) : undefined
     const model = typeof args['model'] === 'string' ? (args['model'] as string) : undefined
+    const providerArg = args['provider']
+    if (providerArg !== undefined && providerArg !== 'claude' && providerArg !== 'codex') {
+      return { status: 400, body: { error: 'spawn_session provider must be claude or codex' } }
+    }
+    const provider = providerArg as 'claude' | 'codex' | undefined
+    const reasoningEffort = typeof args['reasoningEffort'] === 'string' ? args['reasoningEffort'] : undefined
+    if (model && !/^[A-Za-z0-9._:/-]+$/.test(model)) {
+      return { status: 400, body: { error: 'spawn_session model has invalid syntax' } }
+    }
+    if (reasoningEffort && !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(reasoningEffort)) {
+      return { status: 400, body: { error: 'spawn_session reasoningEffort is unsupported' } }
+    }
+    if (reasoningEffort && provider === 'claude') {
+      return { status: 400, body: { error: 'spawn_session reasoningEffort is only compatible with Codex' } }
+    }
     // Default 'new-pane'; only 'replace' is the other accepted value.
     const target = args['target'] === 'replace' ? 'replace' : 'new-pane'
 
@@ -383,6 +398,8 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
       correlationId,
       ...(label ? { label } : {}),
       ...(model ? { model } : {}),
+      ...(provider ? { provider } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(worktreePath ? { worktreePath } : {}),
       target,
     })
@@ -542,11 +559,14 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
   const signal = parseHookBody(parsed)
   if (!signal) return {}
 
-  const terminalId = terminalForSession(signal.sessionId)
+  // Codex's reporter stamps the terminal id straight into the body; Claude's
+  // HTTP hooks don't, so those route by session_id through the registry.
+  const terminalId = signal.terminalId ?? terminalForSession(signal.sessionId)
   if (!terminalId) return {}
 
   const worktrees = await resolveWorktrees(webContents.id)
   const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
+  if (signal.terminalId) registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
 
   if (!webContents.isDestroyed()) {
     webContents.send('session:cwd', {
@@ -609,6 +629,33 @@ function handleTurnEnd(
     })
   }
   return { decision: 'block', reason: formatForDelivery(messages) }
+}
+
+function registerCodexIdentityAndStatus(
+  signal: import('./cwd-tracker').HookSignal,
+  terminalId: string,
+  worktreePath: string,
+  webContents: WebContents,
+): void {
+  if (webContents.isDestroyed()) return
+  webContents.send('agent:session-id', { terminalId, sessionId: signal.sessionId })
+  const statusByEvent: Record<string, 'initializing' | 'running' | 'waiting' | 'idle' | 'exited'> = {
+    SessionStart: 'initializing',
+    UserPromptSubmit: 'running',
+    PermissionRequest: 'waiting',
+    PostToolUse: 'running',
+    Stop: 'idle',
+    SessionEnd: 'exited',
+  }
+  const status = signal.eventName ? statusByEvent[signal.eventName] : undefined
+  if (status) {
+    webContents.send('agent:status', {
+      worktreePath,
+      status,
+      terminalId,
+      precise: true,
+    })
+  }
 }
 
 function createBridgeServer(token: string, webContents: WebContents): Server {

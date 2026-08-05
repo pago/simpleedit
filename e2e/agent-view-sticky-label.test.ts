@@ -75,7 +75,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     })
 
     // Spawn an Agent View session via the new-session context menu.
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click({ button: 'right' })
     await window.getByRole('menuitem', { name: 'New Agent View session' }).click()

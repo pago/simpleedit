@@ -48,7 +48,7 @@ describe('agent-session:spawn listener', () => {
       await flush()
 
       const spawned = sessionsStore.sessions()[0]
-      expect(spawned.kind).toBe('claude')
+      expect(spawned.kind).toBe('agent')
       expect(spawned.seedPrompt).toBe('fix the timeline reducer')
       expect(spawned.launchDir).toBe(PROJECT_ROOT)
       // No caller and no explicit worktree → default to the main worktree.
@@ -104,6 +104,40 @@ describe('agent-session:spawn listener', () => {
       const spawned = sessionsStore.sessions()[0]
       expect(spawned.label).toBe('my label')
       expect(spawned.model).toEqual({ provider: 'anthropic', model: 'claude-opus-4-8' })
+    } finally {
+      off()
+    }
+  })
+
+  it('inherits a Codex caller target including reasoning effort', async () => {
+    const off = initSessionListeners()
+    try {
+      const callerId = sessionsStore.createCodex(FEAT_WT, { model: 'gpt-5.6-sol', reasoningEffort: 'xhigh' })
+      handlers.get('agent-session:spawn')!({ sourceTerminalId: callerId, brief: 'continue in Codex' })
+      await flush()
+
+      const spawned = sessionsStore.sessions()[0]
+      expect(spawned.provider).toBe('codex')
+      expect(spawned.target).toEqual({ provider: 'codex', model: 'gpt-5.6-sol', reasoningEffort: 'xhigh' })
+      expect(spawned.launchDir).toBe(FEAT_WT)
+    } finally {
+      off()
+    }
+  })
+
+  it('supports explicit Claude to Codex delegation with an uncatalogued canonical model id', async () => {
+    const off = initSessionListeners()
+    try {
+      const callerId = sessionsStore.createClaude(PRIMARY, FEAT_WT)
+      handlers.get('agent-session:spawn')!({
+        sourceTerminalId: callerId,
+        brief: 'take this in Codex',
+        provider: 'codex',
+        model: 'gpt-5.99-future',
+        reasoningEffort: 'high',
+      })
+      await flush()
+      expect(sessionsStore.sessions()[0].target).toEqual({ provider: 'codex', model: 'gpt-5.99-future', reasoningEffort: 'high' })
     } finally {
       off()
     }
@@ -175,18 +209,18 @@ describe('replaceWithClaude (store)', () => {
   })
 })
 
-describe('forkClaude (store)', () => {
+describe('forkAgent (store)', () => {
   it('forks a live session with --fork-session and groups the pair', () => {
     const src = sessionsStore.createClaude(PRIMARY, FEAT_WT)
-    sessionsStore.update(src, { claudeSessionId: 'src-uuid' })
+    sessionsStore.update(src, { providerSessionId: 'src-uuid' })
 
-    const forkId = sessionsStore.forkClaude(src)
+    const forkId = sessionsStore.forkAgent(src)
     expect(forkId).toBeTruthy()
 
     // Fork went through claude:spawn with resume+forkSession (not a plain resume).
     const invoke = (window as unknown as { api: { invoke: { mock: { calls: unknown[][] } } } }).api.invoke
     const spawn = invoke.mock.calls.find(
-      ([channel, opts]) => channel === 'claude:spawn' && (opts as { id: string }).id === forkId,
+      ([channel, opts]) => channel === 'agent:spawn' && (opts as { id: string }).id === forkId,
     )
     expect(spawn?.[1]).toMatchObject({ resumeSessionId: 'src-uuid', forkSession: true })
 
@@ -201,18 +235,35 @@ describe('forkClaude (store)', () => {
 
   it('joins the source group when it already has one', () => {
     const a = sessionsStore.createClaude(PRIMARY, MAIN_WT)
-    sessionsStore.update(a, { claudeSessionId: 'a-uuid' })
+    sessionsStore.update(a, { providerSessionId: 'a-uuid' })
     const b = sessionsStore.createClaude(PRIMARY, MAIN_WT)
     const g = sessionsStore.createGroup([a, b])!
 
-    const forkId = sessionsStore.forkClaude(a)
+    const forkId = sessionsStore.forkAgent(a)
     expect(sessionsStore.get(forkId!)?.groupId).toBe(g)
     // No spurious extra group was formed.
     expect(sessionsStore.groups()).toHaveLength(1)
   })
 
-  it('refuses to fork a session with no captured claude session id', () => {
-    const src = sessionsStore.createClaude(PRIMARY, MAIN_WT) // no claudeSessionId yet
-    expect(sessionsStore.forkClaude(src)).toBeNull()
+  it('uses Codex-native fork with the captured thread target', () => {
+    const src = sessionsStore.createCodex(FEAT_WT, { model: 'gpt-5.6-sol', reasoningEffort: 'ultra' })
+    sessionsStore.update(src, { providerSessionId: 'thread-123' })
+
+    const forkId = sessionsStore.forkAgent(src)
+    const invoke = (window as unknown as { api: { invoke: { mock: { calls: unknown[][] } } } }).api.invoke
+    const spawn = invoke.mock.calls.find(
+      ([channel, opts]) => channel === 'agent:spawn' && (opts as { id: string }).id === forkId,
+    )
+    expect(spawn?.[1]).toMatchObject({
+      target: { provider: 'codex', model: 'gpt-5.6-sol', reasoningEffort: 'ultra' },
+      resumeSessionId: 'thread-123',
+      forkSession: true,
+      worktreePath: FEAT_WT,
+    })
+  })
+
+  it('refuses to fork a session with no captured provider session id', () => {
+    const src = sessionsStore.createClaude(PRIMARY, MAIN_WT) // no providerSessionId yet
+    expect(sessionsStore.forkAgent(src)).toBeNull()
   })
 })

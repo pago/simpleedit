@@ -68,7 +68,7 @@ test.describe('Issue #97: tab strip a11y / DOM validity', () => {
   test('Claude session is role="option" (not <button>), and ⋯ / close are real <button> children', async () => {
     // Spawn a Claude session via the ✦ Agent button so we have a Claude-kind
     // entry with its full set of inner controls (⋯ + x).
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
 
@@ -102,7 +102,7 @@ test.describe('Issue #97: tab strip a11y / DOM validity', () => {
 
   test('PromptModal dialog has tabindex="-1" so it can receive programmatic focus', async () => {
     // Spawn a Claude session and open Rename… to surface the PromptModal.
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
 

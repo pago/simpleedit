@@ -133,10 +133,17 @@ export interface GitEventMap {
   'git:status-changed': { worktreePath: string }
 }
 
-// ── Claude stream ─────────────────────────────────────────
-export type ClaudeStatus = 'idle' | 'running' | 'waiting' | 'error'
+// ── Interactive agents ────────────────────────────────────
+export type AgentProviderId = 'claude' | 'codex'
+export type AgentStatus = 'initializing' | 'idle' | 'running' | 'waiting' | 'error' | 'exited'
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
 
-export interface ClaudeSpawnOptions extends PtySpawnOptions {
+export type InteractiveTarget =
+  | { provider: 'claude'; model?: ModelRef }
+  | { provider: 'codex'; model?: string; reasoningEffort?: ReasoningEffort }
+
+export interface AgentSpawnOptions extends PtySpawnOptions {
+  target: InteractiveTarget
   /** When set, claude is launched with `--resume <id>` to restore a prior session. */
   resumeSessionId?: string
   /**
@@ -157,21 +164,35 @@ export interface ClaudeSpawnOptions extends PtySpawnOptions {
   model?: ModelRef
 }
 
-export interface ClaudeInvokeMap {
-  'claude:spawn': { args: [options: ClaudeSpawnOptions]; result: void }
+export interface AgentInvokeMap {
+  'agent:spawn': { args: [options: AgentSpawnOptions]; result: void }
   /**
    * Spawn `claude agents` (the interactive TUI) without stream-json parsing.
    * Used by the Agent View menu entry on the new-Claude button. No session-id
    * capture, no MCP bridge config — those only make sense for stream-json mode.
    */
-  'claude:spawn-agents': { args: [options: PtySpawnOptions]; result: void }
-  'claude:attach': { args: [terminalId: string, worktreePath: string]; result: void }
-  'claude:detach': { args: [terminalId: string]; result: void }
+  'agent:spawn-agents': { args: [options: PtySpawnOptions]; result: void }
+  'agent:attach': { args: [terminalId: string, worktreePath: string]; result: void }
+  'agent:detach': { args: [terminalId: string]; result: void }
+  'agent:capabilities': { args: [provider: AgentProviderId]; result: AgentCapabilities }
+  'agent:available': { args: [provider: AgentProviderId]; result: boolean }
 }
 
-export interface ClaudeEventMap {
-  'claude:status': { worktreePath: string; status: ClaudeStatus; terminalId: string }
-  'claude:session-id': { terminalId: string; sessionId: string }
+export interface AgentCapabilities {
+  status: 'precise' | 'osc' | 'basic'
+  resume: boolean
+  fork: boolean
+  tracking: 'full' | 'cwd-only' | 'none'
+  mcp: boolean
+  modelOverride: 'env' | 'native' | 'none'
+  shiftEnter: 'native' | 'escape-newline'
+  droppedPath: 'at-reference' | 'shell-escaped'
+  gracefulShutdown: boolean
+}
+
+export interface AgentEventMap {
+  'agent:status': { worktreePath: string; status: AgentStatus; terminalId: string; precise: boolean; message?: string }
+  'agent:session-id': { terminalId: string; sessionId: string }
   /**
    * The session's tracked working directory changed (from a hook POST). When
    * `cwd` falls inside a worktree of the session's repo, `worktreePath` is that
@@ -318,7 +339,7 @@ export interface TourEventMap {
   'tour:overview': { key: string; overview: string }
   'tour:topic': { key: string; topic: TourTopic }
   'tour:status': { key: string; status: TourStatus; error?: string }
-  'tour:from-claude': {
+  'tour:from-agent': {
     key: string
     terminalId: string
     worktreePath: string
@@ -341,7 +362,10 @@ export type SerializedTab =
 
 /** One persisted agent session plus its workspace state. */
 export interface SerializedAgentSession {
-  kind: 'claude' | 'agents'
+  kind: 'agent' | 'agents' | 'claude'
+  /** `claude` kind is accepted only for v2/v3 migration. */
+  provider?: AgentProviderId
+  target?: InteractiveTarget
   /** UI label as last observed (OSC title or user rename). */
   label: string
   /** True when the user renamed the session — the label is sticky. */
@@ -352,6 +376,8 @@ export interface SerializedAgentSession {
    * session-id) — those respawn fresh instead.
    */
   sessionId?: string
+  model?: string
+  reasoningEffort?: ReasoningEffort
   /**
    * Directory the PTY spawned in (project root for Claude sessions — the
    * shared Claude memory home). Resume respawns here. Falls back to
@@ -402,8 +428,8 @@ export interface SerializedGroup {
 }
 
 export interface SerializedSession {
-  /** 2 = pre-grouping blobs (hydrate as all-standalone); 3 = with `groups`. */
-  version: 2 | 3
+  /** v4 introduces provider-aware agent sessions. */
+  version: 2 | 3 | 4
   repoPath: string
   savedAt: string
   /** Sidebar order. */
@@ -429,6 +455,12 @@ export interface SessionInvokeMap {
 export type ModelRef =
   | { provider: 'anthropic'; model: string }
   | { provider: 'ollama'; model: string; endpoint?: string }
+  | { provider: 'openai'; model?: string; reasoningEffort?: ReasoningEffort }
+
+export type TaskTarget =
+  | { runner: 'claude'; model?: string }
+  | { runner: 'codex'; model?: string; reasoningEffort?: ReasoningEffort }
+  | { runner: 'ollama'; model: string; endpoint?: string }
 
 /** How well a model is expected to run on the current machine (see computeFit). */
 export type ModelFit = 'fits' | 'marginal' | 'too-big'
@@ -463,6 +495,15 @@ export interface ClaudeModel {
   provider: 'anthropic'
   displayName: string
   model: string
+}
+
+export interface CodexModel {
+  provider: 'openai'
+  displayName: string
+  model: string
+  defaultReasoningEffort?: ReasoningEffort
+  supportedReasoningEfforts: ReasoningEffort[]
+  isDefault: boolean
 }
 
 /** Machine profile used to size recommendations. */
@@ -515,6 +556,8 @@ export interface ModelsInvokeMap {
   'models:available': { args: []; result: boolean }
   /** The static Claude cloud model list (always available). */
   'models:claude': { args: []; result: ClaudeModel[] }
+  /** Best-effort dynamic catalog. Empty means use Codex's configured default. */
+  'models:codex': { args: []; result: CodexModel[] }
   /** This machine's profile (chip + RAM), used to show fit/hardware hints. */
   'models:hardware': { args: []; result: HardwareInfo }
   /** All installed Ollama models, annotated with hardware fit + tool-capability. */
@@ -634,6 +677,10 @@ export interface AgentPanelEventMap {
     label?: string
     /** Optional model id override; when absent the caller's model is inherited. */
     model?: string
+    /** Agent runtime. Omitted inherits the caller's complete target. */
+    provider?: AgentProviderId
+    /** Codex-only reasoning override. */
+    reasoningEffort?: ReasoningEffort
     /**
      * Worktree the new session's workspace points at, validated against the
      * repo main-side. Absent = inherit the caller's current workspace worktree.
@@ -748,7 +795,7 @@ export type InvokeMap = WorktreeInvokeMap &
   FsInvokeMap &
   EditorInvokeMap &
   GitInvokeMap &
-  ClaudeInvokeMap &
+  AgentInvokeMap &
   AppInvokeMap &
   ReviewInvokeMap &
   TourInvokeMap &
@@ -763,7 +810,7 @@ export type SendMap = LspSendMap
 
 export type EventMap = WorktreeEventMap &
   PtyEventMap &
-  ClaudeEventMap &
+  AgentEventMap &
   GitEventMap &
   ReviewEventMap &
   TourEventMap &

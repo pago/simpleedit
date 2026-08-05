@@ -26,10 +26,19 @@ export function loadSession(repoPath: string): SerializedSession | null {
   try {
     const raw = readFileSync(fileFor(repoPath), 'utf-8')
     const parsed = JSON.parse(raw) as SerializedSession
-    // v2 = pre-grouping (no `groups`; hydrates as all-standalone), v3 = grouped.
-    if (parsed.version !== 2 && parsed.version !== 3) return null
+    if (parsed.version !== 2 && parsed.version !== 3 && parsed.version !== 4) return null
     if (parsed.repoPath !== repoPath) return null
-    return parsed
+    if (parsed.version === 4) return parsed
+    return {
+      ...parsed,
+      version: 4,
+      sessions: parsed.sessions.map((session) => ({
+        ...session,
+        kind: session.kind === 'agents' ? 'agents' : 'agent',
+        provider: 'claude',
+        target: { provider: 'claude' },
+      })),
+    }
   } catch {
     return null
   }

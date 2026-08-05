@@ -18,6 +18,7 @@ import * as readline from 'readline'
 import type { ModelRef } from '../../shared/ipc-types'
 import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveClaudePath } from '../lib/shell-path'
+import { resolveCodexPath } from '../lib/shell-path'
 import { chatStream, type ChatMessage } from '../models/ollama'
 
 export interface RunRequest<Item> {
@@ -276,5 +277,87 @@ export class DirectRunner implements Runner {
     })) {
       for (const item of scan(chunk)) yield item
     }
+  }
+}
+
+export interface CodexRunnerOptions {
+  cwd: string
+  model?: string
+  reasoningEffort?: import('../../shared/ipc-types').ReasoningEffort
+  skipGitRepoCheck?: boolean
+}
+
+export function buildCodexExecArgs(opts: CodexRunnerOptions): string[] {
+  const args = ['--ask-for-approval', 'never', 'exec', '--json', '--ephemeral', '--sandbox', 'read-only']
+  if (opts.skipGitRepoCheck) args.push('--skip-git-repo-check')
+  if (opts.model) args.push('--model', opts.model)
+  if (opts.reasoningEffort) args.push('-c', `model_reasoning_effort=${JSON.stringify(opts.reasoningEffort)}`)
+  args.push('-')
+  return args
+}
+
+export function codexPrompt(system: string, user: string): string {
+  return system ? `${system}\n\n${user}` : user
+}
+
+export function codexAgentText(event: unknown): string | null {
+  if (!event || typeof event !== 'object') return null
+  const item = (event as Record<string, unknown>)['item']
+  if (!item || typeof item !== 'object' || (item as Record<string, unknown>)['type'] !== 'agent_message') return null
+  const record = item as Record<string, unknown>
+  const text = record['text'] ?? record['message']
+  return typeof text === 'string' ? text : null
+}
+
+/** Read-only, non-interactive Codex execution for bounded analysis tasks. */
+export class CodexRunner implements Runner {
+  constructor(private readonly opts: CodexRunnerOptions) {}
+
+  run<Item>(req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item> {
+    const stream = createPushStream<Item>()
+    this.spawn(req, stream, opts).catch((err) => stream.fail(err))
+    return stream.iterable
+  }
+
+  private async spawn<Item>(req: RunRequest<Item>, stream: PushStream<Item>, opts?: RunOptions): Promise<void> {
+    const codexBin = await resolveCodexPath()
+    const args = buildCodexExecArgs(this.opts)
+
+    const proc = spawn(codexBin, args, {
+      cwd: this.opts.cwd,
+      env: process.env as Record<string, string>,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const onAbort = (): void => { try { proc.kill() } catch { /* already dead */ } }
+    if (opts?.signal) {
+      if (opts.signal.aborted) onAbort()
+      else opts.signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    const prompt = codexPrompt(req.system, req.user)
+    proc.stdin.end(prompt, 'utf8')
+    const scan = createFindingScanner<Item>(req.parse)
+    const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
+    rl.on('line', (line) => {
+      try {
+        const text = codexAgentText(JSON.parse(line))
+        if (text) for (const parsed of scan(text)) stream.push(parsed)
+      } catch {
+        // Ignore diagnostics and malformed events; the exit status remains authoritative.
+      }
+    })
+    let stderr = ''
+    proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    proc.on('close', (code) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      if (code === 0) stream.close()
+      else stream.fail(new Error(`codex exited with code ${code}${stderr.trim() ? `: ${stderr.trim().slice(0, 1000)}` : ''}`))
+    })
+    proc.on('error', (err: Error) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      stream.fail(err)
+    })
   }
 }

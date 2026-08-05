@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fake Codex TUI for Electron E2E. It stays alive like the real native TUI and
+# supports deterministic crash/session lifecycle scenarios through env flags.
+if [ -n "${SIMPLEEDIT_FAKE_CODEX_EXIT:-}" ]; then
+  echo "fake codex: simulated spawn failure"
+  exit "${SIMPLEEDIT_FAKE_CODEX_EXIT}"
+fi
+echo "fake codex ready"
+while true; do
+  if IFS= read -r -t 3600 line; then
+    case "$line" in
+      *"/exit"*) exit 0 ;;
+      *"/hooks"*) echo "fake codex: hooks trusted" ;;
+    esac
+  else
+    sleep 1
+  fi
+done

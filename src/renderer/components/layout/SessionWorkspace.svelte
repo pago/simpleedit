@@ -62,7 +62,7 @@
   let agentTargets = $derived.by((): AgentTabInfo[] => {
     const claude = sessionsStore
       .sessions()
-      .filter((s) => s.kind === 'claude' && !s.pendingResume)
+      .filter((s) => s.kind === 'agent' && !s.pendingResume)
       .map((s) => ({ id: s.id, label: s.label }))
     return claude.sort((a, b) => (a.id === sessionId ? -1 : b.id === sessionId ? 1 : 0))
   })
@@ -80,7 +80,7 @@
   // background with the unread marker so we don't steal focus mid-task. Routed by session.
   $effect(() => {
     const sid = sessionId
-    const unsub = window.api.on('tour:from-claude', (data) => {
+    const unsub = window.api.on('tour:from-agent', (data) => {
       if (data.terminalId !== sid) return
 
       tourStore.receiveTourFromClaude(data.key, data.tour)
@@ -175,17 +175,12 @@
 
   function sendToAgent(terminalId: string | 'new', message: string): string | undefined {
     if (terminalId === 'new') {
-      // Launch at the project root (Claude memory home) but inherit THIS
-      // workspace's worktree as the new session's viewer target — the
-      // question being asked is about this worktree's content.
-      const id = sessionsStore.createClaude(
-        projectRoot() ?? worktreePath,
-        worktreePath,
-      )
-      // Give the fresh claude process a moment to boot before pasting.
-      setTimeout(() => {
-        void window.api.invoke('pty:write', id, message + '\r')
-      }, 1000)
+      const target = session?.target ?? { provider: 'claude' as const }
+      const launchDir = target.provider === 'codex' ? worktreePath : (projectRoot() ?? worktreePath)
+      const id = sessionsStore.createAgent(target, launchDir, worktreePath, {
+        initialPrompt: message,
+        ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),
+      })
       return id
     }
     sessionsStore.select(terminalId)
@@ -509,9 +504,15 @@
 
     <!-- Terminal: full-bleed until the viewer opens, bottom strip after -->
     <div class="min-h-0 flex-1 bg-black">
+      {#if session.reportingSetupNeeded && !session.pendingResume}
+        <div class="flex items-center justify-between border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
+          <span>Reporting setup needed — status and worktree tracking are using basic PTY signals.</span>
+          <button class="rounded border border-amber-500/40 px-2 py-0.5 hover:bg-amber-500/15" onclick={() => window.api.invoke('pty:write', sessionId, '/hooks\r')}>Open /hooks</button>
+        </div>
+      {/if}
       {#if session.pendingResume}
         <div class="flex h-full flex-col items-center justify-center gap-3 text-zinc-400">
-          <p class="text-xs">Claude session from your last visit</p>
+          <p class="text-xs">{session.provider === 'codex' ? 'Codex' : 'Claude'} session from your last visit</p>
           <button
             class="rounded border border-orange-500/40 bg-orange-500/10 px-3 py-1 text-xs text-orange-300 hover:bg-orange-500/20"
             onclick={resumeSession}
@@ -525,6 +526,7 @@
           terminalId={sessionId}
           active={sessionsStore.activeSessionId() === sessionId}
           isClaude={session.kind !== 'terminal'}
+          provider={session.provider}
           ontitlechange={(title) => sessionsStore.applyOscTitle(sessionId, title)}
         />
       {/if}
