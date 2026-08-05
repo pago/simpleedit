@@ -73,7 +73,13 @@ describe('parseHookBody', () => {
       cwd: '/repo/main',
       hook_event_name: 'PermissionRequest',
     })).toEqual({
-      sessionId: 'thr_123', terminalId: 'agent-codex-1', cwd: '/repo/main', eventName: 'PermissionRequest', filePath: null,
+      sessionId: 'thr_123',
+      terminalId: 'agent-codex-1',
+      cwd: '/repo/main',
+      filePath: null,
+      eventName: 'PermissionRequest',
+      lastAssistantMessage: null,
+      stopHookActive: false,
     })
   })
 
@@ -127,6 +133,7 @@ describe('parseHookBody', () => {
       }),
     ).toEqual({
       sessionId: 's',
+      terminalId: null,
       cwd: '/p',
       filePath: null,
       eventName: 'Stop',

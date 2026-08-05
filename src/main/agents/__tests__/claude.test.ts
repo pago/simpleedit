@@ -40,9 +40,12 @@ describe('claude provider buildLaunch — model application', () => {
     expect(plan.env?.['ANTHROPIC_BASE_URL']).toBe('http://192.168.1.5:11434')
   })
 
-  it('anthropic model adds --model with NO env override (normal cloud auth)', () => {
+  it('anthropic model adds --model with NO brain override (normal cloud auth)', () => {
     const plan = launch({ provider: 'anthropic', model: 'claude-opus-4' })
-    expect(plan.env).toBeUndefined()
+    // The agent-messaging env always applies; what must NOT appear for cloud
+    // Claude is an endpoint/auth override, which is the Ollama path's business.
+    expect(plan.env?.['ANTHROPIC_BASE_URL']).toBeUndefined()
+    expect(plan.env?.['ANTHROPIC_AUTH_TOKEN']).toBeUndefined()
     expect(plan.args.slice(-2)).toEqual(['--model', 'claude-opus-4'])
   })
 
@@ -50,9 +53,22 @@ describe('claude provider buildLaunch — model application', () => {
     const plan = launch()
     expect(plan.executable).toBe('claude')
     expect(plan.args).not.toContain('--model')
-    expect(plan.env).toBeUndefined()
+    expect(plan.env?.['ANTHROPIC_BASE_URL']).toBeUndefined()
     // Fresh spawn (no resume): a pinned --session-id and nothing else.
     expect(plan.args).toEqual(['--session-id', expect.stringMatching(/^[0-9a-f-]+$/)])
+  })
+
+  /**
+   * The messaging channel needs these on every launch: `send_message`'s
+   * wait-for-reply parks far longer than the CLI's default tool timeout, and
+   * each mail delivery consumes one consecutive Stop-hook block against a
+   * default cap of 8.
+   */
+  it('always carries the agent-messaging env, whatever the brain', () => {
+    for (const plan of [launch(), launch({ provider: 'anthropic', model: 'claude-opus-4' })]) {
+      expect(plan.env?.['MCP_TOOL_TIMEOUT']).toBe('660000')
+      expect(plan.env?.['CLAUDE_CODE_STOP_HOOK_BLOCK_CAP']).toBe('32')
+    }
   })
 
   it('rejects an ollama endpoint that is not an http(s) URL', () => {

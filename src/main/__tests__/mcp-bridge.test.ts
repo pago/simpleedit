@@ -635,14 +635,16 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
       args: { brief: 'continue in Codex', provider: 'codex', model: 'gpt-5.6-sol', reasoningEffort: 'ultra' },
     })
     expect(res.status).toBe(200)
-    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+    // objectContaining, not an exact shape: the payload also carries a random
+    // `correlationId` so the spawn_session call can await the minted handle.
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({
       sourceTerminalId: 'term-1',
       brief: 'continue in Codex',
       provider: 'codex',
       model: 'gpt-5.6-sol',
       reasoningEffort: 'ultra',
       target: 'new-pane',
-    })
+    }))
   })
 
   it('spawn_session rejects invalid model syntax and Claude reasoning overrides', async () => {
