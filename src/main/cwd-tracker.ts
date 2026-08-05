@@ -28,6 +28,21 @@ export interface HookSignal {
    * non-file events (UserPromptSubmit, Bash, …) or relative paths.
    */
   filePath: string | null
+  /** `hook_event_name` verbatim ('Stop', 'PostToolUse', …); null if absent. */
+  eventName: string | null
+  /**
+   * On `Stop`/`SubagentStop`, the text of the turn's final assistant message.
+   * Both Claude Code and Codex supply this (Claude's schema documents it as
+   * avoiding a transcript read), which is what lets a peer's ordinary answer
+   * serve as a reply without it calling any tool.
+   */
+  lastAssistantMessage: string | null
+  /**
+   * True when this `Stop` follows a turn a Stop hook already continued. Mail
+   * must NOT be delivered on such a stop: doing so re-blocks the same turn and
+   * the agent never reaches idle (Claude hard-caps this at 8 and then overrides).
+   */
+  stopHookActive: boolean
 }
 
 /**
@@ -58,7 +73,16 @@ export function parseHookBody(body: unknown): HookSignal | null {
   const cwd = rec['cwd']
   if (typeof sessionId !== 'string' || !sessionId) return null
   if (typeof cwd !== 'string' || !cwd) return null
-  return { sessionId, cwd, filePath: parseToolFilePath(rec['tool_input']) }
+  const eventName = rec['hook_event_name']
+  const lastAssistant = rec['last_assistant_message']
+  return {
+    sessionId,
+    cwd,
+    filePath: parseToolFilePath(rec['tool_input']),
+    eventName: typeof eventName === 'string' && eventName ? eventName : null,
+    lastAssistantMessage: typeof lastAssistant === 'string' ? lastAssistant : null,
+    stopHookActive: rec['stop_hook_active'] === true,
+  }
 }
 
 /** realpath that degrades to the input when the path doesn't resolve. */

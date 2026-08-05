@@ -108,7 +108,8 @@ MCP tool.
 ### Session location & repo trail (hook-based)
 Each spawned Claude session is launched with a `--settings` file
 (`agents/claude.ts` `writeHookSettings`) wiring `UserPromptSubmit` +
-`PostToolUse` HTTP hooks to the per-window bridge's `/<token>/hooks` endpoint.
+`PostToolUse` + `Stop` HTTP hooks to the per-window bridge's `/<token>/hooks`
+endpoint. (`Stop` serves agent messaging — see below.)
 `mcp-bridge.ts` `handleHook`
 parses the body (`cwd-tracker.ts` `parseHookBody`) and drives the session's
 "touched repos" trail — which feeds the **repo picker dropdown**
@@ -128,6 +129,32 @@ A repo the window never opened is resolved on demand (`resolveBareRepo` →
 `git rev-parse --git-common-dir`) and registered for the window. Gotcha: if you
 only track `cwd`, cross-repo file reads/edits silently never appear in the
 picker — that was the original bug (`e2e/session-repo-trail.test.ts`).
+
+### Agent-to-agent messaging (`agent-bus.ts`)
+Sessions can message each other: `list_sessions`, `send_message` (optionally
+blocking on the answer), `reply`, `check_inbox`. `spawn_session` returns the new
+session's id, so an agent can delegate and then collect.
+
+**No new transport.** The bridge already had both directions and they were simply
+never connected: an agent SENDS via `/tool-call`, and RECEIVES through the
+**response body of its own `Stop` hook**. When a session's turn ends with mail
+queued, `handleHook` answers `{decision:'block', reason:<mail>}` — which both
+Claude Code and Codex honour by continuing the turn with that text as input.
+
+Consequences worth knowing before touching this:
+- **Delivery is at turn boundaries only**, deliberately. Nothing writes to the
+  PTY, so nothing races the live TUI.
+- **`stop_hook_active` must gate delivery.** That flag means the stop already
+  belongs to a turn a hook continued; blocking again re-blocks the same turn and
+  the agent never reaches idle (Claude hard-caps this at 8 blocks, then overrides).
+- **The reply channel is `last_assistant_message`** on the following `Stop`, so a
+  peer answers *without calling any tool*. That is what removes the copy-paste.
+  Only messages sent with `wait_for_reply` capture one — otherwise an unrelated
+  "fyi" would relay the peer's next turn as a bogus answer.
+- **The renderer owns the peer list** (labels, provider, status), so it pushes
+  snapshots via `agent-bus:sync`; main cannot derive them.
+- Exchanges are bounded: hop budget, per-sender rate limit, message size cap.
+  `agent-message:sent` / `:delivered` are emitted for UI surfacing.
 
 ### Diff review flow
 GitLog (in the session workspace) → click commit → `openDiffTab`
@@ -170,6 +197,7 @@ src/
     claude-stream.ts   ← stream/OSC parser, PTY data tap, status
     claude-paths.ts    ← Claude project/JSONL path helpers
     cwd-tracker.ts     ← Parses hook bodies → session cwd / repo-touch trail
+    agent-bus.ts       ← Agent-to-agent messaging: peers, mailboxes, replies
     mcp-bridge.ts      ← Per-window HTTP bridge: MCP tool-calls + hook endpoint
     mcp-server/
       index.mjs        ← Stdio MCP server ("simpleedit" tools) → posts to bridge

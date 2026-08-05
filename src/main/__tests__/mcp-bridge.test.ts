@@ -5,6 +5,7 @@ import { join } from 'path'
 import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver, setRepoDiscoverer } from '../mcp-bridge'
 import { attachToTerminal, detachFromTerminal } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
+import { resetBus, resolveSpawn, syncPeers } from '../agent-bus'
 import type { WorktreeInfo } from '../../shared/ipc-types'
 
 function makeWebContents() {
@@ -565,12 +566,44 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
   it('spawn_session emits agent-session:spawn with the brief and caller terminal', async () => {
     const res = await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'fix the timeline reducer' } })
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ ok: true })
-    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+    expect(res.body['ok']).toBe(true)
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({
       sourceTerminalId: 'term-1',
       brief: 'fix the timeline reducer',
       target: 'new-pane',
+    }))
+  })
+
+  it('spawn_session returns the session handle once the renderer reports it', async () => {
+    const pending = post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'fan out' } })
+
+    // The renderer mints the id, so replay its `agent-bus:spawned` report using
+    // the correlationId the bridge sent. Poll for it: the request is still in
+    // flight over HTTP when this line first runs.
+    let correlationId = ''
+    for (let i = 0; i < 100 && !correlationId; i++) {
+      const sent = wc.send.mock.calls.find((c) => c[0] === 'agent-session:spawn')
+      if (sent) correlationId = (sent[1] as { correlationId: string }).correlationId
+      else await new Promise((r) => setTimeout(r, 10))
+    }
+    expect(correlationId).toBeTruthy()
+    resolveSpawn(correlationId, {
+      terminalId: 'claude-new',
+      label: 'fan out',
+      provider: 'claude',
+      worktreePath: '/repo/main',
+      status: 'unknown',
     })
+
+    const res = await pending
+    expect(res.body['session_id']).toBe('claude-new')
+    expect(res.body['label']).toBe('fan out')
+  })
+
+  it('spawn_session degrades to a list_sessions hint when no handle comes back', async () => {
+    const res = await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'no reply' } })
+    expect(res.body['ok']).toBe(true)
+    expect(String(res.body['note'])).toContain('list_sessions')
   })
 
   it('spawn_session forwards label, model, a validated worktree, and target', async () => {
@@ -580,14 +613,14 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
       args: { brief: 'rebase #42', label: 'rebase', model: 'claude-opus-4-8', worktree: '/repo/feature', target: 'replace' },
     })
     expect(res.status).toBe(200)
-    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({
       sourceTerminalId: 'term-1',
       brief: 'rebase #42',
       label: 'rebase',
       model: 'claude-opus-4-8',
       worktreePath: '/repo/feature',
       target: 'replace',
-    })
+    }))
   })
 
   it('spawn_session defaults an unknown/absent target to new-pane', async () => {
@@ -916,11 +949,183 @@ describe.skipIf(!runIntegration)('MCP Server → Bridge integration', () => {
     const content = (toolResponse['result'] as { content: Array<{ text: string }> }).content
     expect(content[0].text).toContain('New session started')
 
-    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', {
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({
       sourceTerminalId: 'spawn-test-term',
       brief: 'rebase and land PR #42',
       label: 'rebase',
       target: 'new-pane',
-    })
+    }))
   }, 15000)
+})
+
+describe('MCP Bridge — agent-to-agent messaging', () => {
+  let port: number
+  let token: string
+  let wc: ReturnType<typeof makeWebContents>
+
+  beforeEach(async () => {
+    wc = makeWebContents()
+    port = await startBridge(bridgeWebContentsId, wc as never)
+    token = getBridgeInfo(bridgeWebContentsId)!.token
+    resetBus()
+    syncPeers([
+      { terminalId: 'claude-a', label: 'alpha', provider: 'claude', worktreePath: '/repo/a', status: 'idle' },
+      { terminalId: 'claude-b', label: 'beta', provider: 'claude', worktreePath: '/repo/b', status: 'idle' },
+    ])
+  })
+
+  afterEach(() => {
+    resetBus()
+    unregisterTerminal('claude-b')
+  })
+
+  async function callTool(tool: string, args: Record<string, unknown>, terminalId: string) {
+    const res = await fetch(`http://127.0.0.1:${port}/${token}/tool-call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool, args, terminalId }),
+    })
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> }
+  }
+
+  async function postHook(body: unknown): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://127.0.0.1:${port}/${token}/hooks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return (await res.json()) as Record<string, unknown>
+  }
+
+  it('list_sessions returns peers without the caller', async () => {
+    const { body } = await callTool('list_sessions', {}, 'claude-a')
+    const sessions = body['sessions'] as Array<Record<string, unknown>>
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]['session_id']).toBe('claude-b')
+    expect(sessions[0]['label']).toBe('beta')
+  })
+
+  it('send_message queues mail and mirrors it to the renderer', async () => {
+    const { body } = await callTool('send_message', { to: 'beta', text: 'check PR 42' }, 'claude-a')
+    expect(body['ok']).toBe(true)
+    expect(body['delivered_to']).toBe('claude-b')
+    expect(wc.send).toHaveBeenCalledWith('agent-message:sent', expect.objectContaining({
+      from: 'claude-a',
+      to: 'claude-b',
+      text: 'check PR 42',
+    }))
+  })
+
+  it('send_message to an unknown session is an actionable error', async () => {
+    const { status, body } = await callTool('send_message', { to: 'ghost', text: 'hi' }, 'claude-a')
+    expect(status).toBe(400)
+    expect(String(body['error'])).toContain('beta')
+  })
+
+  // The core mechanism: a Stop hook with queued mail must answer with a block
+  // whose `reason` carries the mail, because that is what both CLIs honour.
+  it('delivers queued mail through the Stop hook as decision:block', async () => {
+    registerSession('sess-b', 'claude-b')
+    await callTool('send_message', { to: 'beta', text: 'please rebase' }, 'claude-a')
+
+    const reply = await postHook({
+      session_id: 'sess-b',
+      cwd: '/repo/b',
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+      last_assistant_message: 'done with my own work',
+    })
+
+    expect(reply['decision']).toBe('block')
+    expect(String(reply['reason'])).toContain('please rebase')
+    expect(String(reply['reason'])).toContain('alpha')
+  })
+
+  it('does NOT re-block when stop_hook_active is set (would strand the turn)', async () => {
+    registerSession('sess-b', 'claude-b')
+    await callTool('send_message', { to: 'beta', text: 'more work' }, 'claude-a')
+
+    const reply = await postHook({
+      session_id: 'sess-b',
+      cwd: '/repo/b',
+      hook_event_name: 'Stop',
+      stop_hook_active: true,
+    })
+    expect(reply['decision']).toBeUndefined()
+  })
+
+  it('returns an inert body on a Stop with no mail', async () => {
+    registerSession('sess-b', 'claude-b')
+    const reply = await postHook({
+      session_id: 'sess-b',
+      cwd: '/repo/b',
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+    })
+    expect(reply['decision']).toBeUndefined()
+  })
+
+  // The full round trip, and the reason the copy-paste goes away: the peer never
+  // calls a tool — its ordinary answer becomes the blocked sender's result.
+  it('returns the recipient\'s final turn text as a blocked sender\'s reply', async () => {
+    registerSession('sess-b', 'claude-b')
+    const pending = callTool(
+      'send_message',
+      { to: 'beta', text: 'did it land?', wait_for_reply: true, timeout_seconds: 10 },
+      'claude-a',
+    )
+
+    // First Stop delivers the mail…
+    const delivery = await postHook({
+      session_id: 'sess-b',
+      cwd: '/repo/b',
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+    })
+    expect(delivery['decision']).toBe('block')
+
+    // …the follow-up Stop carries the answer.
+    await postHook({
+      session_id: 'sess-b',
+      cwd: '/repo/b',
+      hook_event_name: 'Stop',
+      stop_hook_active: true,
+      last_assistant_message: 'yes, merged as abc123',
+    })
+
+    const { body } = await pending
+    const reply = body['reply'] as Record<string, unknown>
+    expect(reply['text']).toBe('yes, merged as abc123')
+    expect(reply['from']).toBe('claude-b')
+  })
+
+  it('does not relay a turn\'s text when the sender never asked for a reply', async () => {
+    registerSession('sess-b', 'claude-b')
+    await callTool('send_message', { to: 'beta', text: 'fyi, I am done' }, 'claude-a')
+    await postHook({ session_id: 'sess-b', cwd: '/repo/b', hook_event_name: 'Stop', stop_hook_active: false })
+    await postHook({
+      session_id: 'sess-b',
+      cwd: '/repo/b',
+      hook_event_name: 'Stop',
+      stop_hook_active: true,
+      last_assistant_message: 'unrelated chatter about my own task',
+    })
+
+    const { body } = await callTool('check_inbox', {}, 'claude-a')
+    expect(body['count']).toBe(0)
+  })
+
+  it('reply routes to the original sender using the message id', async () => {
+    const sent = await callTool('send_message', { to: 'beta', text: 'q' }, 'claude-a')
+    const messageId = String(sent.body['message_id'])
+
+    const { body } = await callTool('reply', { to_message_id: messageId, text: 'a' }, 'claude-b')
+    expect(body['delivered_to']).toBe('claude-a')
+  })
+
+  it('reply with an unknown message id explains what to use', async () => {
+    const { status, body } = await callTool('reply', { to_message_id: 'nope', text: 'a' }, 'claude-b')
+    expect(status).toBe(400)
+    expect(String(body['error'])).toContain('message id')
+  })
 })
