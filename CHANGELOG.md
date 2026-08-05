@@ -1,5 +1,34 @@
 # simpleedit
 
+## 0.20.0
+
+### Minor Changes
+
+- [#166](https://github.com/pago/simpleedit/pull/166) [`8363b5c`](https://github.com/pago/simpleedit/commit/8363b5cb3760f3b1361be7981f1ad7952fb3813a) Thanks [@pago](https://github.com/pago)! - Agent-composed panels can now carry code tours.
+
+  - `show_panel` resolves its worktree agent-argument-first and validates it against the window's registered worktrees, like `show_diff` already did. Previously the frozen terminal→worktree mapping won, so a `worktreePath` naming another repo was silently ignored and the panel rendered against the wrong worktree.
+  - New `DiffBlock` primitive: renders a unified diff from the diff _text_ the agent already has, so it works for changes that were never checked out. Expanded by default, optional `language` override, optional per-file jump-to-file links.
+  - `open_file` and `show_diff` actions accept an optional `worktree`, so one panel can tour several repos. A named worktree must be one the window has registered.
+  - `show_panel` accepts an optional `panelId`, so a session can keep several panels open as separate tabs instead of each call replacing the last.
+  - Selecting text in any panel block offers "Discuss this", handing the block's id, type and content to a new or existing agent session.
+
+- [#168](https://github.com/pago/simpleedit/pull/168) [`584c846`](https://github.com/pago/simpleedit/commit/584c846a2dc3d18f48db3dac5ecc6e4269251ec5) Thanks [@pago](https://github.com/pago)! - Four additive extensions to the composed-panel catalog, all backward compatible.
+
+  - New `focus_block` action: a panel element can now scroll to another block of the _same_ panel and flash it, expanding any collapsed `Section` on the way. It is the first panel-local action — it never crosses the MCP bridge or IPC — so a "Read in this order" `FileList` at the top of a code tour can jump to each file's `DiffBlock` without a checkout and without dropping the reader out of the tour. A `blockId` that names no element of the spec is rejected as a dead link before the panel opens.
+  - `Diagram` takes an optional `title`, rendered as a heading on the diagram itself, so naming one no longer costs a `ProseBlock` above it.
+  - `Callout.body` renders markdown, through the same path as `ProseBlock`. It previously did not even preserve newlines, which forced every callout down to a single claim.
+  - `FileList.detail` wraps below the path in full instead of being truncated to a single line, so a row can say _why_ the file is in the list.
+
+  Fixes: no composed-panel action has ever dispatched. `ComposedPanel` passed `state`/`actions` to `JsonUIProvider`, whose props are `initialState`/`handlers`, so every `open_file`, `show_diff`, `send_to_agent` and `dismiss_panel` click logged "No handler registered for action" and did nothing.
+
+### Patch Changes
+
+- [#165](https://github.com/pago/simpleedit/pull/165) [`63733a1`](https://github.com/pago/simpleedit/commit/63733a183645205b2a7121285ba2ad4f29f4f626) Thanks [@pago](https://github.com/pago)! - Fix three defects in the Homebrew update path: the running-instance guard now
+  refuses to upgrade when `pgrep` cannot answer (rather than reading its error
+  exits as "nothing running"), the watchdog no longer leaves an orphaned 30-minute
+  `sleep` behind after every upgrade, and a failed Homebrew update can be retried
+  from the banner instead of being stuck until the app restarts.
+
 ## 0.19.0
 
 ### Minor Changes
