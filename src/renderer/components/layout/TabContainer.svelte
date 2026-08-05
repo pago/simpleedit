@@ -85,6 +85,7 @@
     {workspaceKey}
     {worktreePath}
     {onclose}
+    {ondiscusswithagent}
   />
 {:else}
   {@const _exhaustive: never = tab}

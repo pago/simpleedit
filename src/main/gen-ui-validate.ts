@@ -13,7 +13,7 @@
  */
 
 import { resolve, normalize, sep } from 'path'
-import simpleGit from 'simple-git'
+import simpleGit, { type SimpleGit } from 'simple-git'
 import { z } from 'zod'
 import {
   catalog,
@@ -170,8 +170,16 @@ function* findActionsIn(value: unknown, at: string): Generator<{ action: ActionR
 
 /**
  * Verify every ActionRef in a spec is safe to expose:
- *  - `open_file` paths must resolve inside `worktreePath` (no `..` escape).
- *  - `show_diff` commit hashes must be reachable in the worktree's git history.
+ *  - `open_file` paths must resolve inside their worktree (no `..` escape).
+ *  - `show_diff` commit hashes must be reachable in their worktree's history.
+ *
+ * An action may name its own `worktree` — a single tour legitimately spans
+ * repos, and the panel-level `worktreePath` is really just the default
+ * validation scope. A named worktree must be one of `allowedWorktrees` (the
+ * window's registered-repo union, the trust boundary); without that check an
+ * agent could make the UI open arbitrary files outside the user's repos. When
+ * the caller passes no union (unit tests, no resolver wired) membership is not
+ * enforced, matching how the bridge treats an empty worktree list elsewhere.
  *
  * Other action kinds (`send_to_agent`, `dismiss_panel`, `set_state`) carry
  * no filesystem/git capability and are not gated here.
@@ -179,35 +187,68 @@ function* findActionsIn(value: unknown, at: string): Generator<{ action: ActionR
 export async function validateSpecActions(
   spec: Spec,
   worktreePath: string,
+  allowedWorktrees: readonly string[] = [],
 ): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = []
-  const wtRoot = resolve(worktreePath)
-  const commits = new Set<string>()
+  const panelRoot = resolve(worktreePath)
+  const allowed = new Set(allowedWorktrees.map((p) => resolve(p)))
+  /** worktree root → commit hashes that must be reachable there. */
+  const commitsByWorktree = new Map<string, Set<string>>()
 
   for (const { action, at } of iterateActions(spec)) {
+    if (action.type !== 'open_file' && action.type !== 'show_diff') continue
+
+    let root = panelRoot
+    if (action.worktree) {
+      root = resolve(action.worktree)
+      if (allowed.size > 0 && !allowed.has(root)) {
+        issues.push({
+          path: `${at}.worktree`,
+          message:
+            `worktree "${action.worktree}" is not a worktree this window has registered ` +
+            `(known: ${[...allowed].join(', ')})`,
+        })
+        continue
+      }
+    }
+
     if (action.type === 'open_file') {
-      if (!isInsideWorktree(action.path, wtRoot)) {
+      if (!isInsideWorktree(action.path, root)) {
         issues.push({
           path: at,
-          message: `open_file path "${action.path}" resolves outside the active worktree`,
+          message: action.worktree
+            ? `open_file path "${action.path}" resolves outside worktree "${action.worktree}"`
+            : `open_file path "${action.path}" resolves outside the active worktree`,
         })
       }
-    } else if (action.type === 'show_diff') {
-      commits.add(action.commitHash)
+    } else {
+      const hashes = commitsByWorktree.get(root) ?? new Set<string>()
+      hashes.add(action.commitHash)
+      commitsByWorktree.set(root, hashes)
     }
   }
 
-  if (commits.size > 0) {
-    const git = simpleGit(worktreePath)
-    for (const hash of commits) {
-      const reachable = await git
-        .raw(['cat-file', '-e', `${hash}^{commit}`])
+  for (const [root, hashes] of commitsByWorktree) {
+    // simple-git throws on construction for a missing baseDir; a spec must not
+    // be able to take the panel down, so treat that as "not reachable".
+    let git: SimpleGit | null = null
+    try {
+      git = simpleGit(root)
+    } catch {
+      git = null
+    }
+    for (const hash of hashes) {
+      const reachable = await (git
+        ?.raw(['cat-file', '-e', `${hash}^{commit}`])
         .then(() => true)
-        .catch(() => false)
+        .catch(() => false) ?? Promise.resolve(false))
       if (!reachable) {
         issues.push({
           path: 'action.commitHash',
-          message: `show_diff commit "${hash}" is not reachable in this worktree`,
+          message:
+            root === panelRoot
+              ? `show_diff commit "${hash}" is not reachable in this worktree`
+              : `show_diff commit "${hash}" is not reachable in worktree "${root}"`,
         })
       }
     }

@@ -34,11 +34,20 @@ export const ActionRefSchema = z.discriminatedUnion('type', [
     type: z.literal('open_file'),
     path: z.string().min(1),
     line: z.number().int().positive().optional(),
+    /**
+     * Worktree the path is relative to / validated against. Optional: when
+     * absent the panel-level worktree is used. A tour legitimately spans
+     * repos, so an action can name its own scope — but it must be a worktree
+     * the window has registered.
+     */
+    worktree: z.string().min(1).optional(),
   }),
   z.object({
     type: z.literal('show_diff'),
     commitHash: z.string().min(1),
     file: z.string().optional(),
+    /** Worktree the commit must be reachable in. See `open_file.worktree`. */
+    worktree: z.string().min(1).optional(),
   }),
   z.object({
     type: z.literal('dismiss_panel'),
@@ -93,6 +102,37 @@ export const CodeSnippetProps = z.object({
   annotation: z.string().optional(),
   lineNumbers: z.boolean().optional(),
   maxLines: z.number().int().positive().optional(),
+})
+
+/**
+ * A diff shown inline in a panel. It carries the diff *content*, not a repo
+ * reference: the agent already holds the text (`git diff` / `gh pr diff`), so
+ * the block renders with zero repo access and works for PRs that were never
+ * checked out.
+ */
+export const DiffBlockProps = z.object({
+  /** Unified diff text (`diff --git` blocks, as `git diff`/`gh pr diff` emit). */
+  diff: z.string().min(1),
+  title: z.string().optional(),
+  /**
+   * Highlighting language for every file in the diff, overriding the
+   * per-extension guess. Exists for embedded DSLs — a shell script inside a
+   * `.ts` template literal is not TypeScript.
+   */
+  language: z.string().optional(),
+  /**
+   * Optional "jump to the file in context" links, matched to a diff file by
+   * its path. Each carries its own ActionRef, so a link can name a worktree.
+   */
+  fileActions: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        label: z.string().optional(),
+        action: ActionRefSchema,
+      }),
+    )
+    .optional(),
 })
 
 export const DecisionCardProps = z.object({
@@ -255,7 +295,16 @@ export const catalog = defineCatalog(schema, {
       props: CodeSnippetProps,
       slots: [],
       description:
-        'Syntax-highlighted, read-only code block with an optional annotation. Use for inline references, variant previews, or excerpts. Use DiffView for before/after.',
+        'Syntax-highlighted, read-only code block with an optional annotation. Use for inline references, variant previews, or excerpts. Use DiffBlock for before/after.',
+    },
+    DiffBlock: {
+      props: DiffBlockProps,
+      slots: [],
+      description:
+        'Unified diff rendered inline, expanded, with per-line +/- gutters. You supply the diff TEXT ' +
+        '(from `git diff` or `gh pr diff`) — the block needs no repo access, so it works for changes that ' +
+        'are not checked out. Use it for code tours and change walkthroughs. Optional `language` overrides ' +
+        'per-extension highlighting; optional `fileActions` add a jump-to-file link per diff file.',
     },
     DecisionCard: {
       props: DecisionCardProps,
@@ -330,15 +379,21 @@ export const catalog = defineCatalog(schema, {
       params: z.object({
         path: z.string(),
         line: z.number().int().positive().optional(),
+        worktree: z.string().optional(),
       }),
-      description: 'Open a file tab in the active pane. Path is validated against the active worktree.',
+      description:
+        'Open a file tab in the active pane. Path is validated against `worktree` when given ' +
+        '(which must be a worktree this window knows), otherwise against the panel-level worktree.',
     },
     show_diff: {
       params: z.object({
         commitHash: z.string(),
         file: z.string().optional(),
+        worktree: z.string().optional(),
       }),
-      description: 'Open or focus a diff tab. Commit hash is validated as reachable.',
+      description:
+        'Open or focus a diff tab. Commit hash is validated as reachable in `worktree` when given, ' +
+        'otherwise in the panel-level worktree.',
     },
     dismiss_panel: {
       params: z.object({}),

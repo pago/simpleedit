@@ -1,10 +1,10 @@
 <script lang="ts">
-  import * as monaco from 'monaco-editor'
   import { onMount } from 'svelte'
   import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity } from '../../../shared/screenprs'
   import { DEEP_LENS_ORDER, DEEP_LENS_LABEL } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
-  import { parseUnifiedDiff, languageForPath, type DiffFile } from '../../lib/parseDiff'
+  import { parseUnifiedDiff, type DiffFile } from '../../lib/parseDiff'
+  import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
   import ReviewComposer from './ReviewComposer.svelte'
   import SplitButton from '../SplitButton.svelte'
   import { loadAgentModels, type AgentModel } from '../../lib/agentModels'
@@ -72,39 +72,6 @@
 
   let files = $derived<DiffFile[]>(parseUnifiedDiff(context.diff))
 
-  // ── syntax highlighting (Monaco colorize; falls back to plain on any miss) ──
-  // Map<file path, HTML per row index>. Recomputed when the selected PR changes.
-  let highlighted = $state<Map<string, string[]>>(new Map())
-  function escapeHtml(s: string): string {
-    return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string)
-  }
-  $effect(() => {
-    const url = context.url
-    const fs = files
-    void (async () => {
-      // colorize() uses Monaco's global theme (defaults to light until an editor
-      // mounts); the app standardizes on vs-dark, so match it for readable colors.
-      monaco.editor.setTheme('vs-dark')
-      const next = new Map<string, string[]>()
-      for (const f of fs) {
-        if (f.binary) continue
-        const lang = languageForPath(f.path)
-        const codeLines = f.rows.map((r) => (r.kind === 'hunk' ? '' : r.text))
-        try {
-          const html = await monaco.editor.colorize(codeLines.join('\n'), lang, { tabSize: 2 })
-          const parts = html.split(/<br\/?>/)
-          if (parts.length >= codeLines.length) next.set(f.path, codeLines.map((_, i) => parts[i]))
-        } catch {
-          /* leave unset → escaped plain text */
-        }
-      }
-      if (context.url === url) highlighted = next
-    })()
-  })
-  function rowHtml(f: DiffFile, i: number, text: string): string {
-    return highlighted.get(f.path)?.[i] ?? escapeHtml(text)
-  }
-
   const LABEL_CLASS: Record<TriageFinding['label'], string> = {
     issue: 'bg-red-500/15 text-red-300',
     suggestion: 'bg-blue-500/15 text-blue-300',
@@ -119,19 +86,6 @@
     concern: 'bg-amber-500/15 text-amber-300',
     note: 'bg-zinc-700 text-zinc-300',
   }
-  // Subtle, desaturated tints (GitHub-like) so the vs-dark syntax colors stay readable.
-  const ROW_BG: Record<'add' | 'del' | 'ctx', string> = {
-    add: 'bg-emerald-500/[0.07]',
-    del: 'bg-red-500/[0.07]',
-    ctx: '',
-  }
-  const STATUS_BADGE: Record<DiffFile['status'], { t: string; c: string }> = {
-    added: { t: 'added', c: 'text-emerald-400' },
-    deleted: { t: 'deleted', c: 'text-red-400' },
-    renamed: { t: 'renamed', c: 'text-blue-300' },
-    modified: { t: '', c: '' },
-  }
-
   let activeLenses = $derived(DEEP_LENS_ORDER.filter((l) => deep?.lenses[l]))
   let lensesRunning = $derived(activeLenses.some((l) => deep?.lenses[l] === 'running'))
 
@@ -283,39 +237,8 @@
     {/if}
 
     <!-- Diff — one section per file (git plumbing stripped, syntax-highlighted) -->
-    <div class="mx-4 mb-6 mt-4 flex flex-col gap-3">
-      {#each files as f (f.path)}
-        {@const badge = STATUS_BADGE[f.status]}
-        <div class="overflow-hidden rounded-lg border border-zinc-800">
-          <div class="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 font-mono text-[11px]">
-            {#if f.oldPath}<span class="text-zinc-500">{f.oldPath} →</span>{/if}
-            <span class="text-zinc-200">{f.path}</span>
-            {#if badge.t}<span class="rounded bg-zinc-800 px-1.5 text-[9px] uppercase tracking-wide {badge.c}">{badge.t}</span>{/if}
-            <span class="ml-auto tabular-nums text-[10px]"><span class="text-emerald-400">+{f.additions}</span> <span class="text-red-400">−{f.deletions}</span></span>
-          </div>
-          {#if f.binary}
-            <div class="px-3 py-2 font-mono text-[11px] text-zinc-500">Binary file not shown</div>
-          {:else}
-            <div class="overflow-x-auto bg-zinc-950 font-mono text-[11.5px] leading-[1.5]">
-              {#each f.rows as row, i (i)}
-                {#if row.kind === 'hunk'}
-                  <div class="bg-zinc-900/60 px-3 py-0.5 text-[10.5px] text-zinc-500">⋯ {row.text}</div>
-                {:else}
-                  <div class="flex {ROW_BG[row.kind]}">
-                    <span class="w-10 flex-none select-none border-r border-zinc-800/60 pr-2 text-right text-zinc-500 tabular-nums">{row.oldNo ?? ''}</span>
-                    <span class="w-10 flex-none select-none border-r border-zinc-800/60 pr-2 text-right text-zinc-500 tabular-nums">{row.newNo ?? ''}</span>
-                    <span class="w-4 flex-none select-none text-center {row.kind === 'add' ? 'text-emerald-400' : row.kind === 'del' ? 'text-red-400' : 'text-zinc-600'}">{row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ''}</span>
-                    <span class="whitespace-pre pl-2 pr-4 text-zinc-200">{@html rowHtml(f, i, row.text)}</span>
-                  </div>
-                {/if}
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/each}
-      {#if files.length === 0}
-        <div class="rounded-lg border border-zinc-800 px-3 py-2 text-[11px] text-zinc-500">No diff.</div>
-      {/if}
+    <div class="mx-4 mb-6 mt-4">
+      <UnifiedDiffView {files} />
     </div>
   </div>
 

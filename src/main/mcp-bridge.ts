@@ -140,12 +140,45 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
   }
 
   if (tool === 'show_panel') {
-    const claudeWorktreePath = args['worktreePath'] as string | undefined
+    const claudeWorktreePath = typeof args['worktreePath'] === 'string' ? (args['worktreePath'] as string) : undefined
     const title = typeof args['title'] === 'string' ? (args['title'] as string) : 'Agent panel'
 
-    const worktreePath = getWorktreeForTerminal(terminalId) ?? claudeWorktreePath
+    // Agent argument first, then validate against the window's registered
+    // worktrees — the same rule as show_diff. The terminal→worktree map is
+    // written once in attachToTerminal and frozen at session start, so
+    // preferring it silently ignored a worktreePath naming another repo and
+    // rendered the panel against the wrong one. The registered-repo union is
+    // the trust boundary instead; it grows at runtime as the agent touches
+    // files in sibling repos (PostToolUse hook → discoverRepo).
+    const worktreePath = claudeWorktreePath ?? getWorktreeForTerminal(terminalId)
     if (!worktreePath) {
       return { status: 400, body: { error: 'Could not determine worktree path for this terminal' } }
+    }
+
+    const worktrees = await resolveWorktrees(webContents.id)
+    if (worktrees.length > 0 && !worktrees.some((w) => w.path === worktreePath)) {
+      return {
+        status: 400,
+        body: {
+          error: `worktreePath is not a worktree of this repo: ${worktreePath}`,
+          worktrees: worktrees.map((w) => w.path),
+        },
+      }
+    }
+
+    // Optional agent-supplied panel id: distinct ids coexist as separate tabs,
+    // absent keeps the historic one-panel-per-session replace-in-place. It ends
+    // up in a tab id, so keep it to characters that stay legible there.
+    const panelIdArg = args['panelId']
+    let panelId: string | undefined
+    if (panelIdArg !== undefined && panelIdArg !== null) {
+      if (typeof panelIdArg !== 'string' || !/^[A-Za-z0-9_.:-]{1,64}$/.test(panelIdArg)) {
+        return {
+          status: 400,
+          body: { error: 'panelId must be 1–64 characters from [A-Za-z0-9_.:-]' },
+        }
+      }
+      panelId = panelIdArg
     }
 
     const validation = validateSpec(args['spec'])
@@ -159,7 +192,11 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
       }
     }
 
-    const actionIssues = await validateSpecActions(validation.spec, worktreePath)
+    const actionIssues = await validateSpecActions(
+      validation.spec,
+      worktreePath,
+      worktrees.map((w) => w.path),
+    )
     if (actionIssues.length > 0) {
       return {
         status: 400,
@@ -176,6 +213,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: WebContents
         title,
         worktreePath,
         sourceTerminalId: terminalId,
+        ...(panelId ? { panelId } : {}),
       })
     } else {
       console.warn(`[MCP Bridge] webContents is destroyed, cannot send agent-panel:open IPC`)

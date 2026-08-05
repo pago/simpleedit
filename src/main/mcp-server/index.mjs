@@ -115,11 +115,13 @@ const ActionRefSchema = z.discriminatedUnion('type', [
     type: z.literal('open_file'),
     path: z.string().min(1),
     line: z.number().int().positive().optional(),
+    worktree: z.string().min(1).optional(),
   }),
   z.object({
     type: z.literal('show_diff'),
     commitHash: z.string().min(1),
     file: z.string().optional(),
+    worktree: z.string().min(1).optional(),
   }),
   z.object({ type: z.literal('dismiss_panel') }),
   z.object({ type: z.literal('set_state'), key: z.string().min(1), value: z.unknown() }),
@@ -136,12 +138,20 @@ server.registerTool(
       '- Pausing on an ambiguous decision and asking the user to pick (compose ProseBlock + DecisionCard).',
       '- Summarising structured output like a test run (compose KeyValueSummary + FileList).',
       '- Offering several variants of code to pick from (compose CodeSnippets in a Row, each with an ActionButton).',
+      '- Walking the user through a change as a code tour (compose ProseBlock + DiffBlock per step).',
       '- Surfacing change-impact, semantic bookmarks, or any structured signal the user should review and act on.',
       '',
-      'Catalog of primitives (12; reference each by name in spec.elements[*].type):',
+      'Catalog of primitives (14; reference each by name in spec.elements[*].type):',
       '- ProseBlock { content }: markdown narrative.',
       '- FileList { items[{path,status?,detail?,action?}], title? }: clickable file rows; status ∈ added|modified|deleted|renamed|error|ok.',
       '- CodeSnippet { language, code, annotation?, lineNumbers?, maxLines? }: read-only code with optional commentary.',
+      '- DiffBlock { diff, title?, language?, fileActions? }: a unified diff, rendered expanded with +/- gutters.',
+      '    diff        = the diff TEXT you already have from `git diff` / `gh pr diff` (full `diff --git` blocks).',
+      '                  It carries content, not a repo reference — so it works for changes that are NOT checked out.',
+      '    language?   = override highlighting for every file (use it when the extension lies, e.g. a shell script',
+      '                  embedded in a .ts template literal).',
+      '    fileActions? = [{ path, label?, action }] — adds a jump-to-file link on the matching file\'s header.',
+      '                  Prefer this over describing paths in prose.',
       '- DecisionCard { question, context?, options[{label,variant?,action}] }: 2–5 options, each option dispatches an action.',
       '- StatusIndicator { kind, label, detail? }: kind ∈ running|ok|warn|error|pending.',
       '- KeyValueSummary { items[{label,value,status?}] }: label→value pairs.',
@@ -159,8 +169,12 @@ server.registerTool(
       '',
       'Action set (referenced inside DecisionCard.options[].action, ActionButton.action, FileList.items[].action, TextInput/Textarea.submitAction):',
       '- { type: "send_to_agent", text }: sends text to your terminal as if the user typed it. Rate-limited.',
-      '- { type: "open_file", path, line? }: opens a file tab; path is validated against the active worktree.',
-      '- { type: "show_diff", commitHash, file? }: opens a diff tab; commit must be reachable.',
+      '- { type: "open_file", path, line?, worktree? }: opens a file tab.',
+      '- { type: "show_diff", commitHash, file?, worktree? }: opens a diff tab; commit must be reachable.',
+      '  `worktree?` on either action scopes it to another worktree, so ONE panel can tour several repos.',
+      '  It must be a worktree SimpleEdit knows (any repo you have read a file in counts). When omitted, the',
+      '  panel-level worktreePath is used. Prefer explicit { worktree, path: <relative> } over a bare absolute',
+      '  path — the error message tells you what went wrong when the worktree is unknown.',
       '- { type: "dismiss_panel" }: closes this panel.',
       '- { type: "set_state", key, value }: mutates the panel\'s local $bindState scope.',
       '',
@@ -208,11 +222,45 @@ server.registerTool(
       '    } }',
       '  }, root: "root"',
       '',
+      'Example — code tour step (diff content, no repo access needed):',
+      '  {',
+      '    "title": "Tour: retry handling",',
+      '    "panelId": "tour-retry",',
+      '    "spec": {',
+      '      "root": "root",',
+      '      "elements": {',
+      '        "root": { "type": "Section", "props": { "title": "1. The retry loop moved into the client" }, "children": ["why", "diff"] },',
+      '        "why": { "type": "ProseBlock", "props": { "content": "Callers used to own the backoff. Now the client does." } },',
+      '        "diff": { "type": "DiffBlock", "props": {',
+      '          "diff": "diff --git a/src/client.ts b/src/client.ts\\n@@ -1,3 +1,5 @@\\n context\\n+added line\\n",',
+      '          "fileActions": [{ "path": "src/client.ts", "action": { "type": "open_file", "worktree": "/abs/path/to/worktree", "path": "src/client.ts", "line": 12 } }]',
+      '        } }',
+      '      }',
+      '    }',
+      '  }',
+      '',
+      'Panels are tabs. Pass a stable `panelId` when you want several panels open at once (a tour AND a',
+      'decision panel); calling show_panel twice with the SAME panelId updates that tab in place. With no',
+      'panelId your session has a single panel that each call replaces.',
+      '',
       'After dispatching the panel, the user\'s reaction returns through your terminal as plain text (when an action sends_to_agent) — read it and continue.',
     ].join('\n'),
     inputSchema: {
-      worktreePath: z.string().describe('Absolute path to the git worktree this panel applies to'),
+      worktreePath: z
+        .string()
+        .describe(
+          'Absolute path to the git worktree this panel applies to — the default validation scope for its ' +
+            'actions. Validated against the worktrees SimpleEdit knows; an unknown one comes back with the list.',
+        ),
       title: z.string().optional().describe('Tab title shown in SimpleEdit. Defaults to "Agent panel".'),
+      panelId: z
+        .string()
+        .regex(/^[A-Za-z0-9_.:-]{1,64}$/)
+        .optional()
+        .describe(
+          'Stable id for this panel, so distinct panels from one session coexist as separate tabs. ' +
+            'Reuse an id to update that panel in place. Omit for a single replace-in-place panel per session.',
+        ),
       spec: z
         .object({
           root: z.string(),
@@ -235,8 +283,8 @@ server.registerTool(
       ),
     },
   },
-  async ({ worktreePath, title, spec }) => {
-    const result = await postToBridge('show_panel', { worktreePath, title, spec })
+  async ({ worktreePath, title, panelId, spec }) => {
+    const result = await postToBridge('show_panel', { worktreePath, title, panelId, spec })
     if (!result.ok) return errorResult(`Error: ${result.error}`)
     return okResult(
       'Panel displayed in SimpleEdit. Wait for the user\'s response — interactive actions will arrive in your terminal.',
