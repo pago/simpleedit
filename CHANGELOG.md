@@ -1,5 +1,29 @@
 # simpleedit
 
+## 0.21.0
+
+### Minor Changes
+
+- [#169](https://github.com/pago/simpleedit/pull/169) [`8291936`](https://github.com/pago/simpleedit/commit/82919361a8755bbcca1d0acc6b35411efbda339a) Thanks [@pago](https://github.com/pago)! - Agent sessions can now message each other. An agent lists its peers
+  (`list_sessions`), sends a message (`send_message`, optionally waiting for the
+  answer), replies (`reply`), and reads its inbox (`check_inbox`). `spawn_session`
+  now returns the new session's id, so an agent can delegate work and then collect
+  the result instead of the user copy-pasting between sessions.
+
+  Mail is delivered at turn boundaries through the session's Stop hook, and the
+  recipient's ordinary answer is relayed back automatically — it does not have to
+  call any tool to reply. Exchanges are bounded by a hop budget, a per-sender rate
+  limit, and a message size cap.
+
+### Patch Changes
+
+- [#171](https://github.com/pago/simpleedit/pull/171) [`a34673d`](https://github.com/pago/simpleedit/commit/a34673d8e8108a2247cef2700db5ba7fab05199a) Thanks [@pago](https://github.com/pago)! - Fix a mermaid diagram with a syntax error painting its giant "bomb" error
+  graphic over the app. Mermaid draws its own error diagram into a temporary node
+  it appends to `<body>` and then rethrows before cleaning it up, so the graphic
+  was left floating above the UI — one per failed render — even though the
+  markdown preview and gen-UI diagrams already show their own inline error
+  message. Both render sites now initialize mermaid with `suppressErrorRendering`.
+
 ## 0.20.0
 
 ### Minor Changes
