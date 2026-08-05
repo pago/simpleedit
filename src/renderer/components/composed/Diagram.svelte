@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { DiagramSpec } from '../../../shared/gen-ui-catalog'
   import { compileSequenceDiagram } from './mermaid-compiler'
+  import { MERMAID_CONFIG } from '../../lib/mermaid-config'
 
   interface Props {
     props: DiagramSpec
@@ -20,7 +21,7 @@
     mermaidError = null
     try {
       const { default: mermaid } = await import('mermaid')
-      mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' })
+      mermaid.initialize(MERMAID_CONFIG)
       const id = `gen-ui-mermaid-${Math.random().toString(36).slice(2, 10)}`
       const source = compileSequenceDiagram(spec)
       const { svg } = await mermaid.render(id, source)

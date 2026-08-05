@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest'
-import { fenceToMonacoLanguage, rewriteRelativeImages, resolvePosix } from '../markdown-enhance'
+import { describe, it, expect, afterEach } from 'vitest'
+import {
+  fenceToMonacoLanguage,
+  rewriteRelativeImages,
+  resolvePosix,
+  enhanceCodeBlocks,
+} from '../markdown-enhance'
+import { MERMAID_CONFIG } from '../mermaid-config'
 
 describe('fenceToMonacoLanguage', () => {
   it('maps common aliases to Monaco language ids', () => {
@@ -50,5 +56,51 @@ describe('rewriteRelativeImages', () => {
     const el = container('<img src="../../etc/passwd">')
     rewriteRelativeImages(el, '/repo/docs', '/repo')
     expect(el.querySelector('img')!.getAttribute('src')).toBe('../../etc/passwd')
+  })
+})
+
+describe('enhanceCodeBlocks: mermaid fences', () => {
+  /** Mounted under <body> so a diagram escaping its container is detectable. */
+  function mount(html: string): HTMLElement {
+    const el = document.createElement('div')
+    el.innerHTML = html
+    document.body.appendChild(el)
+    return el
+  }
+
+  function straySvgs(root: HTMLElement): Element[] {
+    return Array.from(document.querySelectorAll('svg')).filter((svg) => !root.contains(svg))
+  }
+
+  // A leak is a body-level node, so it would otherwise be visible to every
+  // later test in this file and turn one regression into several failures.
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('renders a valid diagram inline', async () => {
+    const root = mount('<pre><code class="language-mermaid">graph TD\n  A[One] --> B[Two]</code></pre>')
+    await enhanceCodeBlocks(root, 1, () => true)
+    expect(root.querySelector('.md-mermaid svg')).not.toBeNull()
+    expect(straySvgs(root)).toHaveLength(0)
+  })
+
+  it('shows an error box for a broken diagram without leaking mermaid’s error SVG into <body>', async () => {
+    const root = mount('<pre><code class="language-mermaid">sequenceDiagram\n  ->> not valid ->></code></pre>')
+    await enhanceCodeBlocks(root, 2, () => true)
+    expect(root.querySelector('pre')).toBeNull()
+    expect(root.textContent).toContain('Diagram render failed')
+    expect(straySvgs(root)).toHaveLength(0)
+    expect(document.body.textContent).not.toContain('Syntax error in text')
+  })
+})
+
+describe('MERMAID_CONFIG', () => {
+  // The gen-UI Diagram.svelte render site shares this object but has no test of
+  // its own, so the flag that keeps mermaid's error graphic out of <body> is
+  // pinned here for both sites.
+  it('suppresses mermaid’s own error rendering', () => {
+    expect(MERMAID_CONFIG.suppressErrorRendering).toBe(true)
+    expect(MERMAID_CONFIG.securityLevel).toBe('strict')
   })
 })
