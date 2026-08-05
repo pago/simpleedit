@@ -6,12 +6,13 @@
  *
  * Both pieces reuse dependencies already in the app — `mermaid` (also used by
  * the gen-ui Diagram component) and `monaco-editor` (always loaded for the
- * editor). Mermaid runs with `securityLevel: 'strict'` and its SVG is still
+ * editor). Mermaid runs with the shared `MERMAID_CONFIG` and its SVG is still
  * re-sanitized with DOMPurify before injection (defense-in-depth);
  * `monaco.editor.colorize` only re-wraps our own already-escaped text.
  */
 import * as monaco from 'monaco-editor'
 import DOMPurify from 'dompurify'
+import { MERMAID_CONFIG } from './mermaid-config'
 
 /** Fenced-code info string → Monaco language id. Unknown/blank → null (left as-is). */
 const LANG_ALIAS: Record<string, string> = {
@@ -82,7 +83,7 @@ let mermaidReady = false
 async function renderMermaid(code: string, id: string): Promise<string> {
   const { default: mermaid } = await import('mermaid')
   if (!mermaidReady) {
-    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' })
+    mermaid.initialize(MERMAID_CONFIG)
     mermaidReady = true
   }
   const { svg } = await mermaid.render(id, code)
