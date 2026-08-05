@@ -139,7 +139,7 @@
       e.preventDefault()
       void window.api.invoke('models:config-get').then((config) => {
         const id = config.lastUsed?.provider === 'openai'
-          ? sessionsStore.createCodex(wt.path, { model: config.lastUsed.model, reasoningEffort: config.lastUsed.reasoningEffort })
+          ? sessionsStore.createCodex(root, wt.path, { model: config.lastUsed.model, reasoningEffort: config.lastUsed.reasoningEffort })
           : sessionsStore.createClaude(root, wt.path)
         sessionsStore.requestTerminalFocus(id)
       })

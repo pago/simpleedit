@@ -72,7 +72,7 @@
     const target = provider === 'codex'
       ? { provider: 'codex' as const, ...(codexModel ? { model: codexModel } : {}), ...(reasoningEffort ? { reasoningEffort: reasoningEffort as import('../../../shared/ipc-types').ReasoningEffort } : {}) }
       : { provider: 'claude' as const, ...(claudeModel ? { model: { provider: 'anthropic' as const, model: claudeModel } } : {}) }
-    sessionsStore.replaceWithAgent(session.id, target, provider === 'codex' ? session.worktreePath : session.launchDir, session.worktreePath, {
+    sessionsStore.replaceWithAgent(session.id, target, session.launchDir, session.worktreePath, {
       initialPrompt,
       label: session.label,
       ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),

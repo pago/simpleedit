@@ -39,8 +39,18 @@ export interface Session {
   /** True when the user renamed the session — OSC titles no longer apply. */
   customLabel?: boolean
   /**
-   * Directory the PTY spawned in (and respawns in on resume). Claude keeps its
-   * historical project-root launch behavior; Codex and terminals use a worktree.
+   * Directory the PTY spawned in (and respawns in on resume). EVERY agent —
+   * Claude and Codex alike — launches at the project root (beside the bare
+   * repo), never inside a worktree: agents create their own worktrees, and a
+   * root launch is what lets one agent memory span them. Only plain terminals
+   * spawn in a worktree.
+   *
+   * For Codex this is load-bearing beyond convention. Codex gates hook loading
+   * on directory trust (`[projects."<path>"] trust_level`), which is NOT
+   * inherited by subdirectories — so launching per-worktree would demand a
+   * fresh interactive trust grant for every worktree, and until it was given
+   * no hooks would load at all. Rooted at the container, one grant covers
+   * every session in the project.
    */
   launchDir: string
   /**
@@ -324,6 +334,7 @@ export const sessionsStore = {
   },
 
   createCodex(
+    launchDir: string,
     worktreePath: string,
     opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
   ): string {
@@ -332,7 +343,7 @@ export const sessionsStore = {
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
     }
-    return this.createAgent(target, worktreePath, worktreePath, opts)
+    return this.createAgent(target, launchDir, worktreePath, opts)
   },
 
   createAgents(launchDir: string, worktreePath: string): string {
@@ -833,8 +844,8 @@ async function spawnSessionFromAgent(
   // when the caller can't be located (nothing to replace).
   const newId =
     data.target === 'replace' && caller
-      ? sessionsStore.replaceWithAgent(caller.id, target, provider === 'codex' ? worktreePath : launchDir, worktreePath, spawnOpts)
-      : sessionsStore.createAgent(target, provider === 'codex' ? worktreePath : launchDir, worktreePath, spawnOpts)
+      ? sessionsStore.replaceWithAgent(caller.id, target, launchDir, worktreePath, spawnOpts)
+      : sessionsStore.createAgent(target, launchDir, worktreePath, spawnOpts)
 
   // Hand the minted id back so the waiting `spawn_session` tool call can return
   // an addressable handle — main never sees this id otherwise.

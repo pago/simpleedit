@@ -54,8 +54,9 @@
     return GROUP_COLOR_CLASS[c] ?? GROUP_COLOR_CLASS.sky
   }
 
-  /** Claude sessions launch at the PROJECT ROOT (one Claude memory for all
-   * work); their workspace viewer defaults to the main worktree. */
+  /** Agent sessions launch at the PROJECT ROOT (one agent memory for all work,
+   * and agents create their own worktrees); the workspace viewer defaults to
+   * the main worktree. See `Session.launchDir`. */
   function startClaude(): void {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
@@ -64,7 +65,8 @@
 
   function startCodex(model?: string): void {
     const wt = mainWorktree()
-    if (wt) sessionsStore.createCodex(wt.path, model ? { model } : {})
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) sessionsStore.createCodex(root, wt.path, model ? { model } : {})
   }
 
   async function startLastTarget(): Promise<void> {

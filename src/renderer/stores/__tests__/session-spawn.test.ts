@@ -112,14 +112,17 @@ describe('agent-session:spawn listener', () => {
   it('inherits a Codex caller target including reasoning effort', async () => {
     const off = initSessionListeners()
     try {
-      const callerId = sessionsStore.createCodex(FEAT_WT, { model: 'gpt-5.6-sol', reasoningEffort: 'xhigh' })
+      const callerId = sessionsStore.createCodex(PROJECT_ROOT, FEAT_WT, { model: 'gpt-5.6-sol', reasoningEffort: 'xhigh' })
       handlers.get('agent-session:spawn')!({ sourceTerminalId: callerId, brief: 'continue in Codex' })
       await flush()
 
       const spawned = sessionsStore.sessions()[0]
       expect(spawned.provider).toBe('codex')
       expect(spawned.target).toEqual({ provider: 'codex', model: 'gpt-5.6-sol', reasoningEffort: 'xhigh' })
-      expect(spawned.launchDir).toBe(FEAT_WT)
+      // Codex launches at the project root, exactly like Claude — never in a
+      // worktree, or Codex's per-directory hook trust would have to be
+      // re-granted for each one (see Session.launchDir).
+      expect(spawned.launchDir).toBe(PROJECT_ROOT)
     } finally {
       off()
     }
@@ -246,7 +249,7 @@ describe('forkAgent (store)', () => {
   })
 
   it('uses Codex-native fork with the captured thread target', () => {
-    const src = sessionsStore.createCodex(FEAT_WT, { model: 'gpt-5.6-sol', reasoningEffort: 'ultra' })
+    const src = sessionsStore.createCodex(PROJECT_ROOT, FEAT_WT, { model: 'gpt-5.6-sol', reasoningEffort: 'ultra' })
     sessionsStore.update(src, { providerSessionId: 'thread-123' })
 
     const forkId = sessionsStore.forkAgent(src)
@@ -258,7 +261,8 @@ describe('forkAgent (store)', () => {
       target: { provider: 'codex', model: 'gpt-5.6-sol', reasoningEffort: 'ultra' },
       resumeSessionId: 'thread-123',
       forkSession: true,
-      worktreePath: FEAT_WT,
+      // `agent:spawn`'s worktreePath is the LAUNCH dir — the project root.
+      worktreePath: PROJECT_ROOT,
     })
   })
 
