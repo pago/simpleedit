@@ -895,7 +895,11 @@ async function spawnSessionFromAgent(
  */
 function peerSnapshot(): AgentPeer[] {
   return _sessions
-    .filter((s) => s.kind === 'claude' && !s.pendingResume && !s.exited)
+    // 'agent' covers every provider. This read `=== 'claude'` when messaging
+    // landed, which the provider refactor renamed out from under it — leaving
+    // the peer set permanently empty. Agent View ('agents') is excluded on
+    // purpose: it's a bare TUI with no hook wiring to deliver mail through.
+    .filter((s) => s.kind === 'agent' && !s.pendingResume && !s.exited)
     .map((s) => ({
       terminalId: s.id,
       label: s.label,

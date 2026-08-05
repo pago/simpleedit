@@ -7,6 +7,26 @@ const BRIDGE_TOKEN = process.env.SIMPLEEDIT_BRIDGE_TOKEN
 const TERMINAL_ID = process.env.SIMPLEEDIT_TERMINAL_ID
 const CODEX_HOOK_REPORTER = process.argv.includes('--codex-hook-reporter')
 
+/**
+ * Relay one Codex lifecycle hook to the bridge, and the bridge's answer back to
+ * Codex on stdout.
+ *
+ * The answer matters: it is the agent-to-agent messaging channel. On a `Stop`
+ * with queued mail the bridge replies `{"decision":"block","reason":"…"}`, which
+ * feeds the peer's message into this agent's next turn — and the agent's reply
+ * comes back as `last_assistant_message` on the following `Stop`. Discarding the
+ * response would leave Codex able to SEND mail but never receive any.
+ *
+ * Everything else stays advisory: a bridge that's gone, a malformed payload or a
+ * non-JSON answer must leave Codex running exactly as it would have. Only a
+ * genuine, non-empty decision is ever printed, so ordinary events (cwd
+ * tracking, status) stay silent.
+ *
+ * The bridge coordinates come from the environment rather than our argv on
+ * purpose: Codex hashes a hook's command string to decide whether it is
+ * trusted, so anything per-session in the command would re-roll that hash every
+ * launch and silently disable the hook. See main/agents/codex.ts.
+ */
 async function reportCodexHook() {
   let input = ''
   for await (const chunk of process.stdin) input += chunk
@@ -18,11 +38,16 @@ async function reportCodexHook() {
   }
   if (!BRIDGE_PORT || !BRIDGE_TOKEN || !TERMINAL_ID) return
   try {
-    await fetch(`http://127.0.0.1:${BRIDGE_PORT}/${BRIDGE_TOKEN}/hooks`, {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/${BRIDGE_TOKEN}/hooks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...payload, simpleedit_terminal_id: TERMINAL_ID }),
     })
+    if (!res.ok) return
+    const answer = await res.json()
+    if (answer && typeof answer === 'object' && Object.keys(answer).length > 0) {
+      process.stdout.write(JSON.stringify(answer))
+    }
   } catch {
     // Reporting is advisory. Never change Codex behavior when SimpleEdit exits.
   }

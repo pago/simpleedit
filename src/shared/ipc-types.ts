@@ -751,7 +751,7 @@ export interface AgentPeer {
   label: string
   provider?: string
   worktreePath: string
-  status: ClaudeStatus | 'unknown'
+  status: AgentStatus | 'unknown'
 }
 
 export interface AgentBusInvokeMap {
