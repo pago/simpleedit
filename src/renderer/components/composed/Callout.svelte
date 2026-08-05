@@ -2,10 +2,13 @@
   import type { BaseComponentProps } from '@json-render/svelte'
   import type { z } from 'zod'
   import type { CalloutProps as CalloutPropsSchema } from '../../../shared/gen-ui-catalog'
+  import { renderMarkdown } from '../../lib/markdown'
 
   type CalloutProps = z.infer<typeof CalloutPropsSchema>
 
   let { props }: BaseComponentProps<CalloutProps> = $props()
+
+  const bodyHtml = $derived(renderMarkdown(props.body))
 
   const VARIANT_STYLES: Record<CalloutProps['variant'], string> = {
     info: 'border-blue-800/60 bg-blue-950/40 text-blue-200',
@@ -19,5 +22,9 @@
   {#if props.title}
     <div class="font-semibold">{props.title}</div>
   {/if}
-  <div class="text-current/90">{props.body}</div>
+  <!-- Same markdown path as ProseBlock; `callout-prose` hands the variant's own
+       colour and size back to the typography plugin's output. -->
+  <div class="prose prose-invert prose-sm callout-prose max-w-none">
+    {@html bodyHtml}
+  </div>
 </div>

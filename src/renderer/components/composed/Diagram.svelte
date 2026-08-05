@@ -101,30 +101,35 @@
   })
 </script>
 
-{#if props.kind === 'sequence'}
-  {#if mermaidError}
-    <div class="rounded border border-red-800/50 bg-red-950/30 p-3 text-xs text-red-300">
-      Diagram render failed: {mermaidError}
-    </div>
-  {:else if mermaidSvg}
-    <div class="rounded border border-zinc-800 bg-zinc-900 p-2">
-      {@html mermaidSvg}
-    </div>
-  {:else}
-    <div class="rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-zinc-500">
-      Rendering sequence diagram…
-    </div>
+<div class="flex min-w-0 flex-col gap-1">
+  {#if props.title}
+    <div class="text-xs font-medium text-zinc-400">{props.title}</div>
   {/if}
-{:else if props.kind === 'graph'}
-  {#if graphError}
-    <div class="rounded border border-red-800/50 bg-red-950/30 p-3 text-xs text-red-300">
-      Diagram render failed: {graphError}
-    </div>
-  {:else if graphLayout && GraphView}
-    <GraphView nodes={graphLayout.nodes} edges={graphLayout.edges} />
-  {:else}
-    <div class="rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-zinc-500">
-      Rendering graph…
-    </div>
+  {#if props.kind === 'sequence'}
+    {#if mermaidError}
+      <div class="rounded border border-red-800/50 bg-red-950/30 p-3 text-xs text-red-300">
+        Diagram render failed: {mermaidError}
+      </div>
+    {:else if mermaidSvg}
+      <div class="rounded border border-zinc-800 bg-zinc-900 p-2">
+        {@html mermaidSvg}
+      </div>
+    {:else}
+      <div class="rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-zinc-500">
+        Rendering sequence diagram…
+      </div>
+    {/if}
+  {:else if props.kind === 'graph'}
+    {#if graphError}
+      <div class="rounded border border-red-800/50 bg-red-950/30 p-3 text-xs text-red-300">
+        Diagram render failed: {graphError}
+      </div>
+    {:else if graphLayout && GraphView}
+      <GraphView nodes={graphLayout.nodes} edges={graphLayout.edges} />
+    {:else}
+      <div class="rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-zinc-500">
+        Rendering graph…
+      </div>
+    {/if}
   {/if}
-{/if}
+</div>

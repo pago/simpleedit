@@ -35,7 +35,7 @@
       <li>
         <button
           type="button"
-          class="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs disabled:cursor-default {clickable
+          class="flex w-full items-start gap-2 px-2 py-1.5 text-left text-xs disabled:cursor-default {clickable
             ? 'hover:bg-zinc-800/80'
             : 'cursor-default'}"
           disabled={!clickable}
@@ -43,17 +43,21 @@
         >
           {#if item.status}
             <span
-              class="rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide {STATUS_STYLES[
+              class="flex-none rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide {STATUS_STYLES[
                 item.status
               ]}"
             >
               {item.status}
             </span>
           {/if}
-          <span class="flex-1 truncate font-mono text-zinc-200" title={item.path}>{item.path}</span>
-          {#if item.detail}
-            <span class="truncate text-zinc-500">{item.detail}</span>
-          {/if}
+          <!-- The path stays one line (it has a tooltip); `detail` carries a
+               clause about why the file is here, so it wraps in full below. -->
+          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span class="truncate font-mono text-zinc-200" title={item.path}>{item.path}</span>
+            {#if item.detail}
+              <span class="whitespace-pre-wrap break-words text-zinc-500">{item.detail}</span>
+            {/if}
+          </span>
         </button>
       </li>
     {/each}

@@ -122,6 +122,115 @@ test.describe('show_panel — composed panels', () => {
     await expect(window.getByText(/index 1111111/)).toHaveCount(0)
   })
 
+  test('focus_block jumps to a block inside a collapsed Section and flashes it', async () => {
+    await sendPanel(
+      {
+        root: 'tour',
+        elements: {
+          // A "read in this order" list above a step that starts collapsed —
+          // the case a tour hits: the target is not in the DOM until we expand.
+          tour: { type: 'Section', props: { title: 'Retry handling' }, children: ['index', 'step'] },
+          index: {
+            type: 'FileList',
+            props: {
+              title: 'Read in this order',
+              items: [
+                {
+                  path: 'src/a.ts',
+                  detail: 'Start here: the added export is what the rest of the tour builds on.',
+                  action: { type: 'focus_block', blockId: 'diff' },
+                },
+              ],
+            },
+          },
+          step: {
+            type: 'Section',
+            props: { title: 'Step 1', defaultOpen: false },
+            children: ['diff'],
+          },
+          diff: { type: 'DiffBlock', props: { diff: DIFF, title: 'The change' } },
+        },
+      },
+      'Tour',
+      'focus',
+    )
+    await expect(panelTabs()).toHaveCount(1, { timeout: 10_000 })
+
+    // A sentence-length detail is shown in full, not truncated to a chip.
+    await expect(
+      window.getByText('Start here: the added export is what the rest of the tour builds on.'),
+    ).toBeVisible({ timeout: 10_000 })
+
+    // Collapsed: the DiffBlock is not rendered at all yet.
+    await expect(window.getByText('The change')).toHaveCount(0)
+
+    await window.getByRole('button', { name: /src\/a\.ts/ }).click()
+
+    // The collapsed step opened on the way, so the jump actually lands.
+    await expect(window.getByText('The change')).toBeVisible({ timeout: 5000 })
+    await expect(window.getByText('export const added = 2')).toBeVisible()
+    await expect(
+      window.locator('[data-block-id="step"] [data-section-toggle]'),
+    ).toHaveAttribute('aria-expanded', 'true')
+    // (The arrival flash is time-boxed, so it is asserted in focus-block.test.ts
+    // rather than raced against here.)
+  })
+
+  test('a Callout body renders markdown instead of one run-on line', async () => {
+    await sendPanel(
+      {
+        root: 'c',
+        elements: {
+          c: {
+            type: 'Callout',
+            props: {
+              variant: 'warn',
+              title: 'Two things to know',
+              body: 'First paragraph here.\n\n- one bullet\n- another bullet',
+            },
+          },
+        },
+      },
+      'Tour',
+      'callout',
+    )
+    await expect(panelTabs()).toHaveCount(1, { timeout: 10_000 })
+
+    const callout = window.locator('[data-block-id="c"]')
+    await expect(callout.locator('p', { hasText: 'First paragraph here.' })).toBeVisible({
+      timeout: 10_000,
+    })
+    await expect(callout.locator('li')).toHaveCount(2)
+  })
+
+  test('a Diagram carries its own title, with no ProseBlock above it', async () => {
+    await sendPanel(
+      {
+        root: 'd',
+        elements: {
+          d: {
+            type: 'Diagram',
+            props: {
+              kind: 'graph',
+              title: 'Request path',
+              nodes: [
+                { id: 'a', label: 'Client' },
+                { id: 'b', label: 'API' },
+              ],
+              edges: [{ source: 'a', target: 'b' }],
+            },
+          },
+        },
+      },
+      'Tour',
+      'diagram',
+    )
+    await expect(panelTabs()).toHaveCount(1, { timeout: 10_000 })
+    await expect(window.locator('[data-block-id="d"]').getByText('Request path')).toBeVisible({
+      timeout: 10_000,
+    })
+  })
+
   test('selecting text in a block offers Discuss this and opens the agent popover', async () => {
     await sendPanel(
       {
