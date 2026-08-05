@@ -120,11 +120,29 @@ echo "app exited after $((waited / 2))s"
 # And make sure it was not reopened in the meantime. Upgrading under a live
 # instance is exactly what this script exists to avoid. The pattern includes
 # /Contents/MacOS/ so it cannot match this script's own argv.
-if pgrep -f "$APP/Contents/MacOS/" >/dev/null 2>&1; then
-  echo "another SimpleEdit instance is running; aborting."
-  write_result false relaunched "SimpleEdit was reopened before the update could run."
-  exit 1
-fi
+#
+# Only exit 1 means "nothing matched". 2 is a pattern pgrep could not compile
+# (the bundle path is used as an extended regex, so a path containing regex
+# metacharacters lands here), 3 an internal error, 127 no pgrep on PATH. In none
+# of those did pgrep look and find nothing — treating them as "clear" is how you
+# get brew replacing the bundle under a running app, which is the one outcome
+# this script exists to prevent. stderr goes to the log rather than /dev/null so
+# the reason is recoverable afterwards.
+pgrep -f "$APP/Contents/MacOS/" >/dev/null
+pgrep_status=$?
+case "$pgrep_status" in
+  0)
+    echo "another SimpleEdit instance is running; aborting."
+    write_result false relaunched "SimpleEdit was reopened before the update could run."
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "could not check for a running instance (pgrep exited $pgrep_status); aborting."
+    write_result false guard "Could not confirm SimpleEdit had quit, so the update was not started."
+    exit 1
+    ;;
+esac
 
 # stdin from /dev/null so that a sudo prompt fails immediately rather than
 # hanging forever in a job with no terminal to answer it.
@@ -133,9 +151,21 @@ HOMEBREW_NO_AUTO_UPDATE=1 "$BREW" upgrade --cask "$CASK" </dev/null &
 brew_pid=$!
 
 # Backstop: a wedged download must not leave the user with no app and no reason.
-( sleep 1800
+# The timeout is in seconds, overridable only so the tests do not have to wedge
+# for half an hour to prove it fires.
+#
+# The sleep is a child of the watchdog subshell, and killing a subshell does not
+# touch its children — so the watchdog has to wait on the sleep and pass the
+# signal down, or every upgrade leaves a stray sleep orphaned to launchd for the
+# rest of the half hour, still holding this log's file descriptor open.
+upgrade_timeout="\${SIMPLEEDIT_UPGRADE_TIMEOUT:-1800}"
+( sleep_pid=''
+  trap '[ -n "$sleep_pid" ] && kill "$sleep_pid" 2>/dev/null; exit 0' TERM
+  sleep "$upgrade_timeout" &
+  sleep_pid=$!
+  wait "$sleep_pid" || exit 0
   if kill -0 "$brew_pid" 2>/dev/null; then
-    echo "brew still running after 30m; terminating."
+    echo "brew still running after \${upgrade_timeout}s; terminating."
     kill -TERM "$brew_pid" 2>/dev/null
   fi ) &
 watchdog_pid=$!

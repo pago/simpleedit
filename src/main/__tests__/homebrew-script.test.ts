@@ -29,7 +29,12 @@ function stub(name: string, body: string): string {
   return path
 }
 
-async function runScript(pid: number, brew: string, version = '9.9.9'): Promise<number> {
+async function runScript(
+  pid: number,
+  brew: string,
+  version = '9.9.9',
+  env: Record<string, string> = {}
+): Promise<number> {
   const child = spawn(
     '/bin/sh',
     [script, String(pid), brew, 'pago/simpleedit/simpleedit', resultFile, bundle, 'com.simpleedit.app', version],
@@ -39,11 +44,26 @@ async function runScript(pid: number, brew: string, version = '9.9.9'): Promise<
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         // Half-seconds. Keeps the "app never quit" case from taking a real
         // minute; the production default is 120.
-        SIMPLEEDIT_UPGRADE_MAX_WAIT: '4'
+        SIMPLEEDIT_UPGRADE_MAX_WAIT: '4',
+        ...env
       }
     }
   )
   return new Promise((resolve) => child.on('exit', (code) => resolve(code ?? -1)))
+}
+
+/** pids of every `sleep <seconds>` on the machine, so a leak can be attributed. */
+async function sleepPids(seconds: string): Promise<Set<string>> {
+  const { stdout } = await run('/bin/sh', [
+    '-c',
+    `ps -A -o pid=,args= | grep -E "[s]leep ${seconds}\\b" || true`
+  ])
+  return new Set(
+    stdout
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter(Boolean)
+  )
 }
 
 function result(): { ok: boolean; stage: string; version: string; detail: string } {
@@ -115,6 +135,20 @@ describe('the detached Homebrew upgrade helper', () => {
     expect(existsSync(join(binDir, 'fake-brew.ran'))).toBe(false)
   })
 
+  // `pgrep` exits 1 for "nothing matched" but 2 for a pattern it could not
+  // compile and 127 if it is not on PATH. Reading those as "nothing matched" runs
+  // brew without ever having checked — the one thing the guard is here to stop.
+  it('refuses to upgrade when the running-instance check itself fails', async () => {
+    const brew = stub('fake-brew', 'echo "SHOULD NOT RUN" > "$0.ran"; exit 0')
+    stub('pgrep', 'echo "pgrep: bad pattern" >&2; exit 2')
+
+    const code = await runScript(await deadPid(), brew)
+
+    expect(code).toBe(1)
+    expect(result()).toMatchObject({ ok: false, stage: 'guard' })
+    expect(existsSync(join(binDir, 'fake-brew.ran'))).toBe(false)
+  })
+
   // A relaunch between the quit and the upgrade is the subtle version of the
   // same hazard, and `kill -0` on the old pid cannot see it.
   it('aborts if another instance appeared after the first one exited', async () => {
@@ -134,5 +168,41 @@ describe('the detached Homebrew upgrade helper', () => {
     expect(code).toBe(1)
     expect(result()).toMatchObject({ ok: false, stage: 'relaunched' })
     expect(existsSync(join(binDir, 'fake-brew.ran'))).toBe(false)
+  })
+
+  it('terminates a brew that never finishes', async () => {
+    const brew = stub('fake-brew', 'sleep 60')
+
+    const code = await runScript(await deadPid(), brew, '9.9.9', {
+      SIMPLEEDIT_UPGRADE_TIMEOUT: '1'
+    })
+
+    expect(code).toBe(0)
+    expect(result()).toMatchObject({ ok: false, stage: 'upgrade' })
+    expect(existsSync(join(binDir, 'open.calls'))).toBe(true)
+  })
+
+  // The watchdog's `sleep` is a child of the watchdog subshell, so killing the
+  // subshell leaves it running — for the full half hour, holding the log's fd,
+  // after an upgrade that finished in seconds.
+  it('leaves no watchdog sleep behind', async () => {
+    const brew = stub('fake-brew', 'exit 0')
+    const before = await sleepPids('1800')
+
+    expect(await runScript(await deadPid(), brew)).toBe(0)
+
+    let leaked = new Set<string>()
+    try {
+      // The watchdog is signalled as the script exits, so give it a moment to go.
+      for (let attempt = 0; attempt < 20; attempt++) {
+        leaked = new Set([...(await sleepPids('1800'))].filter((pid) => !before.has(pid)))
+        if (leaked.size === 0) break
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      expect([...leaked]).toEqual([])
+    } finally {
+      // Do not leave half-hour sleeps on the machine when this test fails.
+      for (const pid of leaked) process.kill(Number(pid), 'SIGKILL')
+    }
   })
 })
