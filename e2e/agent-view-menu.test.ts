@@ -111,14 +111,32 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     await expect(window.getByRole('menu')).not.toBeVisible()
   })
 
-  test('Codex menu item launches a native Codex session with guided reporting setup', async () => {
+  /**
+   * Codex is a first-class provider: everything that doesn't depend on Codex's
+   * one-time hook-trust grant must match Claude. The banner is the ONLY expected
+   * difference, and only until that grant is made — so assert the parity too,
+   * not just the degraded state, or this test would pass while Codex silently
+   * regressed to a second-class citizen.
+   */
+  test('Codex menu item launches a native Codex session at the project root', async () => {
     const agentButton = window.getByRole('button', { name: 'New agent session' }).first()
     await agentButton.click({ button: 'right' })
 
     const menu = window.getByRole('menu').first()
     await menu.getByRole('menuitem', { name: 'New Codex session · configured default' }).click()
 
+    // Named for its own provider, numbered in its own sequence — not "Claude".
     await expect(window.locator('[role="option"]:has-text("Codex")').first()).toBeVisible({ timeout: 5_000 })
+
+    // A real PTY on the provider-namespaced id, same shape as Claude's.
+    // (That it launches at the project root is asserted in the unit parity
+    // tests, where launchDir is directly observable.)
+    const ptyIds = await window.evaluate(() =>
+      (window as unknown as { api: { invoke: (ch: string) => Promise<string[]> } }).api.invoke('pty:active-ids'),
+    )
+    expect(ptyIds.some((id) => id.startsWith('agent-codex-'))).toBe(true)
+
+    // The one permitted difference, until hook trust is granted once.
     await expect(window.getByText('Reporting setup needed', { exact: false })).toBeVisible()
     await expect(window.getByRole('button', { name: 'Open /hooks' })).toBeVisible()
   })
