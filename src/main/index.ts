@@ -467,7 +467,7 @@ function registerAllHandlers(): void {
       },
       event.sender
     )
-    attachToTerminal(options.id, options.worktreePath, event.sender)
+    attachToTerminal(options.id, options.worktreePath, event.sender, options.target.provider)
   })
 
   ipcMain.handle('agent:spawn-agents', (event, options: PtySpawnOptions) => {

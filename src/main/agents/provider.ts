@@ -70,6 +70,15 @@ export function getProvider(id: string): AgentProvider {
 }
 
 /**
+ * Look up a provider without throwing. For callers where a provider is an
+ * enhancement rather than a requirement — e.g. terminal attachment, which owns
+ * the terminal→worktree mapping and only *also* wants status detection.
+ */
+export function tryGetProvider(id: string | undefined): AgentProvider | undefined {
+  return id ? providers.get(id) : undefined
+}
+
+/**
  * Every provider that has registered itself. The renderer reads this at startup
  * to discover which agents exist and cache their capabilities, so a new
  * provider module surfaces in the UI purely by importing it in `pty.ts` — no

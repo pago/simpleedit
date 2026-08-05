@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron'
-import type { AgentStatus } from '../shared/ipc-types'
+import type { AgentProviderId, AgentStatus } from '../shared/ipc-types'
+import { tryGetProvider } from './agents/provider'
 
 interface TerminalAttachment {
   worktreePath: string
@@ -108,24 +109,42 @@ export function getWorktreeForTerminal(terminalId: string): string | null {
 }
 
 /**
- * Start monitoring a terminal's PTY output for Claude Code TUI events.
+ * Start monitoring a terminal's PTY output for agent status.
+ *
+ * Attachment has two jobs, and only the second needs a provider:
+ *   1. record the terminal → worktree mapping (`getWorktreeForTerminal`), which
+ *      the MCP bridge relies on and which must work unconditionally;
+ *   2. derive status from output, via the provider's `detectStatus`.
+ *
+ * Status therefore goes through the provider (Claude reads its OSC title; a
+ * provider reporting out-of-band, like Codex over hooks, simply doesn't
+ * implement it) — this module stays generic plumbing, and an unregistered or
+ * absent provider costs you status detection, not the attachment.
+ *
+ * Only *changes* are emitted. The PTY fires per output chunk — a busy TUI
+ * redraws constantly — and re-sending an unchanged status would put an IPC
+ * message on every chunk on top of `pty:data`.
  */
 export function attachToTerminal(
   terminalId: string,
   worktreePath: string,
-  webContents: WebContents
+  webContents: WebContents,
+  provider: AgentProviderId = 'claude',
 ): void {
   // Don't double-attach
   if (attachments.has(terminalId)) return
 
-  const removeListener = onPtyData(terminalId, (data: string) => {
-    for (const title of extractOscTitles(data)) {
-      const status = statusFromTitle(title)
-      if (status !== null) {
+  const detect = tryGetProvider(provider)?.detectStatus
+  let lastStatus: AgentStatus | null = null
+
+  const removeListener = detect
+    ? onPtyData(terminalId, (data: string) => {
+        const status = detect(data)
+        if (status === null || status === lastStatus) return
+        lastStatus = status
         sendStatus(webContents, terminalId, worktreePath, status)
-      }
-    }
-  })
+      })
+    : () => {}
 
   attachments.set(terminalId, { worktreePath, webContents, removeListener })
 }

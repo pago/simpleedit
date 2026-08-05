@@ -180,11 +180,14 @@ function spawnAgentTerminal(
     webContents.send('agent:session-id', { terminalId: id, sessionId: plan.sessionId })
   }
 
+  // Status is NOT derived here. `emitPtyData` feeds the tap in claude-stream,
+  // which asks the provider to interpret the chunk and emits only on change —
+  // sending a status per chunk would double the IPC traffic of a busy TUI and,
+  // for a provider that reports out-of-band, pin it at a wrong value forever.
   term.onData((data: string) => {
     emitPtyData(id, data)
     const offset = recordBacklog(id, data)
     if (!webContents.isDestroyed()) {
-      webContents.send('agent:status', { worktreePath, status: 'running', terminalId: id, precise: false })
       webContents.send('pty:data', { id, data, offset })
     }
   })
