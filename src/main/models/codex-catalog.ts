@@ -1,6 +1,7 @@
+import { app } from 'electron'
 import { spawn } from 'child_process'
 import * as readline from 'readline'
-import type { CodexModel, ReasoningEffort } from '../../shared/ipc-types'
+import { isReasoningEffort, type CodexModel } from '../../shared/ipc-types'
 import { resolveCodexPath } from '../lib/shell-path'
 
 let cached: CodexModel[] | null = null
@@ -16,10 +17,14 @@ export function parseCodexModelPage(result: Record<string, unknown> | undefined)
     if (entry['hidden'] === true) continue
     const model = typeof entry['model'] === 'string' ? entry['model'] : entry['id']
     if (typeof model !== 'string') continue
+    // Codex types reasoning effort as an open string, so anything it advertises
+    // that we don't model is dropped rather than cast into our union — an
+    // unknown effort would otherwise reach the launch flags and the settings UI
+    // as a value nothing can handle.
     const efforts = Array.isArray(entry['supportedReasoningEfforts'])
       ? entry['supportedReasoningEfforts'].flatMap((e) => {
           const value = e && typeof e === 'object' ? (e as Record<string, unknown>)['reasoningEffort'] : undefined
-          return typeof value === 'string' ? [value as ReasoningEffort] : []
+          return isReasoningEffort(value) ? [value] : []
         })
       : []
     models.push({
@@ -27,21 +32,31 @@ export function parseCodexModelPage(result: Record<string, unknown> | undefined)
       displayName: typeof entry['displayName'] === 'string' ? entry['displayName'] : model,
       model,
       supportedReasoningEfforts: efforts,
-      ...(typeof entry['defaultReasoningEffort'] === 'string' ? { defaultReasoningEffort: entry['defaultReasoningEffort'] as ReasoningEffort } : {}),
+      ...(isReasoningEffort(entry['defaultReasoningEffort']) ? { defaultReasoningEffort: entry['defaultReasoningEffort'] } : {}),
       isDefault: entry['isDefault'] === true,
     })
   }
   return { models, nextCursor: typeof result?.['nextCursor'] === 'string' ? result['nextCursor'] : null }
 }
 
+/**
+ * The Codex model catalog, discovered once and then cached.
+ *
+ * A failure is NOT cached: `codex` may not be installed yet, may be mid-upgrade,
+ * or its app-server may have hiccupped, and caching `[]` for the process
+ * lifetime would leave the model picker permanently empty until a restart —
+ * with no way for the user to tell why. An empty successful result isn't cached
+ * either, for the same reason.
+ */
 export async function listCodexModels(): Promise<CodexModel[]> {
   if (cached) return cached
   try {
-    cached = await discover()
+    const models = await discover()
+    if (models.length > 0) cached = models
+    return models
   } catch {
-    cached = []
+    return []
   }
-  return cached
 }
 
 async function discover(): Promise<CodexModel[]> {
@@ -71,7 +86,7 @@ async function discover(): Promise<CodexModel[]> {
   const timeout = setTimeout(() => fail(new Error('codex model discovery timed out')), 5000)
   try {
     const initialized = await request('initialize', {
-      clientInfo: { name: 'simpleedit', title: 'SimpleEdit', version: '0.19.0' },
+      clientInfo: { name: 'simpleedit', title: 'SimpleEdit', version: app.getVersion() },
     })
     if (initialized.error) throw new Error('Codex app-server initialization failed')
     proc.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`)

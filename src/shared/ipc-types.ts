@@ -138,6 +138,20 @@ export type AgentProviderId = 'claude' | 'codex'
 export type AgentStatus = 'initializing' | 'idle' | 'running' | 'waiting' | 'error' | 'exited'
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
 
+/**
+ * Every effort we recognise, for validating values that arrive from outside.
+ * Codex's app-server schema types `reasoningEffort` as an open, non-empty
+ * string, so a new value can appear at any time — `isReasoningEffort` keeps it
+ * from being cast blindly into the union above.
+ */
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = [
+  'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+]
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === 'string' && (REASONING_EFFORTS as readonly string[]).includes(value)
+}
+
 export type InteractiveTarget =
   | { provider: 'claude'; model?: ModelRef }
   | { provider: 'codex'; model?: string; reasoningEffort?: ReasoningEffort }
