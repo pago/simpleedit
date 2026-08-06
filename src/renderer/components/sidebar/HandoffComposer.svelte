@@ -1,6 +1,8 @@
 <script lang="ts">
   import { sessionsStore, type Session } from '../../stores/sessions.svelte'
   import { assembleBriefContext } from '../../lib/session-brief'
+  import { capabilitiesFor, knownProviders, providerLabel } from '../../stores/agent-capabilities.svelte'
+  import { REASONING_EFFORTS, type AgentProviderId, type InteractiveTarget, type ReasoningEffort } from '../../../shared/ipc-types'
 
   interface Props {
     session: Session
@@ -9,7 +11,7 @@
 
   let { session, onclose }: Props = $props()
 
-  function initialProvider(): 'claude' | 'codex' {
+  function initialProvider(): AgentProviderId {
     return session.provider ?? 'claude'
   }
 
@@ -17,12 +19,15 @@
     return session.target?.provider === 'codex' ? (session.target.reasoningEffort ?? '') : ''
   }
 
-  function initialClaudeModel(): string {
-    return session.target?.provider === 'claude' ? (session.target.model?.model ?? '') : ''
-  }
-
-  function initialCodexModel(): string {
-    return session.target?.provider === 'codex' ? (session.target.model ?? '') : ''
+  /**
+   * The model already on this session's target, as a plain id. Providers carry
+   * it differently — a structured ModelRef, or a bare id — which is what
+   * `capabilities.modelSelector` describes.
+   */
+  function initialModelId(): string {
+    const t = session.target
+    if (!t) return ''
+    return t.provider === 'claude' ? (t.model?.model ?? '') : (t.model ?? '')
   }
 
   // The human writes the directive (what the successor should DO — the reason
@@ -31,10 +36,14 @@
   let directive = $state('')
   let context = $state('Assembling context…')
   let directiveEl: HTMLTextAreaElement | undefined = $state()
-  let provider = $state<'claude' | 'codex'>(initialProvider())
-  let claudeModel = $state(initialClaudeModel())
-  let codexModel = $state(initialCodexModel())
+  let provider = $state<AgentProviderId>(initialProvider())
+  let modelId = $state(initialModelId())
   let reasoningEffort = $state(initialReasoningEffort())
+
+  // Everything provider-specific below reads the descriptor, never the id — so
+  // a new provider appears here by registering in main, not by editing this file.
+  const caps = $derived(capabilitiesFor(provider))
+  const providers = $derived(knownProviders().length > 0 ? knownProviders() : [provider])
 
   let canSubmit = $derived(directive.trim().length > 0)
 
@@ -69,9 +78,20 @@
     const initialPrompt = `${directive.trim()}\n\n${context.trim()}`
     // 'replace': hand off in place — the successor takes this session's slot and
     // the current (fat) session is closed. That's the whole point of a hand-off.
-    const target = provider === 'codex'
-      ? { provider: 'codex' as const, ...(codexModel ? { model: codexModel } : {}), ...(reasoningEffort ? { reasoningEffort: reasoningEffort as import('../../../shared/ipc-types').ReasoningEffort } : {}) }
-      : { provider: 'claude' as const, ...(claudeModel ? { model: { provider: 'anthropic' as const, model: claudeModel } } : {}) }
+    // `modelSelector` says how this provider carries a model: a structured
+    // ModelRef, or the bare id it was typed as.
+    const target: InteractiveTarget = caps?.modelSelector === 'model-id'
+      ? {
+          provider: 'codex',
+          ...(modelId ? { model: modelId } : {}),
+          ...(caps?.reasoningEffort && reasoningEffort
+            ? { reasoningEffort: reasoningEffort as ReasoningEffort }
+            : {}),
+        }
+      : {
+          provider: 'claude',
+          ...(modelId ? { model: { provider: 'anthropic' as const, model: modelId } } : {}),
+        }
     sessionsStore.replaceWithAgent(session.id, target, session.launchDir, session.worktreePath, {
       initialPrompt,
       label: session.label,
@@ -114,22 +134,18 @@
     <div class="mt-3 grid grid-cols-3 gap-2">
       <label class="text-xs text-zinc-400">Provider
         <select bind:value={provider} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200">
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
+          {#each providers as id (id)}<option value={id}>{providerLabel(id)}</option>{/each}
         </select>
       </label>
       <label class="col-span-2 text-xs text-zinc-400">Model <span class="text-zinc-600">(default when blank)</span>
-        {#if provider === 'codex'}
-          <input bind:value={codexModel} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200" placeholder="gpt-5.6-sol" />
-        {:else}
-          <input bind:value={claudeModel} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200" placeholder="claude-opus-5" />
-        {/if}
+        <input bind:value={modelId} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200" />
       </label>
-      {#if provider === 'codex'}
+      {#if caps?.reasoningEffort}
         <label class="text-xs text-zinc-400">Reasoning
           <select bind:value={reasoningEffort} class="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-zinc-200">
             <option value="">Model default</option>
-            {#each ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as effort}<option value={effort}>{effort}</option>{/each}
+            <!-- One list, shared with the launch flags and the spawn_session schema. -->
+            {#each REASONING_EFFORTS as effort (effort)}<option value={effort}>{effort}</option>{/each}
           </select>
         </label>
       {/if}

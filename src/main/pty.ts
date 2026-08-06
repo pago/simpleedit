@@ -130,18 +130,18 @@ export function renderLaunchCommand(plan: Pick<LaunchPlan, 'executable' | 'args'
   return [...(env.length ? ['env', ...env] : []), shellQuote(plan.executable), ...plan.args.map(shellQuote)].join(' ')
 }
 
-function getPtyOptions(
-  worktreePath: string,
-  extraEnv?: Record<string, string>,
-): pty.IPtyForkOptions {
+/**
+ * A plan's own env is NOT merged here — `renderLaunchCommand` prefixes it inline
+ * on the command instead, so a login shell's rc files cannot clobber it after
+ * the fact (that is what the Ollama endpoint override needs).
+ */
+function getPtyOptions(worktreePath: string): pty.IPtyForkOptions {
   return {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
     cwd: worktreePath,
-    env: extraEnv
-      ? { ...(process.env as Record<string, string>), ...extraEnv }
-      : (process.env as Record<string, string>)
+    env: process.env as Record<string, string>,
   }
 }
 

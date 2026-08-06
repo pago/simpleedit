@@ -19,13 +19,14 @@ const base: AgentCapabilities = {
   status: 'precise', resume: true, fork: true, tracking: 'full', mcp: true,
   modelOverride: 'native', shiftEnter: 'native', droppedPath: 'at-reference',
   gracefulShutdown: true, displayName: 'Codex', oscTitle: 'directory',
-  reportingSetup: 'user-granted',
+  reportingSetup: 'user-granted', modelSelector: 'model-id', reasoningEffort: true,
 }
 const CAPS: Record<string, AgentCapabilities> = {
   claude: {
     ...base, displayName: 'Claude', status: 'osc', modelOverride: 'env',
     shiftEnter: 'escape-newline', droppedPath: 'newline-list',
     oscTitle: 'session-label', reportingSetup: 'automatic',
+    modelSelector: 'model-ref', reasoningEffort: false,
   },
   codex: base,
 }

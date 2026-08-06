@@ -270,11 +270,18 @@ export const sessionsStore = {
   // ── creation ─────────────────────────────────────────────────────────────
 
   createAgent(
-    target: InteractiveTarget,
+    rawTarget: InteractiveTarget,
     launchDir: string,
     worktreePath: string,
     opts: AgentCreateOptions = {},
   ): string {
+    // Detach from Svelte's reactive graph ONCE, up front. Callers hand us a
+    // target read straight out of the session array — `forkAgent` and
+    // "discuss with agent" both pass `session.target` — so it is a $state proxy,
+    // which structured clone rejects on the way through IPC. Snapshotting here
+    // rather than at each `invoke` keeps the two calls below from disagreeing,
+    // and stops the new session aliasing the source session's target object.
+    const target = $state.snapshot(rawTarget) as InteractiveTarget
     const id = `agent-${target.provider}-${crypto.randomUUID()}`
     const model = opts.model ?? (target.provider === 'claude' ? target.model : undefined)
     const caps = capabilitiesFor(target.provider)
@@ -314,7 +321,7 @@ export const sessionsStore = {
     void window.api.invoke('agent:spawn', {
       id,
       worktreePath: launchDir,
-      target: $state.snapshot(target),
+      target,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
       ...(opts.forkSession ? { forkSession: true } : {}),
       // $state.snapshot: `model` may be a Svelte proxy (e.g. an element of a
@@ -776,6 +783,13 @@ export const sessionsStore = {
         touchedWorktrees,
         ...(input.groupId ? { groupId: input.groupId } : {}),
         ...(input.seedPrompt ? { seedPrompt: input.seedPrompt } : {}),
+        // A restored session needs the trust-grant band as much as a fresh one —
+        // arguably more, since the user has quit and relaunched since granting.
+        // Without this, resuming a Codex session gives degraded status and
+        // tracking with nothing on screen explaining why.
+        ...(capabilitiesFor(input.provider ?? 'claude')?.reportingSetup === 'user-granted'
+          ? { reportingSetupNeeded: true }
+          : {}),
         pendingResume: { sessionId: input.sessionId },
       },
     ]
@@ -905,9 +919,7 @@ async function spawnSessionFromAgent(
  */
 function peerSnapshot(): AgentPeer[] {
   return _sessions
-    // 'agent' covers every provider. This read `=== 'claude'` when messaging
-    // landed, which the provider refactor renamed out from under it — leaving
-    // the peer set permanently empty. Agent View ('agents') is excluded on
+    // 'agent' covers every provider. Agent View ('agents') is excluded on
     // purpose: it's a bare TUI with no hook wiring to deliver mail through.
     .filter((s) => s.kind === 'agent' && !s.pendingResume && !s.exited)
     .map((s) => ({

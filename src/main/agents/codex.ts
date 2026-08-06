@@ -27,7 +27,11 @@ function tomlInlineTable(values: Record<string, string>): string {
     .join(', ')} }`
 }
 
-/** Lifecycle events we ask Codex to report. Order fixes the trust-key indices. */
+/**
+ * Lifecycle events we ask Codex to report. Each goes in its own single-element
+ * `-c hooks.<Event>=[…]`, so every trust key ends `:0:0` and this order does not
+ * affect them.
+ */
 export const HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
@@ -38,15 +42,22 @@ export const HOOK_EVENTS = [
 ] as const
 
 /**
- * The hook command Codex is asked to run, and the ONLY thing its trust hash
- * covers. It must stay byte-identical across launches: Codex gates hook
- * execution on `trustStatus`, and trust is recorded as a sha256 of the command
- * under `[hooks.state."<source>:<snake_event>:<group>:<handler>"]`. Anything
- * session-specific in here (bridge port, token, terminal id) changes the hash
- * on every launch, so the grant the user just made never applies again — which
- * is why the reporter takes its bridge coordinates from the environment
- * instead. Verified against codex-cli 0.146.0: identical command ⇒ identical
- * `currentHash` across sessions with differing bridge env.
+ * The hook command Codex is asked to run. It must stay byte-identical across
+ * launches.
+ *
+ * Codex refuses to run a hook whose `trustStatus` isn't `trusted`, silently,
+ * and records a grant as `trusted_hash` under
+ * `[hooks.state."<source>:<snake_event>:<group>:<handler>"]`. The command is an
+ * input to that hash — not the only one; the six events here produce six
+ * different hashes from one identical command, so the event is mixed in too.
+ * What matters is that the hash is STABLE for a given command: put anything
+ * session-specific (bridge port, token, terminal id) in it and every launch
+ * re-rolls it, permanently invalidating the grant the user just made. Hence the
+ * reporter takes its bridge coordinates from the environment instead.
+ *
+ * Verified against codex-cli 0.146.0 over the app-server `hooks/list` RPC:
+ * identical command ⇒ identical `currentHash` across sessions with differing
+ * bridge env, and exactly six persisted grants rather than six per launch.
  */
 export function hookCommand(serverPath: string): string {
   return `node ${shellQuote(serverPath)} --codex-hook-reporter`
@@ -132,6 +143,8 @@ export const codexProvider: AgentProvider = {
     // once (and trusts the project directory once). Until then reporting
     // falls back to coarse PTY signals.
     reportingSetup: 'user-granted',
+    modelSelector: 'model-id',
+    reasoningEffort: true,
   },
 }
 

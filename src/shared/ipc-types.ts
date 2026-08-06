@@ -237,6 +237,15 @@ export interface AgentCapabilities {
    * tracking stay degraded until the user allows them once.
    */
   reportingSetup: 'automatic' | 'user-granted'
+  /**
+   * How this provider's `InteractiveTarget` carries a model choice.
+   * `model-ref` = a structured `ModelRef` (Claude, which can also point at a
+   * local Ollama endpoint); `model-id` = a bare provider-native id (Codex).
+   * Lets a picker build a target without knowing which provider it is.
+   */
+  modelSelector: 'model-ref' | 'model-id'
+  /** Whether a reasoning effort can be chosen alongside the model. */
+  reasoningEffort: boolean
 }
 
 export interface AgentEventMap {
@@ -477,7 +486,10 @@ export interface SerializedGroup {
 }
 
 export interface SerializedSession {
-  /** v4 introduces provider-aware agent sessions. */
+  /**
+   * v2 = pre-grouping (no groups; hydrates as all-standalone), v3 = grouped,
+   * v4 = provider-aware agent sessions. All are still accepted on load.
+   */
   version: 2 | 3 | 4
   repoPath: string
   savedAt: string

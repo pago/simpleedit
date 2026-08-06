@@ -16,11 +16,6 @@ let byProvider = $state<Partial<Record<AgentProviderId, AgentCapabilities>>>({})
 const inFlight = new Set<AgentProviderId>()
 
 /**
- * Capabilities for `provider`, or undefined until the first fetch resolves.
- * Safe to call from a template or `$derived` — it self-primes and the result
- * lands reactively.
- */
-/**
  * Discover every registered provider and cache its capabilities. Call once at
  * startup so components (and the session store, which needs them synchronously
  * when naming a new session) can read capabilities without awaiting.
@@ -35,6 +30,20 @@ export async function initAgentCapabilities(): Promise<void> {
   byProvider = { ...byProvider, ...loaded }
 }
 
+/**
+ * Every provider whose capabilities have been cached, in registration order.
+ * Drives provider pickers so a new provider appears by registering in main,
+ * not by editing a hard-coded `<option>` list. Empty until priming completes.
+ */
+export function knownProviders(): AgentProviderId[] {
+  return Object.keys(byProvider) as AgentProviderId[]
+}
+
+/**
+ * Capabilities for `provider`, or undefined until the first fetch resolves.
+ * Safe to call from a template or `$derived` — it self-primes and the result
+ * lands reactively.
+ */
 export function capabilitiesFor(provider: AgentProviderId | undefined): AgentCapabilities | undefined {
   if (!provider) return undefined
   const known = byProvider[provider]

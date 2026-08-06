@@ -60,7 +60,14 @@ export interface HookSignal {
 function parseToolFilePath(toolInput: unknown): string | null {
   if (typeof toolInput !== 'object' || toolInput === null) return null
   const rec = toolInput as Record<string, unknown>
-  const raw = rec['file_path'] ?? rec['notebook_path'] ?? rec['path']
+  // `file_path` and `notebook_path` are unambiguously FILES. A bare `path` is
+  // not — Claude's Grep and Glob pass a directory there — and the consumer
+  // takes `dirname` of this value, so a directory resolves a level too high
+  // (typically the project root, outside every worktree), missing
+  // `matchWorktree` and falling through to an uncached `git rev-parse` inside
+  // the hook the CLI is waiting on. Do not add `path` back without teaching the
+  // consumer the difference.
+  const raw = rec['file_path'] ?? rec['notebook_path']
   if (typeof raw !== 'string' || !raw || !isAbsolute(raw)) return null
   return raw
 }

@@ -200,12 +200,19 @@
       } else if (session.kind === 'agents') {
         forkDisabled = true
         forkTooltip = 'Agent View sessions cannot be forked'
-      } else if (!capabilitiesFor(session.provider)?.fork) {
+      } else if (capabilitiesFor(session.provider)?.fork === false) {
+        // `=== false`, not `!`: capabilities are primed asynchronously, and an
+        // undefined descriptor must not read as "cannot fork".
         forkDisabled = true
         forkTooltip = `${providerLabel(session.provider)} sessions cannot be forked`
       } else if (!session.providerSessionId) {
         forkDisabled = true
-        forkTooltip = `Waiting for ${providerLabel(session.provider)} to initialize…`
+        // Fork needs an id the provider only reports once its reporting works.
+        // When that reporting is still waiting on the user's grant, "initializing"
+        // would be a lie — it will never arrive on its own.
+        forkTooltip = session.reportingSetupNeeded
+          ? `Fork needs ${providerLabel(session.provider)}'s session id — answer its trust prompt first`
+          : `Waiting for ${providerLabel(session.provider)} to initialize…`
       }
       // Full-context fork, in place: branches the conversation into a fresh
       // session paired with this one (no worktree targeting).

@@ -155,14 +155,15 @@ test.describe('Claude sessions', () => {
   })
 
   test('each ✦ Agent button click creates exactly one Claude PTY', async () => {
+    // Provider-namespaced since Codex landed: 'agent-claude-…', not 'claude-…'.
     const before: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
-    const claudeBefore = before.filter((id) => id.startsWith('claude-'))
+    const claudeBefore = before.filter((id) => id.startsWith('agent-claude-'))
 
     await window.getByRole('button', { name: 'New agent session' }).first().click()
     await window.waitForTimeout(1000)
 
     const after: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
-    const claudeAfter = after.filter((id) => id.startsWith('claude-'))
+    const claudeAfter = after.filter((id) => id.startsWith('agent-claude-'))
 
     expect(claudeAfter.length).toBe(claudeBefore.length + 1)
   })
