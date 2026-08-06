@@ -84,6 +84,19 @@ describe('session naming parity', () => {
     expect(sessionsStore.get(codex)?.launchDir).toBe(PROJECT_ROOT)
   })
 
+  /**
+   * Codex names its model with a bare id; Claude carries a structured ModelRef.
+   * They must not cross: `Session.model` is the ModelRef, and
+   * `spawnSessionFromAgent` inherits it as the model for a peer the session
+   * spawns — so leaking Codex's id there would set it as a Claude peer's brain.
+   */
+  it('keeps the Codex model id on the target, out of the ModelRef slot', () => {
+    const id = sessionsStore.createCodex(PROJECT_ROOT, MAIN_WT, { model: 'gpt-5.6-sol' })
+    const session = sessionsStore.get(id)
+    expect(session?.target).toEqual({ provider: 'codex', model: 'gpt-5.6-sol' })
+    expect(session?.model).toBeUndefined()
+  })
+
   it('flags reporting setup from the capability, not the provider id', () => {
     const claude = sessionsStore.createClaude(PROJECT_ROOT, MAIN_WT)
     const codex = sessionsStore.createCodex(PROJECT_ROOT, MAIN_WT)

@@ -363,7 +363,17 @@ export const sessionsStore = {
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
     }
-    return this.createAgent(target, launchDir, worktreePath, opts)
+    // `opts.model` is Codex's bare model id and belongs ONLY on the target.
+    // `AgentCreateOptions.model` is a structured ModelRef — Claude's brain
+    // selection — so the rest of `opts` is forwarded field by field rather than
+    // spread. Passing the string through would put it on `Session.model` and in
+    // the `agent:spawn` payload, and `spawnSessionFromAgent` inherits
+    // `caller.model` as a ModelRef, so a Codex session spawning a Claude peer
+    // would hand the bare id on as that peer's model.
+    return this.createAgent(target, launchDir, worktreePath, {
+      ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
+      ...(opts.label ? { label: opts.label } : {}),
+    })
   },
 
   createAgents(launchDir: string, worktreePath: string): string {
