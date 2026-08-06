@@ -1,5 +1,3 @@
-import type { GitCommitInfo } from '../../../shared/ipc-types'
-
 export type PaletteCategory = 'file' | 'worktree' | 'action' | 'commit'
 
 export interface PaletteItem {

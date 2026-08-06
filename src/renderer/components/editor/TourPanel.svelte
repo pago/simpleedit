@@ -6,10 +6,9 @@
   interface Props {
     worktreePath: string
     commitHash: string | null
-    commitMessage: string
   }
 
-  let { worktreePath, commitHash, commitMessage }: Props = $props()
+  let { worktreePath, commitHash }: Props = $props()
 
   const isStaging = $derived(commitHash === null)
   const isBranch = $derived(commitHash === 'branch')
