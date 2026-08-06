@@ -621,7 +621,7 @@
   }
 </script>
 
-{#snippet sessionRow(session: Session, grouped: boolean)}
+{#snippet sessionRow(session: Session)}
   {@const isActive = session.id === activeId}
   {@const isDragged = draggedId === session.id}
   {@const isGroupTarget =
@@ -750,7 +750,7 @@
     >
       {#each rows as row (row.type === 'group' ? row.group.id : row.session.id)}
         {#if row.type === 'session'}
-          {@render sessionRow(row.session, false)}
+          {@render sessionRow(row.session)}
         {:else}
           {@const color = groupColor(row.group.color)}
           {@const isDropGroup = dropOnGroupId === row.group.id && dropMode === 'intoGroup'}
@@ -791,7 +791,7 @@
             {#if !row.group.collapsed}
               <div class="ml-2 flex flex-col gap-0.5 border-l-2 {color.bar} pl-1">
                 {#each row.members as member (member.id)}
-                  {@render sessionRow(member, true)}
+                  {@render sessionRow(member)}
                 {/each}
               </div>
             {/if}

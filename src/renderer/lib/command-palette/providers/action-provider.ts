@@ -27,7 +27,7 @@ async function getRecentCommits(worktreePath: string): Promise<GitCommitInfo[]> 
   return commits
 }
 
-function buildTourCommitActions(worktreePath: string, commits: GitCommitInfo[]): ActionDef[] {
+function buildTourCommitActions(commits: GitCommitInfo[]): ActionDef[] {
   return commits.map((commit) => {
     const firstLine = commit.message.split('\n')[0] ?? commit.message
     const label = `Tour: ${firstLine || commit.hash.slice(0, 7)}`
@@ -116,7 +116,7 @@ export const actionProvider: PaletteProvider = {
     if (worktreePath) {
       try {
         const commits = await getRecentCommits(worktreePath)
-        tourCommitActions = buildTourCommitActions(worktreePath, commits)
+        tourCommitActions = buildTourCommitActions(commits)
       } catch {
         tourCommitActions = []
       }

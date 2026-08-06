@@ -8,10 +8,9 @@
     flat: PaletteItem[]
     selectedIndex: number
     onselect: (item: PaletteItem) => void
-    onselectedindexchange: (index: number) => void
   }
 
-  let { groups, flat, selectedIndex, onselect, onselectedindexchange }: Props = $props()
+  let { groups, flat, selectedIndex, onselect }: Props = $props()
 
   let listEl = $state<HTMLDivElement | null>(null)
 

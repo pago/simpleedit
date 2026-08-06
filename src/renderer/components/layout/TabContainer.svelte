@@ -38,6 +38,15 @@
 
   /** Diff/tour tabs pin their git context at open time. */
   let tabWorktree = $derived('worktreePath' in tab ? tab.worktreePath : worktreePath)
+
+  /**
+   * Exhaustiveness guard for the tab-kind chain below: adding a `Tab` variant
+   * without a branch makes the argument stop being `never` and fails the build.
+   * Renders nothing — it exists only for the compiler.
+   */
+  function assertNoTabKindLeft(_tab: never): string {
+    return ''
+  }
 </script>
 
 {#if tab.kind === 'file' && isMarkdownPath(tab.path)}
@@ -76,7 +85,6 @@
   <TourPanel
     worktreePath={tabWorktree}
     commitHash={tab.commitHash}
-    commitMessage={tab.commitMessage}
   />
 {:else if tab.kind === 'composed'}
   <ComposedPanel
@@ -88,5 +96,5 @@
     {ondiscusswithagent}
   />
 {:else}
-  {@const _exhaustive: never = tab}
+  {assertNoTabKindLeft(tab)}
 {/if}

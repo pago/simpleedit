@@ -113,7 +113,6 @@
       flat={results.flat}
       {selectedIndex}
       onselect={handleSelect}
-      onselectedindexchange={(i) => (selectedIndex = i)}
     />
   </div>
 </div>

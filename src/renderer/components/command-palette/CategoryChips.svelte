@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { PaletteCategory, PalettePrefix } from '../../lib/command-palette/types'
-  import { CATEGORY_PREFIXES } from '../../lib/command-palette/types'
 
   interface Props {
     activePrefix: PalettePrefix
