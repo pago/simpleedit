@@ -16,9 +16,13 @@ import { ITextModelService } from 'monaco-editor/esm/vs/editor/common/services/r
  *
  * Call once, before mounting the Svelte app.
  */
+/** The one member of Monaco's internal `ITextModelService` this patch touches. */
+interface TextModelService {
+  createModelReference(resource: monaco.Uri): Promise<unknown>
+}
+
 export function initModelAutoLoader(): void {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const textModelService = StandaloneServices.get(ITextModelService) as any
+  const textModelService = StandaloneServices.get(ITextModelService) as TextModelService
   const original = textModelService.createModelReference.bind(textModelService)
 
   textModelService.createModelReference = async function (resource: monaco.Uri) {
