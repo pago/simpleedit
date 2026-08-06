@@ -52,7 +52,8 @@ function setupDiagnostics(connection: LspConnection): () => void {
       startColumn: d.range.start.character + 1,
       endLineNumber: d.range.end.line + 1,
       endColumn: d.range.end.character + 1,
-      message: d.message,
+      // LSP allows a MarkupContent message; Monaco markers take plain text only.
+      message: typeof d.message === 'string' ? d.message : d.message.value,
       severity: LSP_SEVERITY_MAP[d.severity ?? 1] ?? monaco.MarkerSeverity.Error,
       source: d.source,
       code: d.code != null ? String(d.code) : undefined,
@@ -160,7 +161,7 @@ function lspCompletionKindToMonaco(kind: number | undefined): monaco.languages.C
 }
 
 function lspItemToMonaco(item: CompletionItem, defaultRange: monaco.IRange): monaco.languages.CompletionItem {
-  const label = typeof item.label === 'string' ? item.label : item.label.label
+  const label = item.label
   return {
     label,
     kind: lspCompletionKindToMonaco(item.kind),
@@ -341,8 +342,8 @@ function registerDocumentHighlight(
  */
 function suppressBuiltInTsValidation(): void {
   const opts = { noSemanticValidation: true, noSyntaxValidation: false }
-  monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions(opts)
-  monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions(opts)
+  monaco.typescript.typescriptDefaults.setDiagnosticsOptions(opts)
+  monaco.typescript.javascriptDefaults.setDiagnosticsOptions(opts)
 }
 
 // ── Public API ────────────────────────────────────────────
