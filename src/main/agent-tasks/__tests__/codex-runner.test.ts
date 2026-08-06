@@ -96,6 +96,31 @@ describe('codexAgentText', () => {
   })
 })
 
+/**
+ * Verbatim stdout from a real `codex exec --json` run (codex-cli 0.146.0), so
+ * this pins the actual wire format rather than an assumed one:
+ *
+ *   printf '…' | codex exec --json --ephemeral --sandbox read-only \
+ *     -c approval_policy="never" --skip-git-repo-check -
+ */
+const REAL_STREAM = [
+  '{"type":"thread.started","thread_id":"019fd7a4-3e38-7ca0-a9be-c9ec793021fc"}',
+  '{"type":"turn.started"}',
+  '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\\"finding\\":\\"ok\\",\\"n\\":1}"}}',
+  '{"type":"turn.completed","usage":{"input_tokens":22115,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":13,"reasoning_output_tokens":0}}',
+]
+
+describe('against a real captured exec stream', () => {
+  it('picks exactly the assistant text out, ignoring lifecycle events', () => {
+    const texts = REAL_STREAM.map((l) => codexAgentText(JSON.parse(l))).filter((t) => t !== null)
+    expect(texts).toEqual(['{"finding":"ok","n":1}'])
+  })
+
+  it('reports no turn failure for a clean run', () => {
+    expect(REAL_STREAM.map((l) => codexTurnFailure(JSON.parse(l))).filter(Boolean)).toEqual([])
+  })
+})
+
 describe('codexTurnFailure', () => {
   /**
    * A turn can fail while `codex exec` still exits 0 — without this the run
