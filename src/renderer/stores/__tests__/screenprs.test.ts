@@ -4,6 +4,7 @@ import type { EventMap } from '../../../shared/ipc-types'
 import { bucketOf, type ScreenPrCard, type PrContext } from '../../../shared/screenprs'
 
 type Handlers = {
+  'screenprs:queued'?: (d: EventMap['screenprs:queued']) => void
   'screenprs:screening'?: (d: EventMap['screenprs:screening']) => void
   'screenprs:card'?: (d: EventMap['screenprs:card']) => void
   'screenprs:status'?: (d: EventMap['screenprs:status']) => void
@@ -19,6 +20,9 @@ function ctx(over: Partial<PrContext> & { number: number; url: string }): PrCont
   return {
     owner: 'acme', repo: 'ui', title: 't', author: 'a', updatedAt: '2026-07-01',
     headSha: 'sha1', additions: 10, deletions: 1, changedFiles: 1, baseRefName: 'main',
+    // Unique per PR so no two fixtures accidentally stack (groupStacks matches
+    // one card's baseRefName against another's headRefName).
+    headRefName: `pr-${over.number}`,
     ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '', diff: '',
     ...over,
   }
