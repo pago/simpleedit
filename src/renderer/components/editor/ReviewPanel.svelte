@@ -16,7 +16,7 @@
   let { worktreePath, commitHash, terminals, ondiscussfinding, onnavigate, onsendtoagent }: Props = $props()
 
   const key = $derived(reviewKey(worktreePath, commitHash))
-  const state = $derived(reviewStore.get(key))
+  const reviewState = $derived(reviewStore.get(key))
 
   // Subscribe to IPC events for this review target
   $effect(() => {
@@ -163,16 +163,16 @@
 
 <div class="flex h-full flex-col overflow-hidden">
   <!-- Status bar -->
-  {#if state?.status === 'running'}
+  {#if reviewState?.status === 'running'}
     <div class="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 text-xs text-zinc-400">
       <span class="animate-spin">⠿</span>
-      <span>Analyzing{state.findings.length > 0 ? ` · ${state.findings.length} so far` : ''}…</span>
+      <span>Analyzing{reviewState.findings.length > 0 ? ` · ${reviewState.findings.length} so far` : ''}…</span>
     </div>
-  {:else if state?.status === 'error'}
+  {:else if reviewState?.status === 'error'}
     <div class="border-b border-zinc-800 px-3 py-2 text-xs text-red-400">
-      {state.error ?? 'Review failed'}
+      {reviewState.error ?? 'Review failed'}
     </div>
-  {:else if state?.status === 'done' && state.findings.length === 0}
+  {:else if reviewState?.status === 'done' && reviewState.findings.length === 0}
     <div class="border-b border-zinc-800 px-3 py-2 text-xs text-green-400">
       No findings — looks good!
     </div>
@@ -180,11 +180,11 @@
 
   <!-- Findings list -->
   <div class="min-h-0 flex-1 overflow-y-auto">
-    {#if !state || state.status === 'idle'}
+    {#if !reviewState || reviewState.status === 'idle'}
       <p class="px-3 py-4 text-xs text-zinc-600">Click Review to analyze this diff.</p>
     {:else}
-      {@const active = sortedFindings(state.findings, state.dismissed)}
-      {@const gone = dismissedFindings(state.findings, state.dismissed)}
+      {@const active = sortedFindings(reviewState.findings, reviewState.dismissed)}
+      {@const gone = dismissedFindings(reviewState.findings, reviewState.dismissed)}
 
       {#if active.length > 0}
         <!-- Select-all row -->
@@ -323,8 +323,8 @@
 
   <!-- Bulk action toolbar — visible when anything is selected -->
   {#if selectedIds.size > 0}
-    {@const selectedFindings = (state?.findings ?? []).filter(
-      (f) => selectedIds.has(f.id) && !(state?.dismissed.has(f.id))
+    {@const selectedFindings = (reviewState?.findings ?? []).filter(
+      (f) => selectedIds.has(f.id) && !(reviewState?.dismissed.has(f.id))
     )}
     <div class="flex-none border-t border-zinc-700 bg-zinc-900">
       {#if !showSendForm}

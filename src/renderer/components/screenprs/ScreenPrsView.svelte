@@ -45,7 +45,8 @@
       const m = cfg.defaults.screenPrs
       if (!m) triageModel = 'Haiku 4.5 · default'
       else if (m.provider === 'ollama') triageModel = `${m.model} · local`
-      else triageModel = claude.find((c) => c.model === m.model)?.displayName ?? m.model
+      // An `openai` ref may carry no model at all — that means "Codex's own default".
+      else triageModel = claude.find((c) => c.model === m.model)?.displayName ?? m.model ?? 'Codex · default'
     } catch {
       triageModel = 'Haiku 4.5 · default'
     }

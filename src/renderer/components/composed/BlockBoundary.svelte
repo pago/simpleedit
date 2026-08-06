@@ -5,7 +5,7 @@
    * (see `block-context.ts`). `display: contents` keeps it invisible to layout.
    */
   import type { Snippet } from 'svelte'
-  import type { ComponentRenderer } from '@json-render/svelte'
+  import type { ComponentRenderer, EventHandle } from '@json-render/svelte'
   import type { UIElement } from '@json-render/core'
   import { BLOCK_ID_PROP } from './block-context'
 
@@ -15,7 +15,7 @@
     element: UIElement
     children?: Snippet
     emit: (event: string) => void
-    on: (event: string) => unknown
+    on: (event: string) => EventHandle
     bindings?: Record<string, string>
     loading?: boolean
   }
