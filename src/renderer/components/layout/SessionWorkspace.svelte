@@ -504,10 +504,18 @@
 
     <!-- Terminal: full-bleed until the viewer opens, bottom strip after -->
     <div class="min-h-0 flex-1 bg-black">
+      <!--
+        The agent asks for hook trust itself, in its own terminal, on the first
+        launch. This band only explains WHY it is asking and that answering is a
+        one-time cost — it deliberately offers no button: typing a slash command
+        into a live TUI races whatever the agent is already showing, and writing
+        to the PTY is precisely what the messaging design avoids. It clears on
+        the first provider-native signal.
+      -->
       {#if session.reportingSetupNeeded && !session.pendingResume}
-        <div class="flex items-center justify-between border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
-          <span>Reporting setup needed — status and worktree tracking are using basic PTY signals.</span>
-          <button class="rounded border border-amber-500/40 px-2 py-0.5 hover:bg-amber-500/15" onclick={() => window.api.invoke('pty:write', sessionId, '/hooks\r')}>Open /hooks</button>
+        <div class="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
+          Answer {providerLabel(session.provider)}'s trust prompt below to turn on status and
+          worktree tracking — once per machine. Until then this session uses basic PTY signals.
         </div>
       {/if}
       {#if session.pendingResume}

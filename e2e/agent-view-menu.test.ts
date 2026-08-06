@@ -136,9 +136,10 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     )
     expect(ptyIds.some((id) => id.startsWith('agent-codex-'))).toBe(true)
 
-    // The one permitted difference, until hook trust is granted once.
-    await expect(window.getByText('Reporting setup needed', { exact: false })).toBeVisible()
-    await expect(window.getByRole('button', { name: 'Open /hooks' })).toBeVisible()
+    // The one permitted difference, until hook trust is granted once. It is an
+    // explanation, not an action: no button writes into the live TUI.
+    await expect(window.getByText('trust prompt', { exact: false })).toBeVisible()
+    await expect(window.getByRole('button', { name: 'Open /hooks' })).toHaveCount(0)
   })
 
   test('Escape dismisses the menu without picking', async () => {

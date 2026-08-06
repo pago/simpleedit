@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import type {
     ClaudeModel,
+    CodexModel,
     HardwareInfo,
     ModelConfig,
     ModelDescriptor,
@@ -13,6 +14,8 @@
   let available = $state(false)
   let hardware = $state<HardwareInfo | null>(null)
   let claude = $state<ClaudeModel[]>([])
+  let codex = $state<CodexModel[]>([])
+  let codexAvailable = $state(false)
   let installed = $state<ModelDescriptor[]>([])
   let recommended = $state<RecommendedModel[]>([])
   let config = $state<ModelConfig | null>(null)
@@ -52,17 +55,23 @@
     let cancelled = false
 
     void (async () => {
-      const [avail, hw, cl, cfg] = await Promise.all([
+      const [avail, hw, cl, cfg, cx, cxAvail] = await Promise.all([
         window.api.invoke('models:available'),
         window.api.invoke('models:hardware'),
         window.api.invoke('models:claude'),
         window.api.invoke('models:config-get'),
+        // Discovery shells out to `codex app-server`; a missing or unhappy CLI
+        // must leave the rest of the pane working.
+        window.api.invoke('models:codex').catch(() => [] as CodexModel[]),
+        window.api.invoke('agent:available', 'codex').catch(() => false),
       ])
       if (cancelled) return
       available = avail
       hardware = hw
       claude = cl
       config = cfg
+      codex = cx
+      codexAvailable = cxAvail
       await reloadLists()
       if (!cancelled) loading = false
     })()
@@ -164,6 +173,54 @@
           />
         </div>
       {/each}
+    </section>
+
+    <!-- Codex · cloud -->
+    <section class="mt-6">
+      <div
+        class="flex items-baseline justify-between border-b border-zinc-800 px-0.5 pb-2 text-[11px] font-bold uppercase tracking-wider text-zinc-500"
+      >
+        <span>Codex · cloud</span>
+        <span class="text-[11px] font-medium normal-case tracking-normal text-zinc-500">
+          on your ChatGPT plan — no API key
+        </span>
+      </div>
+      {#if codex.length === 0}
+        <p class="px-1.5 py-3 text-[12px] text-zinc-500">
+          {codexAvailable
+            ? 'Codex is installed but its model catalog is unavailable right now.'
+            : 'Install the Codex CLI and sign in to use Codex sessions.'}
+        </p>
+      {:else}
+        {#each codex as model (model.model)}
+          <div class="grid grid-cols-[1fr_auto_auto] items-center gap-3.5 border-b border-zinc-800 px-1.5 py-2.5 last:border-b-0">
+            <div class="min-w-0">
+              <div class="font-mono text-[13px] font-semibold text-zinc-100">{model.displayName}</div>
+              <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-zinc-400">
+                <span class="rounded bg-zinc-800 px-1.5 py-0.5 text-[10.5px] font-semibold text-zinc-400">cloud</span>
+                <span class="rounded bg-blue-950/60 px-1.5 py-0.5 text-[10.5px] font-semibold text-blue-400">agent</span>
+                {#if model.supportedReasoningEfforts.length > 0}
+                  <span class="font-mono tabular-nums text-zinc-400">
+                    {model.supportedReasoningEfforts.join(' · ')}
+                  </span>
+                {/if}
+              </div>
+            </div>
+            <span class="rounded-full bg-zinc-800 px-2 py-1 text-[11px] font-semibold text-zinc-500">
+              {model.isDefault ? 'default' : 'on plan'}
+            </span>
+            <Toggle
+              checked={allowlist.has(model.model)}
+              label="Show {model.displayName} in quick picker"
+              onchange={(v) => toggleSubmenu(model.model, v)}
+            />
+          </div>
+        {/each}
+        <p class="px-1.5 pt-2.5 text-[11.5px] text-zinc-500">
+          Sessions started from the picker use each model's default reasoning effort.
+          Set a specific effort under <span class="text-zinc-400">Default Model</span>.
+        </p>
+      {/if}
     </section>
 
     <!-- Installed · local -->
