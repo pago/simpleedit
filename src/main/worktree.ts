@@ -1,5 +1,5 @@
 import simpleGit from 'simple-git'
-import { join, dirname, basename } from 'path'
+import { join, dirname } from 'path'
 import { existsSync, mkdirSync, realpathSync } from 'fs'
 import type { WorktreeInfo, BranchInfo } from '../shared/ipc-types'
 

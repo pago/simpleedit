@@ -4,7 +4,8 @@ import type { PrContext, DeepFinding } from '../../../shared/screenprs'
 
 const ctx: PrContext = {
   owner: 'acme', repo: 'ui', number: 3, url: 'u', title: 'Add retry', author: 'a', updatedAt: 'd',
-  additions: 20, deletions: 2, changedFiles: 2, baseRefName: 'main',
+  headSha: 'sha3', additions: 20, deletions: 2, changedFiles: 2,
+  baseRefName: 'main', headRefName: 'add-retry',
   ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false,
   body: 'adds retry to the client', diff: 'diff --git a/x b/x\n+ retry()',
 }
