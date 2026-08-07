@@ -13,6 +13,11 @@ while true; do
       *"/hooks"*) echo "fake codex: hooks trusted" ;;
     esac
   else
+    # A PTY session must stay EOF-proof (see e2e/bin/claude), but when driven
+    # over pipes (`codex app-server` model discovery) EOF means the app is done
+    # with us — looping instead deadlocks Electron's shutdown against our open
+    # pipe ends, hanging every app.close() that follows a menu open.
+    if [ ! -t 0 ]; then exit 0; fi
     sleep 1
   fi
 done

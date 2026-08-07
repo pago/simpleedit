@@ -1,8 +1,44 @@
 import { describe, expect, it, vi } from 'vitest'
+import { EventEmitter } from 'events'
+import { PassThrough } from 'stream'
 
 vi.mock('electron', () => ({ app: {} }))
 
-import { parseCodexModelPage } from '../codex-catalog'
+const spawnMock = vi.hoisted(() => vi.fn())
+vi.mock('child_process', () => ({ spawn: spawnMock }))
+vi.mock('../../lib/shell-path', () => ({ resolveCodexPath: () => Promise.resolve('codex') }))
+
+import { parseCodexModelPage, listCodexModels, cancelCodexDiscovery } from '../codex-catalog'
+
+interface FakeProc extends EventEmitter {
+  stdout: PassThrough
+  stdin: { write: ReturnType<typeof vi.fn> }
+  kill: ReturnType<typeof vi.fn>
+}
+
+function makeFakeProc(): FakeProc {
+  const proc = new EventEmitter() as FakeProc
+  proc.stdout = new PassThrough()
+  proc.stdin = { write: vi.fn() }
+  proc.kill = vi.fn(() => proc.emit('close', null))
+  return proc
+}
+
+describe('Codex model discovery lifecycle', () => {
+  it('cancelCodexDiscovery kills an in-flight app-server child', async () => {
+    const proc = makeFakeProc()
+    spawnMock.mockReturnValueOnce(proc)
+
+    const models = listCodexModels()
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledWith('codex', ['app-server'], expect.anything()))
+
+    cancelCodexDiscovery()
+    expect(proc.kill).toHaveBeenCalled()
+    // The killed child's 'close' fails the pending RPC; discovery resolves
+    // empty instead of leaving the promise (and the child) dangling.
+    await expect(models).resolves.toEqual([])
+  })
+})
 
 describe('Codex model catalog parsing', () => {
   it('filters hidden models and preserves reasoning/default metadata and pagination', () => {
