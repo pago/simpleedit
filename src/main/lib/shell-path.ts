@@ -41,7 +41,10 @@ export function resolveExecutable(name: AgentExecutable): Promise<string | null>
   resolvePromises.set(name, promise)
 
   const shell = defaultShell()
+  const t0 = Date.now()
+  process.stderr.write(`[quit-debug ${t0} pid=${process.pid}] resolveExecutable(${name}) probe start shell=${shell}\n`)
   execFile(shell, ['-i', '-l', '-c', `command -v ${name}`], (err, stdout) => {
+    process.stderr.write(`[quit-debug ${Date.now()} pid=${process.pid}] resolveExecutable(${name}) probe done in ${Date.now() - t0}ms err=${!!err}\n`)
     const path = stdout.trim()
     const result = !err && path ? path : null
     if (result) {

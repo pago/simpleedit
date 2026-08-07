@@ -762,9 +762,43 @@ app.whenReady().then(() => {
   })
 })
 
+// TEMP DEBUG instrumentation — remove before merge
+function dbg(msg: string): void {
+  process.stderr.write(`[quit-debug ${Date.now()} pid=${process.pid}] ${msg}\n`)
+}
+app.on('browser-window-created', (_e, win) => {
+  win.on('close', () => dbg(`window ${win.id} close event`))
+  win.on('closed', () => dbg(`window ${win.id} closed`))
+  win.webContents.on('will-prevent-unload', () => dbg(`window ${win.id} will-prevent-unload`))
+})
+app.on('will-quit', () => dbg('will-quit'))
+app.on('quit', () => {
+  dbg('quit')
+  // If the process hangs after 'quit', an unref'd timer still fires as long as
+  // OTHER handles keep the loop alive — logging exactly what those handles are.
+  const probe = setInterval(() => {
+    try {
+      const p = process as unknown as {
+        _getActiveHandles(): Array<{ constructor?: { name?: string } }>
+        _getActiveRequests(): Array<{ constructor?: { name?: string } }>
+      }
+      const handles = p._getActiveHandles().map((h) => h?.constructor?.name ?? '?')
+      const reqs = p._getActiveRequests().map((r) => r?.constructor?.name ?? '?')
+      dbg(`post-quit alive; handles=${JSON.stringify(handles)} reqs=${JSON.stringify(reqs)}`)
+    } catch (e) {
+      dbg(`post-quit probe error ${String(e)}`)
+    }
+  }, 1000)
+  probe.unref()
+})
+process.on('exit', (code) => dbg(`process exit event code=${code}`))
+
 app.on('before-quit', () => {
+  dbg('before-quit: start')
   try { detachAllStreams() } catch { /* ignore */ }
+  dbg('before-quit: detached streams')
   try { killAllTerminals() } catch { /* ignore */ }
+  dbg('before-quit: killed terminals')
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { unwatchAllEditorFiles() } catch { /* ignore */ }
@@ -774,11 +808,14 @@ app.on('before-quit', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  dbg('before-quit: end')
 })
 
 app.on('window-all-closed', () => {
+  dbg('window-all-closed: start')
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
+  dbg('window-all-closed: killed terminals')
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { unwatchAllEditorFiles() } catch { /* ignore */ }
@@ -788,6 +825,7 @@ app.on('window-all-closed', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  dbg('window-all-closed: end')
   if (process.platform !== 'darwin') {
     app.quit()
   }
