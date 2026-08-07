@@ -82,9 +82,15 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     await expect(menu.getByRole('menuitem', { name: 'New Claude session' })).toBeVisible()
     await expect(menu.getByRole('menuitem', { name: 'New Agent View session' })).toBeVisible()
 
-    // Claude is initially focused; Codex is second and Agent View is third.
-    await window.keyboard.press('ArrowDown')
-    await window.keyboard.press('ArrowDown')
+    // The first item is focused on open, so reaching Agent View takes one
+    // ArrowDown per item before it. Derived rather than hard-coded: the entries
+    // ahead of it are one per registered provider, so a fixed press count means
+    // this test breaks every time a provider is added — which is precisely how
+    // it broke when OpenCode became the third.
+    const labels = await menu.getByRole('menuitem').allInnerTexts()
+    const steps = labels.findIndex((l) => l.includes('New Agent View session'))
+    expect(steps).toBeGreaterThan(0)
+    for (let i = 0; i < steps; i++) await window.keyboard.press('ArrowDown')
     await window.keyboard.press('Enter')
     await expect(menu).not.toBeVisible()
     await expect(window.locator('[role="option"]:has-text("Agents")').first()).toBeVisible({ timeout: 5_000 })

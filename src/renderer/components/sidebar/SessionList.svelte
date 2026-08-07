@@ -108,7 +108,12 @@
     const providers = knownProviders()
     const perProvider = (providers.length > 0 ? providers : (['claude'] as AgentProviderId[])).map((id) => ({
       id: `new-provider:${id}`,
-      label: `New ${providerLabel(id)} session`,
+      // The suffix says the session starts on the configured default model
+      // rather than prompting for one. It applies to every provider that names
+      // a model natively, not just the first one that happened to have it.
+      label: capabilitiesFor(id)?.modelSelector === 'model-id'
+        ? `New ${providerLabel(id)} session · configured default`
+        : `New ${providerLabel(id)} session`,
     }))
     return [
       ...perProvider,
@@ -199,11 +204,16 @@
     }
   }
 
-  async function openNewMenuAtPointer(e: MouseEvent): Promise<void> {
+  function openNewMenuAtPointer(e: MouseEvent): void {
     e.preventDefault()
+    // Open first, resolve the model submenu after. Every catalog behind
+    // `buildNewMenu` shells out to a CLI (and OpenCode's may reach the network),
+    // so awaiting it left the menu unopened for as long as the slowest one
+    // took. `newMenuItems` is $state, so the model entries appear when they
+    // arrive rather than gating the provider entries that are already known.
     const { clientX: x, clientY: y } = e
-    await buildNewMenu()
     newMenu = { x, y }
+    void buildNewMenu()
   }
 
   // ── per-session context menu / rename / fork ─────────────────────────────
