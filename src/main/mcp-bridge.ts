@@ -12,6 +12,7 @@ import {
   captureImplicitReplies,
   drain,
   enqueue,
+  peekPending,
   formatForDelivery,
   listPeers,
   pendingCount,
@@ -578,6 +579,7 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
 export async function applyAgentSignal(
   signal: HookSignal,
   webContents: WebContents,
+  opts: { ownsIdentityAndStatus?: boolean; deliver?: (text: string) => Promise<boolean> } = {},
 ): Promise<Record<string, unknown>> {
   // Codex's reporter stamps the terminal id straight into the body; Claude's
   // HTTP hooks don't, so those route by session_id through the registry.
@@ -586,7 +588,15 @@ export async function applyAgentSignal(
 
   const worktrees = await resolveWorktrees(webContents.id)
   const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
-  if (signal.terminalId) registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
+  // Deriving identity and status from a hook's event name is Codex-specific,
+  // and gating it on "a terminal id is present" swept in every attached
+  // provider too — which reports both itself, precisely and synchronously.
+  // Letting this also run gave OpenCode a stuck status (the two awaits above
+  // let a Stop-derived 'idle' land before a PostToolUse-derived 'running') and
+  // published a fabricated session id. The caller says who owns these.
+  if (signal.terminalId && !opts.ownsIdentityAndStatus) {
+    registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
+  }
 
   if (!webContents.isDestroyed()) {
     webContents.send('session:cwd', {
@@ -610,7 +620,7 @@ export async function applyAgentSignal(
     }
   }
 
-  return handleTurnEnd(signal, terminalId, webContents)
+  return handleTurnEnd(signal, terminalId, webContents, opts.deliver)
 }
 
 /**
@@ -624,11 +634,12 @@ export async function applyAgentSignal(
  * Never block when `stop_hook_active` is set: that stop already belongs to a
  * turn a hook continued, and blocking again prevents the agent ever going idle.
  */
-function handleTurnEnd(
+async function handleTurnEnd(
   signal: { eventName: string | null; lastAssistantMessage: string | null; stopHookActive: boolean },
   terminalId: string,
   webContents: WebContents,
-): Record<string, unknown> {
+  deliver?: (text: string) => Promise<boolean>,
+): Promise<Record<string, unknown>> {
   if (signal.eventName !== 'Stop' && signal.eventName !== 'SubagentStop') return {}
 
   if (signal.lastAssistantMessage) {
@@ -638,6 +649,17 @@ function handleTurnEnd(
   }
 
   if (signal.stopHookActive || pendingCount(terminalId) === 0) return {}
+
+  // A hook-driven provider receives mail as this function's return value, so
+  // returning it IS delivery. A pushed provider can still fail after we let go
+  // of the message, so its mail is peeked, pushed, and only then committed —
+  // draining first would destroy the message on a failed POST while the UI
+  // reported it delivered, and would park the sender on a reply never coming.
+  if (deliver) {
+    const pending = peekPending(terminalId)
+    if (pending.length === 0) return {}
+    if (!(await deliver(formatForDelivery(pending)))) return {}
+  }
 
   const messages = drain(terminalId)
   if (messages.length === 0) return {}

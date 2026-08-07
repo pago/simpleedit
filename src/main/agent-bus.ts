@@ -218,6 +218,19 @@ export function senderOf(messageId: string): string | null {
  * Take everything queued for a session. Records which of those messages want a
  * reply so the session's *next* `Stop` can be read as the answer.
  */
+/**
+ * The queued messages WITHOUT consuming them.
+ *
+ * For a provider whose mail is pushed rather than returned in a hook response,
+ * delivery can fail after the fact. `drain` both empties the mailbox and arms
+ * the implicit-reply capture, so draining first and pushing second loses the
+ * message outright on a failed POST — and parks the sender waiting for a reply
+ * that will never come. Peek, push, then drain to commit.
+ */
+export function peekPending(terminalId: string): Message[] {
+  return mailboxes.get(terminalId) ?? []
+}
+
 export function drain(terminalId: string): Message[] {
   const box = mailboxes.get(terminalId)
   if (!box || box.length === 0) return []
