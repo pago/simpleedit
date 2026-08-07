@@ -1,9 +1,15 @@
 /**
- * Provider parity: Claude and Codex must behave identically except where a
- * capability says otherwise. These tests pin the behaviours that used to be
- * `provider === 'codex'` conditionals scattered through the UI, so a third
- * provider (OpenCode, …) can be added by registering a descriptor rather than
- * by editing components.
+ * Provider parity: Claude, Codex and OpenCode must behave identically except
+ * where a capability says otherwise. These tests pin the behaviours that used
+ * to be `provider === 'codex'` conditionals scattered through the UI, so a
+ * further provider can be added by registering a descriptor rather than by
+ * editing components.
+ *
+ * OpenCode earns its place here rather than getting its own file: a parity
+ * suite that only ever sees two providers cannot catch a two-way branch that
+ * happens to be right for both, which is exactly how `provider === 'codex'`
+ * survived. Several assertions below are written over EVERY registered
+ * native-model provider for that reason.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { AgentCapabilities, AgentProviderId, WorktreeInfo } from '../../../shared/ipc-types'
@@ -20,6 +26,7 @@ const base: AgentCapabilities = {
   modelOverride: 'native', shiftEnter: 'native', droppedPath: 'at-reference',
   gracefulShutdown: true, displayName: 'Codex', oscTitle: 'directory',
   reportingSetup: 'user-granted', modelSelector: 'model-id', reasoningEffort: true,
+  nativeModelBrand: 'openai', modelCatalog: true,
 }
 const CAPS: Record<string, AgentCapabilities> = {
   claude: {
@@ -27,8 +34,15 @@ const CAPS: Record<string, AgentCapabilities> = {
     shiftEnter: 'escape-newline', droppedPath: 'newline-list',
     oscTitle: 'session-label', reportingSetup: 'automatic',
     modelSelector: 'model-ref', reasoningEffort: false,
+    nativeModelBrand: undefined, modelCatalog: true,
   },
   codex: base,
+  opencode: {
+    ...base, displayName: 'OpenCode', oscTitle: 'constant',
+    // The two honest differences from Codex: OpenCode needs no one-time trust
+    // grant, and its OSC title is a fixed brand string rather than the cwd.
+    reportingSetup: 'automatic', nativeModelBrand: 'opencode',
+  },
 }
 
 beforeEach(async () => {
@@ -37,7 +51,7 @@ beforeEach(async () => {
       if (channel === 'worktree:list') return Promise.resolve<WorktreeInfo[]>(
         [{ path: MAIN_WT, branch: 'main', isMain: true, isCurrent: false }],
       )
-      if (channel === 'agent:providers') return Promise.resolve(['claude', 'codex'] as AgentProviderId[])
+      if (channel === 'agent:providers') return Promise.resolve(['claude', 'codex', 'opencode'] as AgentProviderId[])
       if (channel === 'agent:capabilities') return Promise.resolve(CAPS[arg as string])
       if (channel === 'models:claude') return Promise.resolve([])
       return Promise.resolve(undefined)
@@ -59,8 +73,11 @@ describe('capability discovery', () => {
   it('labels a provider from its descriptor, falling back to its id', () => {
     expect(providerLabel('claude')).toBe('Claude')
     expect(providerLabel('codex')).toBe('Codex')
+    // Cased from the descriptor, not from the id — 'opencode' would otherwise
+    // render as 'Opencode'.
+    expect(providerLabel('opencode')).toBe('OpenCode')
     // An unregistered provider still reads sensibly rather than blank.
-    expect(providerLabel('opencode' as AgentProviderId)).toBe('Opencode')
+    expect(providerLabel('gemini' as AgentProviderId)).toBe('Gemini')
     expect(providerLabel(undefined)).toBe('Agent')
   })
 })

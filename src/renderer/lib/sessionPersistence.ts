@@ -73,10 +73,14 @@ export function serializeSession(repoPath: string): SerializedSession {
     sessions.push({
       kind: session.kind,
       ...(session.provider ? { provider: session.provider } : {}),
+      // Narrow on 'claude', not on a named native provider: the else branch
+      // hard-codes `provider: 'claude'`, so testing for one specific native id
+      // silently persists every OTHER native provider as a Claude session — it
+      // would come back as the wrong agent on restore.
       ...(session.target
-        ? { target: session.target.provider === 'codex'
-            ? { ...session.target }
-            : { provider: 'claude' as const, ...(session.target.model ? { model: { ...session.target.model } } : {}) } }
+        ? { target: session.target.provider === 'claude'
+            ? { provider: 'claude' as const, ...(session.target.model ? { model: { ...session.target.model } } : {}) }
+            : { ...session.target } }
         : {}),
       label: session.label,
       ...(session.customLabel ? { customLabel: true as const } : {}),
