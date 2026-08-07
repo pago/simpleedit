@@ -589,6 +589,19 @@ export interface ClaudeModel {
   model: string
 }
 
+/**
+ * An OpenCode model offered in the picker. `model` is the fully qualified
+ * `<provider>/<id>` form, because that is the only form `--model` accepts.
+ * Reasoning-effort variants are per model here, not global as they are for
+ * Codex.
+ */
+export interface OpenCodeModel {
+  provider: 'opencode'
+  displayName: string
+  model: string
+  supportedReasoningEfforts: ReasoningEffort[]
+}
+
 export interface CodexModel {
   provider: 'openai'
   displayName: string
@@ -650,6 +663,8 @@ export interface ModelsInvokeMap {
   'models:claude': { args: []; result: ClaudeModel[] }
   /** Best-effort dynamic catalog. Empty means use Codex's configured default. */
   'models:codex': { args: []; result: CodexModel[] }
+  /** OpenCode's catalog, from `opencode models --verbose`. */
+  'models:opencode': { args: []; result: OpenCodeModel[] }
   /** This machine's profile (chip + RAM), used to show fit/hardware hints. */
   'models:hardware': { args: []; result: HardwareInfo }
   /** All installed Ollama models, annotated with hardware fit + tool-capability. */

@@ -131,10 +131,11 @@
    */
   async function buildNewMenu(): Promise<void> {
     try {
-      const [config, claudeModels, codexModels, installed] = await Promise.all([
+      const [config, claudeModels, codexModels, openCodeModels, installed] = await Promise.all([
         window.api.invoke('models:config-get'),
         window.api.invoke('models:claude'),
         window.api.invoke('models:codex').catch(() => []),
+        window.api.invoke('models:opencode').catch(() => []),
         window.api.invoke('models:installed'),
       ])
 
@@ -144,6 +145,9 @@
       }
       for (const m of codexModels) {
         resolver.set(m.model, { ref: { provider: 'codex', model: m.model }, label: `Codex · ${m.displayName}` })
+      }
+      for (const m of openCodeModels) {
+        resolver.set(m.model, { ref: { provider: 'opencode', model: m.model }, label: `OpenCode · ${m.displayName}` })
       }
       // Tool-capable local models are startable interactively now that the
       // Ollama #13949 hang is fixed (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).

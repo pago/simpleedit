@@ -58,6 +58,7 @@ import { syncPeers, resolveSpawn } from './agent-bus'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
+import { getOpenCodeModels } from './models/opencode-catalog'
 import type { PrContext } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
 import { postReview } from './github/gh'
@@ -597,6 +598,8 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('models:codex', () => listCodexModels())
+
+  ipcMain.handle('models:opencode', () => getOpenCodeModels())
 
   ipcMain.handle('models:hardware', () => {
     return detectHardware()
