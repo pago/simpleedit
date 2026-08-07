@@ -17,8 +17,8 @@
 import { app } from 'electron'
 import { createServer } from 'net'
 import { join } from 'path'
-import type { ReasoningEffort } from '../../shared/ipc-types'
 import { registerSession, unregisterTerminal, type HookSignal } from '../cwd-tracker'
+import { openCodeBaseEnv } from '../lib/opencode-env'
 import {
   registerProvider,
   type AgentAttachSink,
@@ -91,11 +91,6 @@ function validSessionId(value: string): string {
   return value
 }
 
-function validVariant(value: ReasoningEffort): string {
-  if (!/^[a-z]+$/.test(value)) throw new Error(`Invalid OpenCode variant: ${value}`)
-  return value
-}
-
 /**
  * The bridge wiring, as an inline config OpenCode reads from the environment.
  *
@@ -105,24 +100,6 @@ function validVariant(value: ReasoningEffort): string {
  * command by hash — nothing here has to stay byte-stable across launches. The
  * per-session bridge token can therefore live in the config where it belongs.
  */
-/**
- * Env every OpenCode launch gets, bridge or no bridge.
- *
- * `OPENCODE_DISABLE_AUTOUPDATE` is the single biggest thing we can do about
- * OpenCode's startup cost, and it matters for correctness as much as speed.
- * Measured on 1.18.15: a default launch takes 0.99s–5.58s and the spread is
- * the update check reaching the network; with it off, 0.63–0.76s consistently.
- *
- * The correctness half: an agent that silently replaces its own binary
- * mid-session changes the contract underneath us — this integration is pinned
- * to a captured 1.18.15 event stream, and OpenCode upgraded itself from
- * 1.17.13 while this provider was being written. SimpleEdit should not be
- * driving a CLI that can become a different CLI between two launches.
- */
-function baseEnv(): Record<string, string> {
-  return { OPENCODE_DISABLE_AUTOUPDATE: '1' }
-}
-
 function bridgeConfigEnv(ctx: LaunchContext): Record<string, string> {
   if (ctx.bridgePort == null || ctx.bridgeToken == null) return {}
   const config = {
@@ -145,13 +122,18 @@ function bridgeConfigEnv(ctx: LaunchContext): Record<string, string> {
 async function buildLaunch(ctx: LaunchContext): Promise<LaunchPlan> {
   const port = await reservePort()
   const model = ctx.target?.provider === 'opencode' ? ctx.target.model : undefined
-  const effort: ReasoningEffort | undefined =
-    ctx.target?.provider === 'opencode' ? ctx.target.reasoningEffort : ctx.reasoningEffort
 
   const args = ['--port', String(port), '--hostname', '127.0.0.1']
 
   if (model) args.push('--model', validModelId(model))
-  if (effort) args.push('--variant', validVariant(effort))
+
+  // No reasoning-effort flag. `--variant` belongs to `opencode run`, NOT to the
+  // interactive command, whose option list has no equivalent (verified on
+  // 1.18.15: `opencode --variant high` exits 1 and prints the help banner), and
+  // its config exposes `model` only as a bare string. So the capability says
+  // `reasoningEffort: false` rather than the launch passing a flag that kills
+  // the session on start. The bounded runner still sets it — there the flag is
+  // real.
 
   if (ctx.resumeSessionId) {
     args.push('--session', validSessionId(ctx.resumeSessionId))
@@ -175,7 +157,7 @@ async function buildLaunch(ctx: LaunchContext): Promise<LaunchPlan> {
   return {
     executable: 'opencode',
     args,
-    env: { ...baseEnv(), ...bridgeConfigEnv(ctx) },
+    env: { ...openCodeBaseEnv(), ...bridgeConfigEnv(ctx) },
     cleanup: () => {
       controlPorts.delete(ctx.terminalId)
       liveSessions.delete(ctx.terminalId)
@@ -510,7 +492,10 @@ function attach(_plan: LaunchPlan, ctx: LaunchContext, sink: AgentAttachSink): (
         await consumeEventStream(res.body, sink, {
           terminalId: ctx.terminalId,
           cwd: ctx.worktreePath,
-          onSessionId: (id) => liveSessions.set(ctx.terminalId, id),
+          onSessionId: (id) => {
+            liveSessions.set(ctx.terminalId, id)
+            sink.sessionId(id)
+          },
         })
       }
     } catch {
@@ -577,7 +562,8 @@ export const opencodeProvider: AgentProvider = {
     reportingSetup: 'automatic',
     modelSelector: 'model-id',
     nativeModelBrand: 'opencode',
-    reasoningEffort: true,
+    // The interactive command has no variant flag — see buildLaunch.
+    reasoningEffort: false,
     modelCatalog: true,
     reportsSessionTitle: true,
   },

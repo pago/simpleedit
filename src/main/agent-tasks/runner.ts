@@ -19,6 +19,7 @@ import type { ModelRef } from '../../shared/ipc-types'
 import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveClaudePath } from '../lib/shell-path'
 import { resolveCodexPath, resolveOpenCodePath } from '../lib/shell-path'
+import { openCodeBaseEnv } from '../lib/opencode-env'
 import { chatStream, type ChatMessage } from '../models/ollama'
 
 export interface RunRequest<Item> {
@@ -413,6 +414,38 @@ export function openCodeReadOnlyEnv(): Record<string, string> {
  * the model's thinking to the finding scanner would let a JSON object it merely
  * *considered* be reported as a finding.
  */
+/**
+ * The failure message from an OpenCode `run --format json` frame, if this is
+ * one.
+ *
+ * A turn can fail — provider error, or a tool denied by the read-only ruleset —
+ * without `opencode run` exiting non-zero, and the run would then look like a
+ * clean pass that simply found nothing. For a review lens that is the worst
+ * possible outcome: "no findings" reads as "reviewed, nothing wrong".
+ *
+ * Captured 1.18.15 frames end each step with `step_finish` carrying a `reason`;
+ * `stop` and `tool-calls` are the healthy ones. An explicit `error` frame is
+ * also treated as fatal.
+ */
+export function openCodeTurnFailure(event: unknown): string | null {
+  if (!event || typeof event !== 'object') return null
+  const record = event as Record<string, unknown>
+  const part = record['part']
+  const partRecord = part && typeof part === 'object' ? (part as Record<string, unknown>) : undefined
+
+  if (record['type'] === 'error') {
+    const message = record['error'] ?? record['message']
+    return typeof message === 'string' ? message : 'opencode reported an error'
+  }
+  if (record['type'] === 'step_finish') {
+    const reason = partRecord?.['reason']
+    if (typeof reason === 'string' && reason !== 'stop' && reason !== 'tool-calls') {
+      return `turn ended with reason "${reason}"`
+    }
+  }
+  return null
+}
+
 export function openCodeAgentText(event: unknown): string | null {
   if (!event || typeof event !== 'object') return null
   const record = event as Record<string, unknown>
@@ -444,7 +477,9 @@ export class OpenCodeRunner implements Runner {
 
     const proc = spawn(bin, args, {
       cwd: this.opts.cwd,
-      env: { ...process.env, ...openCodeReadOnlyEnv() } as Record<string, string>,
+      // `baseEnv` too: the pinning argument for disabling autoupdate applies to
+      // every way we invoke the binary, not just the interactive one.
+      env: { ...process.env, ...openCodeBaseEnv(), ...openCodeReadOnlyEnv() } as Record<string, string>,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const onAbort = (): void => { try { proc.kill() } catch { /* already dead */ } }
@@ -455,9 +490,12 @@ export class OpenCodeRunner implements Runner {
 
     const scan = createFindingScanner<Item>(req.parse)
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
+    let turnFailure: string | null = null
     rl.on('line', (line) => {
       try {
-        const text = openCodeAgentText(JSON.parse(line))
+        const event: unknown = JSON.parse(line)
+        turnFailure ??= openCodeTurnFailure(event)
+        const text = openCodeAgentText(event)
         if (text) for (const parsed of scan(text)) stream.push(parsed)
       } catch {
         // Ignore diagnostics and malformed frames; exit status stays authoritative.
@@ -470,6 +508,10 @@ export class OpenCodeRunner implements Runner {
       opts?.signal?.removeEventListener('abort', onAbort)
       if (code !== 0) {
         stream.fail(new Error(`opencode exited with code ${code}${stderr.trim() ? `: ${stderr.trim().slice(0, 1000)}` : ''}`))
+      } else if (turnFailure) {
+        // Exit 0 with a failed turn: report it rather than letting the caller
+        // read "no findings" as a clean pass.
+        stream.fail(new Error(`opencode turn failed: ${turnFailure}`))
       } else {
         stream.close()
       }

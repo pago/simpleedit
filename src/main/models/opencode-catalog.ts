@@ -12,6 +12,7 @@ import { spawn } from 'child_process'
 import { isReasoningEffort, type OpenCodeModel } from '../../shared/ipc-types'
 import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveOpenCodePath } from '../lib/shell-path'
+import { openCodeBaseEnv } from '../lib/opencode-env'
 
 let cached: OpenCodeModel[] | null = null
 
@@ -67,7 +68,12 @@ export function parseOpenCodeModels(output: string): OpenCodeModel[] {
 
 function runModels(bin: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(bin, ['models', '--verbose'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const proc = spawn(bin, ['models', '--verbose'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Same pinning argument as the interactive launch: a catalog fetch must
+      // not be the thing that silently upgrades the binary out from under it.
+      env: { ...process.env, ...openCodeBaseEnv() } as Record<string, string>,
+    })
     let out = ''
     let err = ''
     proc.stdout.on('data', (c: Buffer) => { out += c.toString() })

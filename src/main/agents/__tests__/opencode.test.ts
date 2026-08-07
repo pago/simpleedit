@@ -25,18 +25,22 @@ function collect(): {
   statuses: [string, string | undefined][]
   signals: HookSignal[]
   titles: string[]
+  sessionIds: string[]
 } {
   const statuses: [string, string | undefined][] = []
   const signals: HookSignal[] = []
   const titles: string[] = []
+  const sessionIds: string[] = []
   return {
     statuses,
     signals,
     titles,
+    sessionIds,
     sink: {
       status: (s, m) => statuses.push([s, m]),
       signal: (s) => signals.push(s),
       title: (t) => titles.push(t),
+      sessionId: (sid) => sessionIds.push(sid),
     },
   }
 }
@@ -109,6 +113,35 @@ describe('opencode buildLaunch', () => {
     await expect(
       opencodeProvider.buildLaunch({ ...base, target: { provider: 'opencode', model: 'deepseek-v4-flash-free' } }),
     ).rejects.toThrow(/Invalid OpenCode model/)
+  })
+
+  it('never passes a reasoning-effort flag to the interactive command', async () => {
+    // `--variant` exists on `opencode run`, NOT on the interactive command:
+    // verified on 1.18.15, where `opencode --variant high` exits 1 and prints
+    // the help banner. Passing it killed every session started with an effort.
+    const plan = await opencodeProvider.buildLaunch({
+      ...base,
+      target: { provider: 'opencode', model: 'opencode/deepseek-v4-flash-free', reasoningEffort: 'high' },
+    })
+    expect(plan.args).not.toContain('--variant')
+    expect(plan.args).not.toContain('high')
+    plan.cleanup?.()
+  })
+
+  it('does not advertise a reasoning effort it cannot apply', () => {
+    // The descriptor is a claim. Saying true here puts an effort picker in the
+    // handoff composer whose every value produces a session that dies on start.
+    expect(opencodeProvider.capabilities.reasoningEffort).toBe(false)
+  })
+
+  it('neutralises a server password that would lock us out of our own session', async () => {
+    // OpenCode nags users to set OPENCODE_SERVER_PASSWORD, and the login shell
+    // sources the profile that sets it — after which /api/health and /event
+    // both 401 and the session sits dead on 'initializing' for 60s.
+    const plan = await opencodeProvider.buildLaunch({ ...base })
+    expect(plan.env?.['OPENCODE_SERVER_PASSWORD']).toBe('')
+    expect(plan.env?.['OPENCODE_DISABLE_AUTOUPDATE']).toBe('1')
+    plan.cleanup?.()
   })
 
   it('carries the bridge in the env, so no temp config file outlives the session', async () => {
@@ -262,7 +295,11 @@ describe('opencode against a captured real turn', () => {
       applyEvent(f, c.sink, state, { ...CTX, onSessionId: (id) => seen.push(id) })
     }
     expect(seen).toHaveLength(1)
+    // A real server-minted id, never the terminal id standing in for one:
+    // publishing `agent-opencode-<uuid>` as the session id fed straight back
+    // into resume, where the launch validator rejects it outright.
     expect(seen[0]).toMatch(/^ses_/)
+    expect(seen[0]).not.toBe(CTX.terminalId)
   })
 
   it('reports exactly one turn boundary', () => {
