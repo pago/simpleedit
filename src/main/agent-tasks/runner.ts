@@ -18,7 +18,7 @@ import * as readline from 'readline'
 import type { ModelRef } from '../../shared/ipc-types'
 import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveClaudePath } from '../lib/shell-path'
-import { resolveCodexPath } from '../lib/shell-path'
+import { resolveCodexPath, resolveOpenCodePath } from '../lib/shell-path'
 import { chatStream, type ChatMessage } from '../models/ollama'
 
 export interface RunRequest<Item> {
@@ -351,6 +351,137 @@ export function codexTurnFailure(event: unknown): string | null {
 }
 
 /** Read-only, non-interactive Codex execution for bounded analysis tasks. */
+export interface OpenCodeRunnerOptions {
+  cwd: string
+  model?: string
+  reasoningEffort?: import('../../shared/ipc-types').ReasoningEffort
+}
+
+/**
+ * Args for a bounded, read-only OpenCode analysis run.
+ *
+ * `run --format json` is the `codex exec --json` analogue: it emits one NDJSON
+ * frame per event and exits, with no TUI. The prompt is positional here —
+ * unlike the interactive command, whose positional is the project path — and
+ * must stay last.
+ *
+ * Read-only is enforced through `OPENCODE_PERMISSION` (see
+ * `openCodeReadOnlyEnv`) rather than a flag: OpenCode has no `--sandbox`
+ * equivalent, and its only CLI-level control is `--auto`, which approves
+ * everything. Passing the permission ruleset denies the mutating tools outright.
+ */
+export function buildOpenCodeRunArgs(opts: OpenCodeRunnerOptions): string[] {
+  const args = ['run', '--format', 'json']
+  if (opts.model) args.push('--model', opts.model)
+  if (opts.reasoningEffort) args.push('--variant', opts.reasoningEffort)
+  return args
+}
+
+/**
+ * A permission ruleset denying every tool that can change the world, for
+ * bounded review/tour tasks. `read`/`grep`/`glob`/`list`/`lsp` stay allowed:
+ * an analysis task must be able to look at the tree it is reviewing.
+ *
+ * `bash` is denied outright. It is the one tool whose read-only-ness cannot be
+ * decided from the call — `bash("git log")` and `bash("git push")` are the same
+ * tool — so allowing it would make the read-only claim untrue.
+ */
+export function openCodeReadOnlyEnv(): Record<string, string> {
+  return {
+    OPENCODE_PERMISSION: JSON.stringify({
+      read: 'allow',
+      grep: 'allow',
+      glob: 'allow',
+      list: 'allow',
+      lsp: 'allow',
+      webfetch: 'deny',
+      websearch: 'deny',
+      edit: 'deny',
+      bash: 'deny',
+      task: 'deny',
+      external_directory: 'deny',
+    }),
+  }
+}
+
+/**
+ * The assistant text from an OpenCode `run --format json` frame.
+ *
+ * Gated on `type === 'text'`, whose `part.text` is the complete block — verified
+ * against a captured 1.17.13 stream, whose frames are `step_start`, `tool_use`,
+ * `step_finish` and `text`. Reasoning frames are deliberately excluded: feeding
+ * the model's thinking to the finding scanner would let a JSON object it merely
+ * *considered* be reported as a finding.
+ */
+export function openCodeAgentText(event: unknown): string | null {
+  if (!event || typeof event !== 'object') return null
+  const record = event as Record<string, unknown>
+  if (record['type'] !== 'text') return null
+  const part = record['part']
+  if (!part || typeof part !== 'object') return null
+  const text = (part as Record<string, unknown>)['text']
+  return typeof text === 'string' ? text : null
+}
+
+/**
+ * Bounded, read-only OpenCode execution for review/tour lenses.
+ *
+ * Mirrors `CodexRunner`, with the prompt passed as an argument rather than on
+ * stdin: `opencode run` takes its message positionally and does not read stdin.
+ */
+export class OpenCodeRunner implements Runner {
+  constructor(private readonly opts: OpenCodeRunnerOptions) {}
+
+  run<Item>(req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item> {
+    const stream = createPushStream<Item>()
+    this.spawn(req, stream, opts).catch((err) => stream.fail(err))
+    return stream.iterable
+  }
+
+  private async spawn<Item>(req: RunRequest<Item>, stream: PushStream<Item>, opts?: RunOptions): Promise<void> {
+    const bin = await resolveOpenCodePath()
+    const args = [...buildOpenCodeRunArgs(this.opts), codexPrompt(req.system, req.user)]
+
+    const proc = spawn(bin, args, {
+      cwd: this.opts.cwd,
+      env: { ...process.env, ...openCodeReadOnlyEnv() } as Record<string, string>,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const onAbort = (): void => { try { proc.kill() } catch { /* already dead */ } }
+    if (opts?.signal) {
+      if (opts.signal.aborted) onAbort()
+      else opts.signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    const scan = createFindingScanner<Item>(req.parse)
+    const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
+    rl.on('line', (line) => {
+      try {
+        const text = openCodeAgentText(JSON.parse(line))
+        if (text) for (const parsed of scan(text)) stream.push(parsed)
+      } catch {
+        // Ignore diagnostics and malformed frames; exit status stays authoritative.
+      }
+    })
+    let stderr = ''
+    proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    proc.on('close', (code) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      if (code !== 0) {
+        stream.fail(new Error(`opencode exited with code ${code}${stderr.trim() ? `: ${stderr.trim().slice(0, 1000)}` : ''}`))
+      } else {
+        stream.close()
+      }
+    })
+    proc.on('error', (err: Error) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      stream.fail(err)
+    })
+  }
+}
+
 export class CodexRunner implements Runner {
   constructor(private readonly opts: CodexRunnerOptions) {}
 
