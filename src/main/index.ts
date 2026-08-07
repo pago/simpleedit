@@ -462,12 +462,12 @@ function registerAllHandlers(): void {
   // ── Interactive agents ──────────────────────────────────
   ipcMain.handle('agent:spawn', async (event, options: AgentSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
-    // Awaited and caught. `buildLaunch` became async and validates ids that
-    // reach a login-shell command string, so it can reject on input an agent
-    // supplied — floating the promise would turn a bad `spawn_session` model id
-    // into an unhandled rejection, which under Node's default
-    // `--unhandled-rejections=throw` kills the main process, every window and
-    // every live PTY.
+    // Awaited and caught. `buildLaunch` validates ids that reach a login-shell
+    // command string, so it rejects on input an agent supplied — a bad
+    // `spawn_session` model id is ordinary bad input, not an internal error.
+    // Floated, it becomes an unhandled rejection, which Electron's default
+    // handler turns into a modal "A JavaScript error occurred in the main
+    // process" dialog while the session it belonged to fails silently.
     try {
       await spawnAgentTerminalForProvider(
         {

@@ -124,10 +124,9 @@
 
   /**
    * Model entries resolved from the catalogs — empty until `buildNewMenu`
-   * finishes. Kept separate from the provider entries so the menu can be
-   * DERIVED: capabilities arrive asynchronously, so a plain `$state` snapshot
-   * taken at component init froze the list at its fallback and then rewrote it
-   * under the user's pointer once the fetch landed, shifting every row.
+   * finishes. Kept separate from the provider entries so the whole menu can be
+   * DERIVED: capabilities and catalogs both arrive asynchronously, and a
+   * snapshot taken at component init would show neither.
    */
   let modelMenuItems: ContextMenuItem[] = $state([])
   const newMenuItems: ContextMenuItem[] = $derived([...newMenuDefaults(), ...modelMenuItems])
@@ -215,9 +214,9 @@
     // `buildNewMenu` shells out to a CLI (and OpenCode's may reach the network),
     // so awaiting it left the menu unopened for as long as the slowest one
     // took. `newMenuItems` is derived, so the model entries appear when they
-    // arrive rather than gating the provider entries that are already known —
-    // and they append BELOW the fixed provider block, so nothing already on
-    // screen shifts under the pointer.
+    // arrive rather than gating the provider entries that are already known.
+    // They append below the provider block, so an open menu grows downwards
+    // rather than renumbering what the pointer is already over.
     const { clientX: x, clientY: y } = e
     newMenu = { x, y }
     void buildNewMenu()

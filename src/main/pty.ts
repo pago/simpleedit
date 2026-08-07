@@ -281,11 +281,16 @@ export async function spawnAgentTerminalForProvider(
   if (terminals.has(id) || spawning.has(id)) return
   if (!guardCwd(id, worktreePath, webContents)) return
 
+  // Resolved before the id is claimed: `getProvider` throws for an unknown id,
+  // and a throw between the claim and the try/finally would strand the entry —
+  // permanently, since every later spawn of that session then returns at the
+  // guard above with no error path.
+  const provider = getProvider(target.provider)
+
   // Claim the id BEFORE the first await. `buildLaunch` can now be async, so
   // without this a second `agent:spawn` for the same id passes the check above
   // while the first is still awaiting, and both spawn.
   spawning.add(id)
-  const provider = getProvider(target.provider)
   const ctx: LaunchContext = {
     provider: target.provider,
     target,
@@ -299,10 +304,16 @@ export async function spawnAgentTerminalForProvider(
     ...(initialPrompt ? { initialPrompt } : {}),
   }
   let plan: LaunchPlan
+  let killed: boolean
   try {
     plan = await provider.buildLaunch(ctx)
   } finally {
+    // Both flags clear here, including when `buildLaunch` throws. A kill
+    // recorded against a launch that then failed would otherwise persist and
+    // abandon the NEXT spawn of that session id — leaving it on 'initializing'
+    // with no PTY and nothing in the terminal buffer to explain it.
     spawning.delete(id)
+    killed = killedWhileSpawning.delete(id)
   }
 
   // `buildLaunch` awaited (OpenCode reserves a port), so the session may have
@@ -310,11 +321,15 @@ export async function spawnAgentTerminalForProvider(
   // is the whole point: the alternative is an orphan agent process attached to
   // a session that no longer exists, alive until the app quits.
   //
-  // `plan.cleanup` is NOT called here. A provider's cleanup is keyed to the
-  // terminal id rather than to the plan, so running the abandoned plan's
-  // cleanup tears down state belonging to whatever now owns that id — dropping
-  // a live session's control port and silently breaking mail delivery to it.
-  if (killedWhileSpawning.delete(id) || terminals.has(id) || webContents.isDestroyed()) return
+  // The plan's cleanup DOES run: `killTerminal` already ran `runAgentCleanup`
+  // before this plan existed, so nothing else will. Skipping it strands the
+  // provider's per-session state — a registered session in the cwd tracker and
+  // a reserved control port for OpenCode, temp hook/mcp-config files on disk
+  // for Claude.
+  if (killed || terminals.has(id) || webContents.isDestroyed()) {
+    plan.cleanup?.()
+    return
+  }
 
   webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
 
