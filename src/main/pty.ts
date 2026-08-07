@@ -3,9 +3,11 @@ import { type WebContents } from 'electron'
 import { existsSync } from 'fs'
 import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
-import { getProvider, type LaunchPlan } from './agents/provider'
+import { getProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
+import { applyAgentSignal } from './mcp-bridge'
 import './agents/codex'
+import './agents/opencode'
 
 type IPty = pty.IPty
 
@@ -242,17 +244,17 @@ export function spawnTerminal(
   })
 }
 
-export function spawnAgentTerminalForProvider(
+export async function spawnAgentTerminalForProvider(
   options: AgentSpawnOptions,
   webContents: WebContents
-): void {
+): Promise<void> {
   const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt, target } = options
 
   if (terminals.has(id)) return
   if (!guardCwd(id, worktreePath, webContents)) return
 
   const provider = getProvider(target.provider)
-  const plan = provider.buildLaunch({
+  const ctx: LaunchContext = {
     provider: target.provider,
     target,
     terminalId: id,
@@ -263,11 +265,56 @@ export function spawnAgentTerminalForProvider(
     ...(bridgeToken != null ? { bridgeToken } : {}),
     ...(model ? { model } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
-  })
-
-  if (!webContents.isDestroyed()) {
-    webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
   }
+  const plan = await provider.buildLaunch(ctx)
+
+  // Re-check: `buildLaunch` may have awaited (OpenCode reserves a port), so the
+  // terminal could have been spawned or the window torn down in the meantime.
+  if (terminals.has(id)) {
+    plan.cleanup?.()
+    return
+  }
+  if (webContents.isDestroyed()) {
+    plan.cleanup?.()
+    return
+  }
+
+  webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
+
+  // A provider that reports out-of-band opens its control channel here. Its
+  // signals go through the very handler an HTTP hook would hit, so status, the
+  // touched-repo trail and agent messaging behave identically to a provider
+  // that calls in.
+  if (provider.attach) {
+    const detach = provider.attach(plan, ctx, {
+      status: (status, message) => {
+        if (webContents.isDestroyed()) return
+        webContents.send('agent:status', {
+          worktreePath,
+          status,
+          terminalId: id,
+          precise: true,
+          ...(message ? { message } : {}),
+        })
+      },
+      signal: (signal) => {
+        if (webContents.isDestroyed()) return
+        void applyAgentSignal(signal, webContents).then((result) => {
+          const mail = typeof result['reason'] === 'string' ? result['reason'] : undefined
+          // An attached provider has no hook response to ride, so queued mail
+          // is pushed instead. Only at this point — a turn boundary — which is
+          // the same delivery rule every other provider follows.
+          if (mail && provider.deliverMessage) void provider.deliverMessage(id, mail)
+        })
+      },
+    })
+    const planCleanup = plan.cleanup
+    plan.cleanup = () => {
+      detach()
+      planCleanup?.()
+    }
+  }
+
   spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: !!plan.sessionId, clearStatusOnExit: true }, webContents)
 }
 

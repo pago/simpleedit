@@ -6,7 +6,7 @@ import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
 import { validateSpec, validateSpecActions } from './gen-ui-validate'
-import { parseHookBody, matchWorktree, terminalForSession } from './cwd-tracker'
+import { parseHookBody, matchWorktree, terminalForSession, type HookSignal } from './cwd-tracker'
 import {
   awaitSpawn,
   captureImplicitReplies,
@@ -558,7 +558,27 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
   }
   const signal = parseHookBody(parsed)
   if (!signal) return {}
+  return applyAgentSignal(signal, webContents)
+}
 
+/**
+ * Everything a lifecycle signal drives, independent of how it arrived.
+ *
+ * Claude and Codex POST hooks here; OpenCode has no hooks and instead has its
+ * events translated into the same `HookSignal` by its provider's control
+ * channel (`agents/opencode.ts`). Keeping one implementation is what makes the
+ * touched-repo trail and agent-to-agent messaging work identically for a
+ * provider that never calls in — the alternative was a second, parallel
+ * pathway that would drift.
+ *
+ * The returned record is the hook's response body, which for `Stop` may carry
+ * queued peer mail. A caller that is not answering an actual HTTP hook (an
+ * attached provider) must deliver that itself — see `deliverMessage`.
+ */
+export async function applyAgentSignal(
+  signal: HookSignal,
+  webContents: WebContents,
+): Promise<Record<string, unknown>> {
   // Codex's reporter stamps the terminal id straight into the body; Claude's
   // HTTP hooks don't, so those route by session_id through the registry.
   const terminalId = signal.terminalId ?? terminalForSession(signal.sessionId)
