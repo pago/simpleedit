@@ -13,6 +13,11 @@ while true; do
       *"/hooks"*) echo "fake codex: hooks trusted" ;;
     esac
   else
+    # A PTY session must stay EOF-proof (see e2e/bin/claude), but when driven
+    # over pipes (`codex app-server` model discovery) EOF means the app closed
+    # our stdin — exit like the real app-server does, so a fake discovery child
+    # can never outlive the app that spawned it.
+    if [ ! -t 0 ]; then exit 0; fi
     sleep 1
   fi
 done

@@ -1,10 +1,39 @@
 import { app } from 'electron'
-import { spawn } from 'child_process'
+import { spawn, type ChildProcess } from 'child_process'
 import * as readline from 'readline'
 import { isReasoningEffort, type CodexModel } from '../../shared/ipc-types'
 import { resolveCodexPath } from '../lib/shell-path'
 
 let cached: CodexModel[] | null = null
+
+/**
+ * Discovery children that haven't exited yet. They must die with the app: a
+ * `codex app-server` still holding its stdio pipes at quit can hang Electron's
+ * shutdown indefinitely — every quit inside the discovery window then shows up
+ * as an app process that outlives its window.
+ */
+const inflight = new Set<ChildProcess>()
+
+/**
+ * Bumped by `cancelCodexDiscovery`. A discovery that was still resolving the
+ * codex path when the cancel happened must not go on to spawn — the spawn
+ * would land after the quit hooks already ran, recreating the hang the kill
+ * exists to prevent. Only that in-flight discovery is abandoned: a later call
+ * (e.g. macOS re-opening a window after window-all-closed) starts a new
+ * generation and may spawn normally.
+ */
+let cancelGeneration = 0
+
+/** Kill any in-flight model discovery. Wired into the app's quit path. */
+export function cancelCodexDiscovery(): void {
+  cancelGeneration++
+  for (const proc of inflight) {
+    // SIGKILL: this is teardown, there is nothing to flush, and a child that
+    // ignores SIGTERM would put the shutdown hang right back.
+    try { proc.kill('SIGKILL') } catch { /* already gone */ }
+  }
+  inflight.clear()
+}
 
 interface RpcResponse { id?: number; result?: Record<string, unknown>; error?: unknown }
 
@@ -60,8 +89,12 @@ export async function listCodexModels(): Promise<CodexModel[]> {
 }
 
 async function discover(): Promise<CodexModel[]> {
+  const generation = cancelGeneration
   const bin = await resolveCodexPath()
+  if (generation !== cancelGeneration) throw new Error('codex model discovery cancelled')
   const proc = spawn(bin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
+  inflight.add(proc)
+  proc.on('close', () => inflight.delete(proc))
   const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
   let nextId = 1
   const pending = new Map<number, { resolve: (value: RpcResponse) => void; reject: (err: Error) => void }>()
