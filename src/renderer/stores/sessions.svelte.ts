@@ -40,12 +40,6 @@ export interface Session {
   /** True when the user renamed the session — OSC titles no longer apply. */
   customLabel?: boolean
   /**
-   * The label is a stand-in (the model id) rather than a chosen name, so an
-   * agent-reported conversation title may replace it. Distinct from
-   * `customLabel`, which no automatic title may overwrite.
-   */
-  provisionalLabel?: boolean
-  /**
    * Directory the PTY spawned in (and respawns in on resume). EVERY agent —
    * Claude and Codex alike — launches at the project root (beside the bare
    * repo), never inside a worktree: agents create their own worktrees, and a
@@ -296,16 +290,16 @@ export const sessionsStore = {
     // structured ModelRef; every other provider carries a bare native id, so
     // narrowing on 'claude' handles all of them without naming any.
     const modelId = target.provider === 'claude' ? model?.model : target.model
-    // `customLabel` means a human or a model CHOSE this name. Falling back to
-    // the model id is not a choice — it is what we show for want of anything
-    // better — so it is marked `provisionalLabel` instead. Treating the two the
-    // same froze the label of every session started with an explicit model, so
-    // the conversation title an agent later reports could never replace it.
-    // Whether a provider's OSC titles may rename a session stays a provider
+    // `customLabel` means a human or a model CHOSE this name, and nothing
+    // automatic may overwrite it. Falling back to the model id is NOT a choice
+    // — it is what we show for want of anything better — so it no longer sets
+    // the flag, and the conversation title the agent later reports replaces it.
+    // This applies to every provider: before, any session started on an
+    // explicit model was frozen at the model id for its whole life.
+    // Whether a provider's titles may rename a session stays a provider
     // property, decided when the title actually arrives — deciding it here
     // would race the async capability fetch.
     const chosen = !!opts.label
-    const provisional = !chosen && !!modelId
     const newSession: Session = {
       id,
       kind: 'agent',
@@ -313,7 +307,6 @@ export const sessionsStore = {
       target,
       label: opts.label ?? modelId ?? defaultLabel('agent', name),
       ...(chosen ? { customLabel: true as const } : {}),
-      ...(provisional ? { provisionalLabel: true as const } : {}),
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
       ...(opts.target?.groupId ? { groupId: opts.target.groupId } : {}),
@@ -601,7 +594,7 @@ export const sessionsStore = {
     if (!session || session.customLabel) return
     const clean = title.trim()
     if (!clean || clean === session.label) return
-    this.update(id, { label: clean, provisionalLabel: false })
+    this.update(id, { label: clean })
   },
 
   /**

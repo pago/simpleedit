@@ -143,3 +143,44 @@ describe('OSC titles', () => {
     expect(sessionsStore.get(id)?.label).toBe('main: pnpm test')
   })
 })
+
+/**
+ * Labelling is a cross-provider contract, and it had no coverage at all — which
+ * is why splitting `customLabel` silently changed Claude and Codex too.
+ */
+describe('label stickiness parity', () => {
+  const NATIVE: AgentProviderId[] = ['codex', 'opencode']
+
+  it('lets an agent-reported title replace a model-id stand-in, for every provider', () => {
+    for (const provider of NATIVE) {
+      const id = sessionsStore.createNativeAgent(provider, PROJECT_ROOT, MAIN_WT, { model: 'some/model-id' })
+      expect(sessionsStore.get(id)?.label).toBe('some/model-id')
+      sessionsStore.applySessionTitle(id, 'Refactor the parser')
+      expect(sessionsStore.get(id)?.label).toBe('Refactor the parser')
+    }
+  })
+
+  it('does the same for a model-ref provider', () => {
+    const id = sessionsStore.createClaude(PROJECT_ROOT, MAIN_WT, {
+      model: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+    })
+    expect(sessionsStore.get(id)?.label).toBe('claude-sonnet-4-5')
+    sessionsStore.applySessionTitle(id, 'Fix the flaky test')
+    expect(sessionsStore.get(id)?.label).toBe('Fix the flaky test')
+  })
+
+  it('never overwrites a name the user chose', () => {
+    for (const provider of NATIVE) {
+      const id = sessionsStore.createNativeAgent(provider, PROJECT_ROOT, MAIN_WT, { label: 'My session' })
+      sessionsStore.applySessionTitle(id, 'Something The Agent Picked')
+      expect(sessionsStore.get(id)?.label).toBe('My session')
+    }
+  })
+
+  it('never overwrites a rename, even over a model-id stand-in', () => {
+    const id = sessionsStore.createNativeAgent('opencode', PROJECT_ROOT, MAIN_WT, { model: 'some/model-id' })
+    sessionsStore.rename(id, 'Mine')
+    sessionsStore.applySessionTitle(id, 'Agent Title')
+    expect(sessionsStore.get(id)?.label).toBe('Mine')
+  })
+})

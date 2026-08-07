@@ -122,7 +122,15 @@
     ]
   }
 
-  let newMenuItems: ContextMenuItem[] = $state(newMenuDefaults())
+  /**
+   * Model entries resolved from the catalogs — empty until `buildNewMenu`
+   * finishes. Kept separate from the provider entries so the menu can be
+   * DERIVED: capabilities arrive asynchronously, so a plain `$state` snapshot
+   * taken at component init froze the list at its fallback and then rewrote it
+   * under the user's pointer once the fetch landed, shifting every row.
+   */
+  let modelMenuItems: ContextMenuItem[] = $state([])
+  const newMenuItems: ContextMenuItem[] = $derived([...newMenuDefaults(), ...modelMenuItems])
   /** key (allowlist entry) → ModelRef for the current menu; rebuilt on open. */
   let modelMenuRefs: Map<string, InteractiveTarget> = $state(new Map())
 
@@ -170,17 +178,14 @@
       })
 
       modelMenuRefs = refs
-      newMenuItems = [
-        ...newMenuDefaults(),
-        ...resolved.map((m, i) => ({
-          id: `model:${m.key}`,
-          label: `New session · ${m.label}`,
-          separatorBefore: i === 0,
-        })),
-      ]
+      modelMenuItems = resolved.map((m, i) => ({
+        id: `model:${m.key}`,
+        label: `New session · ${m.label}`,
+        separatorBefore: i === 0,
+      }))
     } catch {
       modelMenuRefs = new Map()
-      newMenuItems = newMenuDefaults()
+      modelMenuItems = []
     }
   }
 
@@ -209,8 +214,10 @@
     // Open first, resolve the model submenu after. Every catalog behind
     // `buildNewMenu` shells out to a CLI (and OpenCode's may reach the network),
     // so awaiting it left the menu unopened for as long as the slowest one
-    // took. `newMenuItems` is $state, so the model entries appear when they
-    // arrive rather than gating the provider entries that are already known.
+    // took. `newMenuItems` is derived, so the model entries appear when they
+    // arrive rather than gating the provider entries that are already known —
+    // and they append BELOW the fixed provider block, so nothing already on
+    // screen shifts under the pointer.
     const { clientX: x, clientY: y } = e
     newMenu = { x, y }
     void buildNewMenu()
