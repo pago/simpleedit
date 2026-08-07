@@ -37,7 +37,21 @@ export function fitClasses(fit: ModelFit): string {
   }
 }
 
-/** Stable string key for a ModelRef — used as <select> option values. */
+/**
+ * Stable string key for a ModelRef — used as <select> option values.
+ *
+ * The effort is keyed off whether the ref CAN carry one rather than off a named
+ * provider: a picker offers one option per supported effort, so a provider
+ * whose effort is dropped here collapses every variant of a model onto one key,
+ * and the options silently overwrite each other in the lookup map.
+ */
 export function refKey(ref: ModelRef): string {
-  return `${ref.provider}:${ref.model ?? 'configured-default'}:${ref.provider === 'openai' ? (ref.reasoningEffort ?? 'default') : ''}`
+  // Narrowed by excluding the arms that cannot carry an effort, so every
+  // effort-bearing provider keys the same way. Testing `'reasoningEffort' in
+  // ref` instead would read false when the field is merely absent, changing
+  // the key of an existing `{ provider: 'openai' }` ref and orphaning the
+  // "Configured default" option it is matched against.
+  const carriesEffort = ref.provider !== 'anthropic' && ref.provider !== 'ollama'
+  const effort = carriesEffort ? (ref.reasoningEffort ?? 'default') : ''
+  return `${ref.provider}:${ref.model ?? 'configured-default'}:${effort}`
 }

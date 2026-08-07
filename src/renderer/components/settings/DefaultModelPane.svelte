@@ -3,6 +3,7 @@
   import type {
     ClaudeModel,
     CodexModel,
+    OpenCodeModel,
     ModelConfig,
     ModelDescriptor,
     ModelFeatureKey,
@@ -19,13 +20,14 @@
   let claudeOptions = $state<Option[]>([])
   let localOptions = $state<Option[]>([])
   let codexOptions = $state<Option[]>([])
+  let openCodeOptions = $state<Option[]>([])
   let defaults = $state<Partial<Record<ModelFeatureKey, ModelRef>>>({})
   let loading = $state(true)
 
   // Every option, for resolving a selected key back to its ModelRef.
   const byKey = $derived(
     new Map<string, ModelRef>(
-      [...claudeOptions, ...codexOptions, ...localOptions].map((o) => [o.key, o.ref])
+      [...claudeOptions, ...codexOptions, ...openCodeOptions, ...localOptions].map((o) => [o.key, o.ref])
     )
   )
 
@@ -37,10 +39,11 @@
   onMount(() => {
     let cancelled = false
     void (async () => {
-      const [claude, codex, installed, config]: [ClaudeModel[], CodexModel[], ModelDescriptor[], ModelConfig] =
+      const [claude, codex, openCode, installed, config]: [ClaudeModel[], CodexModel[], OpenCodeModel[], ModelDescriptor[], ModelConfig] =
         await Promise.all([
           window.api.invoke('models:claude'),
           window.api.invoke('models:codex').catch(() => [] as CodexModel[]),
+          window.api.invoke('models:opencode').catch(() => [] as OpenCodeModel[]),
           window.api.invoke('models:installed').catch(() => [] as ModelDescriptor[]),
           window.api.invoke('models:config-get'),
         ])
@@ -55,6 +58,18 @@
           const efforts = m.supportedReasoningEfforts.length ? [undefined, ...m.supportedReasoningEfforts] : [undefined]
           return efforts.map((effort) => {
             const ref: ModelRef = { provider: 'openai', model: m.model, ...(effort ? { reasoningEffort: effort } : {}) }
+            return { key: refKey(ref), label: `${m.displayName}${effort ? ` · ${effort}` : ''}`, ref }
+          })
+        }),
+      ]
+      openCodeOptions = [
+        { key: refKey({ provider: 'opencode' }), label: 'Configured default', ref: { provider: 'opencode' } },
+        ...openCode.flatMap((m) => {
+          // Variants are per model here, not shared across the catalog, so an
+          // entry is only offered for efforts this model actually accepts.
+          const efforts = m.supportedReasoningEfforts.length ? [undefined, ...m.supportedReasoningEfforts] : [undefined]
+          return efforts.map((effort) => {
+            const ref: ModelRef = { provider: 'opencode', model: m.model, ...(effort ? { reasoningEffort: effort } : {}) }
             return { key: refKey(ref), label: `${m.displayName}${effort ? ` · ${effort}` : ''}`, ref }
           })
         }),
@@ -125,6 +140,9 @@
               {/if}
               <optgroup label="Codex (cloud)">
                 {#each codexOptions as opt (opt.key)}<option value={opt.key}>{opt.label}</option>{/each}
+              </optgroup>
+              <optgroup label="OpenCode (cloud)">
+                {#each openCodeOptions as opt (opt.key)}<option value={opt.key}>{opt.label}</option>{/each}
               </optgroup>
               {#if localOptions.length}
                 <optgroup label="Local (Ollama)">
