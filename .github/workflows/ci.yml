@@ -44,6 +44,8 @@ jobs:
 
       - name: E2E tests
         run: xvfb-run --auto-servernum -- pnpm test:e2e
+        env:
+          DEBUG: pw:browser
 
       - name: Upload Playwright report
         if: failure()
