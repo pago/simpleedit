@@ -3,9 +3,9 @@
   import PromptModal from '../PromptModal.svelte'
   import HandoffComposer from './HandoffComposer.svelte'
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
-  import type { InteractiveTarget } from '../../../shared/ipc-types'
+  import type { AgentProviderId, InteractiveTarget, NativeModelAgentId } from '../../../shared/ipc-types'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
-  import { capabilitiesFor, providerLabel } from '../../stores/agent-capabilities.svelte'
+  import { capabilitiesFor, knownProviders, providerForModelBrand, providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
@@ -64,15 +64,22 @@
     if (root && wt) sessionsStore.createClaude(root, wt.path)
   }
 
-  function startCodex(model?: string): void {
+  /** Start any provider that names its model by bare native id. */
+  function startNative(provider: NativeModelAgentId, model?: string): void {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
-    if (root && wt) sessionsStore.createCodex(root, wt.path, model ? { model } : {})
+    if (root && wt) sessionsStore.createNativeAgent(provider, root, wt.path, model ? { model } : {})
   }
 
   async function startLastTarget(): Promise<void> {
     const config = await window.api.invoke('models:config-get').catch(() => null)
-    if (config?.lastUsed?.provider === 'openai') startCodex(config.lastUsed.model)
+    const last = config?.lastUsed
+    // Resolve the remembered ModelRef back to the agent that owns it. Testing
+    // for one brand by name would send every other native model to Claude.
+    const owner = last && last.provider !== 'anthropic' && last.provider !== 'ollama'
+      ? providerForModelBrand(last.provider)
+      : undefined
+    if (owner && owner !== 'claude') startNative(owner, last?.model)
     else startClaude()
   }
 
@@ -92,14 +99,25 @@
   let newMenu: { x: number; y: number } | null = $state(null)
   let newButtonEl: HTMLButtonElement | undefined = $state()
 
-  const NEW_MENU_DEFAULTS: ContextMenuItem[] = [
-    { id: 'new-claude', label: 'New Claude session' },
-    { id: 'new-codex', label: 'New Codex session · configured default' },
-    { id: 'new-agents', label: 'New Agent View session' },
-    { id: 'new-terminal', label: 'New terminal', separatorBefore: true },
-  ]
+  /**
+   * One entry per registered provider, then the fixed entries. Built from the
+   * capability descriptors so a provider that registers itself in main shows up
+   * here without this component being edited.
+   */
+  function newMenuDefaults(): ContextMenuItem[] {
+    const providers = knownProviders()
+    const perProvider = (providers.length > 0 ? providers : (['claude'] as AgentProviderId[])).map((id) => ({
+      id: `new-provider:${id}`,
+      label: `New ${providerLabel(id)} session`,
+    }))
+    return [
+      ...perProvider,
+      { id: 'new-agents', label: 'New Agent View session' },
+      { id: 'new-terminal', label: 'New terminal', separatorBefore: true },
+    ]
+  }
 
-  let newMenuItems: ContextMenuItem[] = $state(NEW_MENU_DEFAULTS)
+  let newMenuItems: ContextMenuItem[] = $state(newMenuDefaults())
   /** key (allowlist entry) → ModelRef for the current menu; rebuilt on open. */
   let modelMenuRefs: Map<string, InteractiveTarget> = $state(new Map())
 
@@ -144,7 +162,7 @@
 
       modelMenuRefs = refs
       newMenuItems = [
-        ...NEW_MENU_DEFAULTS,
+        ...newMenuDefaults(),
         ...resolved.map((m, i) => ({
           id: `model:${m.key}`,
           label: `New session · ${m.label}`,
@@ -153,15 +171,15 @@
       ]
     } catch {
       modelMenuRefs = new Map()
-      newMenuItems = NEW_MENU_DEFAULTS
+      newMenuItems = newMenuDefaults()
     }
   }
 
   function pickNewMenuItem(id: string): void {
-    if (id === 'new-claude') {
-      startClaude()
-    } else if (id === 'new-codex') {
-      startCodex()
+    if (id.startsWith('new-provider:')) {
+      const provider = id.slice('new-provider:'.length) as AgentProviderId
+      if (provider === 'claude') startClaude()
+      else startNative(provider as NativeModelAgentId)
     } else if (id === 'new-agents') {
       startAgents()
     } else if (id === 'new-terminal') {

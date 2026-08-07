@@ -67,3 +67,17 @@ export function providerLabel(provider: AgentProviderId | undefined): string {
   if (!provider) return 'Agent'
   return capabilitiesFor(provider)?.displayName ?? provider.charAt(0).toUpperCase() + provider.slice(1)
 }
+
+/**
+ * Which agent owns a remembered `ModelRef`.
+ *
+ * The inverse of `nativeModelBrand`: "last model used" is persisted as a
+ * ModelRef, and reopening that session needs the agent it belongs to. Resolving
+ * it from the descriptors keeps the mapping in one place — the alternative was
+ * a `provider === 'openai'` check that quietly sent every non-Codex native
+ * model to Claude.
+ */
+export function providerForModelBrand(brand: string | undefined): AgentProviderId | undefined {
+  if (!brand) return undefined
+  return knownProviders().find((id) => byProvider[id]?.nativeModelBrand === brand)
+}
