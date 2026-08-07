@@ -13,6 +13,7 @@ import {
   drain,
   enqueue,
   peekPending,
+  commitDelivery,
   formatForDelivery,
   listPeers,
   pendingCount,
@@ -588,12 +589,11 @@ export async function applyAgentSignal(
 
   const worktrees = await resolveWorktrees(webContents.id)
   const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
-  // Deriving identity and status from a hook's event name is Codex-specific,
-  // and gating it on "a terminal id is present" swept in every attached
-  // provider too — which reports both itself, precisely and synchronously.
-  // Letting this also run gave OpenCode a stuck status (the two awaits above
-  // let a Stop-derived 'idle' land before a PostToolUse-derived 'running') and
-  // published a fabricated session id. The caller says who owns these.
+  // Deriving identity and status from a hook's event name is Codex-specific.
+  // An attached provider reports both itself, precisely and synchronously, so
+  // letting this also run races it — the two awaits above let a Stop-derived
+  // 'idle' land after a PostToolUse-derived 'running' — and republishes a
+  // session id it may not have learned yet. The caller says who owns these.
   if (signal.terminalId && !opts.ownsIdentityAndStatus) {
     registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
   }
@@ -655,13 +655,19 @@ async function handleTurnEnd(
   // of the message, so its mail is peeked, pushed, and only then committed —
   // draining first would destroy the message on a failed POST while the UI
   // reported it delivered, and would park the sender on a reply never coming.
+  let messages: Message[]
   if (deliver) {
+    // Snapshot, push, then commit exactly what was pushed. Committing the
+    // mailbox's current contents instead would mark a message that arrived
+    // DURING the push as delivered without it ever having been sent — and arm
+    // its sender to receive the answer to a different question.
     const pending = peekPending(terminalId)
     if (pending.length === 0) return {}
     if (!(await deliver(formatForDelivery(pending)))) return {}
+    messages = commitDelivery(terminalId, new Set(pending.map((m) => m.id)))
+  } else {
+    messages = drain(terminalId)
   }
-
-  const messages = drain(terminalId)
   if (messages.length === 0) return {}
 
   if (!webContents.isDestroyed()) {

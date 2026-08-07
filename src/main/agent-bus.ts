@@ -219,16 +219,45 @@ export function senderOf(messageId: string): string | null {
  * reply so the session's *next* `Stop` can be read as the answer.
  */
 /**
- * The queued messages WITHOUT consuming them.
+ * A SNAPSHOT of what is queued, without consuming it.
  *
  * For a provider whose mail is pushed rather than returned in a hook response,
- * delivery can fail after the fact. `drain` both empties the mailbox and arms
- * the implicit-reply capture, so draining first and pushing second loses the
- * message outright on a failed POST — and parks the sender waiting for a reply
- * that will never come. Peek, push, then drain to commit.
+ * delivery can fail after we have let go of the message. `drain` both empties
+ * the mailbox and arms the implicit-reply capture, so draining first and
+ * pushing second loses the message outright on a failed POST — and parks the
+ * sender waiting on a reply that will never come. Peek, push, then
+ * `commitDelivery` exactly what was pushed.
+ *
+ * Returns a copy, not the live array: `enqueue` pushes into that array in
+ * place, so a message arriving while the push is in flight would otherwise be
+ * committed as delivered without ever having been sent.
  */
 export function peekPending(terminalId: string): Message[] {
-  return mailboxes.get(terminalId) ?? []
+  return [...(mailboxes.get(terminalId) ?? [])]
+}
+
+/**
+ * Consume exactly the messages that were successfully delivered, leaving
+ * anything enqueued since the snapshot for the next turn. Arms the
+ * implicit-reply capture for the delivered ones only — arming it for a message
+ * that never arrived would hand its sender the answer to a different question.
+ */
+export function commitDelivery(terminalId: string, deliveredIds: ReadonlySet<string>): Message[] {
+  const box = mailboxes.get(terminalId)
+  if (!box || box.length === 0) return []
+
+  const delivered = box.filter((m) => deliveredIds.has(m.id))
+  const remaining = box.filter((m) => !deliveredIds.has(m.id))
+  if (remaining.length > 0) mailboxes.set(terminalId, remaining)
+  else mailboxes.delete(terminalId)
+
+  const wanting = delivered
+    .filter((m) => m.expectsReply)
+    .map((m) => ({ messageId: m.id, from: m.from, to: m.to, expectsReply: true, hops: m.hops }))
+  if (wanting.length > 0) {
+    awaitingImplicitReply.set(terminalId, [...(awaitingImplicitReply.get(terminalId) ?? []), ...wanting])
+  }
+  return delivered
 }
 
 export function drain(terminalId: string): Message[] {
