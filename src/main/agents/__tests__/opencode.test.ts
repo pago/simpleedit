@@ -1,7 +1,7 @@
 /**
  * OpenCode provider contract.
  *
- * Every event payload below is shaped from opencode 1.17.13's own OpenAPI
+ * Every event payload below is shaped from opencode 1.18.15's own OpenAPI
  * document and a captured live stream — not from output imagined to match the
  * parser. Assertions are on the properties a launch must GUARANTEE (read-only
  * really denies writes; a prompt never lands where a path is expected), not on
@@ -20,15 +20,23 @@ import liveTurn from './fixtures/opencode-live-turn.json'
 const base = { terminalId: 't1', worktreePath: '/repo/main' }
 const CTX = { terminalId: 't1', cwd: '/repo/main' }
 
-function collect(): { sink: AgentAttachSink; statuses: [string, string | undefined][]; signals: HookSignal[] } {
+function collect(): {
+  sink: AgentAttachSink
+  statuses: [string, string | undefined][]
+  signals: HookSignal[]
+  titles: string[]
+} {
   const statuses: [string, string | undefined][] = []
   const signals: HookSignal[] = []
+  const titles: string[] = []
   return {
     statuses,
     signals,
+    titles,
     sink: {
       status: (s, m) => statuses.push([s, m]),
       signal: (s) => signals.push(s),
+      title: (t) => titles.push(t),
     },
   }
 }
@@ -278,6 +286,43 @@ describe('opencode against a captured real turn', () => {
     const touches = c.signals.filter((s) => s.filePath !== null)
     // The read FAILED (file not found), so it is not a touched repo at all.
     expect(touches).toHaveLength(0)
+  })
+})
+
+describe('opencode conversation title', () => {
+  it('publishes the name OpenCode gives the conversation', () => {
+    const c = apply([
+      { type: 'session.updated', properties: { info: { id: 'ses_1', title: 'Capital of France' } } },
+    ])
+    expect(c.titles).toEqual(['Capital of France'])
+  })
+
+  it('suppresses the placeholder a session carries before it is named', () => {
+    // OpenCode stamps `New session - <ISO timestamp>` until its title agent
+    // runs. Showing that would be strictly worse than the default label.
+    const c = apply([
+      { type: 'session.created', properties: { info: { id: 'ses_1', title: 'New session - 2026-08-07T09:01:34.098Z' } } },
+    ])
+    expect(c.titles).toEqual([])
+  })
+
+  it('publishes a title once, not on every session.updated', () => {
+    // The captured turn shows session.updated repeating many times per turn;
+    // re-sending an unchanged title would rewrite the sidebar label constantly.
+    const state: EventState = {}
+    const c = collect()
+    for (let i = 0; i < 5; i++) {
+      applyEvent({ type: 'session.updated', properties: { info: { id: 'ses_1', title: 'Same Name' } } }, c.sink, state, CTX)
+    }
+    expect(c.titles).toEqual(['Same Name'])
+  })
+
+  it('publishes a genuinely new title when the conversation is renamed', () => {
+    const state: EventState = {}
+    const c = collect()
+    applyEvent({ type: 'session.updated', properties: { info: { id: 'ses_1', title: 'First' } } }, c.sink, state, CTX)
+    applyEvent({ type: 'session.updated', properties: { info: { id: 'ses_1', title: 'Second' } } }, c.sink, state, CTX)
+    expect(c.titles).toEqual(['First', 'Second'])
   })
 })
 

@@ -146,6 +146,7 @@ export const codexProvider = {
     modelSelector: 'model-id',
     reasoningEffort: true,
     modelCatalog: true,
+    reportsSessionTitle: false,
   },
 } satisfies AgentProvider
 

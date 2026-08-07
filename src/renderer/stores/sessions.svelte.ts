@@ -40,6 +40,12 @@ export interface Session {
   /** True when the user renamed the session — OSC titles no longer apply. */
   customLabel?: boolean
   /**
+   * The label is a stand-in (the model id) rather than a chosen name, so an
+   * agent-reported conversation title may replace it. Distinct from
+   * `customLabel`, which no automatic title may overwrite.
+   */
+  provisionalLabel?: boolean
+  /**
    * Directory the PTY spawned in (and respawns in on resume). EVERY agent —
    * Claude and Codex alike — launches at the project root (beside the bare
    * repo), never inside a worktree: agents create their own worktrees, and a
@@ -290,18 +296,24 @@ export const sessionsStore = {
     // structured ModelRef; every other provider carries a bare native id, so
     // narrowing on 'claude' handles all of them without naming any.
     const modelId = target.provider === 'claude' ? model?.model : target.model
-    // `customLabel` means "a human or a model chose this name", nothing more.
-    // Whether a provider's OSC titles may rename a session is a provider
-    // property, decided in `applyOscTitle` when the title actually arrives —
-    // deciding it here would race the async capability fetch.
-    const pinned = !!opts.label || !!modelId
+    // `customLabel` means a human or a model CHOSE this name. Falling back to
+    // the model id is not a choice — it is what we show for want of anything
+    // better — so it is marked `provisionalLabel` instead. Treating the two the
+    // same froze the label of every session started with an explicit model, so
+    // the conversation title an agent later reports could never replace it.
+    // Whether a provider's OSC titles may rename a session stays a provider
+    // property, decided when the title actually arrives — deciding it here
+    // would race the async capability fetch.
+    const chosen = !!opts.label
+    const provisional = !chosen && !!modelId
     const newSession: Session = {
       id,
       kind: 'agent',
       provider: target.provider,
       target,
       label: opts.label ?? modelId ?? defaultLabel('agent', name),
-      ...(pinned ? { customLabel: true as const } : {}),
+      ...(chosen ? { customLabel: true as const } : {}),
+      ...(provisional ? { provisionalLabel: true as const } : {}),
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
       ...(opts.target?.groupId ? { groupId: opts.target.groupId } : {}),
@@ -574,6 +586,22 @@ export const sessionsStore = {
     const session = findSession(id)
     if (!session || !!session.viewerOpen === open) return
     this.update(id, { viewerOpen: open })
+  },
+
+  /**
+   * Apply a conversation title the agent reported out-of-band.
+   *
+   * Unlike an OSC title this never needs cleaning up or vetting — a provider
+   * only reports one if `reportsSessionTitle` says it names conversations —
+   * but it obeys the same stickiness rule: a name the user or a model CHOSE
+   * wins, a provisional model-id stand-in does not.
+   */
+  applySessionTitle(id: string, title: string): void {
+    const session = findSession(id)
+    if (!session || session.customLabel) return
+    const clean = title.trim()
+    if (!clean || clean === session.label) return
+    this.update(id, { label: clean, provisionalLabel: false })
   },
 
   /**
@@ -1000,6 +1028,12 @@ export function initSessionListeners(): () => void {
     sessionsStore.update(data.terminalId, { providerSessionId: data.sessionId, reportingSetupNeeded: false })
   })
 
+  // The agent's own name for the conversation, for providers that report one
+  // out-of-band (`reportsSessionTitle`) rather than via the terminal title.
+  const offSessionTitle = window.api.on('agent:session-title', (data) => {
+    sessionsStore.applySessionTitle(data.terminalId, data.title)
+  })
+
   // Location tracking (Stage 2+): the agent's tracked cwd moved.
   //   • Always RECORD the move on the session's trail (drives the pickers),
   //     after caching a freshly-discovered repo's worktrees so it resolves.
@@ -1058,6 +1092,7 @@ export function initSessionListeners(): () => void {
   return () => {
     offExit()
     offSessionId()
+    offSessionTitle()
     offCwd()
     offRepoTouch()
     offSpawn()

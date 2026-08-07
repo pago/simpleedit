@@ -297,6 +297,10 @@ export async function spawnAgentTerminalForProvider(
           ...(message ? { message } : {}),
         })
       },
+      title: (title) => {
+        if (webContents.isDestroyed()) return
+        webContents.send('agent:session-title', { terminalId: id, title })
+      },
       signal: (signal) => {
         if (webContents.isDestroyed()) return
         void applyAgentSignal(signal, webContents).then((result) => {

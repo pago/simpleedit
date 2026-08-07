@@ -241,6 +241,13 @@ export interface AgentCapabilities {
    */
   oscTitle: 'session-label' | 'directory' | 'constant'
   /**
+   * Whether the provider reports a conversation title out-of-band (not via the
+   * terminal title). OpenCode names a session from its first turn and pushes
+   * that over its event stream, so a session can be labelled meaningfully even
+   * though its OSC title is a fixed brand string.
+   */
+  reportsSessionTitle: boolean
+  /**
    * Whether lifecycle reporting works as soon as we launch, or needs a one-time
    * grant from the user. Codex is `user-granted`: it refuses to run our hooks
    * until their command hash is trusted, so status, session identity and cwd
@@ -275,6 +282,8 @@ export interface AgentCapabilities {
 export interface AgentEventMap {
   'agent:status': { worktreePath: string; status: AgentStatus; terminalId: string; precise: boolean; message?: string }
   'agent:session-id': { terminalId: string; sessionId: string }
+  /** The agent's own name for the conversation (see `reportsSessionTitle`). */
+  'agent:session-title': { terminalId: string; title: string }
   /**
    * The session's tracked working directory changed (from a hook POST). When
    * `cwd` falls inside a worktree of the session's repo, `worktreePath` is that

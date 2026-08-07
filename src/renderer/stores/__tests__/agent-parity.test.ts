@@ -26,7 +26,7 @@ const base: AgentCapabilities = {
   modelOverride: 'native', shiftEnter: 'native', droppedPath: 'at-reference',
   gracefulShutdown: true, displayName: 'Codex', oscTitle: 'directory',
   reportingSetup: 'user-granted', modelSelector: 'model-id', reasoningEffort: true,
-  nativeModelBrand: 'openai', modelCatalog: true,
+  nativeModelBrand: 'openai', modelCatalog: true, reportsSessionTitle: false,
 }
 const CAPS: Record<string, AgentCapabilities> = {
   claude: {
@@ -41,7 +41,7 @@ const CAPS: Record<string, AgentCapabilities> = {
     ...base, displayName: 'OpenCode', oscTitle: 'constant',
     // The two honest differences from Codex: OpenCode needs no one-time trust
     // grant, and its OSC title is a fixed brand string rather than the cwd.
-    reportingSetup: 'automatic', nativeModelBrand: 'opencode',
+    reportingSetup: 'automatic', nativeModelBrand: 'opencode', reportsSessionTitle: true,
   },
 }
 

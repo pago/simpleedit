@@ -279,6 +279,7 @@ export const claudeProvider = {
     modelSelector: 'model-ref',
     reasoningEffort: false,
     modelCatalog: true,
+    reportsSessionTitle: false,
   },
 } satisfies AgentProvider
 

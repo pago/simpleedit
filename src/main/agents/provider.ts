@@ -61,6 +61,12 @@ export interface LaunchPlan {
 export interface AgentAttachSink {
   status(status: AgentStatus, message?: string): void
   signal(signal: HookSignal): void
+  /**
+   * The agent's own name for this conversation, when it has one. Serves the
+   * same purpose as Claude's OSC session-label — it just does not arrive over
+   * the terminal, so it cannot ride `detectStatus`.
+   */
+  title(title: string): void
 }
 
 export interface AgentProvider {

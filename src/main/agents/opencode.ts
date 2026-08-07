@@ -105,6 +105,24 @@ function validVariant(value: ReasoningEffort): string {
  * command by hash — nothing here has to stay byte-stable across launches. The
  * per-session bridge token can therefore live in the config where it belongs.
  */
+/**
+ * Env every OpenCode launch gets, bridge or no bridge.
+ *
+ * `OPENCODE_DISABLE_AUTOUPDATE` is the single biggest thing we can do about
+ * OpenCode's startup cost, and it matters for correctness as much as speed.
+ * Measured on 1.18.15: a default launch takes 0.99s–5.58s and the spread is
+ * the update check reaching the network; with it off, 0.63–0.76s consistently.
+ *
+ * The correctness half: an agent that silently replaces its own binary
+ * mid-session changes the contract underneath us — this integration is pinned
+ * to a captured 1.18.15 event stream, and OpenCode upgraded itself from
+ * 1.17.13 while this provider was being written. SimpleEdit should not be
+ * driving a CLI that can become a different CLI between two launches.
+ */
+function baseEnv(): Record<string, string> {
+  return { OPENCODE_DISABLE_AUTOUPDATE: '1' }
+}
+
 function bridgeConfigEnv(ctx: LaunchContext): Record<string, string> {
   if (ctx.bridgePort == null || ctx.bridgeToken == null) return {}
   const config = {
@@ -202,6 +220,8 @@ export interface EventContext {
 export interface EventState {
   /** Server-minted `ses_…` id, learned from the first session event. */
   sessionId?: string
+  /** Last conversation title published, so an unchanged one is not re-sent. */
+  title?: string
   /** Text of the last completed assistant block, for the mail reply channel. */
   lastAssistantMessage?: string
   /**
@@ -213,6 +233,16 @@ export interface EventState {
    * question echoed back at it.
    */
   roles?: Map<string, string>
+}
+
+/**
+ * OpenCode stamps a new session `New session - <ISO timestamp>` until its title
+ * agent has named it from the first turn. Verified on 1.18.15, where a session
+ * created with no title went `New session - 2026-08-07T09:01:34.098Z` →
+ * `Capital of France`.
+ */
+function isPlaceholderTitle(title: string): boolean {
+  return /^New session - \d{4}-\d{2}-\d{2}T/.test(title)
 }
 
 function str(value: unknown): string | undefined {
@@ -272,10 +302,21 @@ export function applyEvent(
   switch (type) {
     case 'session.created':
     case 'session.updated': {
-      const id = str(props['sessionID']) ?? str(record(props['info'])?.['id'])
+      const info = record(props['info'])
+      const id = str(props['sessionID']) ?? str(info?.['id'])
       if (id && id !== state.sessionId) {
         state.sessionId = id
         ctx.onSessionId?.(id)
+      }
+      // OpenCode names the session from its first turn ("Capital of France"),
+      // which is a real conversation title and the closest thing it has to
+      // Claude's OSC session-label. Until that lands it holds a placeholder
+      // stamped with the creation time; showing that would be worse than the
+      // default label, so it is filtered rather than published.
+      const title = str(info?.['title'])
+      if (title && title !== state.title && !isPlaceholderTitle(title)) {
+        state.title = title
+        sink.title(title)
       }
       return
     }
@@ -538,6 +579,7 @@ export const opencodeProvider: AgentProvider = {
     nativeModelBrand: 'opencode',
     reasoningEffort: true,
     modelCatalog: true,
+    reportsSessionTitle: true,
   },
 }
 
