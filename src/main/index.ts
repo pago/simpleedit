@@ -7,6 +7,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   spawnTerminal,
   spawnAgentTerminalForProvider,
+  reportSpawnFailure,
   spawnAgentsTerminal,
   writeToTerminal,
   resizeTerminal,
@@ -459,15 +460,27 @@ function registerAllHandlers(): void {
   })
 
   // ── Interactive agents ──────────────────────────────────
-  ipcMain.handle('agent:spawn', (event, options: AgentSpawnOptions) => {
+  ipcMain.handle('agent:spawn', async (event, options: AgentSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
-    spawnAgentTerminalForProvider(
-      {
-        ...options,
-        ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
-      },
-      event.sender
-    )
+    // Awaited and caught. `buildLaunch` became async and validates ids that
+    // reach a login-shell command string, so it can reject on input an agent
+    // supplied — floating the promise would turn a bad `spawn_session` model id
+    // into an unhandled rejection, which under Node's default
+    // `--unhandled-rejections=throw` kills the main process, every window and
+    // every live PTY.
+    try {
+      await spawnAgentTerminalForProvider(
+        {
+          ...options,
+          ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
+        },
+        event.sender
+      )
+    } catch (error) {
+      reportSpawnFailure(options.id, error, event.sender)
+      return
+    }
+    // After the spawn, not before: attachment maps a terminal that must exist.
     attachToTerminal(options.id, options.worktreePath, event.sender, options.target.provider)
   })
 
