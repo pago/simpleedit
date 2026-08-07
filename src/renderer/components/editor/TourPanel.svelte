@@ -48,7 +48,7 @@
 
   // Backfill code snippets for every topic in the current tour, regardless of
   // how it arrived (#119). Streaming tours add topics over IPC; cached and
-  // MCP-delivered (`tour:from-claude`) tours land in the store fully-formed —
+  // MCP-delivered (`tour:from-agent`) tours land in the store fully-formed —
   // this single path gives all three the same collapsible diffs. The load
   // itself is untracked so reading `fileContents` inside it doesn't re-trigger
   // this effect; it re-runs only when the tour's topics change.

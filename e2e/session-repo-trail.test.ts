@@ -76,7 +76,7 @@ test.describe('session repo trail — cross-repo file touch', () => {
         api: { on: (c: string, h: (p: { sessionId: string }) => void) => void }
       }
       w.__sid = undefined
-      w.api.on('claude:session-id', (p) => {
+      w.api.on('agent:session-id', (p) => {
         w.__sid = p.sessionId
       })
     })

@@ -3,11 +3,11 @@
  * agent-first UI.
  *
  * We can't easily spawn a real Claude session in Playwright, so we simulate the
- * main-process side of the bridge by dispatching `tour:from-claude` IPC events
+ * main-process side of the bridge by dispatching `tour:from-agent` IPC events
  * directly from the Electron main context, and assert the renderer's behaviour.
  *
  * Agent-first changes vs the original:
- *  - Tours are routed by SESSION: SessionWorkspace ignores tour:from-claude
+ *  - Tours are routed by SESSION: SessionWorkspace ignores tour:from-agent
  *    events whose terminalId is not its own session id, so each test spawns a
  *    Claude session first and sends with that id.
  *  - The notification toast is gone. Busy workspaces get a BACKGROUND tour tab
@@ -79,7 +79,7 @@ test.describe('complete_task — tour-from-Claude', () => {
       const win = BrowserWindow.getAllWindows()[0]
       if (!win) return
       const key = `${worktreePath}:${p.commitHash ?? 'staging'}`
-      win.webContents.send('tour:from-claude', {
+      win.webContents.send('tour:from-agent', {
         key,
         terminalId: tid,
         worktreePath,

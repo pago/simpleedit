@@ -1,6 +1,5 @@
 /**
- * Session location tracking. Spawned Claude sessions are launched with a hook
- * settings file (see pty.ts) that POSTs every hook event's input JSON to the
+ * Session location tracking. Agent providers POST lifecycle hook input to the
  * per-window bridge's `/hooks` endpoint. Each event carries `session_id` and
  * `cwd`; we map the cwd to the containing worktree and tell the renderer to
  * repoint that session's workspace.
@@ -19,6 +18,13 @@ import type { WorktreeInfo } from '../shared/ipc-types'
 /** Parsed signal from a hook POST body. Null when the body is unusable. */
 export interface HookSignal {
   sessionId: string
+  /**
+   * The terminal this hook belongs to, when the provider's reporter can tell us
+   * directly. Codex's reporter stamps `simpleedit_terminal_id` from its
+   * environment; Claude's HTTP hooks don't, and are routed by `session_id`
+   * through the registry at the bottom of this module.
+   */
+  terminalId: string | null
   cwd: string
   /**
    * Absolute path of a file the tool touched, when this is a `PostToolUse`
@@ -54,6 +60,13 @@ export interface HookSignal {
 function parseToolFilePath(toolInput: unknown): string | null {
   if (typeof toolInput !== 'object' || toolInput === null) return null
   const rec = toolInput as Record<string, unknown>
+  // `file_path` and `notebook_path` are unambiguously FILES. A bare `path` is
+  // not — Claude's Grep and Glob pass a directory there — and the consumer
+  // takes `dirname` of this value, so a directory resolves a level too high
+  // (typically the project root, outside every worktree), missing
+  // `matchWorktree` and falling through to an uncached `git rev-parse` inside
+  // the hook the CLI is waiting on. Do not add `path` back without teaching the
+  // consumer the difference.
   const raw = rec['file_path'] ?? rec['notebook_path']
   if (typeof raw !== 'string' || !raw || !isAbsolute(raw)) return null
   return raw
@@ -70,13 +83,15 @@ export function parseHookBody(body: unknown): HookSignal | null {
   if (typeof body !== 'object' || body === null) return null
   const rec = body as Record<string, unknown>
   const sessionId = rec['session_id']
+  const terminalId = rec['simpleedit_terminal_id']
   const cwd = rec['cwd']
+  const eventName = rec['hook_event_name']
   if (typeof sessionId !== 'string' || !sessionId) return null
   if (typeof cwd !== 'string' || !cwd) return null
-  const eventName = rec['hook_event_name']
   const lastAssistant = rec['last_assistant_message']
   return {
     sessionId,
+    terminalId: typeof terminalId === 'string' && terminalId ? terminalId : null,
     cwd,
     filePath: parseToolFilePath(rec['tool_input']),
     eventName: typeof eventName === 'string' && eventName ? eventName : null,
@@ -149,9 +164,8 @@ export async function resolveBareRepo(cwd: string): Promise<string | null> {
 }
 
 // ── session_id → terminalId registry ────────────────────────────────────────
-// The hook body carries the Claude session_id (the uuid we pinned at spawn),
-// but the rest of SimpleEdit routes by terminalId. We pin the mapping at spawn
-// (where both ids are known) so hook POSTs resolve without scraping anything.
+// Hook bodies carry a provider session/thread id, while the rest of SimpleEdit
+// routes by terminalId. Providers register the mapping once both are known.
 
 const sessionToTerminal = new Map<string, string>()
 

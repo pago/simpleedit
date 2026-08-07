@@ -36,6 +36,7 @@ function configDir(): string {
 }
 
 function filePath(): string {
+  if (process.env.SIMPLEEDIT_E2E_MODEL_CONFIG) return process.env.SIMPLEEDIT_E2E_MODEL_CONFIG
   return join(configDir(), 'models.json')
 }
 

@@ -55,8 +55,8 @@
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
     if (!root || !wt) return
-    const id = sessionsStore.createClaude(root, wt.path, {
-      model: m.ref,
+    const id = sessionsStore.createAgent(m.target, root, wt.path, {
+      ...(m.target.provider === 'claude' && m.target.model ? { model: m.target.model } : {}),
       initialPrompt: buildBrief(),
       label: `review ${context.repo}#${context.number}`,
     })

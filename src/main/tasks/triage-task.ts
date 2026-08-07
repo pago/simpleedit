@@ -11,6 +11,7 @@ import type { Task } from '../agent-tasks/orchestrator'
 
 const MAX_DIFF_BYTES = 60_000
 const MAX_BODY_BYTES = 2_000
+export const TRIAGE_PROMPT_VERSION = 1
 
 // Triage flags only the high-signal, actionable labels — no praise/nit padding.
 const VALID_LABELS = new Set<ConventionalCommentLabel>(['issue', 'suggestion', 'question'])

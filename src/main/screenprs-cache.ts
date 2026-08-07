@@ -10,14 +10,17 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
+import { createHash } from 'crypto'
 import type { TriageResult, DeepFinding } from '../shared/screenprs'
 
 export interface CacheEntry {
   headSha: string
   diff: string
   triage: TriageResult
+  triageFingerprint?: string
   /** Curated deep-review findings, present once a deep review ran at this SHA. */
   deep?: DeepFinding[]
+  deepFingerprint?: string
   /** ISO timestamp of the last write — used for age-based pruning. */
   at: string
 }
@@ -58,25 +61,46 @@ function save(): void {
 }
 
 /** Cached entry for `url` iff it was stored at the current `headSha`. */
-export function getCached(url: string, headSha: string): CacheEntry | undefined {
+export function analysisFingerprint(value: unknown): string {
+  const canonical = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(canonical)
+    if (!input || typeof input !== 'object') return input
+    return Object.fromEntries(Object.entries(input as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canonical(v)]))
+  }
+  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
+}
+
+export function getCached(url: string, headSha: string, triageFingerprint: string): CacheEntry | undefined {
   const e = load()[url]
-  return e && e.headSha === headSha ? e : undefined
+  return e && e.headSha === headSha && e.triageFingerprint === triageFingerprint ? e : undefined
 }
 
 /** Store (or replace) the triage result + diff for a PR at a given SHA. */
-export function putTriage(url: string, headSha: string, diff: string, triage: TriageResult): void {
+export function putTriage(url: string, headSha: string, diff: string, triage: TriageResult, triageFingerprint: string): void {
   const cache = load()
   // A new SHA supersedes the old entry entirely (its deep result is stale too).
-  cache[url] = { headSha, diff, triage, at: new Date().toISOString() }
+  const prior = cache[url]
+  cache[url] = {
+    headSha, diff, triage, triageFingerprint, at: new Date().toISOString(),
+    ...(prior?.headSha === headSha && prior.triageFingerprint === triageFingerprint && prior.deep && prior.deepFingerprint
+      ? { deep: prior.deep, deepFingerprint: prior.deepFingerprint }
+      : {}),
+  }
   save()
 }
 
 /** Attach a deep-review result — only if the cached entry is at the same SHA. */
-export function putDeep(url: string, headSha: string, deep: DeepFinding[]): void {
+export function getCachedDeep(url: string, headSha: string, deepFingerprint: string): DeepFinding[] | undefined {
+  const entry = load()[url]
+  return entry?.headSha === headSha && entry.deepFingerprint === deepFingerprint ? entry.deep : undefined
+}
+
+export function putDeep(url: string, headSha: string, deep: DeepFinding[], deepFingerprint: string): void {
   const cache = load()
   const e = cache[url]
   if (e && e.headSha === headSha) {
     e.deep = deep
+    e.deepFingerprint = deepFingerprint
     e.at = new Date().toISOString()
     save()
   }

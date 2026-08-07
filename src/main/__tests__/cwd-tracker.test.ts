@@ -21,6 +21,7 @@ describe('parseHookBody', () => {
   it('extracts session_id + cwd from a well-formed hook body', () => {
     expect(parseHookBody({ session_id: 'abc', cwd: '/x/y', hook_event_name: 'PostToolUse' })).toEqual({
       sessionId: 'abc',
+      terminalId: null,
       cwd: '/x/y',
       filePath: null,
       eventName: 'PostToolUse',
@@ -38,6 +39,7 @@ describe('parseHookBody', () => {
     }
     expect(parseHookBody(body)).toEqual({
       sessionId: 's',
+      terminalId: null,
       cwd: '/p',
       filePath: null,
       eventName: null,
@@ -55,9 +57,27 @@ describe('parseHookBody', () => {
     }
     expect(parseHookBody(body)).toEqual({
       sessionId: 's',
+      terminalId: null,
       cwd: '/repo/main',
       filePath: '/other-repo/backend/src/app.ts',
       eventName: null,
+      lastAssistantMessage: null,
+      stopHookActive: false,
+    })
+  })
+
+  it('accepts Codex reporter identity and lifecycle metadata', () => {
+    expect(parseHookBody({
+      session_id: 'thr_123',
+      simpleedit_terminal_id: 'agent-codex-1',
+      cwd: '/repo/main',
+      hook_event_name: 'PermissionRequest',
+    })).toEqual({
+      sessionId: 'thr_123',
+      terminalId: 'agent-codex-1',
+      cwd: '/repo/main',
+      filePath: null,
+      eventName: 'PermissionRequest',
       lastAssistantMessage: null,
       stopHookActive: false,
     })
@@ -113,6 +133,7 @@ describe('parseHookBody', () => {
       }),
     ).toEqual({
       sessionId: 's',
+      terminalId: null,
       cwd: '/p',
       filePath: null,
       eventName: 'Stop',

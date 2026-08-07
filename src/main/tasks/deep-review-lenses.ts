@@ -12,6 +12,7 @@ const MAX_DIFF_BYTES = 80_000
 const MAX_BODY_BYTES = 2_000
 const VALID_SEVERITY = new Set<DeepSeverity>(['blocking', 'concern', 'note'])
 const VALID_LENS = new Set<DeepLensId>(['intent', 'tests', 'soundness', 'types', 'architecture'])
+export const DEEP_REVIEW_PROMPT_VERSION = 1
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '\n…[truncated]' : s

@@ -1,10 +1,11 @@
 import * as pty from 'node-pty'
 import { type WebContents } from 'electron'
 import { existsSync } from 'fs'
-import type { ClaudeSpawnOptions as ClaudeSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
+import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
 import { getProvider, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
+import './agents/codex'
 
 type IPty = pty.IPty
 
@@ -85,7 +86,7 @@ function guardCwd(id: string, worktreePath: string, webContents: WebContents): b
   return false
 }
 
-export interface ClaudeSpawnOptions extends ClaudeSpawnOptionsShared {
+export interface AgentSpawnOptions extends AgentSpawnOptionsShared {
   bridgePort?: number
   bridgeToken?: string
 }
@@ -106,35 +107,52 @@ function defaultShell(): string {
  * fake with a real claude on the dev machine — so drop `-i -l` to make the
  * prepended PATH authoritative. Flag-gated: no effect on production spawns.
  */
-function claudeShellArgs(cmd: string): string[] {
+function agentShellArgs(cmd: string): string[] {
   return process.env['SIMPLEEDIT_E2E'] === '1' ? ['-c', cmd] : ['-i', '-l', '-c', cmd]
 }
 
-function getPtyOptions(
-  worktreePath: string,
-  extraEnv?: Record<string, string>,
-): pty.IPtyForkOptions {
+function agentShell(): string {
+  // zsh reads ~/.zshenv even without -i/-l and may replace the fixture PATH.
+  // Keep E2E launches hermetic so the fake provider binaries always win.
+  return process.env['SIMPLEEDIT_E2E'] === '1' && process.platform !== 'win32'
+    ? '/bin/bash'
+    : defaultShell()
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/** Render a structured plan only at the login-shell boundary. */
+export function renderLaunchCommand(plan: Pick<LaunchPlan, 'executable' | 'args' | 'env'>): string {
+  const env = Object.entries(plan.env ?? {}).map(([key, value]) => `${key}=${shellQuote(value)}`)
+  return [...(env.length ? ['env', ...env] : []), shellQuote(plan.executable), ...plan.args.map(shellQuote)].join(' ')
+}
+
+/**
+ * A plan's own env is NOT merged here — `renderLaunchCommand` prefixes it inline
+ * on the command instead, so a login shell's rc files cannot clobber it after
+ * the fact (that is what the Ollama endpoint override needs).
+ */
+function getPtyOptions(worktreePath: string): pty.IPtyForkOptions {
   return {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
     cwd: worktreePath,
-    env: extraEnv
-      ? { ...(process.env as Record<string, string>), ...extraEnv }
-      : (process.env as Record<string, string>)
+    env: process.env as Record<string, string>,
   }
 }
 
 /**
- * Shared spawn path for provider-driven agent terminals (Claude + Agent View).
+ * Shared spawn path for provider-driven agent terminals (Claude and Codex).
  * Runs the plan's command in a login shell, records the backlog, taps PTY data
  * for the stream parser, and wires exit cleanup — the same wiring the hardwired
  * Claude spawns used, now parameterised by the LaunchPlan.
  *
- * `emitSessionId` fires `claude:session-id` at spawn (Claude tabs, including
- * in-place forks, whose fresh id is known up front). `clearStatusOnExit` sends
- * the worktree's Claude status back to 'idle' on exit (Claude; Agent View has
- * no status signal).
+ * `emitSessionId` publishes an identity known at spawn time. Degraded PTY
+ * lifecycle events are replaced by provider-native reporting once available.
  *
  * Callers MUST run the `terminals.has(id)` / `guardCwd` checks before building
  * the plan — a provider's `buildLaunch` can have side effects (writing temp
@@ -144,23 +162,28 @@ function getPtyOptions(
 function spawnAgentTerminal(
   id: string,
   worktreePath: string,
-  plan: LaunchPlan | { command: string; env?: Record<string, string> },
+  plan: Pick<LaunchPlan, 'executable' | 'args' | 'env' | 'sessionId' | 'cleanup'>,
   opts: { emitSessionId?: boolean; clearStatusOnExit?: boolean },
   webContents: WebContents,
 ): void {
-  const shell = defaultShell()
+  const shell = agentShell()
   // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
   // ensuring the agent binary is on PATH regardless of how it was installed.
-  const term = pty.spawn(shell, claudeShellArgs(plan.command), getPtyOptions(worktreePath, plan.env))
+  const command = renderLaunchCommand(plan)
+  const term = pty.spawn(shell, agentShellArgs(command), getPtyOptions(worktreePath))
 
   terminals.set(id, term)
   const cleanup = 'cleanup' in plan ? plan.cleanup : undefined
   if (cleanup) agentCleanups.set(id, cleanup)
 
-  if (opts.emitSessionId && 'sessionId' in plan && !webContents.isDestroyed()) {
-    webContents.send('claude:session-id', { terminalId: id, sessionId: plan.sessionId })
+  if (opts.emitSessionId && plan.sessionId && !webContents.isDestroyed()) {
+    webContents.send('agent:session-id', { terminalId: id, sessionId: plan.sessionId })
   }
 
+  // Status is NOT derived here. `emitPtyData` feeds the tap in claude-stream,
+  // which asks the provider to interpret the chunk and emits only on change —
+  // sending a status per chunk would double the IPC traffic of a busy TUI and,
+  // for a provider that reports out-of-band, pin it at a wrong value forever.
   term.onData((data: string) => {
     emitPtyData(id, data)
     const offset = recordBacklog(id, data)
@@ -180,7 +203,7 @@ function spawnAgentTerminal(
         // tab for this worktree exits — earlier exits leave the status as
         // whichever still-alive tab last reported. Acceptable: the indicator
         // tracks "is *any* Claude active here", not "is this specific tab".
-        webContents.send('claude:status', { worktreePath, status: 'idle', terminalId: id })
+        webContents.send('agent:status', { worktreePath, status: 'exited', terminalId: id, precise: false })
       }
       webContents.send('pty:exit', { id, exitCode })
     }
@@ -219,16 +242,19 @@ export function spawnTerminal(
   })
 }
 
-export function spawnClaudeTerminal(
-  options: ClaudeSpawnOptions,
+export function spawnAgentTerminalForProvider(
+  options: AgentSpawnOptions,
   webContents: WebContents
 ): void {
-  const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt } = options
+  const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt, target } = options
 
   if (terminals.has(id)) return
   if (!guardCwd(id, worktreePath, webContents)) return
 
-  const plan = getProvider('claude').buildLaunch({
+  const provider = getProvider(target.provider)
+  const plan = provider.buildLaunch({
+    provider: target.provider,
+    target,
     terminalId: id,
     worktreePath,
     ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -239,7 +265,10 @@ export function spawnClaudeTerminal(
     ...(initialPrompt ? { initialPrompt } : {}),
   })
 
-  spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: true, clearStatusOnExit: true }, webContents)
+  if (!webContents.isDestroyed()) {
+    webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
+  }
+  spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: !!plan.sessionId, clearStatusOnExit: true }, webContents)
 }
 
 /**

@@ -24,7 +24,7 @@ const LISTS: Record<string, WorktreeInfo[]> = {
 function fakeSession(touched: string[]): Session {
   return {
     id: 's',
-    kind: 'claude',
+    kind: 'agent',
     label: '',
     launchDir: '/launch',
     worktreePath: touched[0] ?? '',

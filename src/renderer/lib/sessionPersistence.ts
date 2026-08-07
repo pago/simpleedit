@@ -16,7 +16,7 @@ import { worktreeList, projectRoot, refreshWorktreesFor } from '../stores/worktr
 import { sessionsStore } from '../stores/sessions.svelte'
 import { tabsStore, type Tab } from '../stores/tabsStore.svelte'
 
-const SAVE_VERSION = 3
+const SAVE_VERSION = 4
 
 function serializeTab(tab: Tab): SerializedTab | null {
   switch (tab.kind) {
@@ -58,8 +58,8 @@ export function serializeSession(repoPath: string): SerializedSession {
     if (session.exited) continue
 
     // A not-yet-resumed placeholder keeps its resumability across another
-    // quit — its uuid lives in pendingResume rather than claudeSessionId.
-    const sessionId = session.claudeSessionId ?? session.pendingResume?.sessionId
+    // quit — its uuid lives in pendingResume rather than providerSessionId.
+    const sessionId = session.providerSessionId ?? session.pendingResume?.sessionId
 
     const tabs = tabsStore
       .list(session.id)
@@ -72,6 +72,12 @@ export function serializeSession(repoPath: string): SerializedSession {
     if (session.id === activeId) activeIndex = sessions.length
     sessions.push({
       kind: session.kind,
+      ...(session.provider ? { provider: session.provider } : {}),
+      ...(session.target
+        ? { target: session.target.provider === 'codex'
+            ? { ...session.target }
+            : { provider: 'claude' as const, ...(session.target.model ? { model: { ...session.target.model } } : {}) } }
+        : {}),
       label: session.label,
       ...(session.customLabel ? { customLabel: true as const } : {}),
       ...(sessionId ? { sessionId } : {}),
@@ -177,6 +183,8 @@ export function hydrateSession(session: SerializedSession): {
 
     const newId = sessionsStore.addRestoredSession({
       kind: s.kind,
+      ...(s.provider ? { provider: s.provider } : {}),
+      ...(s.target ? { target: s.target } : {}),
       label: s.label,
       ...(s.customLabel ? { customLabel: true as const } : {}),
       launchDir: s.launchDir ?? projectRoot() ?? worktreePath,

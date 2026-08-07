@@ -5,6 +5,7 @@
   import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, type DeepLensId } from '../../../shared/screenprs'
   import type {
     ClaudeModel,
+    CodexModel,
     ModelDescriptor,
     ModelConfig,
     ModelRef,
@@ -20,12 +21,13 @@
 
   let claudeOptions = $state<Option[]>([])
   let localOptions = $state<Option[]>([])
+  let codexOptions = $state<Option[]>([])
   let deepReview = $state<DeepReviewConfig>({ lenses: {} })
   let inheritLabel = $state('Haiku 4.5')
   let loading = $state(true)
 
   const byKey = $derived(
-    new Map<string, ModelRef>([...claudeOptions, ...localOptions].map((o) => [o.key, o.ref]))
+    new Map<string, ModelRef>([...claudeOptions, ...codexOptions, ...localOptions].map((o) => [o.key, o.ref]))
   )
 
   const LENS_DESC: Record<DeepLensId, string> = {
@@ -39,17 +41,33 @@
   onMount(() => {
     let cancelled = false
     void (async () => {
-      const [claude, installed, config]: [ClaudeModel[], ModelDescriptor[], ModelConfig] = await Promise.all([
+      const [claude, codex, installed, config]: [ClaudeModel[], CodexModel[], ModelDescriptor[], ModelConfig] = await Promise.all([
         window.api.invoke('models:claude'),
+        window.api.invoke('models:codex').catch(() => [] as CodexModel[]),
         window.api.invoke('models:installed').catch(() => [] as ModelDescriptor[]),
         window.api.invoke('models:config-get'),
       ])
       if (cancelled) return
       claudeOptions = claude.map((m) => ({ key: refKey({ provider: 'anthropic', model: m.model }), label: m.displayName, ref: { provider: 'anthropic', model: m.model } }))
+      codexOptions = [
+        { key: refKey({ provider: 'openai' }), label: 'Configured default', ref: { provider: 'openai' } },
+        ...codex.flatMap((m) => [undefined, ...m.supportedReasoningEfforts].map((effort) => {
+          const ref: ModelRef = { provider: 'openai', model: m.model, ...(effort ? { reasoningEffort: effort } : {}) }
+          return { key: refKey(ref), label: `${m.displayName}${effort ? ` · ${effort}` : ''}`, ref }
+        })),
+      ]
       localOptions = installed.map((m) => ({ key: refKey({ provider: 'ollama', model: m.name }), label: m.name, ref: { provider: 'ollama', model: m.name } }))
       deepReview = config.deepReview ?? { lenses: {} }
       const sp = config.defaults.screenPrs
-      inheritLabel = sp ? (claude.find((c) => c.model === sp.model)?.displayName ?? sp.model) : 'Haiku 4.5'
+      if (!sp) inheritLabel = 'Haiku 4.5'
+      else if (sp.provider === 'openai') {
+        const name = sp.model ? (codex.find((c) => c.model === sp.model)?.displayName ?? sp.model) : 'configured default'
+        inheritLabel = `Codex · ${name}${sp.reasoningEffort ? ` · ${sp.reasoningEffort}` : ''}`
+      } else if (sp.provider === 'anthropic') {
+        inheritLabel = claude.find((c) => c.model === sp.model)?.displayName ?? sp.model
+      } else {
+        inheritLabel = sp.model
+      }
       loading = false
     })()
     return () => {
@@ -92,6 +110,9 @@
           {#each claudeOptions as opt (opt.key)}<option value={opt.key}>{opt.label}</option>{/each}
         </optgroup>
       {/if}
+      <optgroup label="Codex (cloud)">
+        {#each codexOptions as opt (opt.key)}<option value={opt.key}>{opt.label}</option>{/each}
+      </optgroup>
       {#if localOptions.length}
         <optgroup label="Local (Ollama)">
           {#each localOptions as opt (opt.key)}<option value={opt.key}>{opt.label}</option>{/each}

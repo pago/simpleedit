@@ -3,8 +3,9 @@
   import PromptModal from '../PromptModal.svelte'
   import HandoffComposer from './HandoffComposer.svelte'
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
-  import type { ModelRef } from '../../../shared/ipc-types'
-  import { getClaudeStatusForTerminal } from '../../stores/claude-status.svelte'
+  import type { InteractiveTarget } from '../../../shared/ipc-types'
+  import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
+  import { capabilitiesFor, providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
@@ -54,12 +55,25 @@
     return GROUP_COLOR_CLASS[c] ?? GROUP_COLOR_CLASS.sky
   }
 
-  /** Claude sessions launch at the PROJECT ROOT (one Claude memory for all
-   * work); their workspace viewer defaults to the main worktree. */
+  /** Agent sessions launch at the PROJECT ROOT (one agent memory for all work,
+   * and agents create their own worktrees); the workspace viewer defaults to
+   * the main worktree. See `Session.launchDir`. */
   function startClaude(): void {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
     if (root && wt) sessionsStore.createClaude(root, wt.path)
+  }
+
+  function startCodex(model?: string): void {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) sessionsStore.createCodex(root, wt.path, model ? { model } : {})
+  }
+
+  async function startLastTarget(): Promise<void> {
+    const config = await window.api.invoke('models:config-get').catch(() => null)
+    if (config?.lastUsed?.provider === 'openai') startCodex(config.lastUsed.model)
+    else startClaude()
   }
 
   function startAgents(): void {
@@ -80,12 +94,14 @@
 
   const NEW_MENU_DEFAULTS: ContextMenuItem[] = [
     { id: 'new-claude', label: 'New Claude session' },
+    { id: 'new-codex', label: 'New Codex session · configured default' },
     { id: 'new-agents', label: 'New Agent View session' },
+    { id: 'new-terminal', label: 'New terminal', separatorBefore: true },
   ]
 
   let newMenuItems: ContextMenuItem[] = $state(NEW_MENU_DEFAULTS)
   /** key (allowlist entry) → ModelRef for the current menu; rebuilt on open. */
-  let modelMenuRefs: Map<string, ModelRef> = $state(new Map())
+  let modelMenuRefs: Map<string, InteractiveTarget> = $state(new Map())
 
   /**
    * Resolve the persisted submenu allowlist against the live catalogs into
@@ -97,24 +113,28 @@
    */
   async function buildNewMenu(): Promise<void> {
     try {
-      const [config, claudeModels, installed] = await Promise.all([
+      const [config, claudeModels, codexModels, installed] = await Promise.all([
         window.api.invoke('models:config-get'),
         window.api.invoke('models:claude'),
+        window.api.invoke('models:codex').catch(() => []),
         window.api.invoke('models:installed'),
       ])
 
-      const resolver = new Map<string, { ref: ModelRef; label: string }>()
+      const resolver = new Map<string, { ref: InteractiveTarget; label: string }>()
       for (const m of claudeModels) {
-        resolver.set(m.model, { ref: { provider: 'anthropic', model: m.model }, label: m.displayName })
+        resolver.set(m.model, { ref: { provider: 'claude', model: { provider: 'anthropic', model: m.model } }, label: `Claude · ${m.displayName}` })
+      }
+      for (const m of codexModels) {
+        resolver.set(m.model, { ref: { provider: 'codex', model: m.model }, label: `Codex · ${m.displayName}` })
       }
       // Tool-capable local models are startable interactively now that the
       // Ollama #13949 hang is fixed (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).
       for (const m of installed) {
         if (!m.toolCapable) continue
-        resolver.set(m.name, { ref: { provider: 'ollama', model: m.name }, label: m.name })
+        resolver.set(m.name, { ref: { provider: 'claude', model: { provider: 'ollama', model: m.name } }, label: `Claude · ${m.name}` })
       }
 
-      const refs = new Map<string, ModelRef>()
+      const refs = new Map<string, InteractiveTarget>()
       const resolved = config.submenuAllowlist.flatMap((key) => {
         const hit = resolver.get(key)
         if (!hit) return []
@@ -140,14 +160,20 @@
   function pickNewMenuItem(id: string): void {
     if (id === 'new-claude') {
       startClaude()
+    } else if (id === 'new-codex') {
+      startCodex()
     } else if (id === 'new-agents') {
       startAgents()
+    } else if (id === 'new-terminal') {
+      startTerminal()
     } else if (id.startsWith('model:')) {
-      const ref = modelMenuRefs.get(id.slice('model:'.length))
-      if (!ref) return
+      const target = modelMenuRefs.get(id.slice('model:'.length))
+      if (!target) return
       const wt = mainWorktree()
       const root = projectRoot() ?? wt?.path
-      if (root && wt) sessionsStore.createClaude(root, wt.path, { model: ref })
+      if (root && wt) sessionsStore.createAgent(target, root, wt.path, {
+        ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),
+      })
     }
   }
 
@@ -174,9 +200,19 @@
       } else if (session.kind === 'agents') {
         forkDisabled = true
         forkTooltip = 'Agent View sessions cannot be forked'
-      } else if (!session.claudeSessionId) {
+      } else if (capabilitiesFor(session.provider)?.fork === false) {
+        // `=== false`, not `!`: capabilities are primed asynchronously, and an
+        // undefined descriptor must not read as "cannot fork".
         forkDisabled = true
-        forkTooltip = 'Waiting for Claude to initialize…'
+        forkTooltip = `${providerLabel(session.provider)} sessions cannot be forked`
+      } else if (!session.providerSessionId) {
+        forkDisabled = true
+        // Fork needs an id the provider only reports once its reporting works.
+        // When that reporting is still waiting on the user's grant, "initializing"
+        // would be a lie — it will never arrive on its own.
+        forkTooltip = session.reportingSetupNeeded
+          ? `Fork needs ${providerLabel(session.provider)}'s session id — answer its trust prompt first`
+          : `Waiting for ${providerLabel(session.provider)} to initialize…`
       }
       // Full-context fork, in place: branches the conversation into a fresh
       // session paired with this one (no worktree targeting).
@@ -188,7 +224,7 @@
       })
       // Hand off: reset onto a fresh context in place (Claude sessions only —
       // agents have no seed prompt / brief to carry).
-      if (session?.kind === 'claude') {
+      if (session?.kind === 'agent') {
         items.push({ id: 'handoff', label: 'Hand off…' })
       }
     }
@@ -259,8 +295,8 @@
       if (sessionMenu) partnerPicker = { sessionId: session.id, x: sessionMenu.x, y: sessionMenu.y }
       sessionMenu = null
     } else if (id === 'fork') {
-      if (!session.claudeSessionId) return
-      sessionsStore.forkClaude(session.id)
+      if (!session.providerSessionId) return
+      sessionsStore.forkAgent(session.id)
       sessionMenu = null
     } else if (id === 'handoff') {
       handoffTarget = session
@@ -511,7 +547,7 @@
     if (session.exited) return 'bg-red-500'
     if (session.pendingResume) return 'bg-zinc-600'
     if (session.kind === 'terminal') return 'bg-zinc-600'
-    const status = getClaudeStatusForTerminal(session.id)
+    const status = getAgentStatusForTerminal(session.id)
     switch (status) {
       case 'running':
         return 'bg-emerald-400 animate-pulse'
@@ -528,7 +564,7 @@
     if (session.exited) return `Process exited with code ${session.exited.exitCode} — output preserved in the terminal`
     if (session.pendingResume) return 'Resumable — click to resume'
     if (session.kind === 'terminal') return 'Terminal'
-    const status = getClaudeStatusForTerminal(session.id)
+    const status = getAgentStatusForTerminal(session.id)
     switch (status) {
       case 'running':
         return 'Working'
@@ -630,12 +666,12 @@
       <button
         bind:this={newButtonEl}
         class="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-orange-400/70 hover:bg-zinc-700 hover:text-orange-300 disabled:opacity-50"
-        onclick={startClaude}
+        onclick={() => void startLastTarget()}
         oncontextmenu={openNewMenuAtPointer}
         disabled={worktreeList().length === 0}
-        aria-label="New Claude session"
+        aria-label="New agent session"
         aria-haspopup="menu"
-        title="New Claude session (⌘T · right-click for Agent View)"
+        title="New agent session (⌘T · right-click to choose provider)"
       >
         ✦ Agent
       </button>

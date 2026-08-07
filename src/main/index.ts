@@ -6,7 +6,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   spawnTerminal,
-  spawnClaudeTerminal,
+  spawnAgentTerminalForProvider,
   spawnAgentsTerminal,
   writeToTerminal,
   resizeTerminal,
@@ -53,8 +53,11 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, ClaudeSpawnOptions, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
+import { getProvider, registeredProviderIds } from './agents/provider'
+import { isExecutableAvailable } from './lib/shell-path'
+import { listCodexModels } from './models/codex-catalog'
 import type { PrContext } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
 import { postReview } from './github/gh'
@@ -454,30 +457,34 @@ function registerAllHandlers(): void {
     unwatchWorktreeList(event.sender.id, repoPath)
   })
 
-  // ── Claude stream ───────────────────────────────────────
-  ipcMain.handle('claude:spawn', (event, options: ClaudeSpawnOptions) => {
+  // ── Interactive agents ──────────────────────────────────
+  ipcMain.handle('agent:spawn', (event, options: AgentSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
-    spawnClaudeTerminal(
+    spawnAgentTerminalForProvider(
       {
         ...options,
         ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
       },
       event.sender
     )
-    attachToTerminal(options.id, options.worktreePath, event.sender)
+    attachToTerminal(options.id, options.worktreePath, event.sender, options.target.provider)
   })
 
-  ipcMain.handle('claude:spawn-agents', (event, options: PtySpawnOptions) => {
+  ipcMain.handle('agent:spawn-agents', (event, options: PtySpawnOptions) => {
     spawnAgentsTerminal(options, event.sender)
   })
 
-  ipcMain.handle('claude:attach', (event, terminalId: string, worktreePath: string) => {
+  ipcMain.handle('agent:attach', (event, terminalId: string, worktreePath: string) => {
     attachToTerminal(terminalId, worktreePath, event.sender)
   })
 
-  ipcMain.handle('claude:detach', (_event, terminalId: string) => {
+  ipcMain.handle('agent:detach', (_event, terminalId: string) => {
     detachFromTerminal(terminalId)
   })
+
+  ipcMain.handle('agent:capabilities', (_event, provider: AgentProviderId) => getProvider(provider).capabilities)
+  ipcMain.handle('agent:available', (_event, provider: AgentProviderId) => isExecutableAvailable(provider))
+  ipcMain.handle('agent:providers', () => registeredProviderIds())
 
   // ── Git ─────────────────────────────────────────────────
   ipcMain.handle('git:log', (_event, worktreePath: string, count?: number) => {
@@ -588,6 +595,8 @@ function registerAllHandlers(): void {
   ipcMain.handle('models:claude', () => {
     return CLAUDE_MODELS
   })
+
+  ipcMain.handle('models:codex', () => listCodexModels())
 
   ipcMain.handle('models:hardware', () => {
     return detectHardware()

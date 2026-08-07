@@ -35,6 +35,9 @@ export function launchEnv(extra: Record<string, string> = {}): Record<string, st
   // Render test windows without stealing OS focus (macOS accessory policy +
   // showInactive()), so a local test run isn't disruptive. Handled in main.
   base.SIMPLEEDIT_E2E = '1'
+  if (extra.SIMPLEEDIT_REPO) {
+    base.SIMPLEEDIT_E2E_MODEL_CONFIG = `${extra.SIMPLEEDIT_REPO}.models.json`
+  }
   return { ...base, ...extra }
 }
 
@@ -52,7 +55,7 @@ type AppFixtures = {
  */
 export async function waitForWorktreesReady(window: Page): Promise<void> {
   await expect(
-    window.getByRole('button', { name: 'New Claude session' }).first()
+    window.getByRole('button', { name: 'New agent session' }).first()
   ).toBeEnabled({ timeout: 15_000 })
 }
 
@@ -111,7 +114,7 @@ async function spawnSession(
   await waitForWorktreesReady(window)
   const before = new Set(await activePtyIds(window))
   if (button === 'claude') {
-    await window.getByRole('button', { name: 'New Claude session' }).first().click()
+    await window.getByRole('button', { name: 'New agent session' }).first().click()
   } else {
     await window.getByTitle('New terminal').first().click()
   }
@@ -125,9 +128,9 @@ async function spawnSession(
   return after.find((id) => !before.has(id) && idPrefix.test(id))!
 }
 
-/** Spawn a Claude session via the ✦ Agent button; returns the claude- session id. */
+/** Spawn a Claude session via the ✦ Agent button; returns its provider-aware terminal id. */
 export async function spawnClaudeSession(window: Page): Promise<string> {
-  return spawnSession(window, 'claude', /^claude-/)
+  return spawnSession(window, 'claude', /^agent-claude-/)
 }
 
 /** Spawn a plain terminal session via the + Term button; returns the term- id. */

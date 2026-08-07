@@ -27,7 +27,7 @@ test('spawn-crash: session survives with banner and readable output', async () =
   await window.waitForLoadState('domcontentloaded')
   await waitForWorktreesReady(window)
 
-  await window.getByRole('button', { name: 'New Claude session', exact: true }).click()
+  await window.getByRole('button', { name: 'New agent session', exact: true }).click()
 
   // The session must NOT vanish: entry stays, marked exited.
   const entry = window.getByRole('listbox', { name: 'Sessions' }).getByRole('option').first()

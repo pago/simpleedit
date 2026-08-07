@@ -20,7 +20,7 @@
  * never finish.
  */
 import { randomUUID } from 'crypto'
-import type { ClaudeStatus } from '../shared/ipc-types'
+import type { AgentStatus } from '../shared/ipc-types'
 
 /** A session an agent can address. Mirrors the renderer's session registry. */
 export interface Peer {
@@ -29,7 +29,7 @@ export interface Peer {
   /** 'claude' | 'codex' | … — absent on plain terminals, which can't be peers. */
   provider?: string
   worktreePath: string
-  status: ClaudeStatus | 'unknown'
+  status: AgentStatus | 'unknown'
 }
 
 export interface Message {

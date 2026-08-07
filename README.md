@@ -1,6 +1,6 @@
 # SimpleEdit
 
-**An Agentic Development Environment for engineers who run Claude Code.**
+**An Agentic Development Environment for engineers who run Claude Code or Codex.**
 
 SimpleEdit is built around a simple observation: when you run AI agents across multiple worktrees in parallel, your job changes. You're no longer writing code line by line — you're directing agents, reviewing their output, and deciding what ships. SimpleEdit is designed for exactly that workflow.
 
@@ -14,15 +14,15 @@ Most development tools are built around the act of writing code. SimpleEdit is b
 
 - **Diff-first UI** — commit review and staged change inspection are first-class, not buried in a menu
 - **Multi-worktree by design** — run separate agents on separate branches simultaneously, with independent editor state per pane
-- **Live agent awareness** — see which files Claude Code has touched, and what it's currently doing, without leaving your review flow
-- **Contextual agent interaction** — send questions about a specific commit or diff directly to a Claude terminal, with context pre-filled
-- **Embedded terminals** — spawn Claude Code sessions as named tabs, right alongside your editor
+- **Live agent awareness** — see which files an agent has touched, and what it's currently doing, without leaving your review flow
+- **Contextual agent interaction** — send questions about a specific commit or diff directly to a Claude or Codex terminal, with context pre-filled
+- **Embedded terminals** — keep each provider's native terminal UI in a named session tab
 
 The file tree sits on the right. The editor is the primary focus. All splits are resizable.
 
 ---
 
-## Built for Claude Code + worktrees
+## Built for interactive agents + worktrees
 
 SimpleEdit works best with a bare git repository and git worktrees — one worktree per agent session. It will clone any repo into that structure automatically, or you can open an existing bare repo.
 
@@ -51,6 +51,20 @@ We're using SimpleEdit to build SimpleEdit, which helps us find and fix the shar
 ---
 
 ## Installing
+
+SimpleEdit does not install or authenticate an agent CLI for you. Install and sign in to at least one provider first:
+
+```bash
+# Claude Code
+claude
+
+# Codex
+codex login
+```
+
+Codex sessions use the native Codex TUI and your existing sandbox, approval, profile, MCP, and authentication defaults. SimpleEdit adds its MCP bridge and lifecycle reporter only for that session. On first use, Codex may show that the reporter hooks need review; run `/hooks` in the embedded terminal and trust the SimpleEdit hook definition. Until then the session still works, but SimpleEdit labels status and worktree reporting as degraded and derives only basic running/exited state from the PTY.
+
+Automated Review, Tour, Screen PRs, deep-review lenses, and synthesis can target Codex too. These bounded runs always use `codex exec --ephemeral` with a read-only sandbox and approvals disabled.
 
 ### macOS — Homebrew (recommended)
 
@@ -195,10 +209,10 @@ go install golang.org/x/tools/gopls@latest
 - **Monaco Editor** — the same editor engine as VS Code
 - **xterm.js + node-pty** — embedded terminals
 - **simple-git** — all git operations
-- **stream-json** — Claude Code output parsed in the main process
+- **Provider-native streams** — Claude stream JSON and Codex JSONL are validated in the main process
 
 ---
 
 ## Contributing
 
-SimpleEdit is open source. Issues and pull requests welcome. If you're using Claude Code heavily and have thoughts on the workflow, we'd love to hear them.
+SimpleEdit is open source. Issues and pull requests welcome. If you're using interactive coding agents heavily and have thoughts on the workflow, we'd love to hear them.

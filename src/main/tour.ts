@@ -5,7 +5,8 @@ import { app } from 'electron'
 import type { WebContents } from 'electron'
 import type { Tour, TourTopic, TourStatus, ModelRef } from '../shared/ipc-types'
 import { getModelConfig } from './models/config'
-import { ClaudeCodeRunner, DirectRunner, type Runner } from './agent-tasks/runner'
+import type { Runner } from './agent-tasks/runner'
+import { createTaskExecution, targetFromModelRef } from './agent-tasks/registry'
 import { runTask } from './agent-tasks/orchestrator'
 import { tourTask, type TourContext } from './tasks/tour-task'
 
@@ -79,10 +80,8 @@ export function saveOverview(worktreePath: string, commitHash: string | null, ov
  */
 export function selectRunner(worktreePath: string): { runner: Runner; model?: ModelRef } {
   const def = getModelConfig().defaults.tour
-  if (def?.provider === 'ollama') {
-    return { runner: new DirectRunner(), model: def }
-  }
-  return { runner: new ClaudeCodeRunner({ cwd: worktreePath }), model: def }
+  const { runner, model } = createTaskExecution(targetFromModelRef(def), { cwd: worktreePath })
+  return { runner, model }
 }
 
 // ── Tour generation ──────────────────────────────────────

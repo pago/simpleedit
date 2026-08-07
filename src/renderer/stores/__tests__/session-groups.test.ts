@@ -154,7 +154,7 @@ describe('group metadata', () => {
 describe('persistence round-trip', () => {
   function restoredClaude(label: string, groupId?: string): string {
     return sessionsStore.addRestoredSession({
-      kind: 'claude',
+      kind: 'agent',
       label,
       launchDir: PRIMARY,
       worktreePath: MAIN_WT,
@@ -163,14 +163,14 @@ describe('persistence round-trip', () => {
     })!
   }
 
-  it('serializes and restores groups, assignments, and order (v3)', () => {
+  it('serializes and restores groups, assignments, and order (v4)', () => {
     sessionsStore.restoreGroups([{ id: 'g1', name: 'Frontend', color: 'violet', collapsed: true }])
     restoredClaude('a', 'g1')
     restoredClaude('b', 'g1')
     restoredClaude('c')
 
     const blob = serializeSession(PRIMARY)
-    expect(blob.version).toBe(3)
+    expect(blob.version).toBe(4)
     expect(blob.groups).toEqual([{ id: 'g1', name: 'Frontend', color: 'violet', collapsed: true }])
 
     sessionsStore.reset()
@@ -200,7 +200,7 @@ describe('persistence round-trip', () => {
       activeIndex: null,
       sessions: [
         {
-          kind: 'claude',
+          kind: 'agent',
           label: 'legacy',
           worktreePath: MAIN_WT,
           launchDir: PRIMARY,

@@ -18,6 +18,7 @@ import * as readline from 'readline'
 import type { ModelRef } from '../../shared/ipc-types'
 import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveClaudePath } from '../lib/shell-path'
+import { resolveCodexPath } from '../lib/shell-path'
 import { chatStream, type ChatMessage } from '../models/ollama'
 
 export interface RunRequest<Item> {
@@ -276,5 +277,138 @@ export class DirectRunner implements Runner {
     })) {
       for (const item of scan(chunk)) yield item
     }
+  }
+}
+
+export interface CodexRunnerOptions {
+  cwd: string
+  model?: string
+  reasoningEffort?: import('../../shared/ipc-types').ReasoningEffort
+  skipGitRepoCheck?: boolean
+}
+
+/**
+ * Args for a bounded, read-only analysis run.
+ *
+ * `approval_policy` goes through `exec`'s own `-c` rather than the top-level
+ * `--ask-for-approval` flag: that flag is NOT an option of `codex exec` (it only
+ * exists on the root command), so passing it ahead of the subcommand relies on
+ * clap propagating it inward. The config override is the same setting by its
+ * documented name, accepted by `exec` directly — no propagation assumption. It
+ * matters because a run that stopped to ask for approval would hang forever
+ * with no one to answer.
+ */
+export function buildCodexExecArgs(opts: CodexRunnerOptions): string[] {
+  const args = [
+    'exec', '--json', '--ephemeral', '--sandbox', 'read-only',
+    '-c', 'approval_policy="never"',
+  ]
+  if (opts.skipGitRepoCheck) args.push('--skip-git-repo-check')
+  if (opts.model) args.push('--model', opts.model)
+  if (opts.reasoningEffort) args.push('-c', `model_reasoning_effort=${JSON.stringify(opts.reasoningEffort)}`)
+  // `-` reads the prompt from stdin; must stay last.
+  args.push('-')
+  return args
+}
+
+export function codexPrompt(system: string, user: string): string {
+  return system ? `${system}\n\n${user}` : user
+}
+
+/**
+ * The assistant text from a completed `agent_message` item.
+ *
+ * Gated on `item.completed`: Codex's `--json` stream also emits `item.started`
+ * and `item.updated` for the same item (verified against codex-cli 0.146.0),
+ * carrying partial text. Accepting those too would feed the finding scanner
+ * prefixes of a message it is about to receive in full.
+ */
+export function codexAgentText(event: unknown): string | null {
+  if (!event || typeof event !== 'object') return null
+  const record = event as Record<string, unknown>
+  if (record['type'] !== 'item.completed') return null
+  const item = record['item']
+  if (!item || typeof item !== 'object' || (item as Record<string, unknown>)['type'] !== 'agent_message') return null
+  const text = (item as Record<string, unknown>)['text'] ?? (item as Record<string, unknown>)['message']
+  return typeof text === 'string' ? text : null
+}
+
+/**
+ * The failure message from a `turn.failed` event, if this is one.
+ *
+ * A turn can fail (rate limit, refusal, tool error) without `codex exec` itself
+ * exiting non-zero, and the run would then look like a clean pass that simply
+ * found nothing — the worst outcome for a review task. Surfacing it turns a
+ * silent empty result into a reported error.
+ */
+export function codexTurnFailure(event: unknown): string | null {
+  if (!event || typeof event !== 'object') return null
+  const record = event as Record<string, unknown>
+  if (record['type'] !== 'turn.failed') return null
+  const error = record['error']
+  const message = error && typeof error === 'object' ? (error as Record<string, unknown>)['message'] : undefined
+  return typeof message === 'string' && message ? message : 'codex reported a failed turn'
+}
+
+/** Read-only, non-interactive Codex execution for bounded analysis tasks. */
+export class CodexRunner implements Runner {
+  constructor(private readonly opts: CodexRunnerOptions) {}
+
+  run<Item>(req: RunRequest<Item>, opts?: RunOptions): AsyncIterable<Item> {
+    const stream = createPushStream<Item>()
+    this.spawn(req, stream, opts).catch((err) => stream.fail(err))
+    return stream.iterable
+  }
+
+  private async spawn<Item>(req: RunRequest<Item>, stream: PushStream<Item>, opts?: RunOptions): Promise<void> {
+    const codexBin = await resolveCodexPath()
+    const args = buildCodexExecArgs(this.opts)
+
+    const proc = spawn(codexBin, args, {
+      cwd: this.opts.cwd,
+      env: process.env as Record<string, string>,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const onAbort = (): void => { try { proc.kill() } catch { /* already dead */ } }
+    if (opts?.signal) {
+      if (opts.signal.aborted) onAbort()
+      else opts.signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    const prompt = codexPrompt(req.system, req.user)
+    proc.stdin.end(prompt, 'utf8')
+    const scan = createFindingScanner<Item>(req.parse)
+    const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
+    let turnFailure: string | null = null
+    rl.on('line', (line) => {
+      try {
+        const event: unknown = JSON.parse(line)
+        turnFailure ??= codexTurnFailure(event)
+        const text = codexAgentText(event)
+        if (text) for (const parsed of scan(text)) stream.push(parsed)
+      } catch {
+        // Ignore diagnostics and malformed events; the exit status remains authoritative.
+      }
+    })
+    let stderr = ''
+    proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    proc.on('close', (code) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      if (code !== 0) {
+        stream.fail(new Error(`codex exited with code ${code}${stderr.trim() ? `: ${stderr.trim().slice(0, 1000)}` : ''}`))
+      } else if (turnFailure) {
+        // Exit 0 with a failed turn: report it rather than letting the caller
+        // read "no findings" as a clean pass.
+        stream.fail(new Error(`codex turn failed: ${turnFailure}`))
+      } else {
+        stream.close()
+      }
+    })
+    proc.on('error', (err: Error) => {
+      rl.close()
+      opts?.signal?.removeEventListener('abort', onAbort)
+      stream.fail(err)
+    })
   }
 }

@@ -1,11 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// claude.ts (imported below to self-register the provider) touches electron.
+vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => '/app' } }))
+
 import {
   onPtyData,
   emitPtyData,
   attachToTerminal,
   detachFromTerminal,
   detachAll,
+  getWorktreeForTerminal,
 } from '../claude-stream'
+// Status now flows through the provider's detectStatus, so the provider must be
+// registered for attachToTerminal to find it.
+import '../agents/claude'
 
 // WebContents is import type in claude-stream.ts — no Electron mock needed.
 // We pass a plain object that satisfies the runtime interface.
@@ -56,10 +64,11 @@ describe('attachToTerminal — OSC title parsing', () => {
     const wc = makeWebContents()
     attachToTerminal('ta1', '/repo/worktree', wc as never)
     emitPtyData('ta1', '\x1b]0;✳ Claude Code\x07')
-    expect(wc.send).toHaveBeenCalledWith('claude:status', {
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
       worktreePath: '/repo/worktree',
       status: 'idle',
-      terminalId: 'ta1'
+      terminalId: 'ta1',
+      precise: true
     })
   })
 
@@ -68,10 +77,11 @@ describe('attachToTerminal — OSC title parsing', () => {
     attachToTerminal('ta2', '/repo/worktree', wc as never)
     // ⠂ U+2802 is in the braille block
     emitPtyData('ta2', '\x1b]0;⠂ Claude Code\x07')
-    expect(wc.send).toHaveBeenCalledWith('claude:status', {
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
       worktreePath: '/repo/worktree',
       status: 'running',
-      terminalId: 'ta2'
+      terminalId: 'ta2',
+      precise: true
     })
   })
 
@@ -81,10 +91,11 @@ describe('attachToTerminal — OSC title parsing', () => {
       const wc = makeWebContents()
       attachToTerminal(`ta-spin-${spinner}`, '/repo', wc as never)
       emitPtyData(`ta-spin-${spinner}`, `\x1b]0;${spinner} Claude Code\x07`)
-      expect(wc.send).toHaveBeenCalledWith('claude:status', {
+      expect(wc.send).toHaveBeenCalledWith('agent:status', {
         worktreePath: '/repo',
         status: 'running',
-        terminalId: `ta-spin-${spinner}`
+        terminalId: `ta-spin-${spinner}`,
+        precise: true
       })
     }
   })
@@ -97,21 +108,57 @@ describe('attachToTerminal — OSC title parsing', () => {
     expect(wc.send).not.toHaveBeenCalled()
   })
 
-  it('handles multiple OSC sequences in a single chunk', () => {
+  /**
+   * A chunk can carry several titles (spinner frames, then the idle marker).
+   * Only the LAST one is the agent's state once the chunk is applied, so that
+   * is what we report — emitting the superseded intermediate states would just
+   * flicker the indicator.
+   */
+  it('collapses multiple OSC sequences in one chunk to the final status', () => {
     const wc = makeWebContents()
     attachToTerminal('ta4', '/repo', wc as never)
     emitPtyData('ta4', '\x1b]0;⠂ Claude Code\x07some output\x1b]0;✳ Claude Code\x07')
-    expect(wc.send).toHaveBeenCalledTimes(2)
-    expect(wc.send).toHaveBeenNthCalledWith(1, 'claude:status', {
-      worktreePath: '/repo',
-      status: 'running',
-      terminalId: 'ta4'
-    })
-    expect(wc.send).toHaveBeenNthCalledWith(2, 'claude:status', {
+    expect(wc.send).toHaveBeenCalledTimes(1)
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
       worktreePath: '/repo',
       status: 'idle',
-      terminalId: 'ta4'
+      terminalId: 'ta4',
+      precise: true
     })
+  })
+
+  /**
+   * The PTY fires per output chunk and a busy TUI repaints constantly, so an
+   * unchanged status must not put an IPC message on the wire each time.
+   */
+  it('emits only on change, not once per chunk', () => {
+    const wc = makeWebContents()
+    attachToTerminal('ta-dedupe', '/repo', wc as never)
+    emitPtyData('ta-dedupe', '\x1b]0;⠂ Claude Code\x07')
+    emitPtyData('ta-dedupe', '\x1b]0;⠐ Claude Code\x07')
+    emitPtyData('ta-dedupe', '\x1b]0;⠠ Claude Code\x07')
+    expect(wc.send).toHaveBeenCalledTimes(1)
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
+      worktreePath: '/repo', status: 'running', terminalId: 'ta-dedupe', precise: true,
+    })
+
+    emitPtyData('ta-dedupe', '\x1b]0;✳ Claude Code\x07')
+    expect(wc.send).toHaveBeenCalledTimes(2)
+    expect(wc.send).toHaveBeenLastCalledWith('agent:status', {
+      worktreePath: '/repo', status: 'idle', terminalId: 'ta-dedupe', precise: true,
+    })
+  })
+
+  /**
+   * Attachment owns the terminal → worktree mapping the MCP bridge depends on;
+   * an unknown provider may cost status detection but must never break that.
+   */
+  it('still attaches when the provider is unknown', () => {
+    const wc = makeWebContents()
+    attachToTerminal('ta-unknown', '/repo/x', wc as never, 'opencode' as never)
+    expect(getWorktreeForTerminal('ta-unknown')).toBe('/repo/x')
+    emitPtyData('ta-unknown', '\x1b]0;⠂ Something\x07')
+    expect(wc.send).not.toHaveBeenCalled()
   })
 
   it('skips sending when webContents is destroyed', () => {
@@ -141,11 +188,11 @@ describe('attachToTerminal — OSC title parsing', () => {
     const wc = makeWebContents()
     attachToTerminal('ta8', '/repo', wc as never)
     emitPtyData('ta8', '\x1b]0;✳ Claude Code\x1b\\')
-    expect(wc.send).toHaveBeenCalledWith('claude:status', {
+    expect(wc.send).toHaveBeenCalledWith('agent:status', {
       worktreePath: '/repo',
       status: 'idle',
-      terminalId: 'ta8'
+      terminalId: 'ta8',
+      precise: true
     })
   })
 })
-

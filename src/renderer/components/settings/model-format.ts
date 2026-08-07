@@ -39,5 +39,5 @@ export function fitClasses(fit: ModelFit): string {
 
 /** Stable string key for a ModelRef — used as <select> option values. */
 export function refKey(ref: ModelRef): string {
-  return `${ref.provider}:${ref.model}`
+  return `${ref.provider}:${ref.model ?? 'configured-default'}:${ref.provider === 'openai' ? (ref.reasoningEffort ?? 'default') : ''}`
 }

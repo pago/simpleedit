@@ -143,7 +143,7 @@ async function sendClaudeTour(
       const win = BrowserWindow.getAllWindows()[0]
       if (!win) return
       const key = `${worktreePath}:${hash ?? 'staging'}`
-      win.webContents.send('tour:from-claude', {
+      win.webContents.send('tour:from-agent', {
         key,
         terminalId: tid,
         worktreePath,

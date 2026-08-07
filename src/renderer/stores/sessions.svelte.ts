@@ -1,15 +1,16 @@
 /**
  * Global session registry — the primary navigation entity of the agent-first
- * UI. A session is one PTY (Claude, Agent View, or plain terminal) plus the
+ * UI. A session is one PTY (Claude, Codex, Agent View, or plain terminal) plus the
  * workspace state that hangs off it (tabs in tabsStore keyed by session id,
  * worktree selection, editor layout in SessionWorkspace).
  *
  * The session id doubles as the PTY terminal id in main, so all existing
- * `pty:*` / `claude:*` IPC routes work unchanged.
+ * `pty:*` and `agent:*` IPC routes address the same identifier.
  */
 import { untrack } from 'svelte'
-import type { AgentPeer, ModelRef } from '../../shared/ipc-types'
-import { clearClaudeStatusForTerminal, getClaudeStatusForTerminal } from './claude-status.svelte'
+import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, ReasoningEffort } from '../../shared/ipc-types'
+import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
   repoForWorktree,
@@ -22,30 +23,35 @@ import {
 } from './worktrees.svelte'
 import { loadAgentModels } from '../lib/agentModels'
 
-export type SessionKind = 'claude' | 'agents' | 'terminal'
-
-/** Which interactive-agent provider backs this session. Only Claude Code today
- * (see src/main/agents/); other providers will extend this union. */
-export type AgentProviderId = 'claude'
+export type SessionKind = 'agent' | 'agents' | 'terminal'
 
 export interface Session {
-  /** PTY terminal id in main ('claude-…', 'agents-…', 'term-…'). */
+  /** PTY terminal id in main ('agent-claude-…', 'agent-codex-…', 'agents-…', 'term-…'). */
   id: string
   kind: SessionKind
   /**
    * The agent provider backing this session (harness axis, orthogonal to
    * `kind`). Set on agent-backed sessions; absent for plain terminals. Defaults
-   * to 'claude' — the only provider today. The `claude:spawn` invoke isn't yet
-   * routed by this (YAGNI for one provider).
+   * to 'claude' when loading a legacy session.
    */
   provider?: AgentProviderId
+  target?: InteractiveTarget
   label: string
   /** True when the user renamed the session — OSC titles no longer apply. */
   customLabel?: boolean
   /**
-   * Directory the PTY spawned in (and respawns in on resume). For Claude
-   * sessions this is the PROJECT ROOT (beside the bare repo) so all sessions
-   * share one Claude memory; for terminals it's a worktree.
+   * Directory the PTY spawned in (and respawns in on resume). EVERY agent —
+   * Claude and Codex alike — launches at the project root (beside the bare
+   * repo), never inside a worktree: agents create their own worktrees, and a
+   * root launch is what lets one agent memory span them. Only plain terminals
+   * spawn in a worktree.
+   *
+   * For Codex this is load-bearing beyond convention. Codex gates hook loading
+   * on directory trust (`[projects."<path>"] trust_level`), which is NOT
+   * inherited by subdirectories — so launching per-worktree would demand a
+   * fresh interactive trust grant for every worktree, and until it was given
+   * no hooks would load at all. Rooted at the container, one grant covers
+   * every session in the project.
    */
   launchDir: string
   /**
@@ -81,7 +87,7 @@ export interface Session {
    */
   viewerOpen?: boolean
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
-  claudeSessionId?: string
+  providerSessionId?: string
   /**
    * The opening prompt this session was launched with (`createClaude`'s
    * `initialPrompt`). Kept on the record — not merely forwarded to the PTY — so
@@ -104,6 +110,13 @@ export interface Session {
    */
   exited?: { exitCode: number }
   /**
+   * This provider's reporting needs a one-time grant from the user
+   * (`capabilities.reportingSetup === 'user-granted'`) and hasn't reported
+   * yet, so status and tracking are still on coarse PTY signals. Clears as
+   * soon as the first provider-native signal arrives.
+   */
+  reportingSetupNeeded?: boolean
+  /**
    * The group this session belongs to (a `SessionGroup.id`), or undefined when
    * standalone. The sidebar keeps every group's members CONTIGUOUS in
    * `_sessions`, so grouping is purely an ordering invariant — see
@@ -124,6 +137,15 @@ export interface SessionGroup {
   collapsed: boolean
 }
 
+export interface AgentCreateOptions {
+  resumeSessionId?: string
+  forkSession?: boolean
+  model?: ModelRef
+  initialPrompt?: string
+  label?: string
+  target?: { groupId?: string; index: number }
+}
+
 /** Auto-assigned to new groups, cycled by group count. */
 const GROUP_COLORS = ['sky', 'violet', 'emerald', 'amber', 'rose', 'cyan'] as const
 
@@ -135,14 +157,22 @@ let _pendingFocusId = $state<string | null>(null)
 /** Sessions whose workspace has been mounted — kept alive across switches. */
 let _visitedIds = $state<string[]>([])
 
-let nextClaudeIndex = 1
 let nextAgentsIndex = 1
 let nextTerminalIndex = 1
 
-function defaultLabel(kind: SessionKind): string {
+/**
+ * Per-provider counters so each agent numbers its own sessions ("Claude",
+ * "Claude 2", "Codex", …) rather than sharing one "Claude" sequence.
+ */
+const nextAgentIndex = new Map<string, number>()
+
+function defaultLabel(kind: SessionKind, providerName = 'Claude'): string {
   switch (kind) {
-    case 'claude':
-      return nextClaudeIndex++ === 1 ? 'Claude' : `Claude ${nextClaudeIndex - 1}`
+    case 'agent': {
+      const n = (nextAgentIndex.get(providerName) ?? 0) + 1
+      nextAgentIndex.set(providerName, n)
+      return n === 1 ? providerName : `${providerName} ${n}`
+    }
     case 'agents':
       return nextAgentsIndex++ === 1 ? 'Agents' : `Agents ${nextAgentsIndex - 1}`
     case 'terminal':
@@ -239,43 +269,45 @@ export const sessionsStore = {
 
   // ── creation ─────────────────────────────────────────────────────────────
 
-  createClaude(
+  createAgent(
+    rawTarget: InteractiveTarget,
     launchDir: string,
     worktreePath: string,
-    opts: {
-      resumeSessionId?: string
-      /** With `resumeSessionId`, fork the source into a fresh full-context
-       *  session (`--fork-session`) instead of continuing it. See `forkClaude`. */
-      forkSession?: boolean
-      model?: ModelRef
-      initialPrompt?: string
-      label?: string
-      /**
-       * Where to place the new session. Omitted = prepend as a standalone
-       * session (the default). Provided = splice in at `index` and adopt
-       * `groupId` — used by the in-place "replace" reset so the successor takes
-       * the outgoing session's slot/group. See `replaceWithClaude`.
-       */
-      target?: { groupId?: string; index: number }
-    } = {},
+    opts: AgentCreateOptions = {},
   ): string {
-    const id = `claude-${crypto.randomUUID()}`
-    const model = opts.model
+    // Detach from Svelte's reactive graph ONCE, up front. Callers hand us a
+    // target read straight out of the session array — `forkAgent` and
+    // "discuss with agent" both pass `session.target` — so it is a $state proxy,
+    // which structured clone rejects on the way through IPC. Snapshotting here
+    // rather than at each `invoke` keeps the two calls below from disagreeing,
+    // and stops the new session aliasing the source session's target object.
+    const target = $state.snapshot(rawTarget) as InteractiveTarget
+    const id = `agent-${target.provider}-${crypto.randomUUID()}`
+    const model = opts.model ?? (target.provider === 'claude' ? target.model : undefined)
+    const caps = capabilitiesFor(target.provider)
+    const name = providerLabel(target.provider)
+    // The model id, when the target names one — Claude carries a ModelRef,
+    // Codex a bare id.
+    const modelId = target.provider === 'codex' ? target.model : model?.model
+    // `customLabel` means "a human or a model chose this name", nothing more.
+    // Whether a provider's OSC titles may rename a session is a provider
+    // property, decided in `applyOscTitle` when the title actually arrives —
+    // deciding it here would race the async capability fetch.
+    const pinned = !!opts.label || !!modelId
     const newSession: Session = {
       id,
-      kind: 'claude',
-      provider: 'claude',
-      // An explicit label (e.g. "review ui-pack#42") or a picked model names the
-      // session and pins the label so OSC titles don't overwrite it; the plain
-      // cloud default keeps "Claude N".
-      label: opts.label ?? (model ? model.model : defaultLabel('claude')),
-      ...(opts.label || model ? { customLabel: true as const } : {}),
+      kind: 'agent',
+      provider: target.provider,
+      target,
+      label: opts.label ?? modelId ?? defaultLabel('agent', name),
+      ...(pinned ? { customLabel: true as const } : {}),
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
       ...(opts.target?.groupId ? { groupId: opts.target.groupId } : {}),
       launchDir,
       worktreePath,
       touchedWorktrees: [worktreePath],
+      ...(caps?.reportingSetup === 'user-granted' ? { reportingSetupNeeded: true } : {}),
     }
     if (opts.target) {
       const at = Math.min(Math.max(opts.target.index, 0), _sessions.length)
@@ -286,15 +318,21 @@ export const sessionsStore = {
       _sessions = [newSession, ..._sessions]
     }
     select(id)
-    void window.api.invoke('claude:spawn', {
+    void window.api.invoke('agent:spawn', {
       id,
       worktreePath: launchDir,
+      target,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
       ...(opts.forkSession ? { forkSession: true } : {}),
       // $state.snapshot: `model` may be a Svelte proxy (e.g. an element of a
       // $state model list) — Electron IPC structured-clone rejects proxies.
       ...(model ? { model: $state.snapshot(model) } : {}),
       ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
+    })
+    void window.api.invoke('models:config-set', {
+      lastUsed: target.provider === 'codex'
+        ? { provider: 'openai', ...(target.model ? { model: target.model } : {}), ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}) }
+        : target.model,
     })
     // For cloud Claude, upgrade the raw model id to its human display name once
     // the (static) catalog resolves — best-effort, leaves the id if not found.
@@ -313,6 +351,38 @@ export const sessionsStore = {
     return id
   },
 
+  createClaude(
+    launchDir: string,
+    worktreePath: string,
+    opts: AgentCreateOptions = {},
+  ): string {
+    const target: InteractiveTarget = { provider: 'claude', ...(opts.model ? { model: opts.model } : {}) }
+    return this.createAgent(target, launchDir, worktreePath, opts)
+  },
+
+  createCodex(
+    launchDir: string,
+    worktreePath: string,
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+  ): string {
+    const target: InteractiveTarget = {
+      provider: 'codex',
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
+    }
+    // `opts.model` is Codex's bare model id and belongs ONLY on the target.
+    // `AgentCreateOptions.model` is a structured ModelRef — Claude's brain
+    // selection — so the rest of `opts` is forwarded field by field rather than
+    // spread. Passing the string through would put it on `Session.model` and in
+    // the `agent:spawn` payload, and `spawnSessionFromAgent` inherits
+    // `caller.model` as a ModelRef, so a Codex session spawning a Claude peer
+    // would hand the bare id on as that peer's model.
+    return this.createAgent(target, launchDir, worktreePath, {
+      ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
+      ...(opts.label ? { label: opts.label } : {}),
+    })
+  },
+
   createAgents(launchDir: string, worktreePath: string): string {
     const id = `agents-${crypto.randomUUID()}`
     // The `claude agents` TUI sets noisy OSC titles — customLabel keeps
@@ -322,7 +392,7 @@ export const sessionsStore = {
       ..._sessions,
     ]
     select(id)
-    void window.api.invoke('claude:spawn-agents', { id, worktreePath: launchDir })
+    void window.api.invoke('agent:spawn-agents', { id, worktreePath: launchDir })
     return id
   },
 
@@ -354,10 +424,20 @@ export const sessionsStore = {
     worktreePath: string,
     opts: { model?: ModelRef; initialPrompt?: string; label?: string } = {},
   ): string | null {
+    return this.replaceWithAgent(outgoingId, { provider: 'claude', ...(opts.model ? { model: opts.model } : {}) }, launchDir, worktreePath, opts)
+  },
+
+  replaceWithAgent(
+    outgoingId: string,
+    target: InteractiveTarget,
+    launchDir: string,
+    worktreePath: string,
+    opts: AgentCreateOptions = {},
+  ): string | null {
     const outgoing = findSession(outgoingId)
     if (!outgoing) return null
     const index = _sessions.findIndex((s) => s.id === outgoingId)
-    const newId = this.createClaude(launchDir, worktreePath, {
+    const newId = this.createAgent(target, launchDir, worktreePath, {
       ...opts,
       target: { groupId: outgoing.groupId, index },
     })
@@ -379,8 +459,8 @@ export const sessionsStore = {
     const hasLivePty =
       !session.pendingResume && !session.exited && !opts.ptyAlreadyDead
     if (hasLivePty) {
-      if (session.kind === 'claude') {
-        void window.api.invoke('claude:detach', id)
+      if (session.kind === 'agent') {
+        void window.api.invoke('agent:detach', id)
       }
       void window.api.invoke('pty:kill', id)
     }
@@ -389,7 +469,7 @@ export const sessionsStore = {
     const closedGroup = session.groupId
     _sessions = _sessions.filter((s) => s.id !== id)
     _visitedIds = _visitedIds.filter((v) => v !== id)
-    clearClaudeStatusForTerminal(id)
+    clearAgentStatusForTerminal(id)
     tabsStore.closeAll(id)
     dissolveIfOrphaned(closedGroup)
 
@@ -405,9 +485,10 @@ export const sessionsStore = {
     const resumeSessionId = session.pendingResume.sessionId
     this.update(id, { pendingResume: undefined })
     select(id)
-    void window.api.invoke('claude:spawn', {
+    void window.api.invoke('agent:spawn', {
       id,
       worktreePath: session.launchDir,
+      target: session.target ?? { provider: session.provider ?? 'claude' },
       resumeSessionId,
     })
   },
@@ -469,6 +550,12 @@ export const sessionsStore = {
   applyOscTitle(id: string, rawTitle: string): void {
     const session = findSession(id)
     if (!session || session.customLabel) return
+    // Some agents put the working directory (plus a spinner) in the OSC title
+    // rather than a conversation name — renaming the session to that on every
+    // turn would be worse than useless. Only providers that explicitly report a
+    // directory title are blocked, so plain terminals keep their shell-set
+    // titles and an unknown provider stays permissive.
+    if (capabilitiesFor(session.provider)?.oscTitle === 'directory') return
     const firstCp = rawTitle.codePointAt(0) ?? 0
     const hasPrefix = firstCp === 0x2733 || (firstCp >= 0x2800 && firstCp <= 0x28ff)
     const label = hasPrefix
@@ -603,27 +690,25 @@ export const sessionsStore = {
   // ── fork ─────────────────────────────────────────────────────────────────
 
   /**
-   * Full-context in-place fork: branch a live Claude session into a fresh,
+   * Full-context in-place fork: branch a live provider session into a fresh,
    * independent session carrying the whole forked conversation. Goes through
-   * the same `createClaude` → `claude:spawn` → `buildLaunch` path as any spawn,
-   * with `forkSession` set so `buildLaunch` mints a fresh id and adds
-   * `--fork-session` (the source is left intact). No JSONL copy: an in-place
-   * fork stays at the source's project root, where its transcript already lives.
+   * the same provider launch path as any spawn, with `forkSession` set so the
+   * provider uses its native fork command. The source is left intact.
    *
    * Grouping: the fork joins the source's group if it has one, else a fresh
    * group is formed pairing the two — a lone session has no group to inherit,
    * so the fork must create one to keep the pair visually together.
    *
-   * Returns the new session id, or null if the source isn't a forkable Claude
-   * session (no captured session id yet — e.g. still initializing, or Agent View).
+   * Returns the new session id, or null if the source has no provider identity
+   * yet (for example while initializing, or for Agent View).
    */
-  forkClaude(sourceId: string): string | null {
+  forkAgent(sourceId: string): string | null {
     const source = findSession(sourceId)
-    if (!source || source.kind !== 'claude' || !source.claudeSessionId) return null
+    if (!source || source.kind !== 'agent' || !source.providerSessionId || !source.target) return null
 
     const index = _sessions.findIndex((s) => s.id === sourceId)
-    const newId = this.createClaude(source.launchDir, source.worktreePath, {
-      resumeSessionId: source.claudeSessionId,
+    const newId = this.createAgent(source.target, source.launchDir, source.worktreePath, {
+      resumeSessionId: source.providerSessionId,
       forkSession: true,
       // Deliberately no `model`: the resumed session already carries its own,
       // and re-applying it is a separate deferred concern (see Session.model).
@@ -641,7 +726,9 @@ export const sessionsStore = {
 
   /** Stage a restored session as a click-to-resume placeholder. */
   addRestoredSession(input: {
-    kind: 'claude' | 'agents'
+    kind: 'agent' | 'agents' | 'claude'
+    provider?: AgentProviderId
+    target?: InteractiveTarget
     label: string
     customLabel?: boolean
     launchDir: string
@@ -676,18 +763,19 @@ export const sessionsStore = {
           ...(input.groupId ? { groupId: input.groupId } : {}),
         },
       ]
-      void window.api.invoke('claude:spawn-agents', { id, worktreePath: input.launchDir })
+      void window.api.invoke('agent:spawn-agents', { id, worktreePath: input.launchDir })
       return id
     }
     if (!input.sessionId) return null
-    const id = `claude-${crypto.randomUUID()}`
+    const id = `agent-${input.provider ?? 'claude'}-${crypto.randomUUID()}`
     _sessions = [
       ..._sessions,
       {
         id,
-        kind: 'claude',
-        provider: 'claude',
-        label: input.label || defaultLabel('claude'),
+        kind: 'agent',
+        provider: input.provider ?? 'claude',
+        target: input.target ?? { provider: input.provider ?? 'claude' },
+        label: input.label || defaultLabel('agent'),
         ...(input.customLabel ? { customLabel: true as const } : {}),
         launchDir: input.launchDir,
         worktreePath: input.worktreePath,
@@ -695,6 +783,13 @@ export const sessionsStore = {
         touchedWorktrees,
         ...(input.groupId ? { groupId: input.groupId } : {}),
         ...(input.seedPrompt ? { seedPrompt: input.seedPrompt } : {}),
+        // A restored session needs the trust-grant band as much as a fresh one —
+        // arguably more, since the user has quit and relaunched since granting.
+        // Without this, resuming a Codex session gives degraded status and
+        // tracking with nothing on screen explaining why.
+        ...(capabilitiesFor(input.provider ?? 'claude')?.reportingSetup === 'user-granted'
+          ? { reportingSetupNeeded: true }
+          : {}),
         pendingResume: { sessionId: input.sessionId },
       },
     ]
@@ -722,7 +817,7 @@ export const sessionsStore = {
     _groups = []
     _pendingFocusId = null
     _visitedIds = []
-    nextClaudeIndex = 1
+    nextAgentIndex.clear()
     nextAgentsIndex = 1
     nextTerminalIndex = 1
   },
@@ -771,18 +866,27 @@ async function spawnSessionFromAgent(
   if (!worktreePath) return
   const launchDir = projectRoot() ?? worktreePath
 
-  let model: ModelRef | undefined = caller?.model
-  if (data.model) {
-    const agentModels = await loadAgentModels().catch(() => [])
-    const hit = agentModels.find((m) => m.ref?.model === data.model || m.id === data.model)
-    // Fall back to inheriting the caller's model if the id doesn't resolve.
-    model = hit?.ref ?? model
+  const provider = data.provider ?? caller?.provider ?? 'claude'
+  let target: InteractiveTarget
+  if (provider === 'codex') {
+    target = {
+      provider: 'codex',
+      ...(data.model ? { model: data.model } : caller?.target?.provider === 'codex' && caller.target.model ? { model: caller.target.model } : {}),
+      ...(data.reasoningEffort ? { reasoningEffort: data.reasoningEffort } : caller?.target?.provider === 'codex' && caller.target.reasoningEffort ? { reasoningEffort: caller.target.reasoningEffort } : {}),
+    }
+  } else {
+    let model: ModelRef | undefined = caller?.model
+    if (data.model) {
+      const agentModels = await loadAgentModels().catch(() => [])
+      model = agentModels.find((m) => m.ref?.model === data.model || m.id === data.model)?.ref ?? { provider: 'anthropic', model: data.model }
+    }
+    target = { provider: 'claude', ...(model ? { model } : {}) }
   }
 
   const spawnOpts = {
     initialPrompt: data.brief,
     ...(data.label ? { label: data.label } : {}),
-    ...(model ? { model } : {}),
+    ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),
   }
 
   // 'replace' = the caller asked to reset itself: spawn the successor in the
@@ -790,8 +894,8 @@ async function spawnSessionFromAgent(
   // when the caller can't be located (nothing to replace).
   const newId =
     data.target === 'replace' && caller
-      ? sessionsStore.replaceWithClaude(caller.id, launchDir, worktreePath, spawnOpts)
-      : sessionsStore.createClaude(launchDir, worktreePath, spawnOpts)
+      ? sessionsStore.replaceWithAgent(caller.id, target, launchDir, worktreePath, spawnOpts)
+      : sessionsStore.createAgent(target, launchDir, worktreePath, spawnOpts)
 
   // Hand the minted id back so the waiting `spawn_session` tool call can return
   // an addressable handle — main never sees this id otherwise.
@@ -800,7 +904,7 @@ async function spawnSessionFromAgent(
     void window.api.invoke('agent-bus:spawned', data.correlationId, {
       terminalId: newId,
       label: created?.label ?? newId,
-      provider: created?.provider ?? 'claude',
+      provider: created?.provider ?? provider,
       worktreePath: created?.worktreePath ?? worktreePath,
       status: 'unknown',
     })
@@ -815,13 +919,15 @@ async function spawnSessionFromAgent(
  */
 function peerSnapshot(): AgentPeer[] {
   return _sessions
-    .filter((s) => s.kind === 'claude' && !s.pendingResume && !s.exited)
+    // 'agent' covers every provider. Agent View ('agents') is excluded on
+    // purpose: it's a bare TUI with no hook wiring to deliver mail through.
+    .filter((s) => s.kind === 'agent' && !s.pendingResume && !s.exited)
     .map((s) => ({
       terminalId: s.id,
       label: s.label,
       provider: s.provider ?? 'claude',
       worktreePath: s.worktreePath,
-      status: getClaudeStatusForTerminal(s.id),
+      status: getAgentStatusForTerminal(s.id),
     }))
 }
 
@@ -844,9 +950,9 @@ export function initSessionListeners(): () => void {
     }
   })
 
-  // Claude session uuid, pinned at spawn time by main (claude --session-id).
-  const offSessionId = window.api.on('claude:session-id', (data) => {
-    sessionsStore.update(data.terminalId, { claudeSessionId: data.sessionId })
+  // Provider session identity, pinned up front (Claude) or learned from hooks (Codex).
+  const offSessionId = window.api.on('agent:session-id', (data) => {
+    sessionsStore.update(data.terminalId, { providerSessionId: data.sessionId, reportingSetupNeeded: false })
   })
 
   // Location tracking (Stage 2+): the agent's tracked cwd moved.

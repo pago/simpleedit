@@ -1,18 +1,28 @@
 <script lang="ts">
+  import type { AgentProviderId } from '../../../shared/ipc-types'
   import { Terminal } from '@xterm/xterm'
   import { FitAddon } from '@xterm/addon-fit'
   import { WebLinksAddon } from '@xterm/addon-web-links'
   import '@xterm/xterm/css/xterm.css'
   import { sessionsStore } from '../../stores/sessions.svelte'
+  import { capabilitiesFor } from '../../stores/agent-capabilities.svelte'
 
   interface Props {
     terminalId: string
     active?: boolean
-    isClaude?: boolean
+    /** Absent for a plain terminal — there's no agent in front of the shell. */
+    provider?: AgentProviderId
     ontitlechange?: (title: string) => void
   }
 
-  let { terminalId, active = true, isClaude = false, ontitlechange }: Props = $props()
+  let { terminalId, active = true, provider, ontitlechange }: Props = $props()
+
+  // How this terminal's agent wants keys and dropped paths handled. A plain
+  // terminal (no provider) gets shell semantics: never swallow Shift+Enter, and
+  // quote paths rather than newline-separating them.
+  const caps = $derived(capabilitiesFor(provider))
+  const shiftEnter = $derived(caps?.shiftEnter ?? 'native')
+  const droppedPath = $derived(caps?.droppedPath ?? 'shell-escaped')
 
   let containerEl: HTMLDivElement | undefined = $state()
   let isDropTarget = $state(false)
@@ -94,12 +104,12 @@
       fitAddon?.fit()
     })
 
-    // Intercept Shift+Enter so Claude Code treats it as a newline instead of submit.
-    // For Claude terminals: send CSI u sequence (kitty keyboard protocol).
-    // For regular shells: just let Enter through normally (Shift has no meaning).
+    // Shift+Enter must mean "newline", not "submit". Agents that don't handle it
+    // themselves need the CSI-u sequence (kitty keyboard protocol) written to
+    // the PTY; the rest — and plain shells — are left alone.
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.key === 'Enter' && e.shiftKey) {
-        if (e.type === 'keydown' && isClaude) {
+        if (e.type === 'keydown' && shiftEnter === 'escape-newline') {
           e.preventDefault()
           window.api.invoke('pty:write', id, '\x1b[13;2u')
         }
@@ -217,9 +227,8 @@
   })
 
   /**
-   * Format dropped paths for the foreground process. Claude Code parses paths
-   * via regex and accepts newline-separated lists; a regular shell would
-   * submit on a literal newline, so we space-separate (and quote spaces) there.
+   * Format dropped paths for whatever is in the foreground, per the provider's
+   * `droppedPath` capability — never by provider name.
    */
   function shellEscape(p: string): string {
     if (/^[\w./@:+=-]+$/.test(p)) return p
@@ -227,8 +236,11 @@
   }
 
   function formatPaths(paths: string[]): string {
-    if (isClaude) return paths.join('\n')
-    return paths.map(shellEscape).join(' ')
+    switch (droppedPath) {
+      case 'at-reference': return paths.map((p) => `@${p}`).join(' ')
+      case 'newline-list': return paths.join('\n')
+      case 'shell-escaped': return paths.map(shellEscape).join(' ')
+    }
   }
 
   async function resolveDropPath(file: File): Promise<string> {

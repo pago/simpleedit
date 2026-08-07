@@ -59,13 +59,13 @@ test.describe('Claude session_id capture', () => {
     await window.evaluate(() => {
       ;(window as unknown as { __sessionIds: Array<{ terminalId: string; sessionId: string }> })
         .__sessionIds = []
-      window.api.on('claude:session-id', (payload) => {
+      window.api.on('agent:session-id', (payload) => {
         ;(window as unknown as { __sessionIds: Array<{ terminalId: string; sessionId: string }> })
           .__sessionIds.push(payload)
       })
     })
 
-    await window.getByRole('button', { name: 'New Claude session' }).first().click()
+    await window.getByRole('button', { name: 'New agent session' }).first().click()
 
     // Should arrive synchronously (within 1s, just absorbing IPC roundtrip).
     const captured = await window.evaluate(async () => {
@@ -80,7 +80,7 @@ test.describe('Claude session_id capture', () => {
     })
 
     expect(captured, 'claude:session-id was not emitted on spawn').not.toBeNull()
-    expect(captured!.terminalId).toMatch(/^claude-/)
+    expect(captured!.terminalId).toMatch(/^agent-claude-/)
     expect(captured!.sessionId).toMatch(UUID_RE)
   })
 
@@ -100,13 +100,13 @@ test.describe('Claude session_id capture', () => {
     await window.evaluate(() => {
       ;(window as unknown as { __statusEvents: Array<{ worktreePath: string; status: string; terminalId: string }> })
         .__statusEvents = []
-      window.api.on('claude:status', (payload) => {
+      window.api.on('agent:status', (payload) => {
         ;(window as unknown as { __statusEvents: Array<{ worktreePath: string; status: string; terminalId: string }> })
           .__statusEvents.push(payload)
       })
     })
 
-    await window.getByRole('button', { name: 'New Claude session' }).first().click()
+    await window.getByRole('button', { name: 'New agent session' }).first().click()
 
     // Claude emits OSC title sequences ("✳ Claude Code" idle, braille spinner
     // running) as soon as the TUI starts rendering — typically within 1–2s of
@@ -123,7 +123,7 @@ test.describe('Claude session_id capture', () => {
     })
 
     expect(status, 'no claude:status event arrived within 15s — OSC parser path may be broken').not.toBeNull()
-    expect(status!.terminalId).toMatch(/^claude-/)
+    expect(status!.terminalId).toMatch(/^agent-claude-/)
     expect(['idle', 'running']).toContain(status!.status)
   })
 })

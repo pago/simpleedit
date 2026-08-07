@@ -10,7 +10,7 @@
     optimisticRemoveWorktree,
   } from '../../stores/worktrees.svelte'
   import { sessionsStore, touchedWorktreesForRepo } from '../../stores/sessions.svelte'
-  import { getClaudeStatus } from '../../stores/claude-status.svelte'
+  import { getAgentStatus } from '../../stores/agent-status.svelte'
   import { sanitizeBranchName, isValidBranchName } from '../../lib/branchName'
   import { worktreeLabel } from '../../lib/worktreeLabel'
 
@@ -332,14 +332,14 @@
       ></span>
       <span class="flex-1 truncate" title={worktree.path}>{worktreeLabel(worktree)}</span>
       <span
-        class="text-[10px] {getClaudeStatus(worktree.path) === 'running'
+        class="text-[10px] {getAgentStatus(worktree.path) === 'running'
           ? 'text-yellow-400'
-          : getClaudeStatus(worktree.path) === 'error'
+          : getAgentStatus(worktree.path) === 'error'
             ? 'text-red-400'
-            : getClaudeStatus(worktree.path) === 'waiting'
+            : getAgentStatus(worktree.path) === 'waiting'
               ? 'text-blue-400'
               : 'text-zinc-500'}"
-      >{getClaudeStatus(worktree.path)}</span>
+      >{getAgentStatus(worktree.path)}</span>
 
       {#if !worktree.isMain}
         {#if removing === worktree.path}

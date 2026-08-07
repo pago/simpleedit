@@ -70,7 +70,7 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
   })
 
   test('keyboard nav in the new-session menu (ArrowDown + Enter) picks Agent View', async () => {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
     // Open the new-session menu (right-click; the button does not wire a
@@ -82,7 +82,8 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
     await expect(menu.getByRole('menuitem', { name: 'New Claude session' })).toBeVisible()
     await expect(menu.getByRole('menuitem', { name: 'New Agent View session' })).toBeVisible()
 
-    // Arrow down + Enter should pick the second item ("New Agent View session").
+    // Claude is initially focused; Codex is second and Agent View is third.
+    await window.keyboard.press('ArrowDown')
     await window.keyboard.press('ArrowDown')
     await window.keyboard.press('Enter')
     await expect(menu).not.toBeVisible()
@@ -90,7 +91,7 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
   })
 
   test('Escape returns focus to the ✦ Agent button after dismissing the menu', async () => {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
     await claudeButton.click({ button: 'right' })
@@ -102,11 +103,11 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
 
     // Focus should be on the ✦ Agent button after dismissal.
     const focused = await window.evaluate(() => document.activeElement?.getAttribute('aria-label'))
-    expect(focused).toBe('New Claude session')
+    expect(focused).toBe('New agent session')
   })
 
   test('Agent View labels increment as Agents, Agents 2, Agents 3 at spawn time', async () => {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
     // Spawn three Agent View sessions.
@@ -125,7 +126,7 @@ test.describe('Issue #90 QA — keyboard menu, focus return, label increments', 
   })
 
   test('Claude and Agents session labels increment independently', async () => {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
     // 1 Claude (left-click), 1 Agents (right-click → menu), 1 Claude, 1 Agents.

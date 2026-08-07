@@ -74,8 +74,8 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
   })
 
   test('right-click opens menu; selecting Agent View spawns an Agents session', async () => {
-    // The ✦ Agent button has aria-label="New Claude session".
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    // The ✦ Agent button has aria-label="New agent session".
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
 
     // Right-click to open the context menu.
@@ -97,7 +97,11 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
   })
 
   test('left-click on ✦ Agent button still creates a Claude session (unchanged)', async () => {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    await window.evaluate(async () => {
+      const api = (window as unknown as { api: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> } }).api
+      await api.invoke('models:config-set', { lastUsed: { provider: 'anthropic', model: 'claude-opus-5' } })
+    })
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click()
 
@@ -107,8 +111,39 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     await expect(window.getByRole('menu')).not.toBeVisible()
   })
 
+  /**
+   * Codex is a first-class provider: everything that doesn't depend on Codex's
+   * one-time hook-trust grant must match Claude. The banner is the ONLY expected
+   * difference, and only until that grant is made — so assert the parity too,
+   * not just the degraded state, or this test would pass while Codex silently
+   * regressed to a second-class citizen.
+   */
+  test('Codex menu item launches a native Codex session at the project root', async () => {
+    const agentButton = window.getByRole('button', { name: 'New agent session' }).first()
+    await agentButton.click({ button: 'right' })
+
+    const menu = window.getByRole('menu').first()
+    await menu.getByRole('menuitem', { name: 'New Codex session · configured default' }).click()
+
+    // Named for its own provider, numbered in its own sequence — not "Claude".
+    await expect(window.locator('[role="option"]:has-text("Codex")').first()).toBeVisible({ timeout: 5_000 })
+
+    // A real PTY on the provider-namespaced id, same shape as Claude's.
+    // (That it launches at the project root is asserted in the unit parity
+    // tests, where launchDir is directly observable.)
+    const ptyIds = await window.evaluate(() =>
+      (window as unknown as { api: { invoke: (ch: string) => Promise<string[]> } }).api.invoke('pty:active-ids'),
+    )
+    expect(ptyIds.some((id) => id.startsWith('agent-codex-'))).toBe(true)
+
+    // The one permitted difference, until hook trust is granted once. It is an
+    // explanation, not an action: no button writes into the live TUI.
+    await expect(window.getByText('trust prompt', { exact: false })).toBeVisible()
+    await expect(window.getByRole('button', { name: 'Open /hooks' })).toHaveCount(0)
+  })
+
   test('Escape dismisses the menu without picking', async () => {
-    const claudeButton = window.getByRole('button', { name: 'New Claude session' }).first()
+    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click({ button: 'right' })
 
@@ -123,8 +158,9 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
   })
 
   test('Agent View entries survive a session save/load round-trip', async () => {
-    // Round-trip the SerializedSession (version 2) blob through the
-    // session:save / session:load IPC handlers. An Agent View entry persists
+    // Round-trip a legacy SerializedSession (version 2) blob through the
+    // session:save / session:load IPC handlers. It is migrated to the
+    // provider-aware v4 shape while the Agent View entry persists
     // with kind 'agents' and no sessionId, so on a real restart it respawns
     // fresh via claude:spawn-agents (not via a Resume placeholder).
     interface ApiOnly { api: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> } }
@@ -155,7 +191,8 @@ test.describe('Issue #90: Agent View context menu on new-Claude button', () => {
     expect(sessions).toHaveLength(2)
 
     const claude = sessions.find((s) => s.label === 'Claude')!
-    expect(claude.kind).toBe('claude')
+    expect(claude.kind).toBe('agent')
+    expect((claude as typeof claude & { provider: string }).provider).toBe('claude')
     expect(claude.sessionId).toBe('sid-1')
 
     const agents = sessions.find((s) => s.label === 'Agents')!

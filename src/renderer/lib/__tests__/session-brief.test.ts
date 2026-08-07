@@ -68,7 +68,7 @@ describe('assembleBriefContext', () => {
   it('pulls the goal from the seed prompt, resolves the branch, and lists staged files', async () => {
     const session: Session = {
       id: 's',
-      kind: 'claude',
+      kind: 'agent',
       label: 'Claude',
       launchDir: PRIMARY,
       worktreePath: FEAT,
@@ -90,7 +90,7 @@ describe('assembleBriefContext', () => {
     }
     const session: Session = {
       id: 's',
-      kind: 'claude',
+      kind: 'agent',
       label: 'Claude',
       launchDir: PRIMARY,
       worktreePath: FEAT,
