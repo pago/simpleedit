@@ -243,6 +243,20 @@ describe('opencode against a captured real turn', () => {
     expect(c.signals.every((s) => s.sessionId.startsWith('ses_'))).toBe(true)
   })
 
+  it('reports the learned session id exactly once, not per frame', () => {
+    // Out-of-band mail delivery targets this id. The server is per PROJECT and
+    // lists every session in its history, so "the first one" would post a
+    // peer's message into an unrelated conversation.
+    const seen: string[] = []
+    const c = collect()
+    const state: EventState = {}
+    for (const f of frames) {
+      applyEvent(f, c.sink, state, { ...CTX, onSessionId: (id) => seen.push(id) })
+    }
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatch(/^ses_/)
+  })
+
   it('reports exactly one turn boundary', () => {
     const c = apply(frames)
     expect(c.signals.filter((s) => s.eventName === 'Stop')).toHaveLength(1)

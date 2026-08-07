@@ -12,7 +12,7 @@
  * boundaries, tool calls and session identity directly, so status is precise
  * and tracking is full with no one-time trust grant of the kind Codex needs.
  *
- * Verified against opencode 1.17.13.
+ * Verified against opencode 1.18.15.
  */
 import { app } from 'electron'
 import { createServer } from 'net'
@@ -29,6 +29,13 @@ import {
 
 /** Where an attached session's server lives, so out-of-band delivery can reach it. */
 const controlPorts = new Map<string, number>()
+/**
+ * terminal id → the OpenCode session it is driving.
+ *
+ * Learned from the event stream rather than known at launch: session ids are
+ * minted server-side, so unlike Claude there is no id to pin before spawning.
+ */
+const liveSessions = new Map<string, string>()
 
 function mcpServerPath(): string {
   return app.isPackaged
@@ -153,6 +160,7 @@ async function buildLaunch(ctx: LaunchContext): Promise<LaunchPlan> {
     env: bridgeConfigEnv(ctx),
     cleanup: () => {
       controlPorts.delete(ctx.terminalId)
+      liveSessions.delete(ctx.terminalId)
       unregisterTerminal(ctx.terminalId)
     },
   }
@@ -183,6 +191,14 @@ async function waitForHealth(port: number, signal: AbortSignal): Promise<boolean
  * session id, cwd and touched file together — so a `HookSignal` has to be
  * assembled from several frames. That is what this holds.
  */
+/** What the event mapper needs about the session it is watching. */
+export interface EventContext {
+  terminalId: string
+  cwd: string
+  /** Called when the server-minted session id is first learned, or changes. */
+  onSessionId?: (sessionId: string) => void
+}
+
 export interface EventState {
   /** Server-minted `ses_…` id, learned from the first session event. */
   sessionId?: string
@@ -228,7 +244,7 @@ export function applyEvent(
   event: unknown,
   sink: AgentAttachSink,
   state: EventState,
-  ctx: { terminalId: string; cwd: string },
+  ctx: EventContext,
 ): void {
   const frame = record(event)
   const type = str(frame?.['type'])
@@ -257,7 +273,10 @@ export function applyEvent(
     case 'session.created':
     case 'session.updated': {
       const id = str(props['sessionID']) ?? str(record(props['info'])?.['id'])
-      if (id) state.sessionId = id
+      if (id && id !== state.sessionId) {
+        state.sessionId = id
+        ctx.onSessionId?.(id)
+      }
       return
     }
 
@@ -408,7 +427,7 @@ export function applyEvent(
 export async function consumeEventStream(
   body: ReadableStream<Uint8Array>,
   sink: AgentAttachSink,
-  ctx: { terminalId: string; cwd: string },
+  ctx: EventContext,
 ): Promise<void> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
@@ -447,7 +466,11 @@ function attach(_plan: LaunchPlan, ctx: LaunchContext, sink: AgentAttachSink): (
     try {
       const res = await fetch(`http://127.0.0.1:${port}/event`, { signal: controller.signal })
       if (res.body) {
-        await consumeEventStream(res.body, sink, { terminalId: ctx.terminalId, cwd: ctx.worktreePath })
+        await consumeEventStream(res.body, sink, {
+          terminalId: ctx.terminalId,
+          cwd: ctx.worktreePath,
+          onSessionId: (id) => liveSessions.set(ctx.terminalId, id),
+        })
       }
     } catch {
       // Aborted on exit, or the server went away with the process. Either way
@@ -469,14 +492,13 @@ function attach(_plan: LaunchPlan, ctx: LaunchContext, sink: AgentAttachSink): (
  */
 async function deliverMessage(terminalId: string, text: string): Promise<boolean> {
   const port = controlPorts.get(terminalId)
-  if (port == null) return false
+  // The session THIS terminal is driving, learned from its own event stream.
+  // Not "the first session the server lists": OpenCode's server is per project
+  // and its session list includes every session in that project's history, so
+  // picking the first would post a peer's mail into an unrelated conversation.
+  const sessionId = liveSessions.get(terminalId)
+  if (port == null || sessionId === undefined) return false
   try {
-    const sessions = await fetch(`http://127.0.0.1:${port}/session`)
-    if (!sessions.ok) return false
-    const list: unknown = await sessions.json()
-    const first = Array.isArray(list) ? list[0] : undefined
-    const sessionId = first && typeof first === 'object' ? (first as Record<string, unknown>)['id'] : undefined
-    if (typeof sessionId !== 'string') return false
     const res = await fetch(`http://127.0.0.1:${port}/session/${sessionId}/prompt_async`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
