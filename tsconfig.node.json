@@ -15,6 +15,9 @@
   },
   "include": [
     "src/main/**/*",
+    // `**/*` does not match .json even with resolveJsonModule — captured-output
+    // test fixtures are imported as modules and must be listed explicitly.
+    "src/main/**/*.json",
     "src/preload/**/*",
     "src/shared/**/*",
     "electron.vite.config.ts"
