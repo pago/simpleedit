@@ -14,7 +14,7 @@ vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => '/app' 
 import { opencodeProvider, applyEvent, reservePort, type EventState } from '../opencode'
 import type { AgentAttachSink } from '../provider'
 import type { HookSignal } from '../../cwd-tracker'
-import { buildOpenCodeRunArgs, openCodeReadOnlyEnv, openCodeAgentText } from '../../agent-tasks/runner'
+import { buildOpenCodeRunArgs, openCodeReadOnlyEnv, openCodeAgentText, openCodeTurnFailure } from '../../agent-tasks/runner'
 import liveTurn from './fixtures/opencode-live-turn.json'
 
 const base = { terminalId: 't1', worktreePath: '/repo/main' }
@@ -405,6 +405,38 @@ describe('opencode bounded read-only execution', () => {
     expect(openCodeAgentText({ type: 'step_start', part: {} })).toBeNull()
     expect(openCodeAgentText({ type: 'tool_use', part: { state: { output: '{"finding":"no"}' } } })).toBeNull()
     expect(openCodeAgentText({ type: 'step_finish', part: { reason: 'stop' } })).toBeNull()
+  })
+})
+
+describe('opencode turn-failure detection', () => {
+  it('reports a genuine failure so an empty run is not read as a clean pass', () => {
+    expect(openCodeTurnFailure({ type: 'step_finish', part: { reason: 'error' } })).toMatch(/error/)
+    expect(openCodeTurnFailure({ type: 'step_finish', part: { reason: 'content-filter' } })).toMatch(/content-filter/)
+  })
+
+  it('passes reasons that merely mean "the SDK did not recognise this"', () => {
+    // The finish reason is an open string passed through from the AI SDK, whose
+    // mapping falls back to `other` for any provider value it does not know. An
+    // allowlist of known-good reasons therefore fails healthy runs on unfamiliar
+    // models — reporting a real review as an error, which is worse than the gap.
+    for (const reason of ['stop', 'tool-calls', 'other', 'unknown', 'length']) {
+      expect(openCodeTurnFailure({ type: 'step_finish', part: { reason } })).toBeNull()
+    }
+  })
+
+  it('extracts the message from an error frame, whose payload is an object', () => {
+    // `{ error: { name, data: { message } } }` — never a bare string, so a
+    // typeof check against the payload always fell through to the generic text.
+    expect(
+      openCodeTurnFailure({ type: 'error', error: { name: 'ProviderAuthError', data: { message: 'no credentials' } } }),
+    ).toBe('no credentials')
+    expect(openCodeTurnFailure({ type: 'error', error: { name: 'UnknownError' } })).toBe('UnknownError')
+  })
+
+  it('says nothing about healthy frames', () => {
+    expect(openCodeTurnFailure({ type: 'text', part: { text: 'hi' } })).toBeNull()
+    expect(openCodeTurnFailure({ type: 'step_start', part: {} })).toBeNull()
+    expect(openCodeTurnFailure(null)).toBeNull()
   })
 })
 

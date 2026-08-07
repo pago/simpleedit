@@ -406,14 +406,16 @@ export function openCodeReadOnlyEnv(): Record<string, string> {
 }
 
 /**
- * The assistant text from an OpenCode `run --format json` frame.
+ * Reasons that genuinely mean the turn failed.
  *
- * Gated on `type === 'text'`, whose `part.text` is the complete block — verified
- * against a captured 1.17.13 stream, whose frames are `step_start`, `tool_use`,
- * `step_finish` and `text`. Reasoning frames are deliberately excluded: feeding
- * the model's thinking to the finding scanner would let a JSON object it merely
- * *considered* be reported as a finding.
+ * A DENYLIST, deliberately. The finish reason is an open string that OpenCode
+ * passes through from the AI SDK, whose mapping falls back to `other` for any
+ * provider value it does not recognise — so an allowlist of known-good reasons
+ * fails healthy runs on any model whose provider reports something unfamiliar.
+ * Reporting a real review as an error is worse than the gap this closes.
  */
+const OPENCODE_FATAL_FINISH_REASONS = new Set(['error', 'content-filter'])
+
 /**
  * The failure message from an OpenCode `run --format json` frame, if this is
  * one.
@@ -422,30 +424,41 @@ export function openCodeReadOnlyEnv(): Record<string, string> {
  * without `opencode run` exiting non-zero, and the run would then look like a
  * clean pass that simply found nothing. For a review lens that is the worst
  * possible outcome: "no findings" reads as "reviewed, nothing wrong".
- *
- * Captured 1.18.15 frames end each step with `step_finish` carrying a `reason`;
- * `stop` and `tool-calls` are the healthy ones. An explicit `error` frame is
- * also treated as fatal.
  */
 export function openCodeTurnFailure(event: unknown): string | null {
   if (!event || typeof event !== 'object') return null
   const record = event as Record<string, unknown>
-  const part = record['part']
-  const partRecord = part && typeof part === 'object' ? (part as Record<string, unknown>) : undefined
 
   if (record['type'] === 'error') {
-    const message = record['error'] ?? record['message']
+    // The payload is an object (`{ name, data: { message } }`), never a string.
+    const error = record['error']
+    const errorRecord = error && typeof error === 'object' ? (error as Record<string, unknown>) : undefined
+    const data = errorRecord?.['data']
+    const dataRecord = data && typeof data === 'object' ? (data as Record<string, unknown>) : undefined
+    const message = dataRecord?.['message'] ?? errorRecord?.['name'] ?? record['message']
     return typeof message === 'string' ? message : 'opencode reported an error'
   }
+
   if (record['type'] === 'step_finish') {
+    const part = record['part']
+    const partRecord = part && typeof part === 'object' ? (part as Record<string, unknown>) : undefined
     const reason = partRecord?.['reason']
-    if (typeof reason === 'string' && reason !== 'stop' && reason !== 'tool-calls') {
+    if (typeof reason === 'string' && OPENCODE_FATAL_FINISH_REASONS.has(reason)) {
       return `turn ended with reason "${reason}"`
     }
   }
   return null
 }
 
+/**
+ * The assistant text from an OpenCode `run --format json` frame.
+ *
+ * Gated on `type === 'text'`, whose `part.text` is the complete block — verified
+ * against a captured 1.18.15 stream, whose frames are `step_start`, `tool_use`,
+ * `step_finish` and `text`. Reasoning frames are deliberately excluded: feeding
+ * the model's thinking to the finding scanner would let a JSON object it merely
+ * *considered* be reported as a finding.
+ */
 export function openCodeAgentText(event: unknown): string | null {
   if (!event || typeof event !== 'object') return null
   const record = event as Record<string, unknown>
