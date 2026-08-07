@@ -175,7 +175,7 @@ async function buildLaunch(ctx: LaunchContext): Promise<LaunchPlan> {
   return {
     executable: 'opencode',
     args,
-    env: bridgeConfigEnv(ctx),
+    env: { ...baseEnv(), ...bridgeConfigEnv(ctx) },
     cleanup: () => {
       controlPorts.delete(ctx.terminalId)
       liveSessions.delete(ctx.terminalId)
