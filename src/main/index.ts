@@ -28,7 +28,7 @@ import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
   getBranchDiff, getBranchFiles, getFileAtBranchBase,
-  watchGitRefs, unwatchGitRefs, unwatchAllGitRefs, triggerStatusCheck
+  watchGitRefs, unwatchGitRefs, unwatchAllGitRefs
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
