@@ -57,7 +57,7 @@ import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions,
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
-import { listCodexModels } from './models/codex-catalog'
+import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import type { PrContext } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
 import { postReview } from './github/gh'
@@ -774,6 +774,7 @@ app.on('before-quit', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { cancelCodexDiscovery() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
@@ -788,6 +789,7 @@ app.on('window-all-closed', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { cancelCodexDiscovery() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }

@@ -1,8 +1,69 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { EventEmitter } from 'events'
+import { PassThrough } from 'stream'
 
-vi.mock('electron', () => ({ app: {} }))
+vi.mock('electron', () => ({ app: { getVersion: () => '0.0.0-test' } }))
 
-import { parseCodexModelPage } from '../codex-catalog'
+const spawnMock = vi.hoisted(() => vi.fn())
+const resolveCodexPathMock = vi.hoisted(() => vi.fn(() => Promise.resolve('codex')))
+vi.mock('child_process', () => ({ spawn: spawnMock }))
+vi.mock('../../lib/shell-path', () => ({ resolveCodexPath: resolveCodexPathMock }))
+
+import { parseCodexModelPage, listCodexModels, cancelCodexDiscovery } from '../codex-catalog'
+
+interface FakeProc extends EventEmitter {
+  stdout: PassThrough
+  stdin: { write: ReturnType<typeof vi.fn> }
+  kill: ReturnType<typeof vi.fn>
+}
+
+function makeFakeProc(): FakeProc {
+  const proc = new EventEmitter() as FakeProc
+  proc.stdout = new PassThrough()
+  proc.stdin = { write: vi.fn() }
+  proc.kill = vi.fn(() => proc.emit('close', null))
+  return proc
+}
+
+describe('Codex model discovery lifecycle', () => {
+  beforeEach(() => {
+    spawnMock.mockClear()
+    resolveCodexPathMock.mockClear()
+  })
+
+  it('cancelCodexDiscovery kills an in-flight app-server child', async () => {
+    const proc = makeFakeProc()
+    spawnMock.mockReturnValueOnce(proc)
+
+    const models = listCodexModels()
+    // The initialize RPC has been written and discovery now sits awaiting the
+    // response — the child is alive and in the inflight set.
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalled())
+    expect(proc.kill).not.toHaveBeenCalled()
+
+    cancelCodexDiscovery()
+    expect(proc.kill).toHaveBeenCalledWith('SIGKILL')
+    // The kill's 'close' fails the pending RPC, so discovery resolves empty
+    // instead of leaving the promise dangling.
+    await expect(models).resolves.toEqual([])
+  })
+
+  it('a cancel during codex-path resolution prevents the spawn entirely', async () => {
+    let releasePath: (value: string) => void = () => {}
+    resolveCodexPathMock.mockReturnValueOnce(new Promise<string>((resolve) => { releasePath = resolve }))
+
+    const models = listCodexModels()
+    await vi.waitFor(() => expect(resolveCodexPathMock).toHaveBeenCalled())
+
+    // Quit lands while the login-shell path probe is still running: the spawn
+    // must not happen afterwards — it would outlive the quit hooks.
+    cancelCodexDiscovery()
+    releasePath('codex')
+
+    await expect(models).resolves.toEqual([])
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+})
 
 describe('Codex model catalog parsing', () => {
   it('filters hidden models and preserves reasoning/default metadata and pagination', () => {
