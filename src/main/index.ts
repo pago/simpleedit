@@ -59,7 +59,7 @@ import { syncPeers, resolveSpawn } from './agent-bus'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
-import { getOpenCodeModels } from './models/opencode-catalog'
+import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
 import type { PrContext } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
 import { postReview } from './github/gh'
@@ -791,6 +791,7 @@ app.on('before-quit', () => {
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
+  try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
@@ -806,6 +807,7 @@ app.on('window-all-closed', () => {
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
+  try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }
