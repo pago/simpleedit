@@ -1,5 +1,49 @@
 # simpleedit
 
+## 0.22.0
+
+### Minor Changes
+
+- [#172](https://github.com/pago/simpleedit/pull/172) [`29cfccb`](https://github.com/pago/simpleedit/commit/29cfccb72ba2bc0263b9691ba1f23529fcdfad57) Thanks [@pago](https://github.com/pago)! - Added first-class Codex support alongside Claude Code.
+
+  - Launch, resume, fork, hand off, and delegate between native Claude and Codex terminal sessions. Every agent launches at the project root, as Claude already did — agents create their own worktrees.
+  - Agent-to-agent messaging now spans both providers: a Codex session is addressable by `list_sessions` / `send_message` and receives mail through its `Stop` hook, the same channel Claude uses.
+  - Provider differences are declared as capabilities rather than hard-coded per provider, so the UI adapts (Shift+Enter handling, dropped-path format, labels, OSC-title policy, reporting setup) without naming a provider. Adding another agent means registering a descriptor.
+  - Codex lifecycle reporting (status, session identity, cwd/repo tracking) rides hooks whose command carries no per-session data, so Codex's hook-trust grant is a genuine one-time action instead of being invalidated on every launch.
+  - Added read-only Codex execution for Review, Tour, Screen PRs, every deep-review lens, and synthesis, with analysis-aware cache invalidation.
+  - Added Codex model discovery over the app-server catalog, with a configured-default fallback when it is unavailable.
+
+  Codex requires two one-time grants before its reporting works: trusting the hook command (via Codex's `/hooks`) and trusting the project directory. Until then a session says so in-place and falls back to coarse signals.
+
+- [#174](https://github.com/pago/simpleedit/pull/174) [`0b7ed24`](https://github.com/pago/simpleedit/commit/0b7ed240520fb8296d8322b92b0c29db9b40b4fe) Thanks [@pago](https://github.com/pago)! - Add OpenCode as a third first-class agent provider.
+
+  OpenCode sessions launch, resume and fork like Claude and Codex ones, report
+  precise status, track the files and repos they touch, name themselves from the
+  conversation, and take part in agent-to-agent messaging. Its models appear in
+  the session picker, the default-model setting and the deep-review lenses, and
+  Review and Tour can run on it as a bounded, read-only runner.
+
+  Unlike the other two, OpenCode reports nothing back over hooks — its TUI hosts
+  the opencode HTTP server, so SimpleEdit launches it on a port it chose and
+  subscribes to that server's event stream instead. Providers can now describe
+  this with an `attach` lifecycle, so status and tracking work with no one-time
+  trust grant of the kind Codex needs.
+
+  Two fixes fall out of this that apply to Claude and Codex as well:
+
+  - A session started on an explicitly chosen model was labelled with the model id
+    and frozen there for its whole life. That label is now a stand-in an agent's
+    own conversation title may replace; a name you chose still wins.
+  - Pickers that offered a reasoning effort per model built their option keys
+    without the effort unless the provider was Codex, so variants of one model
+    could collide.
+
+### Patch Changes
+
+- [#176](https://github.com/pago/simpleedit/pull/176) [`461e640`](https://github.com/pago/simpleedit/commit/461e64089fa29ca62449420f02c18bb1f5e563cd) Thanks [@pago](https://github.com/pago)! - Quitting no longer hangs while Codex model discovery is in flight. The `codex app-server` child spawned to list models is now killed on quit; previously its open stdio pipes could deadlock Electron's shutdown, leaving the app process alive indefinitely.
+
+- [#174](https://github.com/pago/simpleedit/pull/174) [`f96e98c`](https://github.com/pago/simpleedit/commit/f96e98c75f69cb1001d2728de31f6fe35d263058) Thanks [@pago](https://github.com/pago)! - Kill in-flight OpenCode model discovery when the app quits, so a catalog fetch that has not returned yet cannot hold Electron's shutdown open.
+
 ## 0.21.0
 
 ### Minor Changes
