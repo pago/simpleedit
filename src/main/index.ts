@@ -7,6 +7,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   spawnTerminal,
   spawnAgentTerminalForProvider,
+  reportSpawnFailure,
   spawnAgentsTerminal,
   writeToTerminal,
   resizeTerminal,
@@ -27,7 +28,7 @@ import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
   getBranchDiff, getBranchFiles, getFileAtBranchBase,
-  watchGitRefs, unwatchGitRefs, unwatchAllGitRefs, triggerStatusCheck
+  watchGitRefs, unwatchGitRefs, unwatchAllGitRefs
 } from './git-operations'
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
@@ -58,6 +59,7 @@ import { syncPeers, resolveSpawn } from './agent-bus'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
+import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
 import type { PrContext } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
 import { postReview } from './github/gh'
@@ -458,15 +460,27 @@ function registerAllHandlers(): void {
   })
 
   // ── Interactive agents ──────────────────────────────────
-  ipcMain.handle('agent:spawn', (event, options: AgentSpawnOptions) => {
+  ipcMain.handle('agent:spawn', async (event, options: AgentSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
-    spawnAgentTerminalForProvider(
-      {
-        ...options,
-        ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
-      },
-      event.sender
-    )
+    // Awaited and caught. `buildLaunch` validates ids that reach a login-shell
+    // command string, so it rejects on input an agent supplied — a bad
+    // `spawn_session` model id is ordinary bad input, not an internal error.
+    // Floated, it becomes an unhandled rejection, which Electron's default
+    // handler turns into a modal "A JavaScript error occurred in the main
+    // process" dialog while the session it belonged to fails silently.
+    try {
+      await spawnAgentTerminalForProvider(
+        {
+          ...options,
+          ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
+        },
+        event.sender
+      )
+    } catch (error) {
+      reportSpawnFailure(options.id, error, event.sender)
+      return
+    }
+    // After the spawn, not before: attachment maps a terminal that must exist.
     attachToTerminal(options.id, options.worktreePath, event.sender, options.target.provider)
   })
 
@@ -597,6 +611,8 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('models:codex', () => listCodexModels())
+
+  ipcMain.handle('models:opencode', () => getOpenCodeModels())
 
   ipcMain.handle('models:hardware', () => {
     return detectHardware()
@@ -775,6 +791,7 @@ app.on('before-quit', () => {
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
+  try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
 })
 
 app.on('window-all-closed', () => {
@@ -790,6 +807,7 @@ app.on('window-all-closed', () => {
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
+  try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
     app.quit()
   }

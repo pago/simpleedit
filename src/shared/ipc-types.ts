@@ -134,7 +134,16 @@ export interface GitEventMap {
 }
 
 // ── Interactive agents ────────────────────────────────────
-export type AgentProviderId = 'claude' | 'codex'
+export type AgentProviderId = 'claude' | 'codex' | 'opencode'
+
+/**
+ * Providers whose `InteractiveTarget` names a model by bare provider-native id
+ * rather than by structured `ModelRef`. Grouping them in one union arm is what
+ * lets callers narrow with `provider === 'claude'` and handle everything else
+ * uniformly — naming each id individually is how `provider === 'codex'`
+ * conditionals leaked into components in the first place.
+ */
+export type NativeModelAgentId = Exclude<AgentProviderId, 'claude'>
 export type AgentStatus = 'initializing' | 'idle' | 'running' | 'waiting' | 'error' | 'exited'
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
 
@@ -154,7 +163,7 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 
 export type InteractiveTarget =
   | { provider: 'claude'; model?: ModelRef }
-  | { provider: 'codex'; model?: string; reasoningEffort?: ReasoningEffort }
+  | { provider: NativeModelAgentId; model?: string; reasoningEffort?: ReasoningEffort }
 
 export interface AgentSpawnOptions extends PtySpawnOptions {
   target: InteractiveTarget
@@ -227,9 +236,17 @@ export interface AgentCapabilities {
    * What the agent puts in the terminal's OSC title. `session-label` means it's
    * a meaningful name we can show as the session's label (Claude writes the
    * conversation name); `directory` means it's just the cwd — possibly with a
-   * spinner glyph — so it must NOT overwrite the session label.
+   * spinner glyph; `constant` means a fixed brand string (OpenCode emits the
+   * literal "OpenCode"). Only `session-label` may overwrite the session label.
    */
-  oscTitle: 'session-label' | 'directory'
+  oscTitle: 'session-label' | 'directory' | 'constant'
+  /**
+   * Whether the provider reports a conversation title out-of-band (not via the
+   * terminal title). OpenCode names a session from its first turn and pushes
+   * that over its event stream, so a session can be labelled meaningfully even
+   * though its OSC title is a fixed brand string.
+   */
+  reportsSessionTitle: boolean
   /**
    * Whether lifecycle reporting works as soon as we launch, or needs a one-time
    * grant from the user. Codex is `user-granted`: it refuses to run our hooks
@@ -244,13 +261,29 @@ export interface AgentCapabilities {
    * Lets a picker build a target without knowing which provider it is.
    */
   modelSelector: 'model-ref' | 'model-id'
+  /**
+   * For `model-id` providers, the `ModelRef.provider` its bare ids belong to
+   * (Codex's are `openai` ids, OpenCode's are `opencode` ids). This is what
+   * lets "remember the last model used" store a uniform `ModelRef` without a
+   * component knowing which agent produced it. Absent for `model-ref`
+   * providers, which already carry a fully-formed `ModelRef`.
+   */
+  nativeModelBrand?: Extract<ModelRef, { reasoningEffort?: ReasoningEffort }>['provider']
   /** Whether a reasoning effort can be chosen alongside the model. */
   reasoningEffort: boolean
+  /**
+   * Whether the provider can be handed a catalog of selectable models, fetched
+   * over `models:for-agent`. False for agents whose model list we cannot
+   * enumerate, so the picker offers only the configured default.
+   */
+  modelCatalog: boolean
 }
 
 export interface AgentEventMap {
   'agent:status': { worktreePath: string; status: AgentStatus; terminalId: string; precise: boolean; message?: string }
   'agent:session-id': { terminalId: string; sessionId: string }
+  /** The agent's own name for the conversation (see `reportsSessionTitle`). */
+  'agent:session-title': { terminalId: string; title: string }
   /**
    * The session's tracked working directory changed (from a hook POST). When
    * `cwd` falls inside a worktree of the session's repo, `worktreePath` is that
@@ -517,10 +550,17 @@ export type ModelRef =
   | { provider: 'anthropic'; model: string }
   | { provider: 'ollama'; model: string; endpoint?: string }
   | { provider: 'openai'; model?: string; reasoningEffort?: ReasoningEffort }
+  /**
+   * An OpenCode model id, always fully qualified as `<provider>/<model>` (e.g.
+   * `opencode/deepseek-v4-flash-free`) because that is the only form its
+   * `--model` flag accepts. `reasoningEffort` maps to OpenCode's `--variant`.
+   */
+  | { provider: 'opencode'; model?: string; reasoningEffort?: ReasoningEffort }
 
 export type TaskTarget =
   | { runner: 'claude'; model?: string }
   | { runner: 'codex'; model?: string; reasoningEffort?: ReasoningEffort }
+  | { runner: 'opencode'; model?: string; reasoningEffort?: ReasoningEffort }
   | { runner: 'ollama'; model: string; endpoint?: string }
 
 /** How well a model is expected to run on the current machine (see computeFit). */
@@ -556,6 +596,19 @@ export interface ClaudeModel {
   provider: 'anthropic'
   displayName: string
   model: string
+}
+
+/**
+ * An OpenCode model offered in the picker. `model` is the fully qualified
+ * `<provider>/<id>` form, because that is the only form `--model` accepts.
+ * Reasoning-effort variants are per model here, not global as they are for
+ * Codex.
+ */
+export interface OpenCodeModel {
+  provider: 'opencode'
+  displayName: string
+  model: string
+  supportedReasoningEfforts: ReasoningEffort[]
 }
 
 export interface CodexModel {
@@ -619,6 +672,8 @@ export interface ModelsInvokeMap {
   'models:claude': { args: []; result: ClaudeModel[] }
   /** Best-effort dynamic catalog. Empty means use Codex's configured default. */
   'models:codex': { args: []; result: CodexModel[] }
+  /** OpenCode's catalog, from `opencode models --verbose`. */
+  'models:opencode': { args: []; result: OpenCodeModel[] }
   /** This machine's profile (chip + RAM), used to show fit/hardware hints. */
   'models:hardware': { args: []; result: HardwareInfo }
   /** All installed Ollama models, annotated with hardware fit + tool-capability. */

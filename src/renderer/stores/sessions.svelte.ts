@@ -9,7 +9,7 @@
  */
 import { untrack } from 'svelte'
 import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
-import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, ReasoningEffort } from '../../shared/ipc-types'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, NativeModelAgentId, ReasoningEffort } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -286,21 +286,27 @@ export const sessionsStore = {
     const model = opts.model ?? (target.provider === 'claude' ? target.model : undefined)
     const caps = capabilitiesFor(target.provider)
     const name = providerLabel(target.provider)
-    // The model id, when the target names one — Claude carries a ModelRef,
-    // Codex a bare id.
-    const modelId = target.provider === 'codex' ? target.model : model?.model
-    // `customLabel` means "a human or a model chose this name", nothing more.
-    // Whether a provider's OSC titles may rename a session is a provider
-    // property, decided in `applyOscTitle` when the title actually arrives —
-    // deciding it here would race the async capability fetch.
-    const pinned = !!opts.label || !!modelId
+    // The model id, when the target names one. `model-ref` providers carry a
+    // structured ModelRef; every other provider carries a bare native id, so
+    // narrowing on 'claude' handles all of them without naming any.
+    const modelId = target.provider === 'claude' ? model?.model : target.model
+    // `customLabel` means a human or a model CHOSE this name, and nothing
+    // automatic may overwrite it. Falling back to the model id is NOT a choice
+    // — it is what we show for want of anything better — so it no longer sets
+    // the flag, and the conversation title the agent later reports replaces it.
+    // This applies to every provider: before, any session started on an
+    // explicit model was frozen at the model id for its whole life.
+    // Whether a provider's titles may rename a session stays a provider
+    // property, decided when the title actually arrives — deciding it here
+    // would race the async capability fetch.
+    const chosen = !!opts.label
     const newSession: Session = {
       id,
       kind: 'agent',
       provider: target.provider,
       target,
       label: opts.label ?? modelId ?? defaultLabel('agent', name),
-      ...(pinned ? { customLabel: true as const } : {}),
+      ...(chosen ? { customLabel: true as const } : {}),
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
       ...(opts.target?.groupId ? { groupId: opts.target.groupId } : {}),
@@ -329,11 +335,23 @@ export const sessionsStore = {
       ...(model ? { model: $state.snapshot(model) } : {}),
       ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
     })
-    void window.api.invoke('models:config-set', {
-      lastUsed: target.provider === 'codex'
-        ? { provider: 'openai', ...(target.model ? { model: target.model } : {}), ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}) }
-        : target.model,
-    })
+    // "Last model used" is stored as a uniform ModelRef. A bare native id is
+    // lifted into one using the brand its provider declares, so this never has
+    // to know which agent produced the id. `lastUsed` is always sent, including
+    // as undefined: `setModelConfig` treats a present-but-undefined key as an
+    // explicit clear, which is how starting a default session resets the
+    // remembered model. Dropping the key instead would silently keep it.
+    const lastUsed: ModelRef | undefined =
+      target.provider === 'claude'
+        ? target.model
+        : caps?.nativeModelBrand && target.model
+          ? {
+              provider: caps.nativeModelBrand,
+              model: target.model,
+              ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}),
+            }
+          : undefined
+    void window.api.invoke('models:config-set', { lastUsed })
     // For cloud Claude, upgrade the raw model id to its human display name once
     // the (static) catalog resolves — best-effort, leaves the id if not found.
     // Skip when the caller gave an explicit label: the upgrade only prettifies
@@ -360,27 +378,48 @@ export const sessionsStore = {
     return this.createAgent(target, launchDir, worktreePath, opts)
   },
 
-  createCodex(
+  /**
+   * Start a session for any provider that names its model by bare native id.
+   *
+   * `opts.model` is that native id and belongs ONLY on the target.
+   * `AgentCreateOptions.model` is a structured ModelRef — Claude's brain
+   * selection — so the rest of `opts` is forwarded field by field rather than
+   * spread. Passing the string through would put it on `Session.model` and in
+   * the `agent:spawn` payload, and `spawnSessionFromAgent` inherits
+   * `caller.model` as a ModelRef, so this session spawning a Claude peer would
+   * hand the bare id on as that peer's model.
+   */
+  createNativeAgent(
+    provider: NativeModelAgentId,
     launchDir: string,
     worktreePath: string,
     opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
   ): string {
     const target: InteractiveTarget = {
-      provider: 'codex',
+      provider,
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
     }
-    // `opts.model` is Codex's bare model id and belongs ONLY on the target.
-    // `AgentCreateOptions.model` is a structured ModelRef — Claude's brain
-    // selection — so the rest of `opts` is forwarded field by field rather than
-    // spread. Passing the string through would put it on `Session.model` and in
-    // the `agent:spawn` payload, and `spawnSessionFromAgent` inherits
-    // `caller.model` as a ModelRef, so a Codex session spawning a Claude peer
-    // would hand the bare id on as that peer's model.
     return this.createAgent(target, launchDir, worktreePath, {
       ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
       ...(opts.label ? { label: opts.label } : {}),
     })
+  },
+
+  createCodex(
+    launchDir: string,
+    worktreePath: string,
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+  ): string {
+    return this.createNativeAgent('codex', launchDir, worktreePath, opts)
+  },
+
+  createOpenCode(
+    launchDir: string,
+    worktreePath: string,
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+  ): string {
+    return this.createNativeAgent('opencode', launchDir, worktreePath, opts)
   },
 
   createAgents(launchDir: string, worktreePath: string): string {
@@ -543,6 +582,22 @@ export const sessionsStore = {
   },
 
   /**
+   * Apply a conversation title the agent reported out-of-band.
+   *
+   * Unlike an OSC title this never needs cleaning up or vetting — a provider
+   * only reports one if `reportsSessionTitle` says it names conversations —
+   * but it obeys the same stickiness rule: a name the user or a model CHOSE
+   * wins, a provisional model-id stand-in does not.
+   */
+  applySessionTitle(id: string, title: string): void {
+    const session = findSession(id)
+    if (!session || session.customLabel) return
+    const clean = title.trim()
+    if (!clean || clean === session.label) return
+    this.update(id, { label: clean })
+  },
+
+  /**
    * Apply an OSC title from the PTY. User-renamed sessions are sticky.
    * Strips Claude Code's status prefix (✳ U+2733 or braille spinner
    * U+2800–U+28FF), which is always followed by a space.
@@ -550,12 +605,15 @@ export const sessionsStore = {
   applyOscTitle(id: string, rawTitle: string): void {
     const session = findSession(id)
     if (!session || session.customLabel) return
-    // Some agents put the working directory (plus a spinner) in the OSC title
-    // rather than a conversation name — renaming the session to that on every
-    // turn would be worse than useless. Only providers that explicitly report a
-    // directory title are blocked, so plain terminals keep their shell-set
-    // titles and an unknown provider stays permissive.
-    if (capabilitiesFor(session.provider)?.oscTitle === 'directory') return
+    // Agents put all sorts of things in the OSC title — a working directory
+    // plus a spinner, or a fixed brand string — and renaming the session to
+    // that on every turn would be worse than useless. A known provider must
+    // therefore opt IN by reporting `session-label`; only a session with no
+    // provider at all (a plain terminal, keeping its shell-set title) is
+    // permissive by default. Blocking a denylist of known-bad values instead
+    // silently re-breaks the moment a provider reports a new kind of title.
+    const caps = capabilitiesFor(session.provider)
+    if (session.provider && caps && caps.oscTitle !== 'session-label') return
     const firstCp = rawTitle.codePointAt(0) ?? 0
     const hasPrefix = firstCp === 0x2733 || (firstCp >= 0x2800 && firstCp <= 0x28ff)
     const label = hasPrefix
@@ -868,11 +926,19 @@ async function spawnSessionFromAgent(
 
   const provider = data.provider ?? caller?.provider ?? 'claude'
   let target: InteractiveTarget
-  if (provider === 'codex') {
+  if (provider !== 'claude') {
+    // Every non-Claude provider names its model by bare native id, so the
+    // caller's own target can be inherited whenever it is also a native-id
+    // target — regardless of which agent it is. Inheriting across a *different*
+    // native provider would be wrong (an OpenCode id means nothing to Codex),
+    // hence the provider match rather than a plain "not claude" check.
+    const inherited = caller?.target?.provider === provider ? caller.target : undefined
     target = {
-      provider: 'codex',
-      ...(data.model ? { model: data.model } : caller?.target?.provider === 'codex' && caller.target.model ? { model: caller.target.model } : {}),
-      ...(data.reasoningEffort ? { reasoningEffort: data.reasoningEffort } : caller?.target?.provider === 'codex' && caller.target.reasoningEffort ? { reasoningEffort: caller.target.reasoningEffort } : {}),
+      provider,
+      ...(data.model ?? inherited?.model ? { model: data.model ?? inherited?.model } : {}),
+      ...(data.reasoningEffort ?? inherited?.reasoningEffort
+        ? { reasoningEffort: data.reasoningEffort ?? inherited?.reasoningEffort }
+        : {}),
     }
   } else {
     let model: ModelRef | undefined = caller?.model
@@ -955,6 +1021,12 @@ export function initSessionListeners(): () => void {
     sessionsStore.update(data.terminalId, { providerSessionId: data.sessionId, reportingSetupNeeded: false })
   })
 
+  // The agent's own name for the conversation, for providers that report one
+  // out-of-band (`reportsSessionTitle`) rather than via the terminal title.
+  const offSessionTitle = window.api.on('agent:session-title', (data) => {
+    sessionsStore.applySessionTitle(data.terminalId, data.title)
+  })
+
   // Location tracking (Stage 2+): the agent's tracked cwd moved.
   //   • Always RECORD the move on the session's trail (drives the pickers),
   //     after caching a freshly-discovered repo's worktrees so it resolves.
@@ -1013,6 +1085,7 @@ export function initSessionListeners(): () => void {
   return () => {
     offExit()
     offSessionId()
+    offSessionTitle()
     offCwd()
     offRepoTouch()
     offSpawn()

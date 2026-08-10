@@ -1,9 +1,15 @@
 /**
- * Provider parity: Claude and Codex must behave identically except where a
- * capability says otherwise. These tests pin the behaviours that used to be
- * `provider === 'codex'` conditionals scattered through the UI, so a third
- * provider (OpenCode, …) can be added by registering a descriptor rather than
- * by editing components.
+ * Provider parity: Claude, Codex and OpenCode must behave identically except
+ * where a capability says otherwise. These tests pin the behaviours that used
+ * to be `provider === 'codex'` conditionals scattered through the UI, so a
+ * further provider can be added by registering a descriptor rather than by
+ * editing components.
+ *
+ * OpenCode earns its place here rather than getting its own file: a parity
+ * suite that only ever sees two providers cannot catch a two-way branch that
+ * happens to be right for both, which is exactly how `provider === 'codex'`
+ * survived. Several assertions below are written over EVERY registered
+ * native-model provider for that reason.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { AgentCapabilities, AgentProviderId, WorktreeInfo } from '../../../shared/ipc-types'
@@ -20,6 +26,7 @@ const base: AgentCapabilities = {
   modelOverride: 'native', shiftEnter: 'native', droppedPath: 'at-reference',
   gracefulShutdown: true, displayName: 'Codex', oscTitle: 'directory',
   reportingSetup: 'user-granted', modelSelector: 'model-id', reasoningEffort: true,
+  nativeModelBrand: 'openai', modelCatalog: true, reportsSessionTitle: false,
 }
 const CAPS: Record<string, AgentCapabilities> = {
   claude: {
@@ -27,8 +34,15 @@ const CAPS: Record<string, AgentCapabilities> = {
     shiftEnter: 'escape-newline', droppedPath: 'newline-list',
     oscTitle: 'session-label', reportingSetup: 'automatic',
     modelSelector: 'model-ref', reasoningEffort: false,
+    nativeModelBrand: undefined, modelCatalog: true,
   },
   codex: base,
+  opencode: {
+    ...base, displayName: 'OpenCode', oscTitle: 'constant',
+    // The two honest differences from Codex: OpenCode needs no one-time trust
+    // grant, and its OSC title is a fixed brand string rather than the cwd.
+    reportingSetup: 'automatic', nativeModelBrand: 'opencode', reportsSessionTitle: true,
+  },
 }
 
 beforeEach(async () => {
@@ -37,7 +51,7 @@ beforeEach(async () => {
       if (channel === 'worktree:list') return Promise.resolve<WorktreeInfo[]>(
         [{ path: MAIN_WT, branch: 'main', isMain: true, isCurrent: false }],
       )
-      if (channel === 'agent:providers') return Promise.resolve(['claude', 'codex'] as AgentProviderId[])
+      if (channel === 'agent:providers') return Promise.resolve(['claude', 'codex', 'opencode'] as AgentProviderId[])
       if (channel === 'agent:capabilities') return Promise.resolve(CAPS[arg as string])
       if (channel === 'models:claude') return Promise.resolve([])
       return Promise.resolve(undefined)
@@ -59,8 +73,11 @@ describe('capability discovery', () => {
   it('labels a provider from its descriptor, falling back to its id', () => {
     expect(providerLabel('claude')).toBe('Claude')
     expect(providerLabel('codex')).toBe('Codex')
+    // Cased from the descriptor, not from the id — 'opencode' would otherwise
+    // render as 'Opencode'.
+    expect(providerLabel('opencode')).toBe('OpenCode')
     // An unregistered provider still reads sensibly rather than blank.
-    expect(providerLabel('opencode' as AgentProviderId)).toBe('Opencode')
+    expect(providerLabel('gemini' as AgentProviderId)).toBe('Gemini')
     expect(providerLabel(undefined)).toBe('Agent')
   })
 })
@@ -124,5 +141,46 @@ describe('OSC titles', () => {
     const id = sessionsStore.createTerminal(MAIN_WT)
     sessionsStore.applyOscTitle(id, 'main: pnpm test')
     expect(sessionsStore.get(id)?.label).toBe('main: pnpm test')
+  })
+})
+
+/**
+ * Labelling is a cross-provider contract, and it had no coverage at all — which
+ * is why splitting `customLabel` silently changed Claude and Codex too.
+ */
+describe('label stickiness parity', () => {
+  const NATIVE: AgentProviderId[] = ['codex', 'opencode']
+
+  it('lets an agent-reported title replace a model-id stand-in, for every provider', () => {
+    for (const provider of NATIVE) {
+      const id = sessionsStore.createNativeAgent(provider, PROJECT_ROOT, MAIN_WT, { model: 'some/model-id' })
+      expect(sessionsStore.get(id)?.label).toBe('some/model-id')
+      sessionsStore.applySessionTitle(id, 'Refactor the parser')
+      expect(sessionsStore.get(id)?.label).toBe('Refactor the parser')
+    }
+  })
+
+  it('does the same for a model-ref provider', () => {
+    const id = sessionsStore.createClaude(PROJECT_ROOT, MAIN_WT, {
+      model: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+    })
+    expect(sessionsStore.get(id)?.label).toBe('claude-sonnet-4-5')
+    sessionsStore.applySessionTitle(id, 'Fix the flaky test')
+    expect(sessionsStore.get(id)?.label).toBe('Fix the flaky test')
+  })
+
+  it('never overwrites a name the user chose', () => {
+    for (const provider of NATIVE) {
+      const id = sessionsStore.createNativeAgent(provider, PROJECT_ROOT, MAIN_WT, { label: 'My session' })
+      sessionsStore.applySessionTitle(id, 'Something The Agent Picked')
+      expect(sessionsStore.get(id)?.label).toBe('My session')
+    }
+  })
+
+  it('never overwrites a rename, even over a model-id stand-in', () => {
+    const id = sessionsStore.createNativeAgent('opencode', PROJECT_ROOT, MAIN_WT, { model: 'some/model-id' })
+    sessionsStore.rename(id, 'Mine')
+    sessionsStore.applySessionTitle(id, 'Agent Title')
+    expect(sessionsStore.get(id)?.label).toBe('Mine')
   })
 })

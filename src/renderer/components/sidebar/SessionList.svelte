@@ -3,9 +3,9 @@
   import PromptModal from '../PromptModal.svelte'
   import HandoffComposer from './HandoffComposer.svelte'
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
-  import type { InteractiveTarget } from '../../../shared/ipc-types'
+  import type { AgentProviderId, InteractiveTarget, NativeModelAgentId } from '../../../shared/ipc-types'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
-  import { capabilitiesFor, providerLabel } from '../../stores/agent-capabilities.svelte'
+  import { capabilitiesFor, knownProviders, providerForModelBrand, providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
@@ -64,15 +64,22 @@
     if (root && wt) sessionsStore.createClaude(root, wt.path)
   }
 
-  function startCodex(model?: string): void {
+  /** Start any provider that names its model by bare native id. */
+  function startNative(provider: NativeModelAgentId, model?: string): void {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
-    if (root && wt) sessionsStore.createCodex(root, wt.path, model ? { model } : {})
+    if (root && wt) sessionsStore.createNativeAgent(provider, root, wt.path, model ? { model } : {})
   }
 
   async function startLastTarget(): Promise<void> {
     const config = await window.api.invoke('models:config-get').catch(() => null)
-    if (config?.lastUsed?.provider === 'openai') startCodex(config.lastUsed.model)
+    const last = config?.lastUsed
+    // Resolve the remembered ModelRef back to the agent that owns it. Testing
+    // for one brand by name would send every other native model to Claude.
+    const owner = last && last.provider !== 'anthropic' && last.provider !== 'ollama'
+      ? providerForModelBrand(last.provider)
+      : undefined
+    if (owner && owner !== 'claude') startNative(owner, last?.model)
     else startClaude()
   }
 
@@ -92,14 +99,37 @@
   let newMenu: { x: number; y: number } | null = $state(null)
   let newButtonEl: HTMLButtonElement | undefined = $state()
 
-  const NEW_MENU_DEFAULTS: ContextMenuItem[] = [
-    { id: 'new-claude', label: 'New Claude session' },
-    { id: 'new-codex', label: 'New Codex session · configured default' },
-    { id: 'new-agents', label: 'New Agent View session' },
-    { id: 'new-terminal', label: 'New terminal', separatorBefore: true },
-  ]
+  /**
+   * One entry per registered provider, then the fixed entries. Built from the
+   * capability descriptors so a provider that registers itself in main shows up
+   * here without this component being edited.
+   */
+  function newMenuDefaults(): ContextMenuItem[] {
+    const providers = knownProviders()
+    const perProvider = (providers.length > 0 ? providers : (['claude'] as AgentProviderId[])).map((id) => ({
+      id: `new-provider:${id}`,
+      // The suffix says the session starts on the configured default model
+      // rather than prompting for one. It applies to every provider that names
+      // a model natively, not just the first one that happened to have it.
+      label: capabilitiesFor(id)?.modelSelector === 'model-id'
+        ? `New ${providerLabel(id)} session · configured default`
+        : `New ${providerLabel(id)} session`,
+    }))
+    return [
+      ...perProvider,
+      { id: 'new-agents', label: 'New Agent View session' },
+      { id: 'new-terminal', label: 'New terminal', separatorBefore: true },
+    ]
+  }
 
-  let newMenuItems: ContextMenuItem[] = $state(NEW_MENU_DEFAULTS)
+  /**
+   * Model entries resolved from the catalogs — empty until `buildNewMenu`
+   * finishes. Kept separate from the provider entries so the whole menu can be
+   * DERIVED: capabilities and catalogs both arrive asynchronously, and a
+   * snapshot taken at component init would show neither.
+   */
+  let modelMenuItems: ContextMenuItem[] = $state([])
+  const newMenuItems: ContextMenuItem[] = $derived([...newMenuDefaults(), ...modelMenuItems])
   /** key (allowlist entry) → ModelRef for the current menu; rebuilt on open. */
   let modelMenuRefs: Map<string, InteractiveTarget> = $state(new Map())
 
@@ -113,10 +143,11 @@
    */
   async function buildNewMenu(): Promise<void> {
     try {
-      const [config, claudeModels, codexModels, installed] = await Promise.all([
+      const [config, claudeModels, codexModels, openCodeModels, installed] = await Promise.all([
         window.api.invoke('models:config-get'),
         window.api.invoke('models:claude'),
         window.api.invoke('models:codex').catch(() => []),
+        window.api.invoke('models:opencode').catch(() => []),
         window.api.invoke('models:installed'),
       ])
 
@@ -126,6 +157,9 @@
       }
       for (const m of codexModels) {
         resolver.set(m.model, { ref: { provider: 'codex', model: m.model }, label: `Codex · ${m.displayName}` })
+      }
+      for (const m of openCodeModels) {
+        resolver.set(m.model, { ref: { provider: 'opencode', model: m.model }, label: `OpenCode · ${m.displayName}` })
       }
       // Tool-capable local models are startable interactively now that the
       // Ollama #13949 hang is fixed (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).
@@ -143,25 +177,22 @@
       })
 
       modelMenuRefs = refs
-      newMenuItems = [
-        ...NEW_MENU_DEFAULTS,
-        ...resolved.map((m, i) => ({
-          id: `model:${m.key}`,
-          label: `New session · ${m.label}`,
-          separatorBefore: i === 0,
-        })),
-      ]
+      modelMenuItems = resolved.map((m, i) => ({
+        id: `model:${m.key}`,
+        label: `New session · ${m.label}`,
+        separatorBefore: i === 0,
+      }))
     } catch {
       modelMenuRefs = new Map()
-      newMenuItems = NEW_MENU_DEFAULTS
+      modelMenuItems = []
     }
   }
 
   function pickNewMenuItem(id: string): void {
-    if (id === 'new-claude') {
-      startClaude()
-    } else if (id === 'new-codex') {
-      startCodex()
+    if (id.startsWith('new-provider:')) {
+      const provider = id.slice('new-provider:'.length) as AgentProviderId
+      if (provider === 'claude') startClaude()
+      else startNative(provider as NativeModelAgentId)
     } else if (id === 'new-agents') {
       startAgents()
     } else if (id === 'new-terminal') {
@@ -177,11 +208,18 @@
     }
   }
 
-  async function openNewMenuAtPointer(e: MouseEvent): Promise<void> {
+  function openNewMenuAtPointer(e: MouseEvent): void {
     e.preventDefault()
+    // Open first, resolve the model submenu after. Every catalog behind
+    // `buildNewMenu` shells out to a CLI (and OpenCode's may reach the network),
+    // so awaiting it left the menu unopened for as long as the slowest one
+    // took. `newMenuItems` is derived, so the model entries appear when they
+    // arrive rather than gating the provider entries that are already known.
+    // They append below the provider block, so an open menu grows downwards
+    // rather than renumbering what the pointer is already over.
     const { clientX: x, clientY: y } = e
-    await buildNewMenu()
     newMenu = { x, y }
+    void buildNewMenu()
   }
 
   // ── per-session context menu / rename / fork ─────────────────────────────

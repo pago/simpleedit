@@ -6,6 +6,7 @@
  * provider modules.
  */
 import type { AgentCapabilities, AgentProviderId, AgentStatus, InteractiveTarget, ModelRef, ReasoningEffort } from '../../shared/ipc-types'
+import type { HookSignal } from '../cwd-tracker'
 
 /** Inputs for a fresh (or resumed) agent launch. */
 export interface LaunchContext {
@@ -47,11 +48,59 @@ export interface LaunchPlan {
   cleanup?: () => void
 }
 
+/**
+ * What a provider's post-spawn control channel reports back.
+ *
+ * Deliberately the SAME currency the hook-driven providers already speak: a
+ * `HookSignal` goes through the identical handler a Claude or Codex hook POST
+ * would, so an attached provider inherits cwd tracking, the touched-repo trail
+ * and agent-to-agent messaging without reimplementing any of it. Only `status`
+ * is separate, because a provider that reports status precisely should not have
+ * to fake a hook event to say so.
+ */
+export interface AgentAttachSink {
+  status(status: AgentStatus, message?: string): void
+  signal(signal: HookSignal): void
+  /** The provider-native session id, once known (minted server-side). */
+  sessionId(sessionId: string): void
+  /**
+   * The agent's own name for this conversation, when it has one. Serves the
+   * same purpose as Claude's OSC session-label — it just does not arrive over
+   * the terminal, so it cannot ride `detectStatus`.
+   */
+  title(title: string): void
+}
+
 export interface AgentProvider {
   id: AgentProviderId
-  buildLaunch(ctx: LaunchContext): LaunchPlan
+  /**
+   * May be async: a provider can need real work before it knows its own
+   * command line. OpenCode has to reserve a free TCP port to hand its embedded
+   * server, and the OS is the only authority on which port is free. Providers
+   * that need nothing (Claude, Codex) stay synchronous.
+   */
+  buildLaunch(ctx: LaunchContext): LaunchPlan | Promise<LaunchPlan>
   /** Turn a raw PTY output chunk into a status, or null when unrecognised. */
   detectStatus?(chunk: string): AgentStatus | null
+  /**
+   * Open a post-spawn control channel for a launched session.
+   *
+   * Claude and Codex report their lifecycle by calling *into* SimpleEdit (HTTP
+   * hooks), so they need nothing here. OpenCode is the inverse: it exposes an
+   * HTTP server on the port we launched it with, and SimpleEdit has to dial
+   * *out* and subscribe. `buildLaunch` alone cannot express that — it returns
+   * before the process exists — hence this seam.
+   *
+   * Called once after the PTY is spawned. The returned disposer runs on exit or
+   * kill, in addition to `LaunchPlan.cleanup`.
+   */
+  attach?(plan: LaunchPlan, ctx: LaunchContext, sink: AgentAttachSink): () => void
+  /**
+   * Deliver text to a live session out-of-band, without writing PTY bytes.
+   * Used by agent-to-agent messaging for providers that have no hook whose
+   * response body can carry mail. Returns false when delivery is impossible.
+   */
+  deliverMessage?(terminalId: string, text: string): Promise<boolean>
   capabilities: AgentCapabilities
 }
 

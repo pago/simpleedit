@@ -3,9 +3,11 @@ import { type WebContents } from 'electron'
 import { existsSync } from 'fs'
 import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
-import { getProvider, type LaunchPlan } from './agents/provider'
+import { getProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
+import { applyAgentSignal } from './mcp-bridge'
 import './agents/codex'
+import './agents/opencode'
 
 type IPty = pty.IPty
 
@@ -16,6 +18,14 @@ const terminals = new Map<string, IPty>()
  * plain terminals and Agent-View tabs, which wire nothing to clean up.
  */
 const agentCleanups = new Map<string, () => void>()
+/**
+ * Ids whose `buildLaunch` is in flight. A provider's build can await (OpenCode
+ * reserves a TCP port), which opens a window the synchronous spawn path never
+ * had: a duplicate spawn, or a kill, arriving before the PTY exists.
+ */
+const spawning = new Set<string>()
+/** Ids killed while their launch was still being built — do not spawn them. */
+const killedWhileSpawning = new Set<string>()
 
 function runAgentCleanup(id: string): void {
   const cleanup = agentCleanups.get(id)
@@ -84,6 +94,26 @@ function guardCwd(id: string, worktreePath: string, webContents: WebContents): b
     webContents.send('pty:exit', { id, exitCode: 1 })
   }
   return false
+}
+
+/**
+ * Report a launch that failed before any PTY existed, the same way `guardCwd`
+ * reports an unusable directory: readable text in the terminal buffer plus a
+ * `pty:exit`, so the session shows as exited instead of sitting on
+ * 'initializing' forever with no explanation.
+ *
+ * A provider's `buildLaunch` validates ids that reach a login-shell command
+ * string and throws on anything suspect, so this is a normal outcome of bad
+ * input (an agent passing a malformed model id to `spawn_session`), not an
+ * internal error — it must never escape as an unhandled rejection.
+ */
+export function reportSpawnFailure(id: string, error: unknown, webContents: WebContents): void {
+  const detail = error instanceof Error ? error.message : String(error)
+  const msg = `SimpleEdit: cannot start session — ${detail}\r\n`
+  const offset = recordBacklog(id, msg)
+  if (webContents.isDestroyed()) return
+  webContents.send('pty:data', { id, data: msg, offset })
+  webContents.send('pty:exit', { id, exitCode: 1 })
 }
 
 export interface AgentSpawnOptions extends AgentSpawnOptionsShared {
@@ -242,17 +272,26 @@ export function spawnTerminal(
   })
 }
 
-export function spawnAgentTerminalForProvider(
+export async function spawnAgentTerminalForProvider(
   options: AgentSpawnOptions,
   webContents: WebContents
-): void {
+): Promise<void> {
   const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt, target } = options
 
-  if (terminals.has(id)) return
+  if (terminals.has(id) || spawning.has(id)) return
   if (!guardCwd(id, worktreePath, webContents)) return
 
+  // Resolved before the id is claimed: `getProvider` throws for an unknown id,
+  // and a throw between the claim and the try/finally would strand the entry —
+  // permanently, since every later spawn of that session then returns at the
+  // guard above with no error path.
   const provider = getProvider(target.provider)
-  const plan = provider.buildLaunch({
+
+  // Claim the id BEFORE the first await. `buildLaunch` can now be async, so
+  // without this a second `agent:spawn` for the same id passes the check above
+  // while the first is still awaiting, and both spawn.
+  spawning.add(id)
+  const ctx: LaunchContext = {
     provider: target.provider,
     target,
     terminalId: id,
@@ -263,11 +302,82 @@ export function spawnAgentTerminalForProvider(
     ...(bridgeToken != null ? { bridgeToken } : {}),
     ...(model ? { model } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
-  })
-
-  if (!webContents.isDestroyed()) {
-    webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
   }
+  let plan: LaunchPlan
+  let killed: boolean
+  try {
+    plan = await provider.buildLaunch(ctx)
+  } finally {
+    // Both flags clear here, including when `buildLaunch` throws. A kill
+    // recorded against a launch that then failed would otherwise persist and
+    // abandon the NEXT spawn of that session id — leaving it on 'initializing'
+    // with no PTY and nothing in the terminal buffer to explain it.
+    spawning.delete(id)
+    killed = killedWhileSpawning.delete(id)
+  }
+
+  // `buildLaunch` awaited (OpenCode reserves a port), so the session may have
+  // been closed or the window torn down meanwhile. Abandoning without spawning
+  // is the whole point: the alternative is an orphan agent process attached to
+  // a session that no longer exists, alive until the app quits.
+  //
+  // The plan's cleanup DOES run: `killTerminal` already ran `runAgentCleanup`
+  // before this plan existed, so nothing else will. Skipping it strands the
+  // provider's per-session state — a registered session in the cwd tracker and
+  // a reserved control port for OpenCode, temp hook/mcp-config files on disk
+  // for Claude.
+  if (killed || terminals.has(id) || webContents.isDestroyed()) {
+    plan.cleanup?.()
+    return
+  }
+
+  webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
+
+  // A provider that reports out-of-band opens its control channel here. Its
+  // signals go through the very handler an HTTP hook would hit, so status, the
+  // touched-repo trail and agent messaging behave identically to a provider
+  // that calls in.
+  if (provider.attach) {
+    const detach = provider.attach(plan, ctx, {
+      status: (status, message) => {
+        if (webContents.isDestroyed()) return
+        webContents.send('agent:status', {
+          worktreePath,
+          status,
+          terminalId: id,
+          precise: true,
+          ...(message ? { message } : {}),
+        })
+      },
+      title: (title) => {
+        if (webContents.isDestroyed()) return
+        webContents.send('agent:session-title', { terminalId: id, title })
+      },
+      sessionId: (sessionId) => {
+        if (webContents.isDestroyed()) return
+        webContents.send('agent:session-id', { terminalId: id, sessionId })
+      },
+      signal: (signal) => {
+        if (webContents.isDestroyed()) return
+        // `ownsIdentityAndStatus`: this provider reports both itself, above.
+        // `deliver`: it has no hook response to ride, so queued mail is pushed
+        // — and the push is what commits the drain, so a failed POST leaves the
+        // message queued for the next turn instead of destroying it.
+        void applyAgentSignal(signal, webContents, {
+          ownsIdentityAndStatus: true,
+          ...(provider.deliverMessage
+            ? { deliver: (text: string) => provider.deliverMessage!(id, text) }
+            : {}),
+        })
+      },
+    })
+    const planCleanup = plan.cleanup
+    plan.cleanup = () => {
+      detach()
+      planCleanup?.()
+    }
+  }
+
   spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: !!plan.sessionId, clearStatusOnExit: true }, webContents)
 }
 
@@ -313,6 +423,10 @@ export function resizeTerminal(id: string, cols: number, rows: number): void {
 }
 
 export function killTerminal(id: string): void {
+  // A launch still being built has no PTY to kill and no cleanup registered, so
+  // everything below is a no-op for it — record the kill so the spawn abandons
+  // itself when it resumes rather than leaving an orphan process behind.
+  if (spawning.has(id)) killedWhileSpawning.add(id)
   const term = terminals.get(id)
   if (term) {
     try { term.kill() } catch { /* process may already be dead */ }

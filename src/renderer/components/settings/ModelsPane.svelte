@@ -7,6 +7,7 @@
     ModelConfig,
     ModelDescriptor,
     RecommendedModel,
+    OpenCodeModel,
   } from '../../../shared/ipc-types'
   import Toggle from './Toggle.svelte'
   import { fitClasses, fitLabel, formatEstimate, formatGb } from './model-format'
@@ -16,6 +17,8 @@
   let claude = $state<ClaudeModel[]>([])
   let codex = $state<CodexModel[]>([])
   let codexAvailable = $state(false)
+  let openCode = $state<OpenCodeModel[]>([])
+  let openCodeAvailable = $state(false)
   let installed = $state<ModelDescriptor[]>([])
   let recommended = $state<RecommendedModel[]>([])
   let config = $state<ModelConfig | null>(null)
@@ -55,7 +58,7 @@
     let cancelled = false
 
     void (async () => {
-      const [avail, hw, cl, cfg, cx, cxAvail] = await Promise.all([
+      const [avail, hw, cl, cfg, cx, cxAvail, oc, ocAvail] = await Promise.all([
         window.api.invoke('models:available'),
         window.api.invoke('models:hardware'),
         window.api.invoke('models:claude'),
@@ -64,6 +67,10 @@
         // must leave the rest of the pane working.
         window.api.invoke('models:codex').catch(() => [] as CodexModel[]),
         window.api.invoke('agent:available', 'codex').catch(() => false),
+        // Same contract as Codex: catalog discovery shells out, so a missing or
+        // unhappy CLI must leave the rest of the pane working.
+        window.api.invoke('models:opencode').catch(() => [] as OpenCodeModel[]),
+        window.api.invoke('agent:available', 'opencode').catch(() => false),
       ])
       if (cancelled) return
       available = avail
@@ -72,6 +79,8 @@
       config = cfg
       codex = cx
       codexAvailable = cxAvail
+      openCode = oc
+      openCodeAvailable = ocAvail
       await reloadLists()
       if (!cancelled) loading = false
     })()
@@ -219,6 +228,50 @@
         <p class="px-1.5 pt-2.5 text-[11.5px] text-zinc-500">
           Sessions started from the picker use each model's default reasoning effort.
           Set a specific effort under <span class="text-zinc-400">Default Model</span>.
+        </p>
+      {/if}
+    </section>
+
+    <!-- OpenCode · cloud -->
+    <section class="mt-6">
+      <div
+        class="flex items-baseline justify-between border-b border-zinc-800 px-0.5 pb-2 text-[11px] font-bold uppercase tracking-wider text-zinc-500"
+      >
+        <span>OpenCode · cloud</span>
+        <span class="text-[11px] font-medium normal-case tracking-normal text-zinc-500">
+          via your OpenCode providers
+        </span>
+      </div>
+      {#if openCode.length === 0}
+        <p class="px-1.5 py-3 text-[12px] text-zinc-500">
+          {openCodeAvailable
+            ? 'OpenCode is installed but its model catalog is unavailable right now.'
+            : 'Install the OpenCode CLI to use OpenCode sessions.'}
+        </p>
+      {:else}
+        {#each openCode as model (model.model)}
+          <div class="grid grid-cols-[1fr_auto] items-center gap-3.5 border-b border-zinc-800 px-1.5 py-2.5 last:border-b-0">
+            <div class="min-w-0">
+              <div class="font-mono text-[13px] font-semibold text-zinc-100">{model.displayName}</div>
+              <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-zinc-400">
+                <span class="rounded bg-zinc-800 px-1.5 py-0.5 text-[10.5px] font-semibold text-zinc-400">cloud</span>
+                <span class="rounded bg-blue-950/60 px-1.5 py-0.5 text-[10.5px] font-semibold text-blue-400">agent</span>
+                {#if model.supportedReasoningEfforts.length > 0}
+                  <span class="font-mono tabular-nums text-zinc-400">
+                    {model.supportedReasoningEfforts.join(' · ')}
+                  </span>
+                {/if}
+              </div>
+            </div>
+            <Toggle
+              checked={allowlist.has(model.model)}
+              label="Show {model.displayName} in quick picker"
+              onchange={(v) => toggleSubmenu(model.model, v)}
+            />
+          </div>
+        {/each}
+        <p class="px-1.5 pt-2.5 text-[11.5px] text-zinc-500">
+          Reasoning variants are per model here, not shared across the catalog.
         </p>
       {/if}
     </section>

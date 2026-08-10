@@ -21,7 +21,7 @@ const resolvePromises = new Map<string, Promise<string | null>>()
  */
 const MISS_TTL_MS = 30_000
 
-export type AgentExecutable = 'claude' | 'codex'
+export type AgentExecutable = 'claude' | 'codex' | 'opencode'
 
 export function resolveExecutable(name: AgentExecutable): Promise<string | null> {
   const hit = cachedPaths.get(name)
@@ -79,4 +79,8 @@ export function resolveClaudePath(): Promise<string> {
 
 export function resolveCodexPath(): Promise<string> {
   return resolveExecutable('codex').then((path) => path ?? 'codex')
+}
+
+export function resolveOpenCodePath(): Promise<string> {
+  return resolveExecutable('opencode').then((path) => path ?? 'opencode')
 }

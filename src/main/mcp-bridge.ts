@@ -6,12 +6,14 @@ import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
 import { validateSpec, validateSpecActions } from './gen-ui-validate'
-import { parseHookBody, matchWorktree, terminalForSession } from './cwd-tracker'
+import { parseHookBody, matchWorktree, terminalForSession, type HookSignal } from './cwd-tracker'
 import {
   awaitSpawn,
   captureImplicitReplies,
   drain,
   enqueue,
+  peekPending,
+  commitDelivery,
   formatForDelivery,
   listPeers,
   pendingCount,
@@ -558,7 +560,28 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
   }
   const signal = parseHookBody(parsed)
   if (!signal) return {}
+  return applyAgentSignal(signal, webContents)
+}
 
+/**
+ * Everything a lifecycle signal drives, independent of how it arrived.
+ *
+ * Claude and Codex POST hooks here; OpenCode has no hooks and instead has its
+ * events translated into the same `HookSignal` by its provider's control
+ * channel (`agents/opencode.ts`). Keeping one implementation is what makes the
+ * touched-repo trail and agent-to-agent messaging work identically for a
+ * provider that never calls in — the alternative was a second, parallel
+ * pathway that would drift.
+ *
+ * The returned record is the hook's response body, which for `Stop` may carry
+ * queued peer mail. A caller that is not answering an actual HTTP hook (an
+ * attached provider) must deliver that itself — see `deliverMessage`.
+ */
+export async function applyAgentSignal(
+  signal: HookSignal,
+  webContents: WebContents,
+  opts: { ownsIdentityAndStatus?: boolean; deliver?: (text: string) => Promise<boolean> } = {},
+): Promise<Record<string, unknown>> {
   // Codex's reporter stamps the terminal id straight into the body; Claude's
   // HTTP hooks don't, so those route by session_id through the registry.
   const terminalId = signal.terminalId ?? terminalForSession(signal.sessionId)
@@ -566,7 +589,14 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
 
   const worktrees = await resolveWorktrees(webContents.id)
   const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
-  if (signal.terminalId) registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
+  // Deriving identity and status from a hook's event name is Codex-specific.
+  // An attached provider reports both itself, precisely and synchronously, so
+  // letting this also run races it — the two awaits above let a Stop-derived
+  // 'idle' land after a PostToolUse-derived 'running' — and republishes a
+  // session id it may not have learned yet. The caller says who owns these.
+  if (signal.terminalId && !opts.ownsIdentityAndStatus) {
+    registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
+  }
 
   if (!webContents.isDestroyed()) {
     webContents.send('session:cwd', {
@@ -590,7 +620,7 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
     }
   }
 
-  return handleTurnEnd(signal, terminalId, webContents)
+  return handleTurnEnd(signal, terminalId, webContents, opts.deliver)
 }
 
 /**
@@ -604,11 +634,12 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
  * Never block when `stop_hook_active` is set: that stop already belongs to a
  * turn a hook continued, and blocking again prevents the agent ever going idle.
  */
-function handleTurnEnd(
+async function handleTurnEnd(
   signal: { eventName: string | null; lastAssistantMessage: string | null; stopHookActive: boolean },
   terminalId: string,
   webContents: WebContents,
-): Record<string, unknown> {
+  deliver?: (text: string) => Promise<boolean>,
+): Promise<Record<string, unknown>> {
   if (signal.eventName !== 'Stop' && signal.eventName !== 'SubagentStop') return {}
 
   if (signal.lastAssistantMessage) {
@@ -619,7 +650,24 @@ function handleTurnEnd(
 
   if (signal.stopHookActive || pendingCount(terminalId) === 0) return {}
 
-  const messages = drain(terminalId)
+  // A hook-driven provider receives mail as this function's return value, so
+  // returning it IS delivery. A pushed provider can still fail after we let go
+  // of the message, so its mail is peeked, pushed, and only then committed —
+  // draining first would destroy the message on a failed POST while the UI
+  // reported it delivered, and would park the sender on a reply never coming.
+  let messages: Message[]
+  if (deliver) {
+    // Snapshot, push, then commit exactly what was pushed. Committing the
+    // mailbox's current contents instead would mark a message that arrived
+    // DURING the push as delivered without it ever having been sent — and arm
+    // its sender to receive the answer to a different question.
+    const pending = peekPending(terminalId)
+    if (pending.length === 0) return {}
+    if (!(await deliver(formatForDelivery(pending)))) return {}
+    messages = commitDelivery(terminalId, new Set(pending.map((m) => m.id)))
+  } else {
+    messages = drain(terminalId)
+  }
   if (messages.length === 0) return {}
 
   if (!webContents.isDestroyed()) {

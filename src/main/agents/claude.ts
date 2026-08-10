@@ -250,7 +250,7 @@ export function buildAgentsLaunch(): Pick<LaunchPlan, 'executable' | 'args'> {
   return { executable: 'claude', args: ['agents'] }
 }
 
-export const claudeProvider: AgentProvider = {
+export const claudeProvider = {
   id: 'claude',
   buildLaunch,
   detectStatus(chunk: string): AgentStatus | null {
@@ -278,7 +278,9 @@ export const claudeProvider: AgentProvider = {
     reportingSetup: 'automatic',
     modelSelector: 'model-ref',
     reasoningEffort: false,
+    modelCatalog: true,
+    reportsSessionTitle: false,
   },
-}
+} satisfies AgentProvider
 
 registerProvider(claudeProvider)

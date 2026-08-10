@@ -120,7 +120,7 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   return { executable: 'codex', args, ...(env ? { env } : {}) }
 }
 
-export const codexProvider: AgentProvider = {
+export const codexProvider = {
   id: 'codex',
   buildLaunch,
   capabilities: {
@@ -145,7 +145,9 @@ export const codexProvider: AgentProvider = {
     reportingSetup: 'user-granted',
     modelSelector: 'model-id',
     reasoningEffort: true,
+    modelCatalog: true,
+    reportsSessionTitle: false,
   },
-}
+} satisfies AgentProvider
 
 registerProvider(codexProvider)
