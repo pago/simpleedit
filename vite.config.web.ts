@@ -20,7 +20,9 @@ const here = (path: string): string => fileURLToPath(new URL(path, import.meta.u
 export default defineConfig({
   root: here('src/web'),
   base: './',
-  plugins: [svelte(), tailwindcss()],
+  // `root` is src/web, so the plugin would otherwise miss the repo-root
+  // svelte.config.js and silently fall back to a preprocessor-less default.
+  plugins: [svelte({ configFile: here('svelte.config.js') }), tailwindcss()],
   build: {
     outDir: here('out/web'),
     emptyOutDir: true,

@@ -23,6 +23,9 @@ function defaults(): RemoteAccessConfig {
 }
 
 function filePath(): string {
+  // E2E turns remote access on, and userData is shared with the engineer's own
+  // dev build — a test must never leave a server enabled in it.
+  if (process.env.SIMPLEEDIT_E2E_REMOTE_CONFIG) return process.env.SIMPLEEDIT_E2E_REMOTE_CONFIG
   const dir = join(app.getPath('userData'), 'config')
   mkdirSync(dir, { recursive: true })
   return join(dir, 'remote.json')
