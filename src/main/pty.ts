@@ -1,7 +1,7 @@
 import * as pty from 'node-pty'
 import type { RemoteClient } from './client-hub'
 import { existsSync } from 'fs'
-import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
+import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtyClientId, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
 import { getProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
@@ -18,6 +18,16 @@ const terminals = new Map<string, IPty>()
  * plain terminals and Agent-View tabs, which wire nothing to clean up.
  */
 const agentCleanups = new Map<string, () => void>()
+/**
+ * Which client currently sizes each PTY. A PTY has one size but can have many
+ * clients attached (two desktop windows on the same session, later a phone),
+ * and the one that isn't being looked at must not resize the one that is —
+ * so a resize is applied only for the owner and dropped, never queued, for
+ * anyone else. Ownership moves on `claimTerminal`, which the renderer calls on
+ * genuine user attention; last claim wins. The spawner owns it to begin with,
+ * so a lone window never has to claim before its first fit lands.
+ */
+const ptyOwner = new Map<string, PtyClientId>()
 /**
  * Ids whose `buildLaunch` is in flight. A provider's build can await (OpenCode
  * reserves a TCP port), which opens a window the synchronous spawn path never
@@ -203,6 +213,7 @@ function spawnAgentTerminal(
   const term = pty.spawn(shell, agentShellArgs(command), getPtyOptions(worktreePath))
 
   terminals.set(id, term)
+  ptyOwner.set(id, webContents.id)
   const cleanup = 'cleanup' in plan ? plan.cleanup : undefined
   if (cleanup) agentCleanups.set(id, cleanup)
 
@@ -225,6 +236,7 @@ function spawnAgentTerminal(
   term.onExit(({ exitCode }: { exitCode: number }) => {
     runAgentCleanup(id)
     terminals.delete(id)
+    ptyOwner.delete(id)
     if (!webContents.isDestroyed()) {
       if (opts.clearStatusOnExit) {
         // Clear the worktree's Claude status so the worktree picker (#87) and
@@ -255,6 +267,7 @@ export function spawnTerminal(
   const term = pty.spawn(shell, ['-l'], getPtyOptions(worktreePath))
 
   terminals.set(id, term)
+  ptyOwner.set(id, webContents.id)
 
   term.onData((data: string) => {
     emitPtyData(id, data)
@@ -266,6 +279,7 @@ export function spawnTerminal(
 
   term.onExit(({ exitCode }: { exitCode: number }) => {
     terminals.delete(id)
+    ptyOwner.delete(id)
     if (!webContents.isDestroyed()) {
       webContents.send('pty:exit', { id, exitCode })
     }
@@ -415,7 +429,22 @@ export function writeToTerminal(id: string, data: string): void {
   }
 }
 
-export function resizeTerminal(id: string, cols: number, rows: number): void {
+/**
+ * Make `clientId` the client that sizes this PTY. Called when the user's
+ * attention lands on a terminal — never on reconnect or background layout
+ * churn, which would let an unwatched client take the size back.
+ */
+export function claimTerminal(id: string, clientId: PtyClientId): void {
+  ptyOwner.set(id, clientId)
+}
+
+/** The client currently allowed to resize `id`, if any. */
+export function getTerminalOwner(id: string): PtyClientId | undefined {
+  return ptyOwner.get(id)
+}
+
+export function resizeTerminal(id: string, cols: number, rows: number, clientId: PtyClientId): void {
+  if (ptyOwner.get(id) !== clientId) return
   const term = terminals.get(id)
   if (term && cols > 0 && rows > 0) {
     term.resize(cols, rows)
@@ -437,6 +466,7 @@ export function killTerminal(id: string): void {
   // closes. runAgentCleanup is a no-op if nothing was wired (plain terminals).
   runAgentCleanup(id)
   backlogs.delete(id)
+  ptyOwner.delete(id)
 }
 
 export function getActiveTerminalIds(): string[] {
@@ -450,4 +480,5 @@ export function killAllTerminals(): void {
     terminals.delete(id)
   }
   backlogs.clear()
+  ptyOwner.clear()
 }

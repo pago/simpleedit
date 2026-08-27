@@ -11,6 +11,7 @@ import {
   spawnAgentsTerminal,
   writeToTerminal,
   resizeTerminal,
+  claimTerminal,
   killTerminal,
   killAllTerminals,
   getActiveTerminalIds,
@@ -368,8 +369,14 @@ function registerAllHandlers(): void {
     writeToTerminal(id, data)
   })
 
-  ipcMain.handle('pty:resize', (_event, id: string, cols: number, rows: number) => {
-    resizeTerminal(id, cols, rows)
+  // The client id is stamped from the IPC event, never taken from the args —
+  // a renderer must not be able to resize as (or claim on behalf of) another.
+  ipcMain.handle('pty:resize', (event, id: string, cols: number, rows: number) => {
+    resizeTerminal(id, cols, rows, event.sender.id)
+  })
+
+  ipcMain.handle('pty:claim', (event, id: string) => {
+    claimTerminal(id, event.sender.id)
   })
 
   ipcMain.handle('pty:kill', (_event, id: string) => {

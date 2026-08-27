@@ -50,10 +50,25 @@ export interface BranchInfo {
   isRemote: boolean // true = exists only on origin, not as a local branch
 }
 
+/**
+ * Identifies the client behind an IPC call — `WebContents.id` today, later also
+ * a remote (phone) client. Never sent by a client: main stamps it from the IPC
+ * event, so no client can name another one and take its PTY.
+ */
+export type PtyClientId = number
+
 export interface PtyInvokeMap {
   'pty:spawn': { args: [options: PtySpawnOptions]; result: void }
   'pty:write': { args: [id: string, data: string]; result: void }
+  /** Applied only if the calling client owns this PTY's size (see `pty:claim`);
+   * a non-owner's resize is dropped, not queued. The owning `PtyClientId` comes
+   * from the IPC event, not from these args. */
   'pty:resize': { args: [id: string, cols: number, rows: number]; result: void }
+  /** Take ownership of this PTY's size. Sent when the user's attention lands on
+   * a terminal — a session being selected, the window focused, the tab made
+   * visible — so the client being looked at is the one that sizes the PTY.
+   * Last claim wins. */
+  'pty:claim': { args: [id: string]; result: void }
   'pty:kill': { args: [id: string]; result: void }
   'pty:active-ids': { args: []; result: string[] }
   /** Replay buffer for output emitted before the renderer's xterm attached

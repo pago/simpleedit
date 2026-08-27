@@ -37,6 +37,23 @@
   let savedViewportY: number | undefined
   let wasAtBottom = true
 
+  // A PTY has one size but can have several clients attached (a second desktop
+  // window on the same session, later a phone), and main honours a resize only
+  // from the client that claimed it. Claim on genuine user attention only: a
+  // client that re-claimed on reconnect or on background layout churn would
+  // take the size away from whoever is actually looking at the terminal.
+  let ownsPty = false
+
+  /** Is the user looking at THIS terminal, in this window, right now? */
+  function hasUserAttention(): boolean {
+    return active && !document.hidden && document.hasFocus()
+  }
+
+  function claimPty(id: string): void {
+    ownsPty = true
+    void window.api.invoke('pty:claim', id)
+  }
+
   function isScrolledToBottom(): boolean {
     if (!term) return true
     const buf = term.buffer.active
@@ -191,10 +208,13 @@
     // Guard against zero dimensions: ResizeObserver fires when a tab is hidden
     // (display:none), which would cause fitAddon to calculate 0 columns and
     // corrupt the PTY's line wrapping.
+    // The local fit always runs — xterm must match its own container — but the
+    // PTY only hears about it when this client owns the size: an unwatched
+    // window reflowing is no reason to resize what someone else is reading.
     resizeObserver = new ResizeObserver(() => {
       if (fitAddon && el.offsetWidth > 0 && el.offsetHeight > 0) {
         fitPreservingScroll()
-        if (term) {
+        if (term && ownsPty) {
           window.api.invoke('pty:resize', id, term.cols, term.rows)
         }
       }
@@ -204,6 +224,7 @@
 
   function cleanup(): void {
     recordLifecycle('cleanup', terminalId)
+    ownsPty = false
     resizeObserver?.disconnect()
     resizeObserver = undefined
     cleanupDataListener?.()
@@ -223,6 +244,30 @@
     }
     return () => {
       cleanup()
+    }
+  })
+
+  // Two ways attention arrives at an already-mounted, already-selected
+  // terminal: the window is focused, or the document becomes visible. Both
+  // are deliberate user acts, so both claim; losing either drops the claim so
+  // that later background reflows stay silent. `active` and `document` are
+  // read inside the handlers, so this effect re-registers only on id change.
+  $effect(() => {
+    const id = terminalId
+
+    function onAttentionChange(): void {
+      if (hasUserAttention()) claimPty(id)
+      else ownsPty = false
+    }
+
+    window.addEventListener('focus', onAttentionChange)
+    window.addEventListener('blur', onAttentionChange)
+    document.addEventListener('visibilitychange', onAttentionChange)
+
+    return () => {
+      window.removeEventListener('focus', onAttentionChange)
+      window.removeEventListener('blur', onAttentionChange)
+      document.removeEventListener('visibilitychange', onAttentionChange)
     }
   })
 
@@ -289,8 +334,12 @@
       // Use rAF so the container has dimensions (no longer display:none).
       requestAnimationFrame(() => {
         if (!term || !fitAddon) return
+        // Selecting a session is attention, so take the size — but only if
+        // this window is the focused one. A background window re-showing a
+        // tab (a restored layout, a reconnect) must not claim.
+        if (hasUserAttention()) claimPty(terminalId)
         fitAddon.fit()
-        if (term) {
+        if (term && ownsPty) {
           window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
         }
         // Restore scroll after fit. If the user was at the bottom when the
@@ -308,7 +357,9 @@
         }
       })
     } else {
-      // Becoming hidden: save scroll state
+      // Becoming hidden: save scroll state, and stop sizing a PTY the user has
+      // switched away from.
+      ownsPty = false
       wasAtBottom = isScrolledToBottom()
       savedViewportY = term.buffer.active.viewportY
     }
