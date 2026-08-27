@@ -44,7 +44,7 @@ import { ClientHub, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus } from './remote/server'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
-import { listRemoteInterfaces } from './remote/interfaces'
+import { listRemoteInterfaces, isAllowedBindHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import {
@@ -447,6 +447,13 @@ function registerAllHandlers(): void {
   })
 
   handleInvoke('remote:set-host', async (_event, host: string) => {
+    // Validated HERE, not in the pane. This channel is reachable over the
+    // remote socket, so a token holder could otherwise name `0.0.0.0` and turn
+    // a loopback server into one answering on every interface — persisted, so
+    // it would survive a restart.
+    if (!isAllowedBindHost(host)) {
+      throw new Error(`Refusing to bind ${host}: not a loopback or Tailscale address`)
+    }
     setRemoteConfig({ ...getRemoteConfig(), host })
     const status = await applyRemoteConfig()
     broadcastRemoteStatus(status)

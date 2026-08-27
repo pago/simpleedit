@@ -8,6 +8,7 @@
   let interfaces = $state<RemoteInterface[]>([])
   let busy = $state(false)
   let copied = $state(false)
+  let hostError = $state<string | null>(null)
 
   const enabled = $derived(config?.enabled ?? false)
   const tailscale = $derived(interfaces.find((i) => i.isTailscale) ?? null)
@@ -38,9 +39,13 @@
 
   async function setHost(host: string): Promise<void> {
     busy = true
+    hostError = null
     try {
       status = await window.api.invoke('remote:set-host', host)
       config = await window.api.invoke('remote:config')
+    } catch (error) {
+      // Main validates the address independently of what this list offered.
+      hostError = error instanceof Error ? error.message : String(error)
     } finally {
       busy = false
     }
@@ -130,9 +135,14 @@
   <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
     <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Network interface</h2>
     <p class="mt-2 text-xs leading-relaxed text-zinc-500">
-      Binding is always explicit. Loopback reaches only this machine; the Tailscale address
-      reaches your own devices and nothing else. There is no “all interfaces” option on purpose.
+      Only two kinds of address are offered, and the list is a filter rather than a warning:
+      loopback reaches this machine alone, and a Tailscale address reaches your own devices and
+      nothing else. Your LAN is deliberately absent — remote access must never answer on a network
+      you do not control, and there is no “all interfaces” option at all.
     </p>
+    {#if hostError}
+      <p class="mt-2 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{hostError}</p>
+    {/if}
     <div class="mt-3 space-y-1.5">
       {#each interfaces as iface (iface.name + iface.address)}
         {@const selected = config?.host === iface.address}
@@ -149,7 +159,7 @@
           <span class="min-w-0 flex-1 truncate text-xs text-zinc-500">{iface.name}</span>
           {#if iface.isTailscale}
             <span class="flex-none rounded bg-emerald-950 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400">Tailscale</span>
-          {:else if iface.isLoopback}
+          {:else}
             <span class="flex-none rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-400">This Mac only</span>
           {/if}
         </button>
