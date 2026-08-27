@@ -65,8 +65,29 @@ interface RunningServer {
 }
 
 let running: RunningServer | null = null
+/**
+ * A start that has begun but not yet finished listening.
+ *
+ * `running` is only assigned after the `await` on `listen`, so `if (running)`
+ * is not an in-flight guard: two concurrent `remote:set-enabled(true)` calls
+ * each built a server and each took a power assertion, and the second
+ * overwrote `running` — leaving the first's blocker id unreachable, so
+ * `stopRemoteServer` could never release it and the Mac would not suspend
+ * again for the life of the process, remote access off or not.
+ */
+let starting: Promise<RemoteAccessStatus> | null = null
 let lastError: string | null = null
 let socketSeq = 0
+
+/**
+ * Stop buffering into a socket that cannot keep up.
+ *
+ * `pty:data` from a busy terminal outruns a slow link, and `readyState` says
+ * nothing about that — the kernel accepts the write and Node buffers the rest
+ * in main's heap, without bound. A terminal already replays from
+ * `pty:backlog`, so dropping is recoverable where unbounded growth is not.
+ */
+const MAX_BUFFERED_BYTES = 1024 * 1024
 
 /**
  * One WebSocket seen as a `RemoteClient`. `id` is the hub's — this transport
@@ -76,6 +97,10 @@ let socketSeq = 0
 class SocketTransport implements RemoteClient {
   readonly id: number
   readonly clientKey: string
+  /** Events dropped because this client could not drain. Diagnostics only. */
+  dropped = 0
+  /** Set on the socket's `close`; `isDestroyed()` already covers CLOSING. */
+  gone = false
 
   constructor(private readonly ws: WebSocket, hubId: number) {
     this.id = hubId
@@ -88,6 +113,13 @@ class SocketTransport implements RemoteClient {
 
   post(frame: ServerFrame): void {
     if (this.ws.readyState !== this.ws.OPEN) return
+    // A client that cannot drain gets its events dropped rather than allowed
+    // to grow main's heap. `result` frames are exempt: something is awaiting
+    // each one, and a dropped reply is a promise that never settles.
+    if (frame.kind === 'event' && this.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+      this.dropped++
+      return
+    }
     try {
       this.ws.send(JSON.stringify(frame))
     } catch {
@@ -96,7 +128,7 @@ class SocketTransport implements RemoteClient {
   }
 
   isDestroyed(): boolean {
-    return this.ws.readyState !== this.ws.OPEN
+    return this.gone || this.ws.readyState !== this.ws.OPEN
   }
 
   close(): void {
@@ -250,6 +282,7 @@ function attachSocket(ws: WebSocket, server: RunningServer): void {
   })
 
   const detach = (): void => {
+    transport.gone = true
     hub.unregister(transport)
     server.sockets.delete(transport)
     emitStatus(server)
@@ -274,6 +307,11 @@ export function getRemoteStatus(): RemoteAccessStatus {
       powerSaveBlocked: false,
       error: lastError,
     }
+  }
+  // Pruned through the SAME predicate the hub uses, so the reported count and
+  // the hub's transport count can never disagree.
+  for (const transport of [...running.sockets]) {
+    if (transport.isDestroyed()) running.sockets.delete(transport)
   }
   return {
     running: true,
@@ -311,9 +349,16 @@ function releasePowerAssertion(id: number | null): void {
   }
 }
 
-export async function startRemoteServer(options: RemoteServerOptions): Promise<RemoteAccessStatus> {
-  if (running) return getRemoteStatus()
+export function startRemoteServer(options: RemoteServerOptions): Promise<RemoteAccessStatus> {
+  if (running) return Promise.resolve(getRemoteStatus())
+  // Set BEFORE the first await, so a concurrent caller joins this start rather
+  // than building a second server and a second power assertion.
+  if (starting) return starting
+  starting = openServer(options).finally(() => { starting = null })
+  return starting
+}
 
+async function openServer(options: RemoteServerOptions): Promise<RemoteAccessStatus> {
   const token = randomBytes(32).toString('hex')
   const wss = new WebSocketServer({ noServer: true })
 

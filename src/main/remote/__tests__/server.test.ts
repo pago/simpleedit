@@ -248,6 +248,52 @@ describe('remote server', () => {
     ws.close()
   })
 
+  // `running` is assigned only after `listen` resolves, so `if (running)` was
+  // no guard at all: two concurrent starts each built a server and each took a
+  // power assertion, and the second overwrote `running` — leaving the first's
+  // blocker id unreachable forever, so the Mac would not suspend again.
+  it('joins a start already in flight instead of building a second server', async () => {
+    const options = {
+      host: HOST,
+      port: 0,
+      webRoot: '/nonexistent-web-root',
+      attachTarget: () => hub,
+    }
+    const [a, b] = await Promise.all([startRemoteServer(options), startRemoteServer(options)])
+
+    expect(a.port).toBe(b.port)
+    expect(blockers.size).toBe(1)
+
+    stopRemoteServer()
+    expect(blockers.size).toBe(0)
+  })
+
+  // The hub sheds a transport as soon as `isDestroyed()` is true, which is
+  // throughout CLOSING; `server.sockets` was only pruned on `close`. The two
+  // must never disagree, or the pane reports a client that is already gone.
+  it('never reports a client count the hub disagrees with', async () => {
+    const { url, token } = await start()
+    const { ws } = await connect(url, token)
+
+    const disagreements: string[] = []
+    const sample = (): void => {
+      const clients = getRemoteStatus().clients
+      const transports = hub.transportCount - 1 // minus the window's own
+      if (clients !== transports) disagreements.push(`${clients} vs ${transports}`)
+    }
+
+    sample()
+    ws.close()
+    for (let i = 0; i < 40; i++) {
+      sample()
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    await waitFor(() => hub.transportCount === 1)
+    sample()
+
+    expect(disagreements).toEqual([])
+  })
+
   it('closes a hub\'s sockets when its window goes', async () => {
     const { url, token } = await start()
     const { ws } = await connect(url, token)
