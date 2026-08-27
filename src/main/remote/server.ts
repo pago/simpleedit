@@ -146,13 +146,22 @@ const MIME: Record<string, string> = {
 }
 
 /**
- * Resolve `route` inside `webRoot`, or null if it escapes.
+ * Resolve `route` inside `webRoot`, or null if it escapes or will not decode.
  *
  * The token gates the door, but a caller past it must still not be able to
- * read the whole disk through `../`.
+ * read the whole disk through `../`. `decodeURIComponent` throws on a lone
+ * `%` — a truncated pasted link is enough — and an uncaught throw inside the
+ * request listener takes the whole main process down with it, which means
+ * `before-quit` never runs and every agent PTY is orphaned.
  */
 function resolveStatic(webRoot: string, route: string): string | null {
-  const relative = normalize(decodeURIComponent(route)).replace(/^(\.\.[/\\])+/, '')
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(route)
+  } catch {
+    return null
+  }
+  const relative = normalize(decoded).replace(/^(\.\.[/\\])+/, '')
   const full = resolve(join(webRoot, relative))
   const root = resolve(webRoot)
   if (full !== root && !full.startsWith(root + sep)) return null
@@ -182,14 +191,23 @@ function serveStatic(res: ServerResponse, webRoot: string, route: string): void 
   createReadStream(file).pipe(res)
 }
 
-/** True when the request carries no `Origin`, or one naming this very server. */
-function sameOrigin(req: IncomingMessage): boolean {
+/**
+ * True when the request carries no `Origin`, or one naming this very server.
+ *
+ * Compared against the address we actually BOUND, never against the request's
+ * own `Host` header. `Host` is client-supplied, so a DNS-rebinding page can
+ * send an `Origin` and a `Host` that agree with each OTHER while naming a
+ * hostname that resolves to us — which satisfies a self-consistency check and
+ * nothing else.
+ */
+function sameOrigin(req: IncomingMessage, host: string, port: number): boolean {
   const origin = req.headers.origin
   if (!origin) return true
-  const host = req.headers.host
-  if (!host) return false
   try {
-    return new URL(origin).host === host
+    const url = new URL(origin)
+    // `URL.hostname` brackets an IPv6 literal; the bound host does not.
+    const hostname = url.hostname.replace(/^\[|\]$/g, '')
+    return hostname === host && url.port === String(port)
   } catch {
     return false
   }
@@ -299,8 +317,12 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
   const token = randomBytes(32).toString('hex')
   const wss = new WebSocketServer({ noServer: true })
 
+  // Assigned once the listen succeeds; the handlers below close over it so the
+  // origin check can name the address actually bound.
+  let boundPort = 0
+
   const http = createServer((req, res) => {
-    if (!sameOrigin(req)) {
+    if (!sameOrigin(req, options.host, boundPort)) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Cross-origin request refused')
       return
@@ -311,6 +333,15 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
       res.end('Not found')
       return
     }
+    // `/<token>` without the trailing slash serves index.html, but every
+    // relative asset and the socket URL then resolve one level up, WITHOUT the
+    // token — a blank page and a silently reconnecting socket, on exactly the
+    // link someone retypes onto a phone. Redirect rather than serve.
+    if (route === '/' && !(req.url ?? '').split('?')[0].endsWith('/')) {
+      res.writeHead(301, { location: `/${token}/`, 'cache-control': 'no-store' })
+      res.end()
+      return
+    }
     serveStatic(res, options.webRoot, route)
   })
 
@@ -319,7 +350,7 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
     // (that is how a test harness connects); a browser one must be our own
     // page, or a site that guessed the port could borrow the token.
     const route = routeOf(req.url, token)
-    if (route !== '/ws' || !sameOrigin(req) || !req.headers.origin) {
+    if (route !== '/ws' || !sameOrigin(req, options.host, boundPort) || !req.headers.origin) {
       socket.destroy()
       return
     }
@@ -340,6 +371,7 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
         reject(new Error('Failed to get server address'))
         return
       }
+      boundPort = addr.port
       resolvePort(addr.port)
     })
   }).catch((error: unknown) => {

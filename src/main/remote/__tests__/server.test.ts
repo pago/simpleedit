@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocket } from 'ws'
+import { request } from 'http'
 
 const blockers = new Set<number>()
 let nextBlockerId = 1
@@ -63,6 +64,18 @@ async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> 
   }
 }
 
+/** A GET with headers `fetch` will not let us set (notably `Host`). */
+function rawGet(port: number, path: string, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: HOST, port, path, method: 'GET', headers, setHost: false }, (res) => {
+      res.resume()
+      resolve(res.statusCode ?? 0)
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 function invoke(ws: WebSocket, id: number, channel: string, args: unknown[] = []): void {
   ws.send(JSON.stringify({ kind: 'invoke', id, channel, args }))
 }
@@ -105,6 +118,38 @@ describe('remote server', () => {
     const { url, token } = await start()
     const res = await fetch(`${url}/${token}/`, { headers: { origin: 'http://evil.example' } })
     expect(res.status).toBe(403)
+  })
+
+  // The origin must be checked against the address we BOUND, not against the
+  // request's own Host header. A DNS-rebound page sends an Origin and a Host
+  // that agree with each OTHER while naming a hostname that resolves to us —
+  // which satisfies a self-consistency check and nothing else. `fetch` refuses
+  // to forge Host, so this goes out over a raw request.
+  it('refuses an origin that only agrees with a forged Host header', async () => {
+    const { url, token } = await start()
+    const { port } = new URL(url)
+    const status = await rawGet(Number(port), `/${token}/`, {
+      host: `rebound.example:${port}`,
+      origin: `http://rebound.example:${port}`,
+    })
+    expect(status).toBe(403)
+  })
+
+  it('survives a URL that will not percent-decode', async () => {
+    const { url, token } = await start()
+    // A truncated pasted link. An uncaught URIError here would take the whole
+    // main process with it, orphaning every agent PTY.
+    expect((await fetch(`${url}/${token}/%`)).status).toBe(404)
+    expect(getRemoteStatus().running).toBe(true)
+  })
+
+  it('redirects the token path without a trailing slash', async () => {
+    const { url, token } = await start()
+    const res = await fetch(`${url}/${token}`, { redirect: 'manual' })
+    // Serving index.html here would resolve every asset and the socket URL one
+    // level up, without the token: a blank page and a silent reconnect loop.
+    expect(res.status).toBe(301)
+    expect(res.headers.get('location')).toBe(`/${token}/`)
   })
 
   it('refuses a socket on the wrong path or a foreign origin', async () => {
