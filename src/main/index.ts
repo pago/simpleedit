@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron'
+import { app, BrowserWindow, dialog, shell, Menu } from 'electron'
 import { join, basename, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -41,6 +41,7 @@ import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-man
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, type RemoteClient } from './client-hub'
+import { handleInvoke, handleSend } from './ipc-registry'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import {
@@ -314,11 +315,11 @@ function createSettingsWindow(): BrowserWindow {
 
 function registerAllHandlers(): void {
   // ── App ─────────────────────────────────────────────────
-  ipcMain.handle('app:get-repo', (event) => {
+  handleInvoke('app:get-repo', (event) => {
     return getRepoForSender(event.sender.id)
   })
 
-  ipcMain.handle('app:set-repo', (event, repoPath: string) => {
+  handleInvoke('app:set-repo', (event, repoPath: string) => {
     windowRepoMap.set(event.sender.id, repoPath)
     registerWindowRepo(event.sender.id, repoPath)
     addRecentRepo(repoPath)
@@ -331,7 +332,7 @@ function registerAllHandlers(): void {
     })
   })
 
-  ipcMain.handle('app:pick-repo', async (event) => {
+  handleInvoke('app:pick-repo', async (event) => {
     const win = getWindowForContents(event.sender.id)
     const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
       title: 'Select bare git repository',
@@ -341,7 +342,7 @@ function registerAllHandlers(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('app:pick-directory', async (event) => {
+  handleInvoke('app:pick-directory', async (event) => {
     const win = getWindowForContents(event.sender.id)
     const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
       title: 'Select destination directory',
@@ -351,108 +352,108 @@ function registerAllHandlers(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('app:clone-repo', async (_event, repoUrl: string, parentDir: string) => {
+  handleInvoke('app:clone-repo', async (_event, repoUrl: string, parentDir: string) => {
     return cloneBareRepo(repoUrl, parentDir)
   })
 
-  ipcMain.handle('app:recent-repos', () => {
+  handleInvoke('app:recent-repos', () => {
     return getRecentRepos()
   })
 
-  ipcMain.handle('app:open-window', (_event, repoPath?: string) => {
+  handleInvoke('app:open-window', (_event, repoPath?: string) => {
     createWindow(repoPath)
   })
 
-  ipcMain.handle('app:open-external', (_event, url: string) => {
+  handleInvoke('app:open-external', (_event, url: string) => {
     shell.openExternal(url)
   })
 
-  ipcMain.handle('app:save-dropped-blob', (_event, filename: string, bytes: Uint8Array) => {
+  handleInvoke('app:save-dropped-blob', (_event, filename: string, bytes: Uint8Array) => {
     return saveDroppedBlob(filename, bytes)
   })
 
-  ipcMain.handle('app:client-key', (event) => {
+  handleInvoke('app:client-key', (event) => {
     return clientKeyOf(event.sender)
   })
 
   // ── PTY ─────────────────────────────────────────────────
-  ipcMain.handle('pty:spawn', (event, options: PtySpawnOptions) => {
+  handleInvoke('pty:spawn', (event, options: PtySpawnOptions) => {
     spawnTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
   })
 
-  ipcMain.handle('pty:write', (_event, id: string, data: string) => {
+  handleInvoke('pty:write', (_event, id: string, data: string) => {
     writeToTerminal(id, data)
   })
 
   // The client id is stamped from the IPC event, never taken from the args —
   // a renderer must not be able to resize as (or claim on behalf of) another.
-  ipcMain.handle('pty:resize', (event, id: string, cols: number, rows: number) => {
+  handleInvoke('pty:resize', (event, id: string, cols: number, rows: number) => {
     resizeTerminal(id, cols, rows, clientKeyOf(event.sender))
   })
 
-  ipcMain.handle('pty:claim', (event, id: string) => {
+  handleInvoke('pty:claim', (event, id: string) => {
     claimTerminal(id, clientKeyOf(event.sender), hubFor(event.sender))
   })
 
-  ipcMain.handle('pty:kill', (_event, id: string) => {
+  handleInvoke('pty:kill', (_event, id: string) => {
     killTerminal(id)
   })
 
-  ipcMain.handle('pty:active-ids', () => {
+  handleInvoke('pty:active-ids', () => {
     return getActiveTerminalIds()
   })
 
-  ipcMain.handle('pty:backlog', (_event, id: string) => {
+  handleInvoke('pty:backlog', (_event, id: string) => {
     return getTerminalBacklog(id)
   })
 
   // ── File system ─────────────────────────────────────────
-  ipcMain.handle('fs:list', (_event, dirPath: string) => {
+  handleInvoke('fs:list', (_event, dirPath: string) => {
     return listDirectory(dirPath)
   })
 
-  ipcMain.handle('fs:list-all', (_event, worktreePath: string) => {
+  handleInvoke('fs:list-all', (_event, worktreePath: string) => {
     return listAllFiles(worktreePath)
   })
 
-  ipcMain.handle('fs:read', (_event, filePath: string) => {
+  handleInvoke('fs:read', (_event, filePath: string) => {
     return readFile(filePath)
   })
 
-  ipcMain.handle('fs:write', (_event, filePath: string, content: string) => {
+  handleInvoke('fs:write', (_event, filePath: string, content: string) => {
     writeFile(filePath, content)
   })
 
-  ipcMain.handle('fs:create-file', (_event, filePath: string) => {
+  handleInvoke('fs:create-file', (_event, filePath: string) => {
     createFile(filePath)
   })
 
-  ipcMain.handle('fs:create-dir', (_event, dirPath: string) => {
+  handleInvoke('fs:create-dir', (_event, dirPath: string) => {
     createDirectory(dirPath)
   })
 
-  ipcMain.handle('fs:rename', (_event, oldPath: string, newPath: string) => {
+  handleInvoke('fs:rename', (_event, oldPath: string, newPath: string) => {
     renamePath(oldPath, newPath)
   })
 
-  ipcMain.handle('fs:delete', async (_event, filePath: string) => {
+  handleInvoke('fs:delete', async (_event, filePath: string) => {
     await deletePath(filePath)
   })
 
   // ── Editor ──────────────────────────────────────────────
-  ipcMain.handle('editor:open', (_event, filePath: string) => {
+  handleInvoke('editor:open', (_event, filePath: string) => {
     return readFile(filePath)
   })
 
-  ipcMain.handle('editor:save', (_event, filePath: string, content: string) => {
+  handleInvoke('editor:save', (_event, filePath: string, content: string) => {
     return writeFile(filePath, content)
   })
 
-  ipcMain.handle('editor:watch', (event, filePath: string) => {
+  handleInvoke('editor:watch', (event, filePath: string) => {
     watchEditorFile(hubFor(event.sender), filePath)
   })
 
-  ipcMain.handle('editor:unwatch', (event, filePath: string) => {
+  handleInvoke('editor:unwatch', (event, filePath: string) => {
     unwatchEditorFile(event.sender.id, filePath)
   })
 
@@ -461,7 +462,7 @@ function registerAllHandlers(): void {
   // session pointed at another bare repo) it targets that repo; when omitted
   // it falls back to the window's primary repo — preserving single-repo
   // behavior byte-for-byte.
-  ipcMain.handle('worktree:list', async (event, repoPath?: string) => {
+  handleInvoke('worktree:list', async (event, repoPath?: string) => {
     try {
       const repo = resolveWorktreeRepo(event.sender.id, repoPath)
       return await listWorktrees(repo)
@@ -471,37 +472,37 @@ function registerAllHandlers(): void {
     }
   })
 
-  ipcMain.handle('worktree:create', async (event, name: string, baseBranch?: string, repoPath?: string) => {
+  handleInvoke('worktree:create', async (event, name: string, baseBranch?: string, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return createWorktree(repo, name, baseBranch)
   })
 
-  ipcMain.handle('worktree:checkout', async (event, branch: string, repoPath?: string) => {
+  handleInvoke('worktree:checkout', async (event, branch: string, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return checkoutWorktree(repo, branch)
   })
 
-  ipcMain.handle('worktree:branches', async (event, repoPath?: string) => {
+  handleInvoke('worktree:branches', async (event, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return listAvailableBranches(repo)
   })
 
-  ipcMain.handle('worktree:remove', async (event, worktreePath: string, repoPath?: string) => {
+  handleInvoke('worktree:remove', async (event, worktreePath: string, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return removeWorktree(repo, worktreePath)
   })
 
-  ipcMain.handle('worktree:watch', (event, repoPath?: string) => {
+  handleInvoke('worktree:watch', (event, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     watchWorktreeList(hubFor(event.sender), repo)
   })
 
-  ipcMain.handle('worktree:unwatch', (event, repoPath?: string) => {
+  handleInvoke('worktree:unwatch', (event, repoPath?: string) => {
     unwatchWorktreeList(event.sender.id, repoPath)
   })
 
   // ── Interactive agents ──────────────────────────────────
-  ipcMain.handle('agent:spawn', async (event, options: AgentSpawnOptions) => {
+  handleInvoke('agent:spawn', async (event, options: AgentSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
     const client = hubFor(event.sender)
     // Awaited and caught. `buildLaunch` validates ids that reach a login-shell
@@ -527,98 +528,98 @@ function registerAllHandlers(): void {
     attachToTerminal(options.id, options.worktreePath, client, options.target.provider)
   })
 
-  ipcMain.handle('agent:spawn-agents', (event, options: PtySpawnOptions) => {
+  handleInvoke('agent:spawn-agents', (event, options: PtySpawnOptions) => {
     spawnAgentsTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
   })
 
-  ipcMain.handle('agent:attach', (event, terminalId: string, worktreePath: string) => {
+  handleInvoke('agent:attach', (event, terminalId: string, worktreePath: string) => {
     attachToTerminal(terminalId, worktreePath, hubFor(event.sender))
   })
 
-  ipcMain.handle('agent:detach', (_event, terminalId: string) => {
+  handleInvoke('agent:detach', (_event, terminalId: string) => {
     detachFromTerminal(terminalId)
   })
 
-  ipcMain.handle('agent:capabilities', (_event, provider: AgentProviderId) => getProvider(provider).capabilities)
-  ipcMain.handle('agent:available', (_event, provider: AgentProviderId) => isExecutableAvailable(provider))
-  ipcMain.handle('agent:providers', () => registeredProviderIds())
+  handleInvoke('agent:capabilities', (_event, provider: AgentProviderId) => getProvider(provider).capabilities)
+  handleInvoke('agent:available', (_event, provider: AgentProviderId) => isExecutableAvailable(provider))
+  handleInvoke('agent:providers', () => registeredProviderIds())
 
   // ── Git ─────────────────────────────────────────────────
-  ipcMain.handle('git:log', (_event, worktreePath: string, count?: number) => {
+  handleInvoke('git:log', (_event, worktreePath: string, count?: number) => {
     return getCommitLog(worktreePath, count)
   })
 
-  ipcMain.handle('git:diff', (_event, worktreePath: string, commitHash: string) => {
+  handleInvoke('git:diff', (_event, worktreePath: string, commitHash: string) => {
     return getCommitDiff(worktreePath, commitHash)
   })
 
-  ipcMain.handle('git:commit-files', (_event, worktreePath: string, commitHash: string) => {
+  handleInvoke('git:commit-files', (_event, worktreePath: string, commitHash: string) => {
     return getCommitFiles(worktreePath, commitHash)
   })
 
-  ipcMain.handle('git:file-at-commit', (_event, worktreePath: string, commitHash: string, filePath: string) => {
+  handleInvoke('git:file-at-commit', (_event, worktreePath: string, commitHash: string, filePath: string) => {
     return getFileAtCommit(worktreePath, commitHash, filePath)
   })
 
-  ipcMain.handle('git:staging-files', (_event, worktreePath: string) => {
+  handleInvoke('git:staging-files', (_event, worktreePath: string) => {
     return getStagingFiles(worktreePath)
   })
 
-  ipcMain.handle('git:staging-diff', (_event, worktreePath: string) => {
+  handleInvoke('git:staging-diff', (_event, worktreePath: string) => {
     return getStagingDiff(worktreePath)
   })
 
-  ipcMain.handle('git:file-at-head', (_event, worktreePath: string, filePath: string) => {
+  handleInvoke('git:file-at-head', (_event, worktreePath: string, filePath: string) => {
     return getFileAtHead(worktreePath, filePath)
   })
 
-  ipcMain.handle('git:watch', (event, worktreePath: string) => {
+  handleInvoke('git:watch', (event, worktreePath: string) => {
     return watchGitRefs(worktreePath, hubFor(event.sender))
   })
 
-  ipcMain.handle('git:unwatch', (_event, worktreePath: string) => {
+  handleInvoke('git:unwatch', (_event, worktreePath: string) => {
     unwatchGitRefs(worktreePath)
   })
 
-  ipcMain.handle('git:branch-diff', (_event, worktreePath: string) => {
+  handleInvoke('git:branch-diff', (_event, worktreePath: string) => {
     return getBranchDiff(worktreePath)
   })
 
-  ipcMain.handle('git:branch-files', (_event, worktreePath: string) => {
+  handleInvoke('git:branch-files', (_event, worktreePath: string) => {
     return getBranchFiles(worktreePath)
   })
 
-  ipcMain.handle('git:file-at-branch-base', (_event, worktreePath: string, filePath: string) => {
+  handleInvoke('git:file-at-branch-base', (_event, worktreePath: string, filePath: string) => {
     return getFileAtBranchBase(worktreePath, filePath)
   })
 
   // ── Review ──────────────────────────────────────────────
-  ipcMain.handle('review:start', (event, worktreePath: string, commitHash: string | null) => {
+  handleInvoke('review:start', (event, worktreePath: string, commitHash: string | null) => {
     return startReview(worktreePath, commitHash, hubFor(event.sender))
   })
 
-  ipcMain.handle('review:cancel', (_event, worktreePath: string, commitHash: string | null) => {
+  handleInvoke('review:cancel', (_event, worktreePath: string, commitHash: string | null) => {
     cancelReview(worktreePath, commitHash)
   })
 
   // ── Screen PRs ─────────────────────────────────────────
-  ipcMain.handle('screenprs:start', (event, filters: ScreenPrsFilters) => {
+  handleInvoke('screenprs:start', (event, filters: ScreenPrsFilters) => {
     return startScreening(filters, hubFor(event.sender))
   })
 
-  ipcMain.handle('screenprs:cancel', (event) => {
+  handleInvoke('screenprs:cancel', (event) => {
     cancelScreening(hubFor(event.sender))
   })
 
-  ipcMain.handle('screenprs:deep-start', (event, context: PrContext) => {
+  handleInvoke('screenprs:deep-start', (event, context: PrContext) => {
     return startDeepReview(context, hubFor(event.sender))
   })
 
-  ipcMain.handle('screenprs:deep-cancel', (_event, url: string) => {
+  handleInvoke('screenprs:deep-cancel', (_event, url: string) => {
     cancelDeepReview(url)
   })
 
-  ipcMain.handle('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
+  handleInvoke('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
     try {
       const { reviewUrl, foldedComments } = await postReview(request.pr, buildReviewPayload(request.draft))
       return { ok: true, reviewUrl, foldedComments }
@@ -628,46 +629,46 @@ function registerAllHandlers(): void {
   })
 
   // ── Tour ───────────────────────────────────────────────
-  ipcMain.handle('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
+  handleInvoke('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
     return startTour(worktreePath, commitHash, hubFor(event.sender), overrideOverview)
   })
 
-  ipcMain.handle('tour:cancel', (_event, worktreePath: string, commitHash: string | null) => {
+  handleInvoke('tour:cancel', (_event, worktreePath: string, commitHash: string | null) => {
     cancelTour(worktreePath, commitHash)
   })
 
-  ipcMain.handle('tour:load', (_event, worktreePath: string, commitHash: string | null) => {
+  handleInvoke('tour:load', (_event, worktreePath: string, commitHash: string | null) => {
     return loadTour(worktreePath, commitHash)
   })
 
-  ipcMain.handle('tour:save-overview', (_event, worktreePath: string, commitHash: string | null, overview: string) => {
+  handleInvoke('tour:save-overview', (_event, worktreePath: string, commitHash: string | null, overview: string) => {
     saveOverview(worktreePath, commitHash, overview)
   })
 
   // ── Models (local Ollama + cloud Claude) ────────────────
-  ipcMain.handle('models:available', () => {
+  handleInvoke('models:available', () => {
     return isOllamaAvailable()
   })
 
-  ipcMain.handle('models:claude', () => listClaudeModels())
+  handleInvoke('models:claude', () => listClaudeModels())
 
-  ipcMain.handle('models:codex', () => listCodexModels())
+  handleInvoke('models:codex', () => listCodexModels())
 
-  ipcMain.handle('models:opencode', () => getOpenCodeModels())
+  handleInvoke('models:opencode', () => getOpenCodeModels())
 
-  ipcMain.handle('models:hardware', () => {
+  handleInvoke('models:hardware', () => {
     return detectHardware()
   })
 
-  ipcMain.handle('models:installed', () => {
+  handleInvoke('models:installed', () => {
     return listInstalledModels()
   })
 
-  ipcMain.handle('models:recommended', () => {
+  handleInvoke('models:recommended', () => {
     return listRecommendedModels()
   })
 
-  ipcMain.handle('models:pull', async (event, name: string) => {
+  handleInvoke('models:pull', async (event, name: string) => {
     const wc = hubFor(event.sender)
     await pullModel(name, (p) => {
       if (!wc.isDestroyed()) {
@@ -681,16 +682,16 @@ function registerAllHandlers(): void {
     })
   })
 
-  ipcMain.handle('models:config-get', () => {
+  handleInvoke('models:config-get', () => {
     return getModelConfig()
   })
 
-  ipcMain.handle('models:config-set', (_event, partial: Partial<ModelConfig>) => {
+  handleInvoke('models:config-set', (_event, partial: Partial<ModelConfig>) => {
     return setModelConfig(partial)
   })
 
   // ── LSP ─────────────────────────────────────────────────
-  ipcMain.handle('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
+  handleInvoke('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
     try {
       return startServer(language, rootUri, hubFor(event.sender))
     } catch (err) {
@@ -700,16 +701,16 @@ function registerAllHandlers(): void {
     }
   })
 
-  ipcMain.handle('lsp:stop', (_event, { serverId }: { serverId: string }) => {
+  handleInvoke('lsp:stop', (_event, { serverId }: { serverId: string }) => {
     stopServer(serverId)
   })
 
-  ipcMain.on('lsp:send', (_event, { serverId, message }: { serverId: string; message: JsonRpcMessage }) => {
+  handleSend('lsp:send', (_event, { serverId, message }: { serverId: string; message: JsonRpcMessage }) => {
     sendToServer(serverId, message)
   })
 
   // ── Session save/restore ────────────────────────────────
-  ipcMain.handle('session:save', (_event, payload: SerializedSession) => {
+  handleInvoke('session:save', (_event, payload: SerializedSession) => {
     try {
       saveSession(payload)
     } catch (err) {
@@ -717,20 +718,20 @@ function registerAllHandlers(): void {
     }
   })
 
-  ipcMain.handle('session:load', (_event, repoPath: string) => {
+  handleInvoke('session:load', (_event, repoPath: string) => {
     return loadSession(repoPath)
   })
 
-  ipcMain.handle('session:clear', (_event, repoPath: string) => {
+  handleInvoke('session:clear', (_event, repoPath: string) => {
     clearSession(repoPath)
   })
 
   // ── Agent-to-agent messaging ────────────────────────────
-  ipcMain.handle('agent-bus:sync', (_event, peers: AgentPeer[]) => {
+  handleInvoke('agent-bus:sync', (_event, peers: AgentPeer[]) => {
     syncPeers(peers)
   })
 
-  ipcMain.handle('agent-bus:spawned', (_event, correlationId: string, peer: AgentPeer) => {
+  handleInvoke('agent-bus:spawned', (_event, correlationId: string, peer: AgentPeer) => {
     resolveSpawn(correlationId, peer)
   })
 }
