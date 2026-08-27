@@ -53,7 +53,9 @@ async function connect(url: string, token: string): Promise<{ ws: WebSocket; fra
   return { ws, frames, hello: frames[0] }
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
+// Generous: these wait on real loopback sockets, and the suite shares a
+// machine with an Electron build when the full gate runs.
+async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> {
   const start = Date.now()
   while (!check()) {
     if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out')
