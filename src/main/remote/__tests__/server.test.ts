@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken } from '../server'
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
-import type { ServerFrame } from '../protocol'
+import type { ServerFrame } from '../../../shared/remote-protocol'
 
 const HOST = '127.0.0.1'
 let hub: ClientHub

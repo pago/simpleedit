@@ -16,7 +16,9 @@
   },
   "include": [
     "src/renderer/**/*",
+    "src/web/**/*",
     "src/shared/**/*",
-    "src/preload/index.d.ts"
+    "src/preload/index.d.ts",
+    "vite.config.web.ts"
   ]
 }

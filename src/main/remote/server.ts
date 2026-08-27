@@ -35,7 +35,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { powerSaveBlocker } from 'electron'
 import type { ClientHub, RemoteClient } from '../client-hub'
 import { dispatchInvoke, dispatchSend } from '../ipc-registry'
-import { parseClientFrame, type ServerFrame } from './protocol'
+import { parseClientFrame, type ServerFrame } from '../../shared/remote-protocol'
 import type { RemoteAccessStatus } from '../../shared/ipc-types'
 
 export interface RemoteServerOptions {
