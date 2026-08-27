@@ -42,6 +42,9 @@ import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeReso
 import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus } from './remote/server'
+import { getRemoteConfig, setRemoteConfig } from './remote/config'
+import { listRemoteInterfaces } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import {
@@ -58,7 +61,7 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, RemoteAccessStatus } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
@@ -178,6 +181,61 @@ setRepoDiscoverer(async (webContentsId, cwd) => {
   const worktrees = await listWorktrees(repoPath).catch(() => [])
   return { repoPath, worktrees }
 })
+
+// ── Remote access ─────────────────────────────────────────
+// One server for the whole app, off unless the user turns it on. A connecting
+// browser JOINS a window's hub rather than minting an identity of its own —
+// see remote/server.ts for why, and for the security rules that surface obeys.
+
+/** Where the built web bundle lives, beside the renderer's own output. */
+function remoteWebRoot(): string {
+  return join(__dirname, '../web')
+}
+
+/**
+ * The window a new socket attaches to: the focused one if it has a repo, else
+ * the first window that does, else the first window at all.
+ *
+ * Deliberately not "a window of its own". Everything main knows about a
+ * session — its repo, its worktrees, its MCP bridge, its watchers — is keyed
+ * by a window id, so the phone has to borrow one.
+ */
+function remoteAttachTarget(): ClientHub | null {
+  const withRepo = BrowserWindow.getAllWindows().filter(
+    (w) => !w.isDestroyed() && windowRepoMap.has(w.webContents.id),
+  )
+  const focused = BrowserWindow.getFocusedWindow()
+  const chosen =
+    (focused && withRepo.includes(focused) ? focused : undefined) ??
+    withRepo[0] ??
+    BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+  if (!chosen) return null
+  return hubFor(chosen.webContents)
+}
+
+/**
+ * Status goes to EVERY window, not the sender's hub: the pane that shows it
+ * lives in the settings window, while the events that change it (a phone
+ * connecting) arrive on a different one entirely.
+ */
+function broadcastRemoteStatus(status: RemoteAccessStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('remote:status-changed', status)
+  }
+}
+
+async function applyRemoteConfig(): Promise<RemoteAccessStatus> {
+  const config = getRemoteConfig()
+  stopRemoteServer()
+  if (!config.enabled) return getRemoteStatus()
+  return await startRemoteServer({
+    host: config.host,
+    port: config.port,
+    webRoot: remoteWebRoot(),
+    attachTarget: remoteAttachTarget,
+    onStatusChange: broadcastRemoteStatus,
+  })
+}
 
 // ── Window creation ───────────────────────────────────────
 /**
@@ -374,6 +432,25 @@ function registerAllHandlers(): void {
 
   handleInvoke('app:client-key', (event) => {
     return clientKeyOf(event.sender)
+  })
+
+  // ── Remote access ───────────────────────────────────────
+  handleInvoke('remote:status', () => getRemoteStatus())
+  handleInvoke('remote:config', () => getRemoteConfig())
+  handleInvoke('remote:interfaces', () => listRemoteInterfaces())
+
+  handleInvoke('remote:set-enabled', async (_event, enabled: boolean) => {
+    setRemoteConfig({ ...getRemoteConfig(), enabled })
+    const status = await applyRemoteConfig()
+    broadcastRemoteStatus(status)
+    return status
+  })
+
+  handleInvoke('remote:set-host', async (_event, host: string) => {
+    setRemoteConfig({ ...getRemoteConfig(), host })
+    const status = await applyRemoteConfig()
+    broadcastRemoteStatus(status)
+    return status
   })
 
   // ── PTY ─────────────────────────────────────────────────
@@ -757,6 +834,12 @@ app.whenReady().then(() => {
   registerAllHandlers()
   initAutoUpdater()
 
+  // Remote access survives a restart if it was on. `attachTarget` is resolved
+  // per socket, not now, so starting before any window exists is fine.
+  void applyRemoteConfig().catch((err: unknown) => {
+    console.error('[SimpleEdit] Failed to start remote access:', err)
+  })
+
   // Serve worktree-local assets (e.g. images in Markdown previews). Reads are
   // bounded to the directory containing each open window's bare repo, where its
   // worktrees live alongside it.
@@ -832,6 +915,7 @@ app.on('before-quit', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { stopRemoteServer() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
@@ -849,6 +933,7 @@ app.on('window-all-closed', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { stopRemoteServer() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }

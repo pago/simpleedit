@@ -746,6 +746,61 @@ export interface AppInvokeMap {
   'app:client-key': { args: []; result: PtyClientId }
 }
 
+// ── Remote access ─────────────────────────────────────────
+/**
+ * Persisted remote-access preferences. `enabled` is never flipped implicitly:
+ * the server exposes `pty:spawn`, `fs:write` and every git operation to
+ * whoever holds its token, so it starts only when a person asks for it.
+ */
+export interface RemoteAccessConfig {
+  enabled: boolean
+  /** Interface to bind. Always explicit — never an implicit `0.0.0.0`. */
+  host: string
+  /** 0 for an ephemeral port. */
+  port: number
+}
+
+export interface RemoteAccessStatus {
+  running: boolean
+  host: string | null
+  port: number | null
+  /** The full URL to open, token included, or null when not running. */
+  url: string | null
+  /** Currently attached web clients. */
+  clients: number
+  /**
+   * Whether a power assertion is held. Surfaced so it is never a mystery why
+   * the Mac stayed awake — and, more importantly, so a failure to take one is
+   * visible rather than showing up later as agents that stopped overnight.
+   */
+  powerSaveBlocked: boolean
+  /** Why the last start attempt failed (a taken port, typically). */
+  error: string | null
+}
+
+export interface RemoteInvokeMap {
+  'remote:status': { args: []; result: RemoteAccessStatus }
+  'remote:config': { args: []; result: RemoteAccessConfig }
+  /** Starts or stops the server, and persists the choice. */
+  'remote:set-enabled': { args: [enabled: boolean]; result: RemoteAccessStatus }
+  /** Rebinds a running server; persisted either way. */
+  'remote:set-host': { args: [host: string]; result: RemoteAccessStatus }
+  /** Candidate bind addresses, so the pane can offer them instead of a text field. */
+  'remote:interfaces': { args: []; result: RemoteInterface[] }
+}
+
+export interface RemoteInterface {
+  name: string
+  address: string
+  /** A Tailscale address (100.64.0.0/10) — the intended one for a phone. */
+  isTailscale: boolean
+  isLoopback: boolean
+}
+
+export interface RemoteEventMap {
+  'remote:status-changed': RemoteAccessStatus
+}
+
 // ── LSP ───────────────────────────────────────────────────
 /** Opaque JSON-RPC message passed between renderer and LSP server */
 export type JsonRpcMessage = Record<string, unknown>
@@ -957,6 +1012,7 @@ export type InvokeMap = WorktreeInvokeMap &
   SessionInvokeMap &
   UpdateInvokeMap &
   ModelsInvokeMap &
+  RemoteInvokeMap &
   AgentBusInvokeMap
 
 export type SendMap = LspSendMap
@@ -973,4 +1029,5 @@ export type EventMap = WorktreeEventMap &
   AgentBusEventMap &
   UpdateEventMap &
   EditorEventMap &
+  RemoteEventMap &
   ModelsEventMap
