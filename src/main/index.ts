@@ -468,8 +468,8 @@ function registerAllHandlers(): void {
     resizeTerminal(id, cols, rows, clientKeyOf(event.sender))
   })
 
-  handleInvoke('pty:claim', (event, id: string) => {
-    claimTerminal(id, clientKeyOf(event.sender), hubFor(event.sender))
+  handleInvoke('pty:claim', (event, id: string, cols: number, rows: number) => {
+    claimTerminal(id, clientKeyOf(event.sender), hubFor(event.sender), cols, rows)
   })
 
   handleInvoke('pty:kill', (_event, id: string) => {

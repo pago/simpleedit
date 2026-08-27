@@ -73,11 +73,20 @@ export interface PtyInvokeMap {
    * a non-owner's resize is dropped, not queued. The owning `PtyClientId` comes
    * from the IPC event, not from these args. */
   'pty:resize': { args: [id: string, cols: number, rows: number]; result: void }
-  /** Take ownership of this PTY's size. Sent when the user's attention lands on
-   * a terminal — a session being selected, the window focused, the tab made
-   * visible — so the client being looked at is the one that sizes the PTY.
-   * Last claim wins. */
-  'pty:claim': { args: [id: string]; result: void }
+  /**
+   * Take ownership of this PTY's size AND set it, in one call. Sent when the
+   * user's attention lands on a terminal — a session being selected, the
+   * window focused, the tab made visible — so the client being looked at is
+   * the one that sizes the PTY. Last claim wins.
+   *
+   * The dimensions are not optional, and not a separate `pty:resize` after the
+   * claim. While a client is not the owner its resizes are dropped, so its
+   * container can reflow — a viewer opening, a diff tab appearing — with the
+   * PTY never hearing about it. Taking ownership back without also handing
+   * over the current geometry would leave the PTY at a size nothing on screen
+   * matches, until some later resize happened to fix it by luck.
+   */
+  'pty:claim': { args: [id: string, cols: number, rows: number]; result: void }
   'pty:kill': { args: [id: string]; result: void }
   'pty:active-ids': { args: []; result: string[] }
   /** Replay buffer for output emitted before the renderer's xterm attached

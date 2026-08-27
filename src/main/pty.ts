@@ -24,8 +24,14 @@ const agentCleanups = new Map<string, () => void>()
  * and the one that isn't being looked at must not resize the one that is —
  * so a resize is applied only for the owner and dropped, never queued, for
  * anyone else. Ownership moves on `claimTerminal`, which the renderer calls on
- * genuine user attention; last claim wins. The spawner owns it to begin with,
- * so a lone window never has to claim before its first fit lands.
+ * genuine user attention; last claim wins.
+ *
+ * The spawner owns it to begin with, so the very first fit of a lone window
+ * lands without waiting for a claim — which matters because `hasUserAttention`
+ * is false under a headless CI display, where nothing would ever claim.
+ * Claiming also CARRIES the new geometry: a client whose resizes were being
+ * dropped has a container that may have reflowed since, and ownership without
+ * a size would leave the PTY at dimensions nothing on screen matches.
  */
 const ptyOwner = new Map<string, PtyClientId>()
 /**
@@ -435,19 +441,39 @@ export function writeToTerminal(id: string, data: string): void {
 }
 
 /**
- * Make `clientId` the client that sizes this PTY. Called when the user's
- * attention lands on a terminal — never on reconnect or background layout
- * churn, which would let an unwatched client take the size back.
+ * Make `clientId` the client that sizes this PTY, and size it, atomically.
+ *
+ * Called when the user's attention lands on a terminal — never on reconnect or
+ * background layout churn, which would let an unwatched client take the size
+ * back. The geometry travels WITH the claim rather than following it: while
+ * this client was not the owner its resizes were dropped, so its container may
+ * have reflowed in the meantime, and a claim that only moved ownership would
+ * leave the PTY at a size nothing on screen matches until some unrelated later
+ * resize happened to correct it.
+ *
+ * An id with no live PTY is ignored. `pty:exit` deletes the owner entry while
+ * the component stays mounted, so every later focus would otherwise re-insert
+ * an entry for a dead terminal that nothing ever reclaims — and a client could
+ * name a terminal it was never attached to.
  *
  * The change is announced on `client`, which for a hub reaches every transport
  * — including the one that just lost the size. Without that the loser keeps
  * fitting its xterm to a width the PTY no longer uses, with main silently
  * dropping every resize it sends and neither side able to say why.
  */
-export function claimTerminal(id: string, clientId: PtyClientId, client: RemoteClient): void {
-  if (ptyOwner.get(id) === clientId) return
+export function claimTerminal(
+  id: string,
+  clientId: PtyClientId,
+  client: RemoteClient,
+  cols: number,
+  rows: number,
+): void {
+  const term = terminals.get(id)
+  if (!term) return
+  const moved = ptyOwner.get(id) !== clientId
   ptyOwner.set(id, clientId)
-  if (!client.isDestroyed()) client.send('pty:owner-changed', { id, owner: clientId })
+  if (cols > 0 && rows > 0) term.resize(cols, rows)
+  if (moved && !client.isDestroyed()) client.send('pty:owner-changed', { id, owner: clientId })
 }
 
 /** The client currently allowed to resize `id`, if any. */

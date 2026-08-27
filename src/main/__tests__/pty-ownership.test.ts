@@ -33,6 +33,7 @@ vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => '/app', getPath: () => tmpdir() },
 }))
 
+import type { RemoteClient } from '../client-hub'
 import {
   spawnTerminal,
   claimTerminal,
@@ -48,19 +49,27 @@ import {
 const OWNER = '1'
 const OTHER = 'w1.1'
 
-const hub = { id: 1, isDestroyed: () => false, send: vi.fn() }
+// Typed rather than cast: these tests exist to check the ownership contract,
+// and an `as never` here would hide the very signature it depends on.
+const hubSend = vi.fn<(channel: string, data: unknown) => void>()
+const hub: RemoteClient = { id: 1, send: hubSend, isDestroyed: () => false }
 
 beforeEach(() => {
-  hub.send.mockClear()
+  hubSend.mockClear()
 })
 
 /** Spawn a plain terminal owned by `clientKey`; returns its fake PTY. */
 function spawnFor(id: string, clientKey: string): FakePty {
   nextSpawnKey = id
-  spawnTerminal({ id, worktreePath: tmpdir() }, hub as never, clientKey)
+  spawnTerminal({ id, worktreePath: tmpdir() }, hub, clientKey)
   const fake = spawned.get(id)
   if (!fake) throw new Error(`no PTY spawned for ${id}`)
   return fake
+}
+
+/** Claim without handing over a usable geometry (0×0 is skipped, as in a hidden tab). */
+function claim(id: string, clientKey: string, cols = 0, rows = 0): void {
+  claimTerminal(id, clientKey, hub, cols, rows)
 }
 
 beforeEach(() => {
@@ -92,13 +101,13 @@ describe('PTY size ownership', () => {
   it('does not queue a dropped resize — a later claim replays nothing', () => {
     const term = spawnFor('t4', OWNER)
     resizeTerminal('t4', 80, 24, OTHER)
-    claimTerminal('t4', OTHER, hub as never)
+    claim('t4', OTHER)
     expect(term.resize).not.toHaveBeenCalled()
   })
 
   it('transfers ownership on claim, so the old owner stops sizing it', () => {
     const term = spawnFor('t5', OWNER)
-    claimTerminal('t5', OTHER, hub as never)
+    claim('t5', OTHER)
     expect(getTerminalOwner('t5')).toBe(OTHER)
 
     resizeTerminal('t5', 100, 30, OWNER)
@@ -110,8 +119,8 @@ describe('PTY size ownership', () => {
 
   it('last claim wins when two clients claim in turn', () => {
     spawnFor('t6', OWNER)
-    claimTerminal('t6', OTHER, hub as never)
-    claimTerminal('t6', OWNER, hub as never)
+    claim('t6', OTHER)
+    claim('t6', OWNER)
     expect(getTerminalOwner('t6')).toBe(OWNER)
   })
 
@@ -143,14 +152,57 @@ describe('PTY size ownership', () => {
 
   it('tells every transport of the hub when the size moves to another', () => {
     spawnFor('t12', OWNER)
-    claimTerminal('t12', OTHER, hub as never)
-    expect(hub.send).toHaveBeenCalledWith('pty:owner-changed', { id: 't12', owner: OTHER })
+    claim('t12', OTHER)
+    expect(hubSend).toHaveBeenCalledWith('pty:owner-changed', { id: 't12', owner: OTHER })
   })
 
   it('stays quiet when the current owner re-claims', () => {
     spawnFor('t13', OWNER)
-    claimTerminal('t13', OWNER, hub as never)
-    expect(hub.send).not.toHaveBeenCalled()
+    claim('t13', OWNER)
+    expect(hubSend).not.toHaveBeenCalled()
+  })
+
+  // The regression this whole call shape exists for: while a client is not the
+  // owner its resizes are dropped, so its container can reflow unheard. Taking
+  // ownership back has to bring the current geometry with it, or the PTY sits
+  // at a size nothing on screen matches until some later resize fixes it by luck.
+  it('applies the geometry that comes with a claim', () => {
+    const term = spawnFor('t14', OWNER)
+    claim('t14', OTHER, 132, 43)
+    expect(term.resize).toHaveBeenCalledWith(132, 43)
+    expect(getTerminalOwner('t14')).toBe(OTHER)
+  })
+
+  it('applies a claim geometry even when the claimer already owned it', () => {
+    const term = spawnFor('t15', OWNER)
+    claim('t15', OWNER, 100, 30)
+    expect(term.resize).toHaveBeenCalledWith(100, 30)
+    // Ownership did not move, so there is nothing to announce.
+    expect(hubSend).not.toHaveBeenCalled()
+  })
+
+  it('ignores a zero-sized claim, which is what a hidden container fits to', () => {
+    const term = spawnFor('t16', OWNER)
+    claim('t16', OTHER, 0, 0)
+    expect(term.resize).not.toHaveBeenCalled()
+    expect(getTerminalOwner('t16')).toBe(OTHER)
+  })
+
+  // `pty:exit` drops the owner entry while the component stays mounted, so an
+  // unguarded claim would re-insert one per focus and never reclaim it — and
+  // would let a client name a terminal it was never attached to.
+  it('ignores a claim on a terminal that no longer exists', () => {
+    const term = spawnFor('t17', OWNER)
+    term.exit(0)
+    hubSend.mockClear() // the exit itself pushes pty:exit
+    claim('t17', OTHER, 90, 30)
+    expect(getTerminalOwner('t17')).toBeUndefined()
+    expect(hubSend).not.toHaveBeenCalled()
+  })
+
+  it('ignores a claim on an id that was never spawned', () => {
+    claim('never-spawned-claim', OWNER, 90, 30)
+    expect(getTerminalOwner('never-spawned-claim')).toBeUndefined()
   })
 
   it('does not resize an unowned terminal id', () => {
