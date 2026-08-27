@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import type { RemoteAccessConfig } from '../../shared/ipc-types'
-import { REMOTE_DEFAULT_HOST, isAllowedBindHost } from './interfaces'
+import { REMOTE_DEFAULT_HOST } from './interfaces'
 
 function defaults(): RemoteAccessConfig {
   return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0 }
@@ -36,12 +36,12 @@ export function getRemoteConfig(): RemoteAccessConfig {
     const base = defaults()
     return {
       enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : base.enabled,
-      // Re-validated on READ, not just on write. A stored host is untrusted
-      // input by the time it comes back — the file is editable, and an address
-      // that was legitimate when chosen may no longer exist (Tailscale down at
-      // boot). Falling back to loopback fails closed: the wrong outcome is a
-      // server nobody can reach, never one everybody can.
-      host: typeof parsed.host === 'string' && isAllowedBindHost(parsed.host) ? parsed.host : base.host,
+      // Shape only. Whether this host may actually be BOUND is decided at
+      // bind time, not here: rewriting it on read silently and permanently
+      // downgraded a Tailscale preference to loopback whenever Tailscale
+      // happened to be down at boot — the next write persisted the downgrade,
+      // so the choice was gone for good. Keep the preference; refuse the bind.
+      host: typeof parsed.host === 'string' && parsed.host.length > 0 ? parsed.host : base.host,
       port: typeof parsed.port === 'number' && Number.isInteger(parsed.port) && parsed.port >= 0 && parsed.port <= 65535
         ? parsed.port
         : base.port,

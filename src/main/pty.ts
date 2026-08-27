@@ -52,6 +52,12 @@ function rememberClient(id: string, client: RemoteClient): void {
     set = new Set()
     ptyClients.set(id, set)
   }
+  // Shed the dead first: a long-lived terminal outlives windows, and holding a
+  // closed window's hub here would keep it (and its transports) alive for the
+  // rest of the terminal's life.
+  for (const existing of [...set]) {
+    if (existing.isDestroyed()) set.delete(existing)
+  }
   set.add(client)
 }
 

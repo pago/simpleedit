@@ -250,10 +250,28 @@ function broadcastRemoteStatus(status: RemoteAccessStatus): void {
   }
 }
 
-async function applyRemoteConfig(): Promise<RemoteAccessStatus> {
+/**
+ * Serialised. Two `remote:set-*` calls landing together would otherwise each
+ * stop and each start, and the second could join the first's in-flight start
+ * and silently inherit its host.
+ */
+let remoteApply: Promise<RemoteAccessStatus> = Promise.resolve(getRemoteStatus())
+
+function applyRemoteConfig(): Promise<RemoteAccessStatus> {
+  remoteApply = remoteApply.then(applyRemoteConfigNow, applyRemoteConfigNow)
+  return remoteApply
+}
+
+async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
   const config = getRemoteConfig()
   stopRemoteServer()
   if (!config.enabled) return getRemoteStatus()
+  // The stored preference is kept verbatim, so this is where a host that is no
+  // longer bindable — a Tailscale address with Tailscale down — is caught. It
+  // fails closed and SAYS so, rather than quietly binding somewhere else.
+  if (!isAllowedBindHost(config.host)) {
+    return remoteBindRefused(config.host)
+  }
   return await startRemoteServer({
     host: config.host,
     port: config.port,
@@ -261,6 +279,13 @@ async function applyRemoteConfig(): Promise<RemoteAccessStatus> {
     attachTarget: remoteAttachTarget,
     onStatusChange: broadcastRemoteStatus,
   })
+}
+
+function remoteBindRefused(host: string): RemoteAccessStatus {
+  return {
+    ...getRemoteStatus(),
+    error: `${host} is not available right now. If it is your Tailscale address, Tailscale may be down; pick an address below to change it.`,
+  }
 }
 
 // ── Window creation ───────────────────────────────────────

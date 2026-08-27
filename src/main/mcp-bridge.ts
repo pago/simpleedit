@@ -764,16 +764,30 @@ export function startBridge(webContentsId: number, webContents: RemoteClient): P
   const token = randomBytes(16).toString('hex')
   const server = createBridgeServer(token, webContents)
 
+  // Registered BEFORE `listen` resolves. A window closing during the listen
+  // would otherwise find nothing in `bridges` to stop, and the server would
+  // outlive it with nothing left holding a reference. `port: 0` marks it as
+  // not yet listening, which `getBridgeInfo` reports as unavailable.
+  bridges.set(webContentsId, { server, port: 0, token, webContents })
+
   return new Promise((resolve, reject) => {
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') {
         server.close()
+        bridges.delete(webContentsId)
         reject(new Error('Failed to get server address'))
         return
       }
 
       const port = addr.port
+      // A `stopBridge` during the listen already removed the entry; do not
+      // resurrect it, or the window's teardown is undone behind its back.
+      if (!bridges.has(webContentsId)) {
+        server.close()
+        resolve(port)
+        return
+      }
       bridges.set(webContentsId, { server, port, token, webContents })
       console.log(`[MCP Bridge] Started for webContents ${webContentsId} on 127.0.0.1:${port}`)
       resolve(port)
@@ -803,6 +817,8 @@ export function stopAllBridges(): void {
 
 export function getBridgeInfo(webContentsId: number): { port: number; token: string } | null {
   const bridge = bridges.get(webContentsId)
-  if (!bridge) return null
+  // `port: 0` is a bridge registered but not yet listening — it has no address
+  // to hand an agent yet.
+  if (!bridge || bridge.port === 0) return null
   return { port: bridge.port, token: bridge.token }
 }

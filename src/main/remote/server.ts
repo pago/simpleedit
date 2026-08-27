@@ -549,9 +549,10 @@ export function stopRemoteServer(): RemoteAccessStatus {
  * Close every socket attached to `hubId`. Called when that window closes.
  *
  * A socket left open outlives its window: its next invoke reaches `hubFor`
- * with the destroyed window's id, which mints a FRESH hub under that id and
- * revives everything keyed by it — an MCP bridge nothing will ever stop, and
- * chokidar watchers installed after the per-window unwatch already ran.
+ * with the destroyed window's id, which would mint a FRESH hub under that id
+ * and revive everything keyed by it — chokidar watchers installed after the
+ * per-window unwatch already ran, and a repo map entry for a window that is
+ * gone.
  */
 export function closeSocketsForHub(hubId: number): void {
   if (!running) return
