@@ -1,5 +1,5 @@
 import * as pty from 'node-pty'
-import { type WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import { existsSync } from 'fs'
 import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
@@ -82,7 +82,7 @@ export function getTerminalBacklog(id: string): PtyBacklog {
  * text lands in the backlog/terminal and the session shows the exited state.
  * Returns true when the cwd is usable.
  */
-function guardCwd(id: string, worktreePath: string, webContents: WebContents): boolean {
+function guardCwd(id: string, worktreePath: string, webContents: RemoteClient): boolean {
   if (existsSync(worktreePath)) return true
   const msg =
     `SimpleEdit: cannot start session — the directory does not exist:\r\n` +
@@ -107,7 +107,7 @@ function guardCwd(id: string, worktreePath: string, webContents: WebContents): b
  * input (an agent passing a malformed model id to `spawn_session`), not an
  * internal error — it must never escape as an unhandled rejection.
  */
-export function reportSpawnFailure(id: string, error: unknown, webContents: WebContents): void {
+export function reportSpawnFailure(id: string, error: unknown, webContents: RemoteClient): void {
   const detail = error instanceof Error ? error.message : String(error)
   const msg = `SimpleEdit: cannot start session — ${detail}\r\n`
   const offset = recordBacklog(id, msg)
@@ -194,7 +194,7 @@ function spawnAgentTerminal(
   worktreePath: string,
   plan: Pick<LaunchPlan, 'executable' | 'args' | 'env' | 'sessionId' | 'cleanup'>,
   opts: { emitSessionId?: boolean; clearStatusOnExit?: boolean },
-  webContents: WebContents,
+  webContents: RemoteClient,
 ): void {
   const shell = agentShell()
   // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
@@ -242,7 +242,7 @@ function spawnAgentTerminal(
 
 export function spawnTerminal(
   options: PtySpawnOptions,
-  webContents: WebContents
+  webContents: RemoteClient
 ): void {
   const { id, worktreePath } = options
 
@@ -274,7 +274,7 @@ export function spawnTerminal(
 
 export async function spawnAgentTerminalForProvider(
   options: AgentSpawnOptions,
-  webContents: WebContents
+  webContents: RemoteClient
 ): Promise<void> {
   const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt, target } = options
 
@@ -390,7 +390,7 @@ export async function spawnAgentTerminalForProvider(
  */
 export function spawnAgentsTerminal(
   options: PtySpawnOptions,
-  webContents: WebContents
+  webContents: RemoteClient
 ): void {
   const { id, worktreePath } = options
 

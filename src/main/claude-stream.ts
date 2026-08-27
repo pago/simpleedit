@@ -1,10 +1,10 @@
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { AgentProviderId, AgentStatus } from '../shared/ipc-types'
 import { tryGetProvider } from './agents/provider'
 
 interface TerminalAttachment {
   worktreePath: string
-  webContents: WebContents
+  webContents: RemoteClient
   removeListener: () => void
 }
 
@@ -90,7 +90,7 @@ export function statusFromTitle(title: string): AgentStatus | null {
 }
 
 function sendStatus(
-  webContents: WebContents,
+  webContents: RemoteClient,
   terminalId: string,
   worktreePath: string,
   status: AgentStatus
@@ -128,7 +128,7 @@ export function getWorktreeForTerminal(terminalId: string): string | null {
 export function attachToTerminal(
   terminalId: string,
   worktreePath: string,
-  webContents: WebContents,
+  webContents: RemoteClient,
   provider: AgentProviderId = 'claude',
 ): void {
   // Don't double-attach

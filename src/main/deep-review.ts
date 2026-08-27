@@ -9,7 +9,7 @@
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { ModelRef } from '../shared/ipc-types'
 import type { PrContext, DeepFinding, DeepLensId, DeepReviewStatus, DeepLensStatus } from '../shared/screenprs'
 import { DEEP_LENS_ORDER, compareDeepFindings } from '../shared/screenprs'
@@ -24,7 +24,7 @@ import { analysisFingerprint, getCachedDeep, putDeep } from './screenprs-cache'
 
 const activeDeep = new Map<string, AbortController>()
 
-function send(wc: WebContents, channel: string, data: unknown): void {
+function send(wc: RemoteClient, channel: string, data: unknown): void {
   if (!wc.isDestroyed()) wc.send(channel, data)
 }
 
@@ -49,7 +49,7 @@ function enabledLenses(): Array<{ lens: DeepLensId; model?: ModelRef }> {
   }))
 }
 
-export async function startDeepReview(ctx: PrContext, webContents: WebContents): Promise<void> {
+export async function startDeepReview(ctx: PrContext, webContents: RemoteClient): Promise<void> {
   cancelDeepReview(ctx.url)
   const controller = new AbortController()
   activeDeep.set(ctx.url, controller)

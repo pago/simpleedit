@@ -1,12 +1,12 @@
 import { watch, type FSWatcher } from 'chokidar'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 
 const DEBOUNCE_MS = 100
 
 interface FileWatchState {
   watcher: FSWatcher
   debounceTimer: ReturnType<typeof setTimeout> | null
-  subscribers: Map<number, { refCount: number; webContents: WebContents }>
+  subscribers: Map<number, { refCount: number; webContents: RemoteClient }>
 }
 
 const watchers = new Map<string, FileWatchState>()
@@ -24,7 +24,7 @@ function emit(filePath: string): void {
 export function watchEditorFile(
   webContentsId: number,
   filePath: string,
-  webContents: WebContents
+  webContents: RemoteClient
 ): void {
   let state = watchers.get(filePath)
 

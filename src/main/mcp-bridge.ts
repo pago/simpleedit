@@ -1,7 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
 import { randomBytes, randomUUID } from 'crypto'
 import { dirname } from 'path'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
@@ -26,7 +26,7 @@ interface BridgeInstance {
   server: Server
   port: number
   token: string
-  webContents: WebContents
+  webContents: RemoteClient
 }
 
 const bridges = new Map<number, BridgeInstance>()
@@ -109,7 +109,7 @@ const SPAWN_HANDLE_WAIT_MS = 1500
  * Mirror every message to the renderer so the exchange is visible to the user.
  * Two agents talking with no UI trace is the failure mode to avoid.
  */
-function notifyMessage(webContents: WebContents, message: Message): void {
+function notifyMessage(webContents: RemoteClient, message: Message): void {
   if (webContents.isDestroyed()) return
   webContents.send('agent-message:sent', {
     messageId: message.id,
@@ -138,7 +138,7 @@ function jsonResponse(res: ServerResponse, status: number, body: Record<string, 
 
 // -- Tool call handling ----------------------------------------
 
-async function handleToolCall(payload: ToolCallPayload, webContents: WebContents): Promise<{ status: number; body: Record<string, unknown> }> {
+async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClient): Promise<{ status: number; body: Record<string, unknown> }> {
   const { tool, args, terminalId } = payload
 
   if (tool === 'complete_task') {
@@ -551,7 +551,7 @@ async function locateWorktree(
  * paid once per new repo per window. A pathological path (network FS, huge
  * repo) would stall the CLI's hook here.
  */
-async function handleHook(body: string, webContents: WebContents): Promise<Record<string, unknown>> {
+async function handleHook(body: string, webContents: RemoteClient): Promise<Record<string, unknown>> {
   let parsed: unknown
   try {
     parsed = JSON.parse(body)
@@ -579,7 +579,7 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
  */
 export async function applyAgentSignal(
   signal: HookSignal,
-  webContents: WebContents,
+  webContents: RemoteClient,
   opts: { ownsIdentityAndStatus?: boolean; deliver?: (text: string) => Promise<boolean> } = {},
 ): Promise<Record<string, unknown>> {
   // Codex's reporter stamps the terminal id straight into the body; Claude's
@@ -637,7 +637,7 @@ export async function applyAgentSignal(
 async function handleTurnEnd(
   signal: { eventName: string | null; lastAssistantMessage: string | null; stopHookActive: boolean },
   terminalId: string,
-  webContents: WebContents,
+  webContents: RemoteClient,
   deliver?: (text: string) => Promise<boolean>,
 ): Promise<Record<string, unknown>> {
   if (signal.eventName !== 'Stop' && signal.eventName !== 'SubagentStop') return {}
@@ -683,7 +683,7 @@ function registerCodexIdentityAndStatus(
   signal: import('./cwd-tracker').HookSignal,
   terminalId: string,
   worktreePath: string,
-  webContents: WebContents,
+  webContents: RemoteClient,
 ): void {
   if (webContents.isDestroyed()) return
   webContents.send('agent:session-id', { terminalId, sessionId: signal.sessionId })
@@ -706,7 +706,7 @@ function registerCodexIdentityAndStatus(
   }
 }
 
-function createBridgeServer(token: string, webContents: WebContents): Server {
+function createBridgeServer(token: string, webContents: RemoteClient): Server {
   return createServer(async (req, res) => {
     // Validate token from URL path: /<token>/tool-call
     const expectedPath = `/${token}/tool-call`
@@ -755,7 +755,7 @@ function createBridgeServer(token: string, webContents: WebContents): Server {
   })
 }
 
-export function startBridge(webContentsId: number, webContents: WebContents): Promise<number> {
+export function startBridge(webContentsId: number, webContents: RemoteClient): Promise<number> {
   const existing = bridges.get(webContentsId)
   if (existing) {
     return Promise.resolve(existing.port)

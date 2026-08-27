@@ -39,6 +39,7 @@ import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from '.
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
+import { ClientHub, type RemoteClient } from './client-hub'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import {
@@ -123,6 +124,21 @@ function getWindowForContents(webContentsId: number): BrowserWindow | null {
   ) ?? null
 }
 
+// ── Client identity ───────────────────────────────────────
+// One hub per window, keyed by that window's own `webContents.id` — the same
+// key the repo maps, watchers and MCP bridge use. Handlers hand modules the
+// hub rather than the raw sender, so an additional transport can later join
+// this identity without every event-pushing module learning about fan-out.
+const clientHubs = new Map<number, ClientHub>()
+
+function hubFor(sender: RemoteClient): ClientHub {
+  const existing = clientHubs.get(sender.id)
+  if (existing) return existing
+  const hub = new ClientHub(sender.id, sender)
+  clientHubs.set(sender.id, hub)
+  return hub
+}
+
 // Let the MCP bridge resolve a window's worktree list (for hook cwd→worktree
 // matching and open_worktree/show_diff validation) without exposing the
 // per-window repo map. Registered once at module load.
@@ -182,6 +198,7 @@ function createWindow(repoPath?: string): BrowserWindow {
   })
 
   const webContentsId = win.webContents.id
+  clientHubs.set(webContentsId, new ClientHub(webContentsId, win.webContents))
 
   if (repoPath) {
     windowRepoMap.set(webContentsId, repoPath)
@@ -198,6 +215,7 @@ function createWindow(repoPath?: string): BrowserWindow {
     unwatchAllEditorFilesForWindow(webContentsId)
     windowRepoMap.delete(webContentsId)
     windowReposMap.delete(webContentsId)
+    clientHubs.delete(webContentsId)
   })
 
   win.on('ready-to-show', () => {
@@ -343,7 +361,7 @@ function registerAllHandlers(): void {
 
   // ── PTY ─────────────────────────────────────────────────
   ipcMain.handle('pty:spawn', (event, options: PtySpawnOptions) => {
-    spawnTerminal(options, event.sender)
+    spawnTerminal(options, hubFor(event.sender))
   })
 
   ipcMain.handle('pty:write', (_event, id: string, data: string) => {
@@ -409,7 +427,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('editor:watch', (event, filePath: string) => {
-    watchEditorFile(event.sender.id, filePath, event.sender)
+    watchEditorFile(event.sender.id, filePath, hubFor(event.sender))
   })
 
   ipcMain.handle('editor:unwatch', (event, filePath: string) => {
@@ -463,6 +481,7 @@ function registerAllHandlers(): void {
   // ── Interactive agents ──────────────────────────────────
   ipcMain.handle('agent:spawn', async (event, options: AgentSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
+    const client = hubFor(event.sender)
     // Awaited and caught. `buildLaunch` validates ids that reach a login-shell
     // command string, so it rejects on input an agent supplied — a bad
     // `spawn_session` model id is ordinary bad input, not an internal error.
@@ -475,22 +494,22 @@ function registerAllHandlers(): void {
           ...options,
           ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
         },
-        event.sender
+        client
       )
     } catch (error) {
-      reportSpawnFailure(options.id, error, event.sender)
+      reportSpawnFailure(options.id, error, client)
       return
     }
     // After the spawn, not before: attachment maps a terminal that must exist.
-    attachToTerminal(options.id, options.worktreePath, event.sender, options.target.provider)
+    attachToTerminal(options.id, options.worktreePath, client, options.target.provider)
   })
 
   ipcMain.handle('agent:spawn-agents', (event, options: PtySpawnOptions) => {
-    spawnAgentsTerminal(options, event.sender)
+    spawnAgentsTerminal(options, hubFor(event.sender))
   })
 
   ipcMain.handle('agent:attach', (event, terminalId: string, worktreePath: string) => {
-    attachToTerminal(terminalId, worktreePath, event.sender)
+    attachToTerminal(terminalId, worktreePath, hubFor(event.sender))
   })
 
   ipcMain.handle('agent:detach', (_event, terminalId: string) => {
@@ -531,7 +550,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('git:watch', (event, worktreePath: string) => {
-    return watchGitRefs(worktreePath, event.sender)
+    return watchGitRefs(worktreePath, hubFor(event.sender))
   })
 
   ipcMain.handle('git:unwatch', (_event, worktreePath: string) => {
@@ -552,7 +571,7 @@ function registerAllHandlers(): void {
 
   // ── Review ──────────────────────────────────────────────
   ipcMain.handle('review:start', (event, worktreePath: string, commitHash: string | null) => {
-    return startReview(worktreePath, commitHash, event.sender)
+    return startReview(worktreePath, commitHash, hubFor(event.sender))
   })
 
   ipcMain.handle('review:cancel', (_event, worktreePath: string, commitHash: string | null) => {
@@ -569,7 +588,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('screenprs:deep-start', (event, context: PrContext) => {
-    return startDeepReview(context, event.sender)
+    return startDeepReview(context, hubFor(event.sender))
   })
 
   ipcMain.handle('screenprs:deep-cancel', (_event, url: string) => {
@@ -587,7 +606,7 @@ function registerAllHandlers(): void {
 
   // ── Tour ───────────────────────────────────────────────
   ipcMain.handle('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
-    return startTour(worktreePath, commitHash, event.sender, overrideOverview)
+    return startTour(worktreePath, commitHash, hubFor(event.sender), overrideOverview)
   })
 
   ipcMain.handle('tour:cancel', (_event, worktreePath: string, commitHash: string | null) => {
@@ -626,7 +645,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('models:pull', async (event, name: string) => {
-    const wc = event.sender
+    const wc = hubFor(event.sender)
     await pullModel(name, (p) => {
       if (!wc.isDestroyed()) {
         wc.send('models:pull-progress', {
