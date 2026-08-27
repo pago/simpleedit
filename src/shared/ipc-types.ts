@@ -101,10 +101,15 @@ export interface PtyEventMap {
   'pty:data': { id: string; data: string; offset: number }
   'pty:exit': { id: string; exitCode: number }
   /**
-   * Size ownership of `id` moved to `owner`. Fanned out to every transport of
-   * the hub, so the client that just LOST it stops pushing resizes main would
-   * silently drop — and can tell the user its view is sized by another device
-   * rather than simply rendering at the wrong width.
+   * Size ownership of `id` moved to `owner`. Sent to every client holding that
+   * terminal — including the one that just LOST it, which may be a different
+   * window and so a different hub.
+   *
+   * It does NOT stop that client sending resizes: main is authoritative and
+   * drops a non-owner's, and gating the send on this would go stale exactly
+   * when a container reflows out of focus. What it does is let a view say it
+   * is sized by another device instead of silently rendering at a width the
+   * terminal no longer uses.
    */
   'pty:owner-changed': { id: string; owner: PtyClientId }
 }

@@ -16,5 +16,6 @@ While remote access is on, SimpleEdit holds a power assertion so the Mac does
 not sleep and stop your agents. The pane shows whether that assertion is
 actually held.
 
-Also: a terminal is now told when another window or device takes over its size,
-instead of quietly rendering at a width the terminal no longer uses.
+Also: when another window or device takes over a terminal's size, every view of
+that terminal is told — so the one that is no longer sizing it says so, instead
+of quietly rendering at a width the terminal no longer uses.

@@ -35,6 +35,36 @@ const agentCleanups = new Map<string, () => void>()
  */
 const ptyOwner = new Map<string, PtyClientId>()
 /**
+ * Every client that has ever spawned or claimed a terminal, so an ownership
+ * change can reach all of them.
+ *
+ * Sending only to the claimer's own client is exactly backwards: the client
+ * that needs telling is the one that just LOST the size, and if it is another
+ * window it is another hub entirely. A hub is one identity with many
+ * transports, so a claim from a phone reaches its desktop window through the
+ * hub — but a claim from a SECOND WINDOW would never reach the first.
+ */
+const ptyClients = new Map<string, Set<RemoteClient>>()
+
+function rememberClient(id: string, client: RemoteClient): void {
+  let set = ptyClients.get(id)
+  if (!set) {
+    set = new Set()
+    ptyClients.set(id, set)
+  }
+  set.add(client)
+}
+
+/** Tell every client holding `id` who sizes it now, dropping any that have gone. */
+function announceOwner(id: string, owner: PtyClientId): void {
+  const clients = ptyClients.get(id)
+  if (!clients) return
+  for (const client of [...clients]) {
+    if (client.isDestroyed()) clients.delete(client)
+    else client.send('pty:owner-changed', { id, owner })
+  }
+}
+/**
  * Ids whose `buildLaunch` is in flight. A provider's build can await (OpenCode
  * reserves a TCP port), which opens a window the synchronous spawn path never
  * had: a duplicate spawn, or a kill, arriving before the PTY exists.
@@ -221,6 +251,7 @@ function spawnAgentTerminal(
 
   terminals.set(id, term)
   ptyOwner.set(id, owner)
+  rememberClient(id, webContents)
   const cleanup = 'cleanup' in plan ? plan.cleanup : undefined
   if (cleanup) agentCleanups.set(id, cleanup)
 
@@ -244,6 +275,7 @@ function spawnAgentTerminal(
     runAgentCleanup(id)
     terminals.delete(id)
     ptyOwner.delete(id)
+    ptyClients.delete(id)
     if (!webContents.isDestroyed()) {
       if (opts.clearStatusOnExit) {
         // Clear the worktree's Claude status so the worktree picker (#87) and
@@ -276,6 +308,7 @@ export function spawnTerminal(
 
   terminals.set(id, term)
   ptyOwner.set(id, owner)
+  rememberClient(id, webContents)
 
   term.onData((data: string) => {
     emitPtyData(id, data)
@@ -288,6 +321,7 @@ export function spawnTerminal(
   term.onExit(({ exitCode }: { exitCode: number }) => {
     terminals.delete(id)
     ptyOwner.delete(id)
+    ptyClients.delete(id)
     if (!webContents.isDestroyed()) {
       webContents.send('pty:exit', { id, exitCode })
     }
@@ -456,8 +490,9 @@ export function writeToTerminal(id: string, data: string): void {
  * an entry for a dead terminal that nothing ever reclaims — and a client could
  * name a terminal it was never attached to.
  *
- * The change is announced on `client`, which for a hub reaches every transport
- * — including the one that just lost the size. Without that the loser keeps
+ * The change is announced to EVERY client holding this terminal, not just the
+ * claimer's — the one that needs telling is the one that just lost the size,
+ * and if that is another window it is another hub. Without it the loser keeps
  * fitting its xterm to a width the PTY no longer uses, with main silently
  * dropping every resize it sends and neither side able to say why.
  */
@@ -471,9 +506,10 @@ export function claimTerminal(
   const term = terminals.get(id)
   if (!term) return
   const moved = ptyOwner.get(id) !== clientId
+  rememberClient(id, client)
   ptyOwner.set(id, clientId)
   if (cols > 0 && rows > 0) term.resize(cols, rows)
-  if (moved && !client.isDestroyed()) client.send('pty:owner-changed', { id, owner: clientId })
+  if (moved) announceOwner(id, clientId)
 }
 
 /** The client currently allowed to resize `id`, if any. */
@@ -505,6 +541,7 @@ export function killTerminal(id: string): void {
   runAgentCleanup(id)
   backlogs.delete(id)
   ptyOwner.delete(id)
+  ptyClients.delete(id)
 }
 
 export function getActiveTerminalIds(): string[] {
@@ -519,4 +556,5 @@ export function killAllTerminals(): void {
   }
   backlogs.clear()
   ptyOwner.clear()
+  ptyClients.clear()
 }

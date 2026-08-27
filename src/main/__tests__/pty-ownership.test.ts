@@ -156,6 +156,34 @@ describe('PTY size ownership', () => {
     expect(hubSend).toHaveBeenCalledWith('pty:owner-changed', { id: 't12', owner: OTHER })
   })
 
+  // The client that needs telling is the one that LOST the size. A second
+  // window is a second hub, so sending only to the claimer's client would
+  // leave the loser fitting its xterm to a width the PTY no longer uses.
+  it('tells the client that spawned the terminal, not just the one claiming it', () => {
+    const spawnerSend = vi.fn<(channel: string, data: unknown) => void>()
+    const spawner: RemoteClient = { id: 2, send: spawnerSend, isDestroyed: () => false }
+    nextSpawnKey = 't18'
+    spawnTerminal({ id: 't18', worktreePath: tmpdir() }, spawner, '2')
+
+    // A different window entirely — a different hub — takes the size.
+    claimTerminal('t18', OWNER, hub, 100, 30)
+
+    expect(spawnerSend).toHaveBeenCalledWith('pty:owner-changed', { id: 't18', owner: OWNER })
+    expect(hubSend).toHaveBeenCalledWith('pty:owner-changed', { id: 't18', owner: OWNER })
+  })
+
+  it('drops a client that has gone away rather than sending into it', () => {
+    const goneSend = vi.fn<(channel: string, data: unknown) => void>()
+    const gone: RemoteClient = { id: 3, send: goneSend, isDestroyed: () => true }
+    nextSpawnKey = 't19'
+    spawnTerminal({ id: 't19', worktreePath: tmpdir() }, gone, '3')
+
+    claimTerminal('t19', OWNER, hub, 100, 30)
+
+    expect(goneSend).not.toHaveBeenCalled()
+    expect(hubSend).toHaveBeenCalledWith('pty:owner-changed', { id: 't19', owner: OWNER })
+  })
+
   it('stays quiet when the current owner re-claims', () => {
     spawnFor('t13', OWNER)
     claim('t13', OWNER)
