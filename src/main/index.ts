@@ -74,6 +74,20 @@ import { postReview } from './github/gh'
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
 
+/**
+ * Never let a stray rejection kill the app.
+ *
+ * Node's default is to exit, and exiting here means `before-quit` does not
+ * run — so `killAllTerminals` does not run, and every agent PTY is orphaned
+ * with its work in progress. That was always a bad trade; it became an
+ * unacceptable one when the remote transport made every IPC handler reachable
+ * by a caller we do not control. Logged loudly so it is still a bug to fix,
+ * not a failure mode to live with.
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[SimpleEdit] Unhandled promise rejection in main:', reason)
+})
+
 // ── Per-window repo tracking ──────────────────────────────
 // The PRIMARY repo per window (title bar, session save/load keying, and the
 // fallback for worktree:* calls that omit an explicit repoPath). Single-repo
@@ -422,8 +436,17 @@ function registerAllHandlers(): void {
     createWindow(repoPath)
   })
 
-  handleInvoke('app:open-external', (_event, url: string) => {
-    shell.openExternal(url)
+  handleInvoke('app:open-external', async (_event, url: string) => {
+    // Awaited and swallowed, not floated. `openExternal` rejects for a URL the
+    // OS will not handle, and a dropped rejection takes the main process down.
+    // Swallowed rather than rethrown because the channel's result is `void` and
+    // its callers float the invoke — rethrowing would only move the unhandled
+    // rejection into the renderer.
+    try {
+      await shell.openExternal(url)
+    } catch (err) {
+      console.error('[SimpleEdit] app:open-external failed:', err)
+    }
   })
 
   handleInvoke('app:save-dropped-blob', (_event, filename: string, bytes: Uint8Array) => {
