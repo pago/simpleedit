@@ -6,6 +6,7 @@
   import '@xterm/xterm/css/xterm.css'
   import { sessionsStore } from '../../stores/sessions.svelte'
   import { capabilitiesFor } from '../../stores/agent-capabilities.svelte'
+  import { clientKey } from '../../lib/clientKey'
 
   interface Props {
     terminalId: string
@@ -31,6 +32,7 @@
   let fitAddon: FitAddon | undefined
   let cleanupDataListener: (() => void) | undefined
   let cleanupExitListener: (() => void) | undefined
+  let cleanupOwnerListener: (() => void) | undefined
   let resizeObserver: ResizeObserver | undefined
 
   // Scroll position preservation across tab switches
@@ -43,6 +45,9 @@
   // client that re-claimed on reconnect or on background layout churn would
   // take the size away from whoever is actually looking at the terminal.
   let ownsPty = false
+  /** This transport's key, for reading `pty:owner-changed`. '' until it lands. */
+  let myClientKey = ''
+  void clientKey().then((k) => { myClientKey = k })
 
   /** Is the user looking at THIS terminal, in this window, right now? */
   function hasUserAttention(): boolean {
@@ -204,6 +209,15 @@
       }
     })
 
+    // `ownsPty` is set optimistically on claim; this is main's answer. Losing
+    // the size is the case that matters — without it this client keeps sending
+    // resizes main silently drops, and renders at a width the PTY abandoned.
+    // Ignored until the key has landed, so a race can't disown the claimer.
+    cleanupOwnerListener = window.api.on('pty:owner-changed', (payload) => {
+      if (payload.id !== id || !myClientKey) return
+      ownsPty = payload.owner === myClientKey
+    })
+
     // Auto-resize on container size change.
     // Guard against zero dimensions: ResizeObserver fires when a tab is hidden
     // (display:none), which would cause fitAddon to calculate 0 columns and
@@ -231,6 +245,8 @@
     cleanupDataListener = undefined
     cleanupExitListener?.()
     cleanupExitListener = undefined
+    cleanupOwnerListener?.()
+    cleanupOwnerListener = undefined
     term?.dispose()
     term = undefined
     fitAddon = undefined

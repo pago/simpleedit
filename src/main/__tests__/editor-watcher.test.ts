@@ -98,7 +98,7 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     const filePath = join(tmpRoot, `hub-${Math.random().toString(36).slice(2)}.ts`)
     writeFileSync(filePath, 'v1')
     const desktop = makeWebContents(30)
-    const hub = new ClientHub(30, desktop)
+    const hub = new ClientHub(30, desktop as never)
 
     watchEditorFile(hub, filePath)
     await new Promise((r) => setTimeout(r, 300))
@@ -106,7 +106,7 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     // A web client attaching later joins the SAME identity, so it must be
     // served by the existing subscription rather than needing its own.
     const web = makeWebContents(30)
-    hub.register(web)
+    hub.register(web as never)
 
     writeFileSync(filePath, 'v2')
     await waitFor(() => web.send.mock.calls.length > 0)

@@ -57,7 +57,7 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
@@ -131,6 +131,16 @@ function getWindowForContents(webContentsId: number): BrowserWindow | null {
 // hub rather than the raw sender, so an additional transport can later join
 // this identity without every event-pushing module learning about fan-out.
 const clientHubs = new Map<number, ClientHub>()
+
+/**
+ * The calling transport's own `PtyClientId`. Distinct from the hub id: a
+ * window and the phone attached to it share one hub, and size ownership is
+ * precisely what they must be able to take from each other. Remote sockets
+ * carry a `w`-prefixed key, so the two spaces cannot collide.
+ */
+function clientKeyOf(sender: RemoteClient): PtyClientId {
+  return sender.clientKey ?? String(sender.id)
+}
 
 function hubFor(sender: RemoteClient): ClientHub {
   const existing = clientHubs.get(sender.id)
@@ -361,9 +371,13 @@ function registerAllHandlers(): void {
     return saveDroppedBlob(filename, bytes)
   })
 
+  ipcMain.handle('app:client-key', (event) => {
+    return clientKeyOf(event.sender)
+  })
+
   // ── PTY ─────────────────────────────────────────────────
   ipcMain.handle('pty:spawn', (event, options: PtySpawnOptions) => {
-    spawnTerminal(options, hubFor(event.sender))
+    spawnTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
   })
 
   ipcMain.handle('pty:write', (_event, id: string, data: string) => {
@@ -373,11 +387,11 @@ function registerAllHandlers(): void {
   // The client id is stamped from the IPC event, never taken from the args —
   // a renderer must not be able to resize as (or claim on behalf of) another.
   ipcMain.handle('pty:resize', (event, id: string, cols: number, rows: number) => {
-    resizeTerminal(id, cols, rows, event.sender.id)
+    resizeTerminal(id, cols, rows, clientKeyOf(event.sender))
   })
 
   ipcMain.handle('pty:claim', (event, id: string) => {
-    claimTerminal(id, event.sender.id)
+    claimTerminal(id, clientKeyOf(event.sender), hubFor(event.sender))
   })
 
   ipcMain.handle('pty:kill', (_event, id: string) => {
@@ -502,7 +516,8 @@ function registerAllHandlers(): void {
           ...options,
           ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
         },
-        client
+        client,
+        clientKeyOf(event.sender)
       )
     } catch (error) {
       reportSpawnFailure(options.id, error, client)
@@ -513,7 +528,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('agent:spawn-agents', (event, options: PtySpawnOptions) => {
-    spawnAgentsTerminal(options, hubFor(event.sender))
+    spawnAgentsTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
   })
 
   ipcMain.handle('agent:attach', (event, terminalId: string, worktreePath: string) => {

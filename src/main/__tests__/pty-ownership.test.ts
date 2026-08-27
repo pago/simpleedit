@@ -42,17 +42,22 @@ import {
   killAllTerminals,
 } from '../pty'
 
-const OWNER = 1
-const OTHER = 2
+// Two transports of ONE hub: same `id` (the window they share), different
+// client keys. That is the case ownership has to arbitrate, and the case a
+// hub-id-keyed owner map could not see at all.
+const OWNER = '1'
+const OTHER = 'w1.1'
 
-function makeWebContents(id: number) {
-  return { id, isDestroyed: () => false, send: vi.fn() }
-}
+const hub = { id: 1, isDestroyed: () => false, send: vi.fn() }
 
-/** Spawn a plain terminal owned by `clientId`; returns its fake PTY. */
-function spawnFor(id: string, clientId: number): FakePty {
+beforeEach(() => {
+  hub.send.mockClear()
+})
+
+/** Spawn a plain terminal owned by `clientKey`; returns its fake PTY. */
+function spawnFor(id: string, clientKey: string): FakePty {
   nextSpawnKey = id
-  spawnTerminal({ id, worktreePath: tmpdir() }, makeWebContents(clientId) as never)
+  spawnTerminal({ id, worktreePath: tmpdir() }, hub as never, clientKey)
   const fake = spawned.get(id)
   if (!fake) throw new Error(`no PTY spawned for ${id}`)
   return fake
@@ -87,13 +92,13 @@ describe('PTY size ownership', () => {
   it('does not queue a dropped resize — a later claim replays nothing', () => {
     const term = spawnFor('t4', OWNER)
     resizeTerminal('t4', 80, 24, OTHER)
-    claimTerminal('t4', OTHER)
+    claimTerminal('t4', OTHER, hub as never)
     expect(term.resize).not.toHaveBeenCalled()
   })
 
   it('transfers ownership on claim, so the old owner stops sizing it', () => {
     const term = spawnFor('t5', OWNER)
-    claimTerminal('t5', OTHER)
+    claimTerminal('t5', OTHER, hub as never)
     expect(getTerminalOwner('t5')).toBe(OTHER)
 
     resizeTerminal('t5', 100, 30, OWNER)
@@ -105,8 +110,8 @@ describe('PTY size ownership', () => {
 
   it('last claim wins when two clients claim in turn', () => {
     spawnFor('t6', OWNER)
-    claimTerminal('t6', OTHER)
-    claimTerminal('t6', OWNER)
+    claimTerminal('t6', OTHER, hub as never)
+    claimTerminal('t6', OWNER, hub as never)
     expect(getTerminalOwner('t6')).toBe(OWNER)
   })
 
@@ -134,6 +139,18 @@ describe('PTY size ownership', () => {
     killAllTerminals()
     expect(getTerminalOwner('t10')).toBeUndefined()
     expect(getTerminalOwner('t11')).toBeUndefined()
+  })
+
+  it('tells every transport of the hub when the size moves to another', () => {
+    spawnFor('t12', OWNER)
+    claimTerminal('t12', OTHER, hub as never)
+    expect(hub.send).toHaveBeenCalledWith('pty:owner-changed', { id: 't12', owner: OTHER })
+  })
+
+  it('stays quiet when the current owner re-claims', () => {
+    spawnFor('t13', OWNER)
+    claimTerminal('t13', OWNER, hub as never)
+    expect(hub.send).not.toHaveBeenCalled()
   })
 
   it('does not resize an unowned terminal id', () => {

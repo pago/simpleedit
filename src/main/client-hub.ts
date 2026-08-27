@@ -16,6 +16,13 @@
 /** The slice of Electron's `WebContents` that event-pushing modules rely on. */
 export interface RemoteClient {
   readonly id: number
+  /**
+   * Identifies this ONE transport, where `id` identifies the hub it belongs
+   * to. Absent on a real `WebContents` — which is what keeps the interface
+   * structurally satisfied — so callers fall back to the decimal `id`, the
+   * key a window's own renderer has always had.
+   */
+  readonly clientKey?: string
   send(channel: string, data: unknown): void
   isDestroyed(): boolean
 }

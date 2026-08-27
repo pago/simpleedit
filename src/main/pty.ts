@@ -205,6 +205,7 @@ function spawnAgentTerminal(
   plan: Pick<LaunchPlan, 'executable' | 'args' | 'env' | 'sessionId' | 'cleanup'>,
   opts: { emitSessionId?: boolean; clearStatusOnExit?: boolean },
   webContents: RemoteClient,
+  owner: PtyClientId,
 ): void {
   const shell = agentShell()
   // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
@@ -213,7 +214,7 @@ function spawnAgentTerminal(
   const term = pty.spawn(shell, agentShellArgs(command), getPtyOptions(worktreePath))
 
   terminals.set(id, term)
-  ptyOwner.set(id, webContents.id)
+  ptyOwner.set(id, owner)
   const cleanup = 'cleanup' in plan ? plan.cleanup : undefined
   if (cleanup) agentCleanups.set(id, cleanup)
 
@@ -254,7 +255,8 @@ function spawnAgentTerminal(
 
 export function spawnTerminal(
   options: PtySpawnOptions,
-  webContents: RemoteClient
+  webContents: RemoteClient,
+  owner: PtyClientId,
 ): void {
   const { id, worktreePath } = options
 
@@ -267,7 +269,7 @@ export function spawnTerminal(
   const term = pty.spawn(shell, ['-l'], getPtyOptions(worktreePath))
 
   terminals.set(id, term)
-  ptyOwner.set(id, webContents.id)
+  ptyOwner.set(id, owner)
 
   term.onData((data: string) => {
     emitPtyData(id, data)
@@ -288,7 +290,8 @@ export function spawnTerminal(
 
 export async function spawnAgentTerminalForProvider(
   options: AgentSpawnOptions,
-  webContents: RemoteClient
+  webContents: RemoteClient,
+  owner: PtyClientId,
 ): Promise<void> {
   const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt, target } = options
 
@@ -392,7 +395,7 @@ export async function spawnAgentTerminalForProvider(
     }
   }
 
-  spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: !!plan.sessionId, clearStatusOnExit: true }, webContents)
+  spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: !!plan.sessionId, clearStatusOnExit: true }, webContents, owner)
 }
 
 /**
@@ -404,7 +407,8 @@ export async function spawnAgentTerminalForProvider(
  */
 export function spawnAgentsTerminal(
   options: PtySpawnOptions,
-  webContents: RemoteClient
+  webContents: RemoteClient,
+  owner: PtyClientId,
 ): void {
   const { id, worktreePath } = options
 
@@ -419,6 +423,7 @@ export function spawnAgentsTerminal(
     buildAgentsLaunch(),
     { emitSessionId: false, clearStatusOnExit: false },
     webContents,
+    owner,
   )
 }
 
@@ -433,9 +438,16 @@ export function writeToTerminal(id: string, data: string): void {
  * Make `clientId` the client that sizes this PTY. Called when the user's
  * attention lands on a terminal — never on reconnect or background layout
  * churn, which would let an unwatched client take the size back.
+ *
+ * The change is announced on `client`, which for a hub reaches every transport
+ * — including the one that just lost the size. Without that the loser keeps
+ * fitting its xterm to a width the PTY no longer uses, with main silently
+ * dropping every resize it sends and neither side able to say why.
  */
-export function claimTerminal(id: string, clientId: PtyClientId): void {
+export function claimTerminal(id: string, clientId: PtyClientId, client: RemoteClient): void {
+  if (ptyOwner.get(id) === clientId) return
   ptyOwner.set(id, clientId)
+  if (!client.isDestroyed()) client.send('pty:owner-changed', { id, owner: clientId })
 }
 
 /** The client currently allowed to resize `id`, if any. */

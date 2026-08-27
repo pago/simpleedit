@@ -51,11 +51,20 @@ export interface BranchInfo {
 }
 
 /**
- * Identifies the client behind an IPC call — `WebContents.id` today, later also
- * a remote (phone) client. Never sent by a client: main stamps it from the IPC
- * event, so no client can name another one and take its PTY.
+ * Identifies ONE TRANSPORT behind an IPC call — a window's renderer, or a
+ * single remote (phone) socket. Never sent by a client: main stamps it from
+ * the IPC event or the socket, so no client can name another one and take its
+ * PTY.
+ *
+ * Deliberately finer-grained than `ClientHub.id`. A hub is one identity with
+ * several transports, and size ownership is exactly the thing those transports
+ * must be able to take from each other — keying it by the hub id would make a
+ * desktop window and the phone attached to it indistinguishable, which is the
+ * case the whole mechanism exists for. Desktop transports use the decimal
+ * `WebContents.id`; remote sockets use a `w`-prefixed key, so the two spaces
+ * cannot collide.
  */
-export type PtyClientId = number
+export type PtyClientId = string
 
 export interface PtyInvokeMap {
   'pty:spawn': { args: [options: PtySpawnOptions]; result: void }
@@ -82,6 +91,13 @@ export interface PtyEventMap {
    * renderer dedup live chunks against the pty:backlog replay. */
   'pty:data': { id: string; data: string; offset: number }
   'pty:exit': { id: string; exitCode: number }
+  /**
+   * Size ownership of `id` moved to `owner`. Fanned out to every transport of
+   * the hub, so the client that just LOST it stops pushing resizes main would
+   * silently drop — and can tell the user its view is sized by another device
+   * rather than simply rendering at the wrong width.
+   */
+  'pty:owner-changed': { id: string; owner: PtyClientId }
 }
 
 // ── File system ───────────────────────────────────────────
@@ -722,6 +738,12 @@ export interface AppInvokeMap {
   'app:open-window': { args: [repoPath?: string]; result: void }
   'app:open-external': { args: [url: string]; result: void }
   'app:save-dropped-blob': { args: [filename: string, bytes: Uint8Array]; result: string }
+  /**
+   * This transport's own `PtyClientId`, so a client can tell whether a
+   * `pty:owner-changed` names it. Stamped by main from the call's origin — the
+   * value is not something a client may choose.
+   */
+  'app:client-key': { args: []; result: PtyClientId }
 }
 
 // ── LSP ───────────────────────────────────────────────────
