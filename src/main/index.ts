@@ -199,13 +199,14 @@ function createWindow(repoPath?: string): BrowserWindow {
   })
 
   const webContentsId = win.webContents.id
-  clientHubs.set(webContentsId, new ClientHub(webContentsId, win.webContents))
+  const hub = new ClientHub(webContentsId, win.webContents)
+  clientHubs.set(webContentsId, hub)
 
   if (repoPath) {
     windowRepoMap.set(webContentsId, repoPath)
     registerWindowRepo(webContentsId, repoPath)
     addRecentRepo(repoPath)
-    startBridge(webContentsId, win.webContents).catch((err) => {
+    startBridge(webContentsId, hub).catch((err) => {
       console.error('[SimpleEdit] Failed to start MCP bridge:', err)
     })
   }
@@ -315,7 +316,7 @@ function registerAllHandlers(): void {
     if (win) {
       win.setTitle(`SimpleEdit — ${basename(repoPath).replace('.git', '')}`)
     }
-    startBridge(event.sender.id, event.sender).catch((err) => {
+    startBridge(event.sender.id, hubFor(event.sender)).catch((err) => {
       console.error('[SimpleEdit] Failed to start MCP bridge:', err)
     })
   })
@@ -434,7 +435,7 @@ function registerAllHandlers(): void {
   })
 
   ipcMain.handle('editor:watch', (event, filePath: string) => {
-    watchEditorFile(event.sender.id, filePath, hubFor(event.sender))
+    watchEditorFile(hubFor(event.sender), filePath)
   })
 
   ipcMain.handle('editor:unwatch', (event, filePath: string) => {
@@ -478,7 +479,7 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('worktree:watch', (event, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
-    watchWorktreeList(event.sender.id, repo, hubFor(event.sender))
+    watchWorktreeList(hubFor(event.sender), repo)
   })
 
   ipcMain.handle('worktree:unwatch', (event, repoPath?: string) => {

@@ -21,11 +21,16 @@ function emit(filePath: string): void {
   }
 }
 
-export function watchEditorFile(
-  webContentsId: number,
-  filePath: string,
-  webContents: RemoteClient
-): void {
+/**
+ * Subscribe `client` to change events for `filePath`.
+ *
+ * The subscription key is `client.id`, taken from the client itself rather
+ * than passed alongside it: a `ClientHub` is one identity with several
+ * transports, and a separately-supplied id could name a different one — which
+ * would ref-count one subscriber while pushing to another.
+ */
+export function watchEditorFile(client: RemoteClient, filePath: string): void {
+  const webContentsId = client.id
   let state = watchers.get(filePath)
 
   if (!state) {
@@ -50,7 +55,7 @@ export function watchEditorFile(
   if (sub) {
     sub.refCount++
   } else {
-    state.subscribers.set(webContentsId, { refCount: 1, webContents })
+    state.subscribers.set(webContentsId, { refCount: 1, webContents: client })
   }
 }
 

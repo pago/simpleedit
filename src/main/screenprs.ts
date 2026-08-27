@@ -20,7 +20,13 @@ import { triageTask, TRIAGE_PROMPT_VERSION } from './tasks/triage-task'
 import { currentHandle, searchReviewRequestedPrs, getPrMeta, getPrDiff, type PrMeta } from './github/gh'
 import { analysisFingerprint, getCached, putTriage } from './screenprs-cache'
 
-/** In-flight run per window, so a re-screen / window close can cancel cleanly. */
+/**
+ * In-flight run per client identity, so a re-screen / window close can cancel
+ * cleanly. The key is read off the `RemoteClient` that will receive the cards,
+ * never passed alongside it — a `ClientHub` is one identity with several
+ * transports, so a web client re-screening cancels and replaces the run whose
+ * output it is already receiving instead of starting a second, competing one.
+ */
 const activeRuns = new Map<number, AbortController>()
 
 function send(wc: RemoteClient, channel: string, data: unknown): void {
