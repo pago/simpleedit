@@ -829,6 +829,15 @@ app.whenReady().then(() => {
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
+    // `hubFor` mints a hub for ANY sender, and the settings window is the sole
+    // caller of some channels — so an open→use→close cycle left a hub holding
+    // a destroyed WebContents behind. Repo windows clear their own in `closed`
+    // along with the rest of their teardown; this is the catch-all, so a window
+    // added later cannot reintroduce the leak by forgetting.
+    const id = window.webContents.id
+    window.webContents.once('destroyed', () => {
+      clientHubs.delete(id)
+    })
   })
 
   registerAllHandlers()
