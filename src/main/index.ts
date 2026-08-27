@@ -42,7 +42,7 @@ import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeReso
 import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
-import { startRemoteServer, stopRemoteServer, getRemoteStatus } from './remote/server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub } from './remote/server'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
 import { listRemoteInterfaces, isAllowedBindHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
@@ -160,9 +160,21 @@ function clientKeyOf(sender: RemoteClient): PtyClientId {
   return sender.clientKey ?? String(sender.id)
 }
 
+/**
+ * The hub for `sender`'s window, creating it if this is the first call.
+ *
+ * Refuses to resurrect one. A remote socket can outlive the window it joined,
+ * and its next call arrives naming a destroyed window id — minting a fresh hub
+ * for it would revive everything keyed by that id behind the teardown that
+ * already ran: an MCP bridge nothing will stop, watchers installed after the
+ * unwatch, a repo map entry for a window that is gone.
+ */
 function hubFor(sender: RemoteClient): ClientHub {
   const existing = clientHubs.get(sender.id)
   if (existing) return existing
+  if (sender.isDestroyed()) {
+    throw new Error(`Window ${sender.id} is gone`)
+  }
   const hub = new ClientHub(sender.id, sender)
   clientHubs.set(sender.id, hub)
   return hub
@@ -295,6 +307,10 @@ function createWindow(repoPath?: string): BrowserWindow {
   }
 
   win.on('closed', () => {
+    // First: a socket that joined this window must not survive it. Left open,
+    // its next invoke would name a destroyed window id and rebuild everything
+    // the teardown below is about to take apart.
+    closeSocketsForHub(webContentsId)
     stopBridge(webContentsId)
     unwatchAllWorktreeListsForWindow(webContentsId)
     unwatchAllEditorFilesForWindow(webContentsId)
@@ -866,6 +882,7 @@ app.whenReady().then(() => {
     // added later cannot reintroduce the leak by forgetting.
     const id = window.webContents.id
     window.webContents.once('destroyed', () => {
+      closeSocketsForHub(id)
       clientHubs.delete(id)
     })
   })
@@ -939,6 +956,14 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
     }
+    // Belt and braces: the server is no longer stopped on `window-all-closed`,
+    // but if anything else has taken it down while the config says enabled,
+    // this is the moment the user is looking and can be told.
+    if (getRemoteConfig().enabled && !getRemoteStatus().running) {
+      void applyRemoteConfig().catch((err: unknown) => {
+        console.error('[SimpleEdit] Failed to restart remote access:', err)
+      })
+    }
   })
 })
 
@@ -960,6 +985,12 @@ app.on('before-quit', () => {
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
 })
 
+// NOTE: remote access is deliberately NOT stopped here. On macOS closing the
+// last window does not quit, and `activate` reopens one — so stopping the
+// server left the config saying enabled, no server running, no error, and the
+// status broadcast going to zero windows. For a feature whose whole point is a
+// phone reaching an unattended Mac, silence is the worst available failure. It
+// stops on `before-quit`, with the process.
 app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
@@ -972,7 +1003,6 @@ app.on('window-all-closed', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
-  try { stopRemoteServer() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }

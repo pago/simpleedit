@@ -424,6 +424,24 @@ export function stopRemoteServer(): RemoteAccessStatus {
   return status
 }
 
+/**
+ * Close every socket attached to `hubId`. Called when that window closes.
+ *
+ * A socket left open outlives its window: its next invoke reaches `hubFor`
+ * with the destroyed window's id, which mints a FRESH hub under that id and
+ * revives everything keyed by it — an MCP bridge nothing will ever stop, and
+ * chokidar watchers installed after the per-window unwatch already ran.
+ */
+export function closeSocketsForHub(hubId: number): void {
+  if (!running) return
+  for (const transport of [...running.sockets]) {
+    if (transport.id !== hubId) continue
+    transport.close()
+    running.sockets.delete(transport)
+  }
+  emitStatus(running)
+}
+
 /** Exported for tests: the token currently in the URL, or null when stopped. */
 export function currentRemoteToken(): string | null {
   return running?.token ?? null

@@ -17,7 +17,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken } from '../server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub } from '../server'
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
 import type { ServerFrame } from '../../../shared/remote-protocol'
@@ -245,6 +245,33 @@ describe('remote server', () => {
       data: { worktreePath: '/w', status: 'waiting' },
     })
 
+    ws.close()
+  })
+
+  it('closes a hub\'s sockets when its window goes', async () => {
+    const { url, token } = await start()
+    const { ws } = await connect(url, token)
+    const closed = new Promise<void>((res) => ws.once('close', () => res()))
+
+    // A socket left open outlives its window, and its next invoke names a
+    // destroyed window id — which would mint a fresh hub and revive an MCP
+    // bridge and watchers behind the teardown that already ran.
+    closeSocketsForHub(42)
+
+    await closed
+    await waitFor(() => hub.transportCount === 1)
+    expect(getRemoteStatus().clients).toBe(0)
+  })
+
+  it('leaves other hubs alone when one window goes', async () => {
+    const { url, token } = await start()
+    const { ws } = await connect(url, token)
+
+    closeSocketsForHub(999)
+    await new Promise((r) => setTimeout(r, 100))
+
+    expect(ws.readyState).toBe(ws.OPEN)
+    expect(getRemoteStatus().clients).toBe(1)
     ws.close()
   })
 
