@@ -17,7 +17,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub } from '../server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer } from '../server'
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
 import type { ServerFrame } from '../../../shared/remote-protocol'
@@ -177,6 +177,45 @@ describe('remote server', () => {
     // Now the page's subresources are recognised as ours. (404 rather than 200
     // only because the bundle is not built in this suite.)
     expect(await rawGet(Number(port), `/${token}/assets/app.js`, asName)).toBe(404)
+  })
+
+  // `tailscale serve` terminates TLS and reverse-proxies to a local HTTP
+  // server, so the browser's Origin is `https://<name>.ts.net` while the
+  // request reaching us is plain HTTP. Recording `http://` there means every
+  // module script and stylesheet 403s — a blank page, on the deployment phase
+  // 4 requires, since getUserMedia needs a secure context.
+  it('recognises a page served through a TLS-terminating proxy', async () => {
+    const { url, token } = await start()
+    const { port } = new URL(url)
+    const NAME = 'mac.tailnet.ts.net'
+
+    // The navigation, as the proxy forwards it: plain HTTP, no Origin, with
+    // the real scheme and name in the forwarded headers.
+    expect(
+      await rawGet(Number(port), `/${token}/`, {
+        host: `127.0.0.1:${port}`,
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': NAME,
+      }),
+    ).toBe(404)
+
+    // The assets the browser then fetches, carrying the origin it really has.
+    expect(
+      await rawGet(Number(port), `/${token}/assets/app.js`, {
+        host: `127.0.0.1:${port}`,
+        origin: `https://${NAME}`,
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': NAME,
+      }),
+    ).toBe(404)
+
+    // And not some other name the proxy never mentioned.
+    expect(
+      await rawGet(Number(port), `/${token}/assets/app.js`, {
+        host: `127.0.0.1:${port}`,
+        origin: 'https://elsewhere.ts.net',
+      }),
+    ).toBe(403)
   })
 
   it('will not learn an origin from a request without the token', async () => {
@@ -409,5 +448,52 @@ describe('remote server', () => {
     stopRemoteServer()
     await closed
     await waitFor(() => hub.transportCount === 1)
+  })
+})
+
+describe('originOf', () => {
+  const LOCAL = '127.0.0.1'
+
+  it('uses the Host header when nothing is in front of the server', () => {
+    expect(originOf({ host: 'localhost:8080' }, LOCAL)).toBe('http://localhost:8080')
+  })
+
+  it('takes the scheme and name from a loopback proxy', () => {
+    const origin = originOf(
+      { host: '127.0.0.1:8080', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'mac.ts.net' },
+      LOCAL,
+    )
+    expect(origin).toBe('https://mac.ts.net')
+  })
+
+  // A remote client reaching the Tailscale interface directly is not a proxy,
+  // and must not get to name its own scheme or host.
+  it('ignores forwarded headers from a peer that is not on loopback', () => {
+    const origin = originOf(
+      { host: '100.101.102.103:8080', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'evil.example' },
+      '100.64.0.9',
+    )
+    expect(origin).toBe('http://100.101.102.103:8080')
+  })
+
+  it('reads only the first value of a forwarded header list', () => {
+    expect(originOf({ host: 'h', 'x-forwarded-proto': 'https, http' }, LOCAL)).toBe('https://h')
+    expect(originOf({ host: 'h', 'x-forwarded-proto': ['https', 'http'] }, LOCAL)).toBe('https://h')
+  })
+
+  it('treats any scheme but https as http, never as arbitrary text', () => {
+    expect(originOf({ host: 'h', 'x-forwarded-proto': 'javascript' }, LOCAL)).toBe('http://h')
+  })
+
+  it('has no origin without a host', () => {
+    expect(originOf({}, LOCAL)).toBeNull()
+  })
+
+  it('recognises loopback in its IPv4, IPv6 and mapped forms', () => {
+    expect(isLoopbackPeer('127.0.0.1')).toBe(true)
+    expect(isLoopbackPeer('::1')).toBe(true)
+    expect(isLoopbackPeer('::ffff:127.0.0.1')).toBe(true)
+    expect(isLoopbackPeer('100.64.0.9')).toBe(false)
+    expect(isLoopbackPeer(undefined)).toBe(false)
   })
 })

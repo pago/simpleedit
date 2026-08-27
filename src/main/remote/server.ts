@@ -250,11 +250,53 @@ function serveStatic(res: ServerResponse, webRoot: string, route: string): void 
  */
 const MAX_LEARNED_ORIGINS = 16
 
+/** A header that may arrive as a list — `x-forwarded-proto: https,http`. */
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value
+  return raw?.split(',')[0]?.trim() || undefined
+}
+
+/** Loopback peers only: the reverse proxy runs on this machine. */
+export function isLoopbackPeer(remoteAddress: string | undefined): boolean {
+  return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
+}
+
+/**
+ * The origin a browser will report for the page this request is fetching.
+ *
+ * `tailscale serve` is the documented way to get HTTPS on a `*.ts.net` name,
+ * and it TERMINATES TLS and reverse-proxies to a local HTTP server. So the
+ * browser loads `https://mac.tailnet.ts.net/<token>/` and sends
+ * `Origin: https://mac.tailnet.ts.net` on every module script, stylesheet and
+ * the WebSocket upgrade — while the request reaching us is plain HTTP.
+ * Assuming `http://` records an origin no browser will ever send, and every
+ * asset 403s: a blank page, behind exactly the deployment phase 4 requires,
+ * since `getUserMedia` needs a secure context and a raw Tailscale IP over HTTP
+ * is not one.
+ *
+ * The forwarded headers are only honoured for a LOOPBACK peer. A proxy the
+ * user configured runs on this machine and connects over loopback; anything
+ * arriving on the Tailscale interface is a real remote client and does not get
+ * to name its own scheme or host. That narrowing costs nothing — the two
+ * supported deployments are loopback-behind-a-proxy and direct-to-tailnet, and
+ * only the first has a proxy to trust.
+ */
+export function originOf(
+  headers: IncomingMessage['headers'],
+  remoteAddress: string | undefined,
+): string | null {
+  const trusted = isLoopbackPeer(remoteAddress)
+  const forwardedHost = trusted ? firstHeaderValue(headers['x-forwarded-host']) : undefined
+  const forwardedProto = trusted ? firstHeaderValue(headers['x-forwarded-proto']) : undefined
+  const host = forwardedHost ?? headers.host
+  if (!host) return null
+  return `${forwardedProto === 'https' ? 'https' : 'http'}://${host}`
+}
+
 /** Remember the origin of a page we are about to serve. Token already checked. */
 function learnOrigin(server: RunningServer, req: IncomingMessage): void {
-  const host = req.headers.host
-  if (!host) return
-  const origin = `http://${host}`
+  const origin = originOf(req.headers, req.socket.remoteAddress)
+  if (!origin) return
   if (server.origins.has(origin)) return
   if (server.origins.size >= MAX_LEARNED_ORIGINS) return
   server.origins.add(origin)
