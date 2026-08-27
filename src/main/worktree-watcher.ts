@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from 'chokidar'
 import { dirname } from 'path'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 
 /**
  * Watches the project root for worktree add/remove/move performed *outside*
@@ -37,7 +37,7 @@ function watcherKey(webContentsId: number, bareRepoPath: string): string {
 export function watchWorktreeList(
   webContentsId: number,
   bareRepoPath: string,
-  webContents: WebContents
+  webContents: RemoteClient
 ): void {
   const key = watcherKey(webContentsId, bareRepoPath)
   // Don't double-watch a (window, repo) pair that's already being watched.

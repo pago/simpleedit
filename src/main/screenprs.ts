@@ -7,7 +7,7 @@
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { ModelRef, ScreenPrsFilters, ScreenPrsRunStatus } from '../shared/ipc-types'
 import type { PrContext, ScreenPrCard, TriageResult } from '../shared/screenprs'
 import { bucketOf } from '../shared/screenprs'
@@ -23,10 +23,10 @@ import { analysisFingerprint, getCached, putTriage } from './screenprs-cache'
 /** In-flight run per window, so a re-screen / window close can cancel cleanly. */
 const activeRuns = new Map<number, AbortController>()
 
-function send(wc: WebContents, channel: string, data: unknown): void {
+function send(wc: RemoteClient, channel: string, data: unknown): void {
   if (!wc.isDestroyed()) wc.send(channel, data)
 }
-function sendStatus(wc: WebContents, status: ScreenPrsRunStatus, extra: { error?: string; total?: number } = {}): void {
+function sendStatus(wc: RemoteClient, status: ScreenPrsRunStatus, extra: { error?: string; total?: number } = {}): void {
   send(wc, 'screenprs:status', { status, ...extra })
 }
 
@@ -66,7 +66,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out
 }
 
-export async function startScreening(filters: ScreenPrsFilters, webContents: WebContents): Promise<void> {
+export async function startScreening(filters: ScreenPrsFilters, webContents: RemoteClient): Promise<void> {
   cancelScreening(webContents)
   const controller = new AbortController()
   activeRuns.set(webContents.id, controller)
@@ -165,7 +165,7 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
   }
 }
 
-export function cancelScreening(webContents: WebContents): void {
+export function cancelScreening(webContents: RemoteClient): void {
   activeRuns.get(webContents.id)?.abort()
   activeRuns.delete(webContents.id)
 }

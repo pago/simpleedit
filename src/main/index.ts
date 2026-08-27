@@ -471,7 +471,7 @@ function registerAllHandlers(): void {
 
   ipcMain.handle('worktree:watch', (event, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
-    watchWorktreeList(event.sender.id, repo, event.sender)
+    watchWorktreeList(event.sender.id, repo, hubFor(event.sender))
   })
 
   ipcMain.handle('worktree:unwatch', (event, repoPath?: string) => {
@@ -580,11 +580,11 @@ function registerAllHandlers(): void {
 
   // ── Screen PRs ─────────────────────────────────────────
   ipcMain.handle('screenprs:start', (event, filters: ScreenPrsFilters) => {
-    return startScreening(filters, event.sender)
+    return startScreening(filters, hubFor(event.sender))
   })
 
   ipcMain.handle('screenprs:cancel', (event) => {
-    cancelScreening(event.sender)
+    cancelScreening(hubFor(event.sender))
   })
 
   ipcMain.handle('screenprs:deep-start', (event, context: PrContext) => {
@@ -669,7 +669,7 @@ function registerAllHandlers(): void {
   // ── LSP ─────────────────────────────────────────────────
   ipcMain.handle('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
     try {
-      return startServer(language, rootUri, event.sender)
+      return startServer(language, rootUri, hubFor(event.sender))
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       console.warn('[LSP] Server unavailable:', reason)
