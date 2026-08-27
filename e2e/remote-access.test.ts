@@ -58,6 +58,16 @@ type Api = {
   on: (channel: string, cb: (data: unknown) => void) => () => void
 }
 
+/**
+ * The same URL reached by NAME rather than by the bound IP — what a phone does
+ * with a MagicDNS name, and what `status.url` never exercises.
+ */
+function byName(url: string): string {
+  const parsed = new URL(url)
+  parsed.hostname = 'localhost'
+  return parsed.toString()
+}
+
 async function enableRemote(window: Page): Promise<RemoteAccessStatus> {
   return (await window.evaluate(
     () => (window as unknown as { api: Api }).api.invoke('remote:set-enabled', true),
@@ -99,7 +109,7 @@ test('a browser tab invokes into main and receives pushed events', async ({ wind
   }, terminalId)
 
   const page = await browser.newPage()
-  await page.goto(status.url!)
+  await page.goto(byName(status.url!))
 
   // ── invoke: a real result, from the same handler the renderer calls ──
   await expect(page.getByText(/Attached to window \d+ as w\d+\./)).toBeVisible({ timeout: 15_000 })
@@ -141,7 +151,7 @@ test('a socket disconnect leaves the window transport intact', async ({ window, 
   const status = await enableRemote(window)
 
   const page = await browser.newPage()
-  await page.goto(status.url!)
+  await page.goto(byName(status.url!))
   await expect(page.getByText(/Attached to window \d+/)).toBeVisible({ timeout: 15_000 })
   await expect
     .poll(async () => (await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:status')) as RemoteAccessStatus).clients)

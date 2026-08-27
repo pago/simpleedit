@@ -62,6 +62,8 @@ interface RunningServer {
   options: RemoteServerOptions
   sockets: Set<SocketTransport>
   powerSaveBlockerId: number | null
+  /** Origins of pages this server has served — see `learnOrigin`. */
+  origins: Set<string>
 }
 
 let running: RunningServer | null = null
@@ -224,25 +226,44 @@ function serveStatic(res: ServerResponse, webRoot: string, route: string): void 
 }
 
 /**
- * True when the request carries no `Origin`, or one naming this very server.
+ * Origins that a page WE SERVED is running under.
  *
- * Compared against the address we actually BOUND, never against the request's
- * own `Host` header. `Host` is client-supplied, so a DNS-rebinding page can
- * send an `Origin` and a `Host` that agree with each OTHER while naming a
- * hostname that resolves to us — which satisfies a self-consistency check and
- * nothing else.
+ * The test is not "does this hostname look like us" — string equality against
+ * the bound IP rejects `localhost` and every MagicDNS name, which is the phone
+ * path this feature exists for, and resolving the hostname instead is exactly
+ * what DNS rebinding defeats (a rebound `evil.com` resolves to the bound
+ * address by construction). Neither answers the real question.
+ *
+ * So the server records it. A top-level navigation carries no `Origin` and
+ * does carry the token, so serving one is proof that a token holder reached us
+ * under that `Host` — and the origin of the page we just returned is exactly
+ * `scheme://<that Host>`. Subresources and the WebSocket upgrade, which DO
+ * carry `Origin`, are then matched against what was recorded.
+ *
+ * An attacker cannot register an origin without the token, and with the token
+ * they could simply open the page. Bounded so a token holder cannot grow it
+ * without limit.
  */
-function sameOrigin(req: IncomingMessage, host: string, port: number): boolean {
+const MAX_LEARNED_ORIGINS = 16
+
+/** Remember the origin of a page we are about to serve. Token already checked. */
+function learnOrigin(server: RunningServer, req: IncomingMessage): void {
+  const host = req.headers.host
+  if (!host) return
+  const origin = `http://${host}`
+  if (server.origins.has(origin)) return
+  if (server.origins.size >= MAX_LEARNED_ORIGINS) return
+  server.origins.add(origin)
+}
+
+/**
+ * True when the request carries no `Origin` (a navigation, or a non-browser
+ * client), or one belonging to a page this server served.
+ */
+function knownOrigin(server: RunningServer, req: IncomingMessage): boolean {
   const origin = req.headers.origin
   if (!origin) return true
-  try {
-    const url = new URL(origin)
-    // `URL.hostname` brackets an IPv6 literal; the bound host does not.
-    const hostname = url.hostname.replace(/^\[|\]$/g, '')
-    return hostname === host && url.port === String(port)
-  } catch {
-    return false
-  }
+  return server.origins.has(origin)
 }
 
 function attachSocket(ws: WebSocket, server: RunningServer): void {
@@ -317,7 +338,8 @@ export function getRemoteStatus(): RemoteAccessStatus {
     running: true,
     host: running.host,
     port: running.port,
-    url: `http://${running.host.includes(':') ? `[${running.host}]` : running.host}:${running.port}/${running.token}/`,
+    // IPv4 only — `listRemoteInterfaces` offers nothing else, so no bracketing.
+    url: `http://${running.host}:${running.port}/${running.token}/`,
     clients: running.sockets.size,
     powerSaveBlocked:
       running.powerSaveBlockerId !== null && powerSaveBlocker.isStarted(running.powerSaveBlockerId),
@@ -352,32 +374,61 @@ function releasePowerAssertion(id: number | null): void {
 export function startRemoteServer(options: RemoteServerOptions): Promise<RemoteAccessStatus> {
   if (running) return Promise.resolve(getRemoteStatus())
   // Set BEFORE the first await, so a concurrent caller joins this start rather
-  // than building a second server and a second power assertion.
+  // than building a second server and a second power assertion. Callers are
+  // serialised upstream (`applyRemoteConfig`), so a join always shares the
+  // options of the start it joined.
   if (starting) return starting
   starting = openServer(options).finally(() => { starting = null })
   return starting
 }
 
+/**
+ * True once `stopRemoteServer` has been called for the start currently in
+ * flight. `running` is assigned only after `listen` resolves, so a stop that
+ * arrives before then would find nothing to stop and no-op — leaving a
+ * listening socket with a live token and a held power assertion behind, while
+ * the config and the UI both said OFF.
+ */
+let stopRequested = false
+
 async function openServer(options: RemoteServerOptions): Promise<RemoteAccessStatus> {
+  stopRequested = false
   const token = randomBytes(32).toString('hex')
   const wss = new WebSocketServer({ noServer: true })
+  const http = createServer((req, res) => handleRequest(req, res))
 
-  // Assigned once the listen succeeds; the handlers below close over it so the
-  // origin check can name the address actually bound.
-  let boundPort = 0
+  // Built before `listen` so the request handlers have somewhere to record
+  // learned origins, and so a stop arriving mid-start has something to tear
+  // down. Published to `running` only once it is actually listening.
+  const state: RunningServer = {
+    http,
+    wss,
+    token,
+    host: options.host,
+    port: 0,
+    options,
+    sockets: new Set(),
+    powerSaveBlockerId: null,
+    origins: new Set(),
+  }
 
-  const http = createServer((req, res) => {
-    if (!sameOrigin(req, options.host, boundPort)) {
-      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end('Cross-origin request refused')
-      return
-    }
+  function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+    // Token FIRST: an origin is only worth learning from a request that
+    // already proved it holds the token.
     const route = routeOf(req.url, token)
     if (route === null || req.method !== 'GET') {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Not found')
       return
     }
+    if (!knownOrigin(state, req)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('Cross-origin request refused')
+      return
+    }
+    // No `Origin` means a top-level navigation (or a non-browser client), so
+    // the page we are about to return will run under this `Host`.
+    if (!req.headers.origin) learnOrigin(state, req)
     // `/<token>` without the trailing slash serves index.html, but every
     // relative asset and the socket URL then resolve one level up, WITHOUT the
     // token — a blank page and a silently reconnecting socket, on exactly the
@@ -388,23 +439,31 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
       return
     }
     serveStatic(res, options.webRoot, route)
-  })
+  }
 
   http.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
-    // An upgrade with no `Origin` is a non-browser client and stays allowed
-    // (that is how a test harness connects); a browser one must be our own
-    // page, or a site that guessed the port could borrow the token.
+    // A browser always sends `Origin` on a WebSocket handshake, and it must
+    // name a page this server served. An upgrade with none is a non-browser
+    // client and is refused: nothing we ship connects that way.
     const route = routeOf(req.url, token)
-    if (route !== '/ws' || !sameOrigin(req, options.host, boundPort) || !req.headers.origin) {
+    if (route !== '/ws' || !req.headers.origin || !knownOrigin(state, req)) {
       socket.destroy()
       return
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (!running) {
+      if (running !== state) {
         ws.close(1011, 'Server stopped')
         return
       }
-      attachSocket(ws, running)
+      // `attachSocket` resolves a hub, and that can throw for a window that has
+      // gone. A synchronous throw here is inside neither a promise nor a try,
+      // so it would be fatal to the whole process.
+      try {
+        attachSocket(ws, state)
+      } catch (error) {
+        console.error('[Remote] Refusing socket:', error)
+        ws.close(1011, 'No window to attach to')
+      }
     })
   })
 
@@ -416,7 +475,6 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
         reject(new Error('Failed to get server address'))
         return
       }
-      boundPort = addr.port
       resolvePort(addr.port)
     })
   }).catch((error: unknown) => {
@@ -431,39 +489,54 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
     return getRemoteStatus()
   }
 
-  lastError = null
-  running = {
-    http,
-    wss,
-    token,
-    host: options.host,
-    port,
-    options,
-    sockets: new Set(),
-    powerSaveBlockerId: acquirePowerAssertion(),
+  state.port = port
+  // The address we bound is an origin by definition; everything else is
+  // learned from a navigation that carried the token.
+  state.origins.add(`http://${options.host}:${port}`)
+
+  // A stop that arrived while `listen` was pending found no `running` to act
+  // on. Honour it here instead of publishing a server nobody asked for.
+  if (stopRequested) {
+    stopRequested = false
+    teardown(state)
+    return getRemoteStatus()
   }
+
+  lastError = null
+  state.powerSaveBlockerId = acquirePowerAssertion()
+  running = state
   console.log(`[Remote] Listening on ${options.host}:${port}`)
-  emitStatus(running)
+  emitStatus(state)
   return getRemoteStatus()
 }
 
-export function stopRemoteServer(): RemoteAccessStatus {
-  const server = running
-  if (!server) return getRemoteStatus()
-  running = null
-  releasePowerAssertion(server.powerSaveBlockerId)
+/** Close everything `state` holds. Safe whether or not it was ever published. */
+function teardown(state: RunningServer): void {
+  releasePowerAssertion(state.powerSaveBlockerId)
+  state.powerSaveBlockerId = null
   // Closing the WebSocketServer does not close its clients, and a browser tab
   // left holding an open socket would keep a transport registered on a hub
   // that no longer has a server behind it.
-  for (const transport of server.sockets) transport.close()
-  server.wss.close()
-  server.http.close()
+  for (const transport of state.sockets) transport.close()
+  state.wss.close()
+  state.http.close()
   // `close()` only stops NEW connections. A browser tab still holding a socket
   // would keep the listener's handles alive, and an in-flight handle at quit is
   // how this app has hung on exit before (the codex-discovery hang, #176).
-  server.http.closeAllConnections()
-  server.sockets.clear()
+  state.http.closeAllConnections()
+  state.sockets.clear()
+  state.origins.clear()
   console.log('[Remote] Stopped')
+}
+
+export function stopRemoteServer(): RemoteAccessStatus {
+  // Claim any start still in flight, so it tears itself down on completion
+  // rather than publishing a listening server after we said we had stopped.
+  if (starting) stopRequested = true
+  const server = running
+  if (!server) return getRemoteStatus()
+  running = null
+  teardown(server)
   const status = getRemoteStatus()
   server.options.onStatusChange?.(status)
   return status

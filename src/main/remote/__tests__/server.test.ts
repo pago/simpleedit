@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocket } from 'ws'
-import { request } from 'http'
+import { request, createServer } from 'http'
 
 const blockers = new Set<number>()
 let nextBlockerId = 1
@@ -64,6 +64,28 @@ async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> 
   }
 }
 
+/** An ephemeral port, released before it is returned. */
+async function freePort(): Promise<number> {
+  const probe = createServer()
+  const port = await new Promise<number>((res) => {
+    probe.listen(0, HOST, () => {
+      const addr = probe.address()
+      res(typeof addr === 'object' && addr ? addr.port : 0)
+    })
+  })
+  await new Promise<void>((res) => probe.close(() => res()))
+  return port
+}
+
+/** True if `port` can be bound — i.e. nothing is listening on it. */
+function bindable(port: number): Promise<boolean> {
+  return new Promise((res) => {
+    const probe = createServer()
+    probe.once('error', () => res(false))
+    probe.listen(port, HOST, () => probe.close(() => res(true)))
+  })
+}
+
 /** A GET with headers `fetch` will not let us set (notably `Host`). */
 function rawGet(port: number, path: string, headers: Record<string, string>): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -120,12 +142,12 @@ describe('remote server', () => {
     expect(res.status).toBe(403)
   })
 
-  // The origin must be checked against the address we BOUND, not against the
-  // request's own Host header. A DNS-rebound page sends an Origin and a Host
-  // that agree with each OTHER while naming a hostname that resolves to us —
-  // which satisfies a self-consistency check and nothing else. `fetch` refuses
-  // to forge Host, so this goes out over a raw request.
-  it('refuses an origin that only agrees with a forged Host header', async () => {
+  // A DNS-rebound page sends an Origin and a Host that agree with each OTHER
+  // while naming a hostname that resolves to us. Self-consistency proves
+  // nothing, and neither does resolving the hostname — rebinding makes it
+  // resolve to the bound address by construction. `fetch` refuses to forge
+  // Host, so this goes out over a raw request.
+  it('refuses an origin belonging to no page it ever served', async () => {
     const { url, token } = await start()
     const { port } = new URL(url)
     const status = await rawGet(Number(port), `/${token}/`, {
@@ -133,6 +155,42 @@ describe('remote server', () => {
       origin: `http://rebound.example:${port}`,
     })
     expect(status).toBe(403)
+  })
+
+  // The blocker: string-comparing the Origin against the bound IP rejects
+  // `localhost` and every MagicDNS name. Module scripts and stylesheets are
+  // fetched in CORS mode, so they carry Origin — the page loads and then every
+  // asset 403s, which is a blank screen with no error, on the phone path this
+  // whole feature exists for.
+  it('serves assets to a page reached by a name, not just the bound IP', async () => {
+    const { url, token } = await start()
+    const { port } = new URL(url)
+    const asName = { host: `localhost:${port}`, origin: `http://localhost:${port}` }
+
+    // Before any navigation under that name, the origin is unknown.
+    expect(await rawGet(Number(port), `/${token}/`, asName)).toBe(403)
+
+    // The navigation itself carries the token and no Origin — which is what
+    // makes it proof that a token holder reached us under this name.
+    expect(await rawGet(Number(port), `/${token}/`, { host: `localhost:${port}` })).toBe(404)
+
+    // Now the page's subresources are recognised as ours. (404 rather than 200
+    // only because the bundle is not built in this suite.)
+    expect(await rawGet(Number(port), `/${token}/assets/app.js`, asName)).toBe(404)
+  })
+
+  it('will not learn an origin from a request without the token', async () => {
+    const { url, token } = await start()
+    const { port } = new URL(url)
+    // A navigation with the WRONG token must not register its Host, or an
+    // attacker could enrol their own origin without holding the credential.
+    expect(await rawGet(Number(port), `/wrong-token/`, { host: `evil.example:${port}` })).toBe(404)
+    expect(
+      await rawGet(Number(port), `/${token}/`, {
+        host: `evil.example:${port}`,
+        origin: `http://evil.example:${port}`,
+      }),
+    ).toBe(403)
   })
 
   it('survives a URL that will not percent-decode', async () => {
@@ -319,6 +377,28 @@ describe('remote server', () => {
     expect(ws.readyState).toBe(ws.OPEN)
     expect(getRemoteStatus().clients).toBe(1)
     ws.close()
+  })
+
+  // `running` is assigned only after `listen` resolves, so a stop arriving
+  // before then used to find nothing and no-op — leaving a listening socket
+  // with a live token and a held power assertion, while config and UI said OFF.
+  it('honours a stop that arrives while the start is still in flight', async () => {
+    // A fixed port, so "nothing is listening" can be PROVEN by binding it
+    // again rather than merely inferred from the reported status.
+    const port = await freePort()
+    const pending = startRemoteServer({
+      host: HOST,
+      port,
+      webRoot: '/nonexistent-web-root',
+      attachTarget: () => hub,
+    })
+    stopRemoteServer()
+    await pending
+
+    expect(getRemoteStatus().running).toBe(false)
+    expect(blockers.size).toBe(0)
+    expect(currentRemoteToken()).toBeNull()
+    await expect(bindable(port)).resolves.toBe(true)
   })
 
   it('closes attached sockets when remote access is turned off', async () => {
