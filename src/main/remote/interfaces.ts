@@ -9,9 +9,13 @@
  *
  *  - **Loopback** — reaches this machine only, and is the one non-TLS origin
  *    browsers still treat as a secure context.
- *  - **Tailscale** (100.64.0.0/10, the CGNAT range it allocates from) —
- *    reaches your own devices, authenticated at the device level, with a real
- *    certificate.
+ *  - **Tailscale** — reaches your own devices, authenticated at the device
+ *    level, with a real certificate. Identified by the INTERFACE, not by the
+ *    address: Tailscale allocates from 100.64.0.0/10, but so does carrier-grade
+ *    NAT, and Starlink, T-Mobile Home Internet, mobile hotspots, hotels and
+ *    campuses hand those addresses to ordinary LAN interfaces. Matching the
+ *    range alone would offer the café network first, with a green badge
+ *    asserting it was safe.
  *
  * Anything else is filtered out here rather than labelled in the UI, because a
  * warning next to a button is not a control. `0.0.0.0` is not reachable by any
@@ -24,11 +28,33 @@ import type { RemoteInterface } from '../../shared/ipc-types'
 /** Loopback, and the only address guaranteed to exist. */
 export const REMOTE_DEFAULT_HOST = '127.0.0.1'
 
-export function isTailscaleAddress(address: string): boolean {
+/**
+ * The 100.64.0.0/10 shared-address space (RFC 6598).
+ *
+ * Necessary for a Tailscale address and nowhere near sufficient — this is the
+ * range carrier-grade NAT draws from too. Never use it on its own to decide
+ * whether an interface is safe to bind.
+ */
+export function isCgnatAddress(address: string): boolean {
   const parts = address.split('.')
   if (parts.length !== 4) return false
   const [a, b] = parts.map((p) => Number(p))
   return a === 100 && b >= 64 && b <= 127
+}
+
+/**
+ * Does this interface belong to the Tailscale device itself?
+ *
+ * Tailscale gives its interface a host route — a /32 — which a LAN interface
+ * on a carrier-NAT network never has, and that is what separates the two on
+ * macOS, where the name is an ordinary `utunN` shared with every other VPN.
+ * Linux and Windows name the interface outright.
+ */
+function isTailscaleInterface(name: string, address: string, netmask: string, internal: boolean): boolean {
+  if (internal || !isCgnatAddress(address)) return false
+  if (process.platform === 'darwin') return /^utun\d+$/.test(name) && netmask === '255.255.255.255'
+  if (process.platform === 'win32') return /tailscale/i.test(name)
+  return name === 'tailscale0'
 }
 
 export function listRemoteInterfaces(): RemoteInterface[] {
@@ -36,7 +62,7 @@ export function listRemoteInterfaces(): RemoteInterface[] {
   for (const [name, addrs] of Object.entries(networkInterfaces())) {
     for (const addr of addrs ?? []) {
       if (addr.family !== 'IPv4') continue
-      const isTailscale = isTailscaleAddress(addr.address)
+      const isTailscale = isTailscaleInterface(name, addr.address, addr.netmask, addr.internal)
       if (!isTailscale && !addr.internal) continue
       out.push({ name, address: addr.address, isTailscale, isLoopback: addr.internal })
     }
