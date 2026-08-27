@@ -2,11 +2,16 @@
 "simpleedit": patch
 ---
 
-Stop two windows on the same session from fighting over the terminal's size. A
-PTY has one size but can have several clients attached, and a resize was applied
-whoever sent it — so a background window's `ResizeObserver`, or a tab of it
-becoming visible again, reflowed the terminal you were actually reading. The
-main process now tracks which client owns each PTY's size and drops a resize
-from anyone else; a client takes ownership only when your attention genuinely
-lands on that terminal — the session selected, the window focused, the tab made
-visible — and never on a reconnect or a background layout reflow.
+Groundwork for viewing one session from more than one place: the main process
+now tracks which client owns each terminal's size, and applies a resize only
+from that one.
+
+Nothing changes for a single window today — a session's terminal has exactly
+one viewer, so there is nothing to arbitrate. It matters once a second client
+attaches to the same session, which **Remote access** now makes possible: your
+phone and your desktop would otherwise each fit the terminal to their own
+screen and reflow it out from under the other. Ownership follows your
+attention — the session selected, the window focused, the tab made visible —
+and never moves on a reconnect or a background layout reflow. The client that
+is not sizing the terminal says so rather than rendering at a width the
+terminal no longer uses.
