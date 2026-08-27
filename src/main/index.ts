@@ -956,9 +956,9 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
     }
-    // Belt and braces: the server is no longer stopped on `window-all-closed`,
-    // but if anything else has taken it down while the config says enabled,
-    // this is the moment the user is looking and can be told.
+    // Closing the last window stopped it (see `window-all-closed`). Reopening
+    // one is what makes the app usable again, so it is also what makes remote
+    // access meaningful again.
     if (getRemoteConfig().enabled && !getRemoteStatus().running) {
       void applyRemoteConfig().catch((err: unknown) => {
         console.error('[SimpleEdit] Failed to restart remote access:', err)
@@ -985,12 +985,16 @@ app.on('before-quit', () => {
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
 })
 
-// NOTE: remote access is deliberately NOT stopped here. On macOS closing the
-// last window does not quit, and `activate` reopens one — so stopping the
-// server left the config saying enabled, no server running, no error, and the
-// status broadcast going to zero windows. For a feature whose whole point is a
-// phone reaching an unattended Mac, silence is the worst available failure. It
-// stops on `before-quit`, with the process.
+// Remote access stops with the last window, and this handler is why: it also
+// kills every terminal and every bridge. With no window there is no session to
+// reach, no repo to resolve, and `remoteAttachTarget` has nothing to hand a
+// socket — so leaving the server up meant an open port, a live bearer token
+// and a power assertion holding the Mac awake, serving nothing, with the
+// agents already dead. That is worse than stopping, not better.
+//
+// It is not silent either: the config still says enabled, and `activate` —
+// reopening a window, the only way back to a usable app on macOS — starts it
+// again.
 app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
@@ -1003,6 +1007,7 @@ app.on('window-all-closed', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { stopRemoteServer() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
