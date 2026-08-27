@@ -82,12 +82,21 @@ let lastError: string | null = null
 let socketSeq = 0
 
 /**
- * Stop buffering into a socket that cannot keep up.
+ * Watermark past which a socket is CLOSED rather than buffered into.
  *
  * `pty:data` from a busy terminal outruns a slow link, and `readyState` says
  * nothing about that — the kernel accepts the write and Node buffers the rest
- * in main's heap, without bound. A terminal already replays from
- * `pty:backlog`, so dropping is recoverable where unbounded growth is not.
+ * in main's heap, without bound.
+ *
+ * Dropping frames was the wrong answer. A gap in `pty:data` is written to
+ * xterm verbatim, so a truncated escape sequence corrupts the parser for
+ * everything after it; a dropped `pty:exit` leaves a session that never ends;
+ * and `lsp:message` carries JSON-RPC RESPONSES, so a drop there strands a
+ * renderer request forever — the very failure the `result` exemption existed
+ * to prevent. Silent corruption is worse than a dead connection.
+ *
+ * Closing is honest and recoverable: the shim reconnects, and a reconnect is
+ * where resynchronisation belongs.
  */
 const MAX_BUFFERED_BYTES = 1024 * 1024
 
@@ -99,10 +108,6 @@ const MAX_BUFFERED_BYTES = 1024 * 1024
 class SocketTransport implements RemoteClient {
   readonly id: number
   readonly clientKey: string
-  /** Events dropped because this client could not drain. Diagnostics only. */
-  dropped = 0
-  /** Set on the socket's `close`; `isDestroyed()` already covers CLOSING. */
-  gone = false
 
   constructor(private readonly ws: WebSocket, hubId: number) {
     this.id = hubId
@@ -115,11 +120,10 @@ class SocketTransport implements RemoteClient {
 
   post(frame: ServerFrame): void {
     if (this.ws.readyState !== this.ws.OPEN) return
-    // A client that cannot drain gets its events dropped rather than allowed
-    // to grow main's heap. `result` frames are exempt: something is awaiting
-    // each one, and a dropped reply is a promise that never settles.
-    if (frame.kind === 'event' && this.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
-      this.dropped++
+    // A client that cannot drain is disconnected, never quietly skipped: it
+    // must not be possible to miss an event and not know it.
+    if (this.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+      this.close(1013, 'Too far behind')
       return
     }
     try {
@@ -130,12 +134,12 @@ class SocketTransport implements RemoteClient {
   }
 
   isDestroyed(): boolean {
-    return this.gone || this.ws.readyState !== this.ws.OPEN
+    return this.ws.readyState !== this.ws.OPEN
   }
 
-  close(): void {
+  close(code = 1001, reason = 'Remote access turned off'): void {
     try {
-      this.ws.close(1001, 'Remote access turned off')
+      this.ws.close(code, reason)
     } catch {
       /* already closing */
     }
@@ -303,7 +307,6 @@ function attachSocket(ws: WebSocket, server: RunningServer): void {
   })
 
   const detach = (): void => {
-    transport.gone = true
     hub.unregister(transport)
     server.sockets.delete(transport)
     emitStatus(server)
