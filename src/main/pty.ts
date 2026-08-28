@@ -61,8 +61,11 @@ function rememberClient(id: string, client: RemoteClient): void {
   set.add(client)
 }
 
-/** Tell every client holding `id` who sizes it now, dropping any that have gone. */
-function announceOwner(id: string, owner: PtyClientId): void {
+/**
+ * Tell every client holding `id` who sizes it now, dropping any that have gone.
+ * `null` means nobody does — the owner's transport went away.
+ */
+function announceOwner(id: string, owner: PtyClientId | null): void {
   const clients = ptyClients.get(id)
   if (!clients) return
   for (const client of [...clients]) {
@@ -524,10 +527,38 @@ export function getTerminalOwner(id: string): PtyClientId | undefined {
 }
 
 export function resizeTerminal(id: string, cols: number, rows: number, clientId: PtyClientId): void {
-  if (ptyOwner.get(id) !== clientId) return
+  const owner = ptyOwner.get(id)
+  // An UNOWNED terminal takes anyone's size. Ownership is dropped when the
+  // owning transport vanishes (a phone whose tunnel died), and treating that
+  // as "owned by nobody, so nobody may resize" would freeze the geometry for
+  // every remaining client until one of them happened to claim. Resizing does
+  // not take ownership: that stays a deliberate act, so two clients cannot
+  // trade the size back and forth by reflowing.
+  if (owner !== undefined && owner !== clientId) return
   const term = terminals.get(id)
   if (term && cols > 0 && rows > 0) {
     term.resize(cols, rows)
+  }
+}
+
+/**
+ * Drop every claim held by a client that is gone, and say so.
+ *
+ * A transport can disappear without any terminal knowing: a phone locks its
+ * screen, the tunnel drops, the socket closes. Its claim would otherwise
+ * outlive it forever — main keeps dropping the desktop window's resizes on
+ * behalf of a client that no longer exists, and that window keeps showing
+ * "Sized by another device" with no device on the other end.
+ *
+ * `pty:claim` fires on attention, which is a focus or visibility CHANGE, so an
+ * already-focused window sitting on the terminal never re-claims and never
+ * recovers on its own. Releasing here is what closes that.
+ */
+export function releaseTerminalsOwnedBy(clientId: PtyClientId): void {
+  for (const [id, owner] of [...ptyOwner]) {
+    if (owner !== clientId) continue
+    ptyOwner.delete(id)
+    announceOwner(id, null)
   }
 }
 

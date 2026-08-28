@@ -36,7 +36,7 @@ import { powerSaveBlocker } from 'electron'
 import type { ClientHub, RemoteClient } from '../client-hub'
 import { dispatchInvoke, dispatchSend } from '../ipc-registry'
 import { parseClientFrame, type ServerFrame } from '../../shared/remote-protocol'
-import type { RemoteAccessStatus } from '../../shared/ipc-types'
+import type { PtyClientId, RemoteAccessStatus } from '../../shared/ipc-types'
 
 export interface RemoteServerOptions {
   host: string
@@ -51,6 +51,12 @@ export interface RemoteServerOptions {
   attachTarget: () => ClientHub | null
   /** Called whenever the reported status changes, so the UI can follow. */
   onStatusChange?: (status: RemoteAccessStatus) => void
+  /**
+   * A socket has gone. Everything main keys by `PtyClientId` — today only PTY
+   * size ownership — has to let go of it, and only the caller knows what that
+   * is; this module deliberately knows nothing about terminals.
+   */
+  onClientGone?: (clientKey: PtyClientId) => void
 }
 
 interface RunningServer {
@@ -351,6 +357,11 @@ function attachSocket(ws: WebSocket, server: RunningServer): void {
   const detach = (): void => {
     hub.unregister(transport)
     server.sockets.delete(transport)
+    // This transport may have been sizing a terminal. Nothing else will notice
+    // it is gone — a PTY outlives every client — so the owner has to hear about
+    // it here, or the claim is held by a socket that no longer exists for the
+    // terminal's life.
+    server.options.onClientGone?.(transport.clientKey)
     emitStatus(server)
   }
   ws.on('close', detach)

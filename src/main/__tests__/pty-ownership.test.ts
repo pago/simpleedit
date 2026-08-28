@@ -39,6 +39,7 @@ import {
   claimTerminal,
   getTerminalOwner,
   resizeTerminal,
+  releaseTerminalsOwnedBy,
   killTerminal,
   killAllTerminals,
 } from '../pty'
@@ -182,6 +183,49 @@ describe('PTY size ownership', () => {
 
     expect(goneSend).not.toHaveBeenCalled()
     expect(hubSend).toHaveBeenCalledWith('pty:owner-changed', { id: 't19', owner: OWNER })
+  })
+
+  // A transport can vanish without any terminal knowing: a phone locks its
+  // screen and its socket closes. Nothing else releases the claim, and
+  // `pty:claim` only fires on a focus/visibility CHANGE — so a desktop window
+  // already sitting on the terminal never reclaims and never recovers.
+  it('releases the claim of a client that has gone', () => {
+    spawnFor('t20', OWNER)
+    claim('t20', OTHER)
+    releaseTerminalsOwnedBy(OTHER)
+    expect(getTerminalOwner('t20')).toBeUndefined()
+  })
+
+  it('lets any client size a terminal nobody owns', () => {
+    const term = spawnFor('t21', OWNER)
+    claim('t21', OTHER)
+    releaseTerminalsOwnedBy(OTHER)
+    resizeTerminal('t21', 90, 25, OWNER)
+    expect(term.resize).toHaveBeenCalledWith(90, 25)
+  })
+
+  it('does not hand ownership to whoever resizes an unowned terminal', () => {
+    spawnFor('t22', OWNER)
+    claim('t22', OTHER)
+    releaseTerminalsOwnedBy(OTHER)
+    resizeTerminal('t22', 90, 25, OWNER)
+    expect(getTerminalOwner('t22')).toBeUndefined()
+  })
+
+  it('announces the release, so the loser stops saying it lost the size', () => {
+    spawnFor('t23', OWNER)
+    claim('t23', OTHER)
+    hubSend.mockClear()
+    releaseTerminalsOwnedBy(OTHER)
+    expect(hubSend).toHaveBeenCalledWith('pty:owner-changed', { id: 't23', owner: null })
+  })
+
+  it('leaves terminals owned by anyone else alone', () => {
+    spawnFor('t24', OWNER)
+    spawnFor('t25', OTHER)
+    releaseTerminalsOwnedBy(OTHER)
+    expect(getTerminalOwner('t24')).toBe(OWNER)
+    expect(getTerminalOwner('t25')).toBeUndefined()
   })
 
   it('stays quiet when the current owner re-claims', () => {

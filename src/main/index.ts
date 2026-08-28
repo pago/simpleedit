@@ -12,6 +12,7 @@ import {
   writeToTerminal,
   resizeTerminal,
   claimTerminal,
+  releaseTerminalsOwnedBy,
   killTerminal,
   killAllTerminals,
   getActiveTerminalIds,
@@ -279,6 +280,7 @@ async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
     webRoot: remoteWebRoot(),
     attachTarget: remoteAttachTarget,
     onStatusChange: broadcastRemoteStatus,
+    onClientGone: releaseTerminalsOwnedBy,
   })
 }
 

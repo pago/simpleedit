@@ -330,6 +330,29 @@ describe('remote server', () => {
     ws.close()
   })
 
+  // A socket can hold state main keys by `PtyClientId` — today the PTY size
+  // claim. Nothing else notices it is gone: a PTY outlives every client, and
+  // `pty:claim` only fires on an attention CHANGE, so a window already sitting
+  // on that terminal never reclaims. The claim has to be released here.
+  it('reports a departed socket\'s client key, so its claims can be released', async () => {
+    const gone: string[] = []
+    const status = await startRemoteServer({
+      host: HOST,
+      port: 0,
+      webRoot: '/nonexistent-web-root',
+      attachTarget: () => hub,
+      onClientGone: (key) => { gone.push(key) },
+    })
+    const token = currentRemoteToken()!
+    const url = `http://${HOST}:${status.port}`
+    const { ws, hello } = await connect(url, token)
+    const key = (hello as { clientKey: string }).clientKey
+
+    ws.close()
+    await waitFor(() => gone.length > 0)
+    expect(gone).toEqual([key])
+  })
+
   it('pushes a hub event to the attached socket', async () => {
     const { url, token } = await start()
     const { ws, frames } = await connect(url, token)

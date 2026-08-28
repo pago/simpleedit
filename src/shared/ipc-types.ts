@@ -111,7 +111,11 @@ export interface PtyEventMap {
    * is sized by another device instead of silently rendering at a width the
    * terminal no longer uses.
    */
-  'pty:owner-changed': { id: string; owner: PtyClientId }
+  /**
+   * Who sizes this PTY now. `null` means nobody: the owning client's transport
+   * went away, and the next resize from any client is applied.
+   */
+  'pty:owner-changed': { id: string; owner: PtyClientId | null }
 }
 
 // ── File system ───────────────────────────────────────────
