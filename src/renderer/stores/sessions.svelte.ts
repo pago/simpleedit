@@ -142,7 +142,19 @@ export interface AgentCreateOptions {
   forkSession?: boolean
   model?: ModelRef
   initialPrompt?: string
+  /**
+   * A name a human or a model CHOSE. Sticky: nothing automatic overwrites it.
+   */
   label?: string
+  /**
+   * A name DERIVED from something the user wrote — a brief's first clause —
+   * shown for want of anything better until the agent names the conversation.
+   *
+   * Deliberately separate from `label`, because a machine-derived stand-in
+   * must not suppress a name a human or model later chooses. Ranks below
+   * `label` and above the model id.
+   */
+  provisionalLabel?: string
   target?: { groupId?: string; index: number }
 }
 
@@ -299,13 +311,16 @@ export const sessionsStore = {
     // Whether a provider's titles may rename a session stays a provider
     // property, decided when the title actually arrives — deciding it here
     // would race the async capability fetch.
+    // A CHOSEN name only. A provisional one ranks above the model id and
+    // below nothing else — it is still a stand-in, so the agent's own title
+    // replaces it exactly as it replaces the model id.
     const chosen = !!opts.label
     const newSession: Session = {
       id,
       kind: 'agent',
       provider: target.provider,
       target,
-      label: opts.label ?? modelId ?? defaultLabel('agent', name),
+      label: opts.label ?? opts.provisionalLabel ?? modelId ?? defaultLabel('agent', name),
       ...(chosen ? { customLabel: true as const } : {}),
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
@@ -354,9 +369,10 @@ export const sessionsStore = {
     void window.api.invoke('models:config-set', { lastUsed })
     // For cloud Claude, upgrade the raw model id to its human display name once
     // the catalog resolves — best-effort, leaves the id if not found.
-    // Skip when the caller gave an explicit label: the upgrade only prettifies
-    // the default (model-id) label, it must not clobber a chosen name.
-    if (model?.provider === 'anthropic' && !opts.label) {
+    // Skip when the caller supplied any label: the upgrade only prettifies the
+    // default (model-id) label. It must not clobber a chosen name — nor a
+    // provisional one, which is likewise more use than a model id.
+    if (model?.provider === 'anthropic' && !opts.label && !opts.provisionalLabel) {
       const anthropicModel = model.model
       void window.api
         .invoke('models:claude')
@@ -393,7 +409,7 @@ export const sessionsStore = {
     provider: NativeModelAgentId,
     launchDir: string,
     worktreePath: string,
-    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string; provisionalLabel?: string } = {},
   ): string {
     const target: InteractiveTarget = {
       provider,
@@ -403,13 +419,14 @@ export const sessionsStore = {
     return this.createAgent(target, launchDir, worktreePath, {
       ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
       ...(opts.label ? { label: opts.label } : {}),
+      ...(opts.provisionalLabel ? { provisionalLabel: opts.provisionalLabel } : {}),
     })
   },
 
   createCodex(
     launchDir: string,
     worktreePath: string,
-    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string; provisionalLabel?: string } = {},
   ): string {
     return this.createNativeAgent('codex', launchDir, worktreePath, opts)
   },
@@ -417,7 +434,7 @@ export const sessionsStore = {
   createOpenCode(
     launchDir: string,
     worktreePath: string,
-    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string; provisionalLabel?: string } = {},
   ): string {
     return this.createNativeAgent('opencode', launchDir, worktreePath, opts)
   },
@@ -922,7 +939,7 @@ export function createSessionFromDefaults(
   config: ModelConfig | null,
   launchDir: string,
   worktreePath: string,
-  opts: { initialPrompt?: string; label?: string } = {},
+  opts: { initialPrompt?: string; provisionalLabel?: string } = {},
 ): string {
   const lastUsed = config?.lastUsed
   if (lastUsed?.provider !== 'openai') return sessionsStore.createClaude(launchDir, worktreePath, opts)
@@ -961,7 +978,9 @@ async function createSessionFromBrief(
   const config = await window.api.invoke('models:config-get').catch(() => null)
   const id = createSessionFromDefaults(config, root, wt.path, {
     initialPrompt: data.brief,
-    ...(data.label ? { label: data.label } : {}),
+    // Provisional: the brief's first clause is a stand-in the agent replaces
+    // as soon as it names the conversation, exactly as at the desk.
+    ...(data.label ? { provisionalLabel: data.label } : {}),
   })
   answer({ ok: true, terminalId: id, label: sessionsStore.get(id)?.label ?? id })
 }

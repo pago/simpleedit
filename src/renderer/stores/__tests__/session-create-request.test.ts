@@ -86,6 +86,28 @@ describe('session:create-request listener', () => {
     }
   })
 
+  it('lets the agent rename what the brief provisionally called it', async () => {
+    const off = initSessionListeners()
+    try {
+      handlers.get('session:create-request')!({
+        correlationId: 'c1',
+        brief: 'Rework the notification debounce so a flapping session buzzes once',
+        label: 'Rework the notification debounce',
+      })
+      await flush()
+      const started = sessionsStore.sessions()[0]
+
+      // A first clause is a stand-in, not a choice. Treating it as one froze
+      // every phone-started session at a machine-derived substring for its
+      // whole life — and diverged from ⌘T, where the same session does get
+      // renamed.
+      sessionsStore.applySessionTitle(started.id, 'Debounce the waiting buzz')
+      expect(sessionsStore.get(started.id)?.label).toBe('Debounce the waiting buzz')
+    } finally {
+      off()
+    }
+  })
+
   it('uses the last-used provider, so the phone matches ⌘T without offering a picker', async () => {
     config = {
       defaults: {},
