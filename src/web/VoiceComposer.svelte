@@ -106,10 +106,11 @@
     } catch (err) {
       // Denied, or no secure context. `http://localhost` IS one; a plain-HTTP
       // LAN address is not, which is why the transport is Tailscale.
+      const name = err instanceof Error ? err.name : 'Error'
       error =
-        err instanceof Error && err.name === 'NotAllowedError'
+        name === 'NotAllowedError'
           ? 'Microphone access was refused. Type your reply instead.'
-          : 'Could not open the microphone. Type your reply instead.'
+          : `Could not open the microphone (${name}). Type your reply instead.`
       teardownRecording()
       return
     }

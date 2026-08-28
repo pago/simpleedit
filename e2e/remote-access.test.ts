@@ -2,11 +2,18 @@ import { test as base, expect, chromium, _electron as electron } from '@playwrig
 import type { Browser, ElectronApplication, Page } from '@playwright/test'
 import path from 'path'
 import os from 'os'
-import { MAIN, launchEnv, createTempRepo, removeTempRepo, type TempRepo } from './fixtures'
+import {
+  MAIN,
+  launchEnv,
+  createTempRepo,
+  removeTempRepo,
+  spawnTerminalSession,
+  type TempRepo,
+} from './fixtures'
 import type { RemoteAccessStatus } from '../src/shared/ipc-types'
 
 /**
- * The transport, proved from an ordinary browser — no phone, no Tailscale.
+ * The remote surface, proved from an ordinary browser — no phone, no Tailscale.
  *
  * `http://localhost` is a secure context, so verifying here is not a weaker
  * substitute for the real thing: it exercises the same server, the same token
@@ -96,34 +103,46 @@ test('serves the web bundle only under its token, and holds a power assertion', 
   expect(await served.text()).toContain('SimpleEdit')
 })
 
-test('a browser tab invokes into main and receives pushed events', async ({ window, browser }) => {
+test('lists the window\'s sessions and opens one on the real PTY', async ({ window, browser }) => {
+  const terminalId = await spawnTerminalSession(window)
   const status = await enableRemote(window)
-
-  // A terminal owned by the DESKTOP window, so the claim below is a real
-  // transfer between two transports of one hub rather than a no-op.
-  const terminalId = `term-remote-${Date.now()}`
-  await window.evaluate(async (id) => {
-    const api = (window as unknown as { api: Api }).api
-    const worktrees = (await api.invoke('worktree:list')) as { path: string }[]
-    await api.invoke('pty:spawn', { id, worktreePath: worktrees[0].path })
-  }, terminalId)
 
   const page = await browser.newPage()
   await page.goto(byName(status.url!))
 
-  // ── invoke: a real result, from the same handler the renderer calls ──
-  await expect(page.getByText(/Attached to window \d+ as w\d+\./)).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByText(/worktree:list → \d+ worktree/)).toBeVisible({ timeout: 15_000 })
-  await expect(page.locator('code', { hasText: 'main' }).first()).toBeVisible()
+  // Top-level chrome: a title and a tab bar, never a segmented control.
+  await expect(page.getByTestId('screen-title')).toHaveText('Sessions', { timeout: 15_000 })
+  await expect(page.getByTestId('tab-bar')).toBeVisible()
+  await expect(page.getByTestId('connection-dot')).toHaveAttribute('data-state', 'open')
 
-  // ── event: a push nobody asked for, arriving over the same socket ──
-  // Claiming the PTY from the browser moves size ownership away from the
-  // desktop window, which is exactly the phase-2 gap: both transports are told.
+  // The list is the window's own, pushed by the renderer that owns it.
+  const row = page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`)
+  await expect(row).toBeVisible({ timeout: 15_000 })
+
+  // Detail chrome: a back button, and the tab bar gone.
+  await row.click()
+  await expect(page.getByTestId('back')).toBeVisible()
+  await expect(page.getByTestId('tab-bar')).toHaveCount(0)
+  await expect(page.getByTestId('mobile-terminal')).toBeVisible()
+
+  // A real terminal: the shell's own output, replayed from main's backlog.
+  await expect(page.locator('.xterm-rows')).toContainText(/\S/, { timeout: 15_000 })
+
+  await page.getByTestId('back').click()
+  await expect(page.getByTestId('screen-title')).toHaveText('Sessions')
+
+  await page.close()
+})
+
+test('opening a session claims the PTY, and the desktop is told', async ({ window, browser }) => {
+  const terminalId = await spawnTerminalSession(window)
+  const status = await enableRemote(window)
+
   const desktopHeard = window.evaluate(
     (id) =>
-      new Promise<string>((resolve) => {
+      new Promise<string | null>((resolve) => {
         const off = (window as unknown as { api: Api }).api.on('pty:owner-changed', (data) => {
-          const payload = data as { id: string; owner: string }
+          const payload = data as { id: string; owner: string | null }
           if (payload.id !== id) return
           off()
           resolve(payload.owner)
@@ -132,27 +151,68 @@ test('a browser tab invokes into main and receives pushed events', async ({ wind
     terminalId,
   )
 
-  await page.evaluate(
-    (id) => (window as unknown as { api: Api }).api.invoke('pty:claim', id),
-    terminalId,
-  )
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`).click()
 
-  await expect(page.getByText('pty:owner-changed')).toBeVisible({ timeout: 10_000 })
   // The desktop window learns it lost the size — main is authoritative, and it
-  // now says so instead of silently dropping that window's resizes.
-  const newOwner = await desktopHeard
-  expect(newOwner).toMatch(/^w\d+\./)
+  // says so instead of silently dropping that window's resizes.
+  expect(await desktopHeard).toMatch(/^w\d+\./)
 
-  await window.evaluate((id) => (window as unknown as { api: Api }).api.invoke('pty:kill', id), terminalId)
   await page.close()
 })
 
+// A phone locks its screen and its socket goes. Nothing else notices — a PTY
+// outlives every client, and `pty:claim` fires only on an attention CHANGE, so
+// a desktop window already sitting on the terminal never reclaims. Without the
+// release, that window's resizes are dropped for the terminal's whole life.
+test('a socket that goes releases the terminal size it was holding', async ({ window, browser }) => {
+  const terminalId = await spawnTerminalSession(window)
+  const status = await enableRemote(window)
+
+  // Collect every announcement for this terminal, so the sequence can be read
+  // rather than raced: the claim first, then the release.
+  await window.evaluate((id) => {
+    const owners: (string | null)[] = []
+    ;(window as unknown as { __owners__: (string | null)[] }).__owners__ = owners
+    ;(window as unknown as { api: Api }).api.on('pty:owner-changed', (data) => {
+      const payload = data as { id: string; owner: string | null }
+      if (payload.id === id) owners.push(payload.owner)
+    })
+  }, terminalId)
+
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`).click()
+
+  await expect
+    .poll(
+      async () =>
+        await window.evaluate(() => (window as unknown as { __owners__: (string | null)[] }).__owners__),
+      { timeout: 15_000 },
+    )
+    .toEqual([expect.stringMatching(/^w\d+\./)])
+
+  await page.close()
+
+  // Announced as unowned, so the desktop stops saying it lost the size — and
+  // main stops dropping its resizes on behalf of a socket that no longer exists.
+  await expect
+    .poll(
+      async () =>
+        await window.evaluate(() => (window as unknown as { __owners__: (string | null)[] }).__owners__),
+      { timeout: 15_000 },
+    )
+    .toEqual([expect.stringMatching(/^w\d+\./), null])
+})
+
 test('a socket disconnect leaves the window transport intact', async ({ window, browser }) => {
+  await enableRemote(window)
   const status = await enableRemote(window)
 
   const page = await browser.newPage()
   await page.goto(byName(status.url!))
-  await expect(page.getByText(/Attached to window \d+/)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByTestId('screen-title')).toHaveText('Sessions', { timeout: 15_000 })
   await expect
     .poll(async () => (await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:status')) as RemoteAccessStatus).clients)
     .toBe(1)

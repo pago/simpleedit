@@ -36,15 +36,15 @@
   // A session that closed while it was open on this phone leaves a detail
   // screen addressing a terminal that no longer exists. Fall back to the list
   // rather than to a dead terminal.
-  $effect(() => {
-    const open = openSession
-    if (!open) return
-    return window.api.on('session:list-changed', (sessions) => {
-      const current = sessions.find((s) => s.terminalId === open.terminalId)
-      if (!current) openSession = null
-      else openSession = current
-    })
-  })
+  // Registered once: the effect body reads nothing reactive, so re-subscribing
+  // on every list update — which this handler itself causes — cannot happen.
+  $effect(() =>
+    window.api.on('session:list-changed', (sessions) => {
+      const open = openSession
+      if (!open) return
+      openSession = sessions.find((s) => s.terminalId === open.terminalId) ?? null
+    }),
+  )
 
   const title = $derived(openSession ? openSession.label : (TABS.find((t) => t.id === tab)?.label ?? ''))
   const dot = $derived(

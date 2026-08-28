@@ -59,10 +59,6 @@
     }
   }
 
-  export function focus(): void {
-    term?.focus()
-  }
-
   onMount(() => {
     const el = containerEl
     if (!el) return
