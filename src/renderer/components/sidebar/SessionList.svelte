@@ -2,10 +2,10 @@
   import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
   import PromptModal from '../PromptModal.svelte'
   import HandoffComposer from './HandoffComposer.svelte'
-  import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
+  import { sessionsStore, createSessionFromDefaults, type Session, type SessionGroup } from '../../stores/sessions.svelte'
   import type { AgentProviderId, InteractiveTarget, NativeModelAgentId } from '../../../shared/ipc-types'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
-  import { capabilitiesFor, knownProviders, providerForModelBrand, providerLabel } from '../../stores/agent-capabilities.svelte'
+  import { capabilitiesFor, knownProviders, providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
@@ -71,16 +71,12 @@
     if (root && wt) sessionsStore.createNativeAgent(provider, root, wt.path, model ? { model } : {})
   }
 
+  /** The ✦ button, ⌘T and the phone's `+` all ask for the same session. */
   async function startLastTarget(): Promise<void> {
     const config = await window.api.invoke('models:config-get').catch(() => null)
-    const last = config?.lastUsed
-    // Resolve the remembered ModelRef back to the agent that owns it. Testing
-    // for one brand by name would send every other native model to Claude.
-    const owner = last && last.provider !== 'anthropic' && last.provider !== 'ollama'
-      ? providerForModelBrand(last.provider)
-      : undefined
-    if (owner && owner !== 'claude') startNative(owner, last?.model)
-    else startClaude()
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (root && wt) createSessionFromDefaults(config, root, wt.path)
   }
 
   function startAgents(): void {

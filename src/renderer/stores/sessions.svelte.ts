@@ -8,7 +8,7 @@
  * `pty:*` and `agent:*` IPC routes address the same identifier.
  */
 import { untrack } from 'svelte'
-import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
+import { capabilitiesFor, providerForModelBrand, providerLabel } from './agent-capabilities.svelte'
 import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, SessionRepoTrail, WindowSessionInput } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
@@ -926,14 +926,19 @@ export function touchedWorktreesForRepo(
 }
 
 /**
- * Start the session a bare "new session" gesture asks for — ⌘T at the desk,
- * `+` on the phone.
+ * Start the session a bare "new session" gesture asks for — the ✦ Agent
+ * button, ⌘T at the desk, `+` on the phone.
  *
- * One definition of "the default", because two would drift and the phone
- * deliberately offers no picker to correct a drifted one. The rule is the last
- * model a session was launched against: Codex when that was Codex, otherwise
- * plain Claude, which lets Claude pick up whatever the harness itself defaults
- * to rather than pinning a model id here.
+ * ONE definition, because the alternatives disagree in front of the user: the
+ * same `lastUsed` starting OpenCode from the sidebar and Claude from ⌘T, in
+ * the same window, with no picker on the phone to correct it.
+ *
+ * The rule is the last model a session was launched against, resolved back to
+ * the agent that OWNS it through the descriptors. Testing one brand by name —
+ * `provider === 'openai'` — is the mistake `providerForModelBrand` exists to
+ * prevent: it quietly sends every other native model to Claude. `anthropic`
+ * and `ollama` are Claude's own brands, and a Claude default deliberately
+ * pins no model id, so the harness's own default applies.
  */
 export function createSessionFromDefaults(
   config: ModelConfig | null,
@@ -942,12 +947,34 @@ export function createSessionFromDefaults(
   opts: { initialPrompt?: string; provisionalLabel?: string } = {},
 ): string {
   const lastUsed = config?.lastUsed
-  if (lastUsed?.provider !== 'openai') return sessionsStore.createClaude(launchDir, worktreePath, opts)
-  return sessionsStore.createCodex(launchDir, worktreePath, {
+  const owner =
+    lastUsed && lastUsed.provider !== 'anthropic' && lastUsed.provider !== 'ollama'
+      ? providerForModelBrand(lastUsed.provider)
+      : undefined
+  if (!owner || !isNativeModelAgent(owner)) {
+    return sessionsStore.createClaude(launchDir, worktreePath, opts)
+  }
+  return sessionsStore.createNativeAgent(owner, launchDir, worktreePath, {
     ...opts,
-    ...(lastUsed.model ? { model: lastUsed.model } : {}),
-    ...(lastUsed.reasoningEffort ? { reasoningEffort: lastUsed.reasoningEffort } : {}),
+    ...(lastUsed?.model ? { model: lastUsed.model } : {}),
+    ...(lastUsed && 'reasoningEffort' in lastUsed && lastUsed.reasoningEffort
+      ? { reasoningEffort: lastUsed.reasoningEffort }
+      : {}),
   })
+}
+
+/**
+ * Whether an agent names its models by bare native id, and so can be started
+ * from a remembered one.
+ *
+ * Read from the descriptor rather than matched against a union of ids:
+ * `NativeModelAgentId` is a compile-time list, and a provider registered after
+ * it was written would be resolved by `providerForModelBrand` and then
+ * rejected here for no reason the user could see. Claude is excluded by the
+ * same rule rather than by name — it is the `model-ref` provider.
+ */
+function isNativeModelAgent(provider: AgentProviderId): provider is NativeModelAgentId {
+  return capabilitiesFor(provider)?.modelSelector === 'model-id'
 }
 
 /**

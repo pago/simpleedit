@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type { ModelConfig, WorktreeInfo } from '../../../shared/ipc-types'
+import type { AgentCapabilities, AgentProviderId, ModelConfig, WorktreeInfo } from '../../../shared/ipc-types'
 import { sessionsStore, initSessionListeners } from '../sessions.svelte'
 import { setProjectRoot, refreshWorktreesFor } from '../worktrees.svelte'
+import { initAgentCapabilities } from '../agent-capabilities.svelte'
 
 /**
  * The renderer's half of starting a session from the phone.
@@ -18,6 +19,31 @@ const PROJECT_ROOT = '/repo'
 const MAIN_WT = '/repo/primary/main'
 
 const MAIN_ONLY: WorktreeInfo[] = [{ path: MAIN_WT, branch: 'main', isMain: true, isCurrent: false }]
+
+/**
+ * The descriptors as main registers them. `descriptor-contract.test.ts` is
+ * what keeps these honest — a fixture is free to describe a world production
+ * cannot produce, which is exactly how a missing `nativeModelBrand` went
+ * unnoticed while every renderer test of this path stayed green.
+ */
+const NATIVE: AgentCapabilities = {
+  status: 'precise', resume: true, fork: true, tracking: 'full', mcp: true,
+  modelOverride: 'native', shiftEnter: 'native', droppedPath: 'at-reference',
+  gracefulShutdown: true, displayName: 'Codex', oscTitle: 'directory',
+  reportingSetup: 'user-granted', modelSelector: 'model-id', reasoningEffort: true,
+  nativeModelBrand: 'openai', modelCatalog: true, reportsSessionTitle: false,
+}
+const CAPS: Record<string, AgentCapabilities> = {
+  claude: {
+    ...NATIVE, displayName: 'Claude', status: 'osc', modelOverride: 'env',
+    shiftEnter: 'escape-newline', droppedPath: 'newline-list',
+    oscTitle: 'session-label', reportingSetup: 'automatic',
+    modelSelector: 'model-ref', reasoningEffort: false,
+    nativeModelBrand: undefined, reportsSessionTitle: true,
+  },
+  codex: NATIVE,
+  opencode: { ...NATIVE, displayName: 'OpenCode', nativeModelBrand: 'opencode', oscTitle: 'constant' },
+}
 
 type Handler = (data: unknown) => void
 const handlers = new Map<string, Handler>()
@@ -43,6 +69,8 @@ beforeEach(async () => {
     }
     if (channel === 'models:claude') return Promise.resolve([])
     if (channel === 'models:installed') return Promise.resolve([])
+    if (channel === 'agent:providers') return Promise.resolve(['claude', 'codex', 'opencode'] as AgentProviderId[])
+    if (channel === 'agent:capabilities') return Promise.resolve(CAPS[arg as string])
     return Promise.resolve(undefined)
   })
   ;(window as unknown as { api: Record<string, unknown> }).api = {
@@ -55,6 +83,7 @@ beforeEach(async () => {
   setProjectRoot(PRIMARY)
   await refreshWorktreesFor(PRIMARY)
   sessionsStore.reset()
+  await initAgentCapabilities()
 })
 
 describe('session:create-request listener', () => {
@@ -108,24 +137,33 @@ describe('session:create-request listener', () => {
     }
   })
 
-  it('uses the last-used provider, so the phone matches ⌘T without offering a picker', async () => {
-    config = {
-      defaults: {},
-      submenuAllowlist: [],
-      lastUsed: { provider: 'openai', model: 'gpt-5-codex', reasoningEffort: 'high' },
-    }
-    const off = initSessionListeners()
-    try {
-      handlers.get('session:create-request')!({ correlationId: 'c1', brief: 'ship it' })
-      await flush()
+  // The remembered model is a uniform ModelRef; the agent that owns it is
+  // resolved from the descriptors. Naming one brand here — `provider ===
+  // 'openai'` — is what quietly sent every other native model to Claude.
+  it.each([
+    ['openai', 'gpt-5-codex', 'codex'],
+    ['opencode', 'opencode/deepseek-v4-flash-free', 'opencode'],
+  ] as const)(
+    'starts the agent that owns the last-used model (%s)',
+    async (brand, model, provider) => {
+      config = {
+        defaults: {},
+        submenuAllowlist: [],
+        lastUsed: { provider: brand, model, reasoningEffort: 'high' },
+      }
+      const off = initSessionListeners()
+      try {
+        handlers.get('session:create-request')!({ correlationId: 'c1', brief: 'ship it' })
+        await flush()
 
-      const started = sessionsStore.sessions()[0]
-      expect(started.provider).toBe('codex')
-      expect(started.target).toMatchObject({ model: 'gpt-5-codex', reasoningEffort: 'high' })
-    } finally {
-      off()
-    }
-  })
+        const started = sessionsStore.sessions()[0]
+        expect(started.provider).toBe(provider)
+        expect(started.target).toMatchObject({ model, reasoningEffort: 'high' })
+      } finally {
+        off()
+      }
+    },
+  )
 
   it('still starts a session when the model config cannot be read', async () => {
     config = null
