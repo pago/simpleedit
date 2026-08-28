@@ -63,6 +63,18 @@
   let stt = $state<SttStatus | null>(null)
   let fieldEl = $state<HTMLTextAreaElement | undefined>()
 
+  /**
+   * Put the cursor in the field. Called when a notification tap opened this
+   * screen, so the reply is one tap away rather than two.
+   *
+   * On iOS this shows the caret without raising the keyboard — that needs a
+   * gesture. Deliberate: the point is that the composer is READY, not that
+   * something happened on the user's behalf. Nothing here touches the mic.
+   */
+  export function focusField(): void {
+    fieldEl?.focus()
+  }
+
   let handle: RecorderHandle | null = null
   let tickTimer: ReturnType<typeof setInterval> | undefined
   /**

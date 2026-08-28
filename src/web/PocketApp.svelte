@@ -14,6 +14,8 @@
    */
   import SessionsScreen from './SessionsScreen.svelte'
   import SessionScreen from './SessionScreen.svelte'
+  import { onOpenSession } from './lib/push-client'
+  import { sessionFromUrl } from './lib/push-payload'
   import type { ConnectionState, RemoteConnection } from './api-shim'
   import type { WindowSession } from '../shared/ipc-types'
 
@@ -29,9 +31,33 @@
   let tab = $state<Tab['id']>('sessions')
   /** Non-null means a detail screen is on top of `tab`. */
   let openSession = $state<WindowSession | null>(null)
+  /** This screen was reached by tapping a notification, not by tapping a row. */
+  let arrivedFromNotification = $state(false)
   let state = $state<ConnectionState>('connecting')
+  /**
+   * The session a notification asked for, held until the list arrives.
+   *
+   * A tap can land before the socket has answered `session:list` — a cold
+   * launch from a lock screen always does — and the deep link has to survive
+   * that gap or it silently drops you on the list you were trying to skip.
+   * Cleared once it resolves, so a later list update cannot yank the user
+   * back to a session they navigated away from.
+   */
+  let pendingSession = $state<string | null>(sessionFromUrl(window.location.href))
 
   $effect(() => connection.onStateChange((next) => { state = next }))
+
+  /**
+   * A tap in an already-open tab. The service worker messages rather than
+   * navigates, so this is the only path by which a notification can move the
+   * app — and all it does is move it. Never the microphone, never a send.
+   */
+  $effect(() =>
+    onOpenSession(({ terminalId }) => {
+      pendingSession = terminalId
+      openSession = null
+    }),
+  )
 
   // A session that closed while it was open on this phone leaves a detail
   // screen addressing a terminal that no longer exists. Fall back to the list
@@ -40,11 +66,29 @@
   // on every list update — which this handler itself causes — cannot happen.
   $effect(() =>
     window.api.on('session:list-changed', (sessions) => {
+      resolvePending(sessions)
       const open = openSession
       if (!open) return
       openSession = sessions.find((s) => s.terminalId === open.terminalId) ?? null
     }),
   )
+
+  // The list is fetched by `SessionsScreen` too; asking again here is what
+  // makes a cold launch from a notification land on the session rather than on
+  // the list, without coupling the two screens.
+  $effect(() => {
+    if (!pendingSession) return
+    void window.api.invoke('session:list').then(resolvePending).catch(() => { pendingSession = null })
+  })
+
+  function resolvePending(sessions: WindowSession[]): void {
+    if (!pendingSession) return
+    const match = sessions.find((s) => s.terminalId === pendingSession)
+    if (!match) return
+    pendingSession = null
+    arrivedFromNotification = true
+    openSession = match
+  }
 
   const title = $derived(openSession ? openSession.label : (TABS.find((t) => t.id === tab)?.label ?? ''))
   const dot = $derived(
@@ -59,7 +103,7 @@
     {#if openSession}
       <button
         type="button"
-        onclick={() => { openSession = null }}
+        onclick={() => { openSession = null; arrivedFromNotification = false }}
         data-testid="back"
         class="-ml-1 flex min-h-9 items-center gap-1 rounded-md px-2 text-sm text-zinc-400 active:bg-zinc-800"
       >‹ <span>Sessions</span></button>
@@ -75,9 +119,9 @@
 
   <main class="min-h-0 flex-1">
     {#if openSession}
-      <SessionScreen session={openSession} {connection} />
+      <SessionScreen session={openSession} {connection} focusComposer={arrivedFromNotification} />
     {:else if tab === 'sessions'}
-      <SessionsScreen onopen={(session) => { openSession = session }} />
+      <SessionsScreen onopen={(session) => { openSession = session; arrivedFromNotification = false }} />
     {/if}
   </main>
 

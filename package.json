@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "pnpm build:mcp-server && electron-vite dev",
     "build": "electron-vite build && pnpm build:web && pnpm build:mcp-server",
-    "build:web": "vite build --config vite.config.web.ts",
+    "build:web": "vite build --config vite.config.web.ts && vite build --config vite.config.sw.ts",
     "build:mcp-server": "node scripts/build-mcp-server.mjs",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.e2e.json && svelte-check --tsconfig tsconfig.web.json --output human",

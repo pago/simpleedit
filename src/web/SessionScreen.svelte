@@ -17,11 +17,22 @@
   interface Props {
     session: WindowSession
     connection: RemoteConnection
+    /**
+     * This screen was opened by tapping a notification, so put the cursor in
+     * the composer. Never the microphone: iOS requires a gesture for that, and
+     * a hot mic on wake would be wrong where it does not.
+     */
+    focusComposer?: boolean
   }
 
-  let { session, connection }: Props = $props()
+  let { session, connection, focusComposer = false }: Props = $props()
 
   let caps = $state<AgentCapabilities | null>(null)
+  let composer = $state<VoiceComposer | undefined>()
+
+  $effect(() => {
+    if (focusComposer) composer?.focusField()
+  })
   // The terminal owns key encoding: what an arrow sends depends on the cursor
   // mode, which only it knows.
   let terminal = $state<MobileTerminal | undefined>()
@@ -70,6 +81,6 @@
 
   <div class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
     <KeyBar onkey={writeKey} />
-    <VoiceComposer onsend={send} placeholder="Reply to {session.label}…" />
+    <VoiceComposer bind:this={composer} onsend={send} placeholder="Reply to {session.label}…" />
   </div>
 </div>

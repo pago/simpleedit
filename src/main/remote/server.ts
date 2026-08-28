@@ -190,6 +190,10 @@ const MIME: Record<string, string> = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  // Served with the wrong type, iOS ignores the manifest entirely — and with
+  // no manifest there is no standalone install, and with no install there is
+  // no push permission to ask for.
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.woff2': 'font/woff2',
