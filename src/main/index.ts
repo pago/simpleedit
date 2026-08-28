@@ -77,9 +77,10 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
+import { createSessionOnce, resolveSessionCreate } from './session-create'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
@@ -1067,6 +1068,29 @@ function registerAllHandlers(): void {
 
   handleInvoke('session:list', (event) => {
     return getWindowSessions(event.sender.id)
+  })
+
+  /**
+   * Start a session from a brief — the phone's `+`.
+   *
+   * Addressed to the window's OWN renderer, not to `hubFor(event.sender)`:
+   * only the renderer holds the session store, the project root and the model
+   * defaults, and fanning the brief back out to every attached transport
+   * would hand one client's prompt to another for no purpose.
+   */
+  handleInvoke('session:create', (event, request: SessionCreateRequest) => {
+    const window = getWindowForContents(event.sender.id)
+    if (!window) throw new Error('That SimpleEdit window is gone.')
+    return createSessionOnce(request, window.webContents)
+  })
+
+  // Only the renderer that was asked may answer. Same rule as `session:sync`:
+  // a real `WebContents` has no `clientKey`, every other transport does.
+  handleInvoke('session:created', (event, correlationId: string, outcome: SessionCreateOutcome) => {
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('session:created is not available to remote clients')
+    }
+    resolveSessionCreate(correlationId, outcome)
   })
 
   // ── Agent-to-agent messaging ────────────────────────────

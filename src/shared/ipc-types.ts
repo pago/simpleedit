@@ -631,6 +631,35 @@ export interface WindowSession extends WindowSessionInput {
   statusSince: number
 }
 
+/**
+ * Start a session from a brief, from a client that has no session of its own.
+ *
+ * One field, because a session needs no more: agents launch at the project
+ * root and create their own worktrees, so there is no branch to name and no
+ * directory to pick. Provider and model come from the same default a new
+ * session gets at the desk.
+ */
+export interface SessionCreateRequest {
+  /**
+   * Identifies the user's INTENT, not this call.
+   *
+   * Minted once when the user commits to starting a session and reused by
+   * every attempt to deliver that intent, so a double tap, a socket that drops
+   * before the answer arrives, or a replayed frame all resolve to the one
+   * session. Main is where that is enforced — a client-side guard cannot see
+   * the attempt that a different client, or a previous page load, already made.
+   */
+  requestId: string
+  /** What the agent should do. Becomes its seed prompt. */
+  brief: string
+}
+
+/** The session a `session:create` produced — enough to open it. */
+export interface SessionCreateResult {
+  terminalId: string
+  label: string
+}
+
 export interface SessionInvokeMap {
   'session:save': { args: [payload: SerializedSession]; result: void }
   'session:load': { args: [repoPath: string]; result: SerializedSession | null }
@@ -639,11 +668,42 @@ export interface SessionInvokeMap {
   'session:sync': { args: [sessions: WindowSessionInput[]]; result: void }
   /** Any client → main: the current list for the window it is attached to. */
   'session:list': { args: []; result: WindowSession[] }
+  /** Any client → main: start a session from a brief. Rejects with the reason. */
+  'session:create': { args: [request: SessionCreateRequest]; result: SessionCreateResult }
+  /**
+   * Renderer → main: what became of a `session:create-request`.
+   *
+   * The renderer mints the terminal id and owns the defaults, so this is the
+   * only way the outcome can reach the waiting call — including a refusal,
+   * which must be distinguishable from a renderer that never answered.
+   */
+  'session:created': {
+    args: [correlationId: string, outcome: SessionCreateOutcome]
+    result: void
+  }
 }
+
+/** The renderer's answer to one `session:create-request`. */
+export type SessionCreateOutcome =
+  | ({ ok: true } & SessionCreateResult)
+  | { ok: false; reason: string }
 
 export interface SessionEventMap {
   /** Fanned out to every transport on the window whose list changed. */
   'session:list-changed': WindowSession[]
+  /**
+   * Main → the window's own renderer: create a session seeded with this brief.
+   *
+   * Sent to the renderer rather than the hub because only the renderer holds
+   * the session list, the project root and the model defaults. It answers on
+   * `session:created` with the matching `correlationId`.
+   */
+  'session:create-request': {
+    correlationId: string
+    brief: string
+    /** Derived from the brief by main, so one definition serves both ends. */
+    label?: string
+  }
 }
 
 // ── Models (local Ollama + cloud Claude) ──────────────────
