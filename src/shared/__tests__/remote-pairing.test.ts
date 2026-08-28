@@ -81,4 +81,28 @@ describe('pairingTarget', () => {
     expect(result.url).toBeNull()
     expect(result.note).toMatch(/bound to this Mac only/i)
   })
+
+  it('does not tell the user to do the one thing that makes Serve refuse', () => {
+    // Serve proxies from this Mac and main refuses the opt-in on a non-loopback
+    // bind, so "pick the Tailscale address AND turn on Serve" is an instruction
+    // that cannot succeed. Serve is offered on the bind it actually wants; the
+    // Tailscale address is offered as the alternative to Serve, not a step
+    // toward it.
+    const loopback = pairingTarget({
+      running: true,
+      directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
+      boundToTailscale: false,
+      serveUrl: null,
+    }).note
+    expect(loopback).toMatch(/Turn on Tailscale Serve below/)
+    expect(loopback).toMatch(/without Serve, pick the Tailscale address/)
+
+    const overTailnet = pairingTarget({
+      running: true,
+      directUrl: `http://100.109.247.56:5173${TOKEN_PATH}`,
+      boundToTailscale: true,
+      serveUrl: null,
+    }).note
+    expect(overTailnet).toMatch(/switch the bind to .This Mac only. and turn on Tailscale Serve/)
+  })
 })

@@ -9,8 +9,9 @@
  *  - **The matrix is returned, never markup.** The pane draws it as ordinary
  *    SVG elements, so no string built from the URL is ever handed to `@html`.
  *
- * `uqr` does the encoding — 50 KB, zero dependencies, pure TypeScript. Writing
- * Reed–Solomon by hand to save a dependency would be the wrong trade.
+ * `uqr` does the encoding — 80 KB installed, zero dependencies, pure
+ * TypeScript. Writing Reed–Solomon by hand to save a dependency would be the
+ * wrong trade.
  */
 import { encode } from 'uqr'
 

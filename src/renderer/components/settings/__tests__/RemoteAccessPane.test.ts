@@ -118,8 +118,41 @@ describe('Tailscale Serve', () => {
     render(RemoteAccessPane)
 
     const link = await screen.findByRole('button', { name: `${enableUrl} ↗` })
+    // The link is an addition to the failure text, never a replacement for it.
+    expect(screen.getByText('Serve is not enabled on your tailnet.')).toBeInTheDocument()
     await fireEvent.click(link)
     expect(invoke).toHaveBeenCalledWith('app:open-external', enableUrl)
+  })
+
+  it('shows a failure it could not classify instead of hiding it behind a link', async () => {
+    answers['tailscale:serve-status'] = serve({
+      enableUrl: null,
+      error: 'error: HTTPS must be enabled first; visit https://tailscale.com/kb/1153/enabling-https',
+    })
+    render(RemoteAccessPane)
+    await loaded()
+
+    expect(screen.getByText(/HTTPS must be enabled first/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /↗$/ })).toBeNull()
+  })
+
+  it('says nothing is published yet when Serve is on but remote access is off', async () => {
+    answers['remote:config'] = config({ enabled: false, serveEnabled: true })
+    answers['remote:status'] = status({ running: false, host: null, port: null, url: null, powerSaveBlocked: false })
+    render(RemoteAccessPane)
+    await loaded()
+
+    // Otherwise the switch reads "on" with no text anywhere explaining why
+    // nothing happened.
+    expect(screen.getByText(/Remote access is off, so nothing is published yet/)).toBeInTheDocument()
+  })
+
+  it('is not clickable while a serve command is in flight', async () => {
+    answers['tailscale:serve-status'] = serve({ busy: true })
+    render(RemoteAccessPane)
+    await loaded()
+
+    expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeDisabled()
   })
 
   it('reports main’s refusal instead of leaving the toggle silently on', async () => {

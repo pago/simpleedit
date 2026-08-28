@@ -67,7 +67,7 @@ export function pairingTarget(input: PairingInput): PairingTarget {
       url: input.directUrl,
       secure: false,
       note:
-        'This is plain HTTP over the tailnet. It works, but a browser will not call it a secure context, so dictation stays unavailable — turn on Tailscale Serve for an HTTPS address.',
+        'This is plain HTTP over the tailnet. It works, but a browser will not call it a secure context, so dictation stays unavailable. For an HTTPS address, switch the bind to “This Mac only” and turn on Tailscale Serve: Serve proxies from this Mac, so loopback is the bind it needs.',
     }
   }
   return {
@@ -75,6 +75,6 @@ export function pairingTarget(input: PairingInput): PairingTarget {
     secure: false,
     note: input.boundToTailscale
       ? 'There is no address a phone can reach yet.'
-      : 'Remote access is bound to this Mac only, so there is nothing for a phone to scan. Pick the Tailscale address below, and turn on Tailscale Serve for HTTPS.',
+      : 'Remote access is bound to this Mac only, so there is nothing for a phone to scan yet. Turn on Tailscale Serve below to publish it at an HTTPS address — Serve proxies from this Mac, so this is the bind it wants. To reach a phone without Serve, pick the Tailscale address below instead; that link is plain HTTP, so dictation will not work over it.',
   }
 }

@@ -8,13 +8,18 @@
      * clipboard the user asked for.
      */
     value: string
-    /** Rendered edge length in CSS pixels. */
-    size?: number
+    /**
+     * Roughly how wide to draw it, in CSS pixels. Rounded to a whole number of
+     * pixels per module — a fractional module width leaves every edge
+     * straddling a device pixel on a 1× display, which is the difference
+     * between a code that reads first time and one that does not.
+     */
+    targetSize?: number
     /** Announced to screen readers in place of the code. */
     label: string
   }
 
-  let { value, size = 240, label }: Props = $props()
+  let { value, targetSize = 264, label }: Props = $props()
 
   // A URL long enough to exceed every QR version is possible in principle;
   // showing nothing beats showing a code that scans to nothing.
@@ -25,6 +30,8 @@
       return null
     }
   })
+
+  const scale = $derived(matrix ? Math.max(1, Math.round(targetSize / matrix.size)) : 1)
 </script>
 
 {#if matrix}
@@ -35,8 +42,8 @@
   -->
   <svg
     viewBox="0 0 {matrix.size} {matrix.size}"
-    width={size}
-    height={size}
+    width={matrix.size * scale}
+    height={matrix.size * scale}
     role="img"
     aria-label={label}
     shape-rendering="crispEdges"

@@ -317,7 +317,7 @@
       </div>
       <Toggle
         checked={serveOn}
-        disabled={busy || config === null || !ts?.cliUsable}
+        disabled={busy || serve?.busy || config === null || !ts?.cliUsable}
         label="Publish over Tailscale Serve"
         onchange={(v) => void setServeEnabled(v)}
       />
@@ -327,25 +327,36 @@
       <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{serveError}</p>
     {/if}
 
-    {#if serve?.enableUrl}
-      {@const enableUrl = serve.enableUrl}
-      <div class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300">
-        <p>
-          Serve is switched off for your tailnet. That is an admin-console setting, so it cannot
-          be turned on from here — and the link below names this node, so it cannot be guessed
-          either.
-        </p>
-        <button
-          type="button"
-          onclick={() => openExternal(enableUrl)}
-          class="mt-2 break-all text-left text-blue-400 underline hover:text-blue-300"
-        >{enableUrl} ↗</button>
+    <!--
+      The failure text is shown whatever it says, and the enable link is an
+      addition to it rather than a replacement. Branching the other way meant a
+      misclassified failure — one that merely mentioned a URL — replaced its own
+      message with a link to the wrong place, so over-firing hid the error.
+    -->
+    {#if serve?.error}
+      <div class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">
+        <p>{serve.error}</p>
+        {#if serve.enableUrl}
+          {@const enableUrl = serve.enableUrl}
+          <p class="mt-2">
+            Serve is an admin-console setting for the whole tailnet, so it cannot be turned on
+            from here — and this link names your node, so it cannot be guessed either.
+          </p>
+          <button
+            type="button"
+            onclick={() => openExternal(enableUrl)}
+            class="mt-2 break-all text-left text-blue-400 underline hover:text-blue-300"
+          >{enableUrl} ↗</button>
+        {/if}
       </div>
-    {:else if serve?.error}
-      <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{serve.error}</p>
     {/if}
 
-    {#if serveOn && status?.running && !boundToLoopback}
+    {#if serveOn && !status?.running}
+      <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+        Remote access is off, so nothing is published yet. Serve starts and stops with it, and
+        the mapping never outlives the server it points at.
+      </p>
+    {:else if serveOn && !boundToLoopback}
       <p class="mt-3 text-xs leading-relaxed text-amber-400">
         Serve proxies to this Mac over loopback, so it stays idle while remote access is bound to
         {status?.host}. Choose “This Mac only” above to publish again.
