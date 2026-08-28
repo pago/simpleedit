@@ -346,3 +346,97 @@ test('a socket disconnect leaves the window transport intact', async ({ window, 
   // The desktop renderer is unaffected — its own transport was never touched.
   expect(await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('app:get-repo'))).toBeTruthy()
 })
+
+/**
+ * Starting work from the phone, end to end: `+` → a brief → a real session.
+ *
+ * Nothing here is stubbed. The brief travels the socket, main asks the window's
+ * own renderer, the renderer applies the same default ⌘T applies and mints the
+ * terminal id, and the session comes back through main's per-window registry
+ * to the list the phone is already rendering.
+ */
+test('starts a session from the phone, and it lands in the window\'s list', async ({ window, browser }) => {
+  const status = await enableRemote(window)
+
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await expect(page.getByTestId('screen-title')).toHaveText('Sessions', { timeout: 15_000 })
+
+  // The one trailing action a top-level screen is allowed, opening a bottom
+  // sheet — never a segmented control, never a second screen.
+  await page.getByTestId('new-session').click()
+  await expect(page.getByTestId('new-session-sheet')).toBeVisible()
+
+  // Three words would start a session that opens by asking a question, so the
+  // sheet says so — and still lets it through.
+  await page.getByTestId('composer-text').fill('fix it')
+  await expect(page.getByTestId('brief-nudge')).toBeVisible()
+
+  const brief =
+    'Rework the notification debounce so a session that flaps between running and waiting only buzzes once, and prove it with a test.'
+  await page.getByTestId('composer-text').fill(brief)
+  await expect(page.getByTestId('brief-nudge')).toHaveCount(0)
+  await page.getByTestId('composer-send').click()
+
+  // Confirmed by the label main derived from the brief's first clause.
+  await expect(page.getByTestId('started-note')).toContainText('Rework the notification debounce', {
+    timeout: 20_000,
+  })
+
+  // It is a session of the window this phone attached to — not a phantom the
+  // phone drew for itself. Polled: main's registry is fed by the renderer's
+  // own reactive push, which runs on its clock rather than the socket's.
+  const listSessions = async (): Promise<{ terminalId: string; label: string }[]> =>
+    (await window.evaluate(() =>
+      (window as unknown as { api: Api }).api.invoke('session:list'),
+    )) as { terminalId: string; label: string }[]
+  const named = (s: { label: string }): boolean =>
+    s.label.startsWith('Rework the notification debounce')
+  await expect
+    .poll(async () => (await listSessions()).some(named), { timeout: 15_000 })
+    .toBe(true)
+
+  // And it is openable like any other row.
+  const started = (await listSessions()).find(named)!
+  await expect(
+    page.locator(`[data-testid="session-row"][data-session-id="${started.terminalId}"]`),
+  ).toBeVisible({ timeout: 15_000 })
+
+  await page.close()
+})
+
+/**
+ * One confirmed intent, one session — across the real socket.
+ *
+ * Two calls naming the same `requestId` is what a double tap, a retry after a
+ * dropped answer, and a replayed frame all look like by the time they reach
+ * main. Getting this wrong costs a whole parallel slot: a second agent nobody
+ * asked for, working the same brief.
+ */
+test('a repeated intent starts one session, not two', async ({ window, browser }) => {
+  const status = await enableRemote(window)
+
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await page.waitForFunction(() => 'api' in window, undefined, { timeout: 15_000 })
+
+  const created = (await page.evaluate(async () => {
+    const request = {
+      requestId: 'e2e-one-intent',
+      brief: 'Audit every path that can start a session and prove each one is idempotent.',
+    }
+    const api = (window as unknown as { api: Api }).api
+    const first = (await api.invoke('session:create', request)) as { terminalId: string }
+    const second = (await api.invoke('session:create', request)) as { terminalId: string }
+    return [first.terminalId, second.terminalId]
+  })) as [string, string]
+
+  expect(created[1]).toBe(created[0])
+
+  const sessions = (await window.evaluate(() =>
+    (window as unknown as { api: Api }).api.invoke('session:list'),
+  )) as { terminalId: string; label: string }[]
+  expect(sessions.filter((s) => s.label.startsWith('Audit every path'))).toHaveLength(1)
+
+  await page.close()
+})
