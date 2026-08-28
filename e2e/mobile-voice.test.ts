@@ -36,17 +36,70 @@ import type { RemoteAccessStatus, SttStatus } from '../src/shared/ipc-types'
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 
 const SPOKEN = 'Rebase once more before you merge'
-/** Point this at a `ggml-*.bin` to run the test. */
-const MODEL = process.env.SIMPLEEDIT_WHISPER_MODEL ?? ''
 
-function whisperInstalled(): boolean {
+/** Homebrew's `whisper-cpp` formula installs the first; older builds the second. */
+const WHISPER_BINARIES = ['whisper-cli', 'whisper-cpp']
+
+function onPath(binary: string): boolean {
   try {
-    execFileSync('command', ['-v', 'whisper-cli'], { shell: '/bin/sh', stdio: 'ignore' })
+    execFileSync('/bin/sh', ['-c', `command -v ${binary}`], { stdio: 'ignore' })
     return true
   } catch {
     return false
   }
 }
+
+/**
+ * The model this MACHINE has, not the one someone remembered to export.
+ *
+ * The app already knows: the model file is a setting, and the settings pane
+ * writes it to the remote-access config. An env var that has to be set by hand
+ * is not a gate, it is an opt-in — and one nobody opts into, so the test
+ * silently never runs.
+ */
+function configuredModel(): string {
+  const override = process.env.SIMPLEEDIT_WHISPER_MODEL
+  if (override) return override
+  // The app's own userData directory. Two names, because a packaged build and
+  // one launched from source do not agree on it.
+  for (const name of ['simpleedit', 'Electron']) {
+    const config = path.join(os.homedir(), 'Library', 'Application Support', name, 'config', 'remote.json')
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(config, 'utf8'))
+      const stored = (parsed as { sttModelPath?: unknown }).sttModelPath
+      if (typeof stored === 'string' && stored) return stored
+    } catch {
+      /* no config, or not readable — try the next */
+    }
+  }
+  return ''
+}
+
+/**
+ * Everything this test needs, checked rather than assumed.
+ *
+ * Missing pieces produce a skip that names them. Previously an absent `ffmpeg`
+ * threw out of the fixture with nothing to explain it, and an unset env var
+ * short-circuited before whisper was even looked for — so an installed whisper
+ * made no difference at all.
+ */
+function requirements(): { ok: boolean; model: string; reason: string } {
+  const model = configuredModel()
+  const missing: string[] = []
+  // `say` is the speech source, so this is a macOS test whatever else is here.
+  if (process.platform !== 'darwin') missing.push('macOS (for `say`)')
+  if (!WHISPER_BINARIES.some(onPath)) missing.push('`brew install whisper-cpp`')
+  if (!onPath('ffmpeg')) missing.push('`brew install ffmpeg`')
+  if (!model) missing.push('a whisper model — pick one in Settings › Remote access › Dictation')
+  else if (!fs.existsSync(model)) missing.push(`a readable model at ${model}`)
+  return {
+    ok: missing.length === 0,
+    model,
+    reason: `Dictation E2E needs: ${missing.join('; ')}`,
+  }
+}
+
+const REQUIRED = requirements()
 
 /** A WAV of `SPOKEN`, synthesised once per run. Chromium loops it as the mic. */
 function speechFixture(): string {
@@ -77,7 +130,10 @@ const test = base.extend<Fixtures>({
   remoteConfig: async ({}, use) => {
     const file = path.join(os.tmpdir(), `simpleedit-voice-remote-${process.pid}.json`)
     // The model is a setting, so it is set the way the settings pane sets it.
-    fs.writeFileSync(file, JSON.stringify({ enabled: false, host: '127.0.0.1', port: 0, sttModelPath: MODEL }))
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ enabled: false, host: '127.0.0.1', port: 0, sttModelPath: REQUIRED.model }),
+    )
     await use(file)
     fs.rmSync(file, { force: true })
   },
@@ -118,12 +174,12 @@ type Api = {
   on: (channel: string, cb: (data: unknown) => void) => () => void
 }
 
-test.skip(
-  !MODEL || !fs.existsSync(MODEL) || !whisperInstalled(),
-  'Set SIMPLEEDIT_WHISPER_MODEL to a ggml-*.bin and install whisper-cpp',
-)
+test.skip(!REQUIRED.ok, REQUIRED.reason)
 
-test.describe.configure({ mode: 'serial' })
+// The suite-wide 30 s covers fixture setup too — an Electron launch, a temp
+// repo, a Chromium launch, and synthesising the speech — before 2.6 s of
+// recording and a whisper run have even started.
+test.describe.configure({ mode: 'serial', timeout: 180_000 })
 
 test('speaks a reply, reviews it, sends it, and sees it in the terminal', async ({ window, browser }) => {
   const terminalId = await spawnTerminalSession(window)
