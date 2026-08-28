@@ -6,7 +6,9 @@
    *
    *  - A **top-level** screen has a title, at most one trailing action, and the
    *    tab bar. Never a segmented control.
-   *  - A **detail** screen has a back button and a title, and no tab bar.
+   *  - A **detail** screen has a back button and a title, and no tab bar. It
+   *    may have a segmented control, but only when it genuinely has two panes,
+   *    and labelled for that screen — Session's is Terminal / Changes.
    *
    * There is one tab today. It is a tab bar rather than a bare title because
    * the second one (PRs) is a later phase, and a bar that appears when a second

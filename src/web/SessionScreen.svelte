@@ -1,13 +1,23 @@
 <script lang="ts">
   /**
-   * One session: the real terminal, the keys a phone lacks, and a composer.
+   * One session: the real terminal, the keys a phone lacks, a composer — and
+   * what the agent has changed.
    *
-   * A detail screen, so it gets a back button and no tab bar. No segmented
-   * control either — the plan reserves one for a screen that genuinely has two
-   * panes, and Terminal / Changes is only one pane until the review surface
-   * lands.
+   * A detail screen, so it gets a back button and no tab bar. It has genuinely
+   * two panes now, which is the one thing that earns a segmented control, and
+   * it is labelled for this screen: Terminal / Changes.
+   *
+   * The terminal stays MOUNTED behind Changes rather than being torn down and
+   * rebuilt. Its attachment is what fills the gap after a disconnect by byte
+   * offset, and its scrollback is the conversation — unmounting it to look at a
+   * diff would throw both away and hand back a blank screen on the way out.
+   *
+   * The keys and the composer belong to the terminal, and stay with it. There
+   * is nothing on the Changes pane to type at: it reads, and reading is all it
+   * can do.
    */
   import MobileTerminal from './MobileTerminal.svelte'
+  import ChangesPane from './ChangesPane.svelte'
   import KeyBar from './KeyBar.svelte'
   import VoiceComposer from './VoiceComposer.svelte'
   import type { RemoteConnection } from './api-shim'
@@ -29,6 +39,12 @@
 
   let caps = $state<AgentCapabilities | null>(null)
   let composer = $state<VoiceComposer | undefined>()
+
+  const PANES = [
+    { id: 'terminal', label: 'Terminal' },
+    { id: 'changes', label: 'Changes' },
+  ] as const
+  let pane = $state<(typeof PANES)[number]['id']>('terminal')
 
   $effect(() => {
     if (focusComposer) composer?.focusField()
@@ -75,12 +91,35 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col" data-testid="session-screen">
-  <div class="min-h-0 flex-1">
+  <div class="flex flex-none gap-1 border-b border-zinc-800 p-2" role="tablist" data-testid="session-panes">
+    {#each PANES as entry (entry.id)}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={pane === entry.id}
+        onclick={() => { pane = entry.id }}
+        data-testid="pane-{entry.id}"
+        class="min-h-8 flex-1 rounded-md text-xs font-medium
+          {pane === entry.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 active:bg-zinc-900'}"
+      >{entry.label}</button>
+    {/each}
+  </div>
+
+  <!-- Hidden, never unmounted: see the note at the top of this file. -->
+  <div class="min-h-0 flex-1 {pane === 'terminal' ? '' : 'hidden'}">
     <MobileTerminal bind:this={terminal} terminalId={session.terminalId} {connection} />
   </div>
 
-  <div class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-    <KeyBar onkey={writeKey} />
-    <VoiceComposer bind:this={composer} onsend={send} placeholder="Reply to {session.label}…" />
-  </div>
+  {#if pane === 'changes'}
+    <div class="min-h-0 flex-1">
+      <ChangesPane {session} {connection} />
+    </div>
+  {/if}
+
+  {#if pane === 'terminal'}
+    <div class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      <KeyBar onkey={writeKey} />
+      <VoiceComposer bind:this={composer} onsend={send} placeholder="Reply to {session.label}…" />
+    </div>
+  {/if}
 </div>
