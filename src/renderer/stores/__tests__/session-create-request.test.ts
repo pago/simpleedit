@@ -49,7 +49,8 @@ type Handler = (data: unknown) => void
 const handlers = new Map<string, Handler>()
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-let invoke: ReturnType<typeof vi.fn>
+type Invoke = (channel: string, ...args: unknown[]) => unknown
+let invoke: ReturnType<typeof vi.fn<Invoke>>
 let config: ModelConfig | null
 let worktrees: WorktreeInfo[]
 
@@ -184,7 +185,7 @@ describe('session:create-request listener', () => {
     // — the failure `createAgent` snapshots its target to avoid. Unreported,
     // main waits out its timeout and then remembers the intent as one that may
     // have started something, so the user cannot retry what in fact failed.
-    const spawnBoom = vi.fn((channel: string, ...rest: unknown[]) => {
+    const spawnBoom = vi.fn<Invoke>((channel, ...rest) => {
       if (channel === 'agent:spawn') throw new Error('could not be cloned')
       return invoke(channel, ...rest)
     })
