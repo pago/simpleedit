@@ -178,8 +178,25 @@ export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
   return assembleMeta(ref, viewJson, checksJson, handle)
 }
 
+/**
+ * True for a value `gh` will read as a PR URL rather than as an option.
+ *
+ * `spawn` takes no shell, so there is nothing to inject — but an argument
+ * beginning with `-` is a FLAG, and `screenprs:pr-diff` takes its url from
+ * whatever asked, including a socket. Enterprise hosts are real, so this checks
+ * the shape (absolute http/https) rather than the hostname.
+ */
+export function isPrUrl(value: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol)
+  } catch {
+    return false
+  }
+}
+
 /** The expensive-to-refetch half: the unified diff. Skipped on a cache hit. */
 export function getPrDiff(ref: Pick<PrRef, 'url'>): Promise<string> {
+  if (!isPrUrl(ref.url)) return Promise.reject(new Error(`Not a pull-request URL: ${ref.url}`))
   return runGh(['pr', 'diff', ref.url])
 }
 
