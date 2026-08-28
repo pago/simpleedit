@@ -46,8 +46,14 @@ function resampleLinear(samples: Float32Array, from: number, to: number): Float3
   return out
 }
 
-/** 16-bit PCM WAV around `samples`, which must already be at `sampleRate`. */
-export function encodeWav(samples: Float32Array, sampleRate: number): Uint8Array {
+/**
+ * 16-bit PCM WAV around `samples`, which must already be at `sampleRate`.
+ *
+ * The return type names its buffer: a bare `Uint8Array` is
+ * `Uint8Array<ArrayBufferLike>`, which is not a `BlobPart` because it might be
+ * backed by a `SharedArrayBuffer`. This one never is.
+ */
+export function encodeWav(samples: Float32Array, sampleRate: number): Uint8Array<ArrayBuffer> {
   const bytes = new ArrayBuffer(44 + samples.length * 2)
   const view = new DataView(bytes)
 
