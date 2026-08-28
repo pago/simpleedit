@@ -91,7 +91,15 @@ Claude sessions launch at the **project root** (beside the bare repo) so all
 sessions share one Claude memory, while the workspace viewer defaults to the
 main worktree. The stream parser (`claude-stream.ts`) taps PTY output and reads
 OSC titles for status, emitting:
-- `claude:status` — idle/running/waiting/error (shown per session in the sidebar)
+- `agent:status` — the session's lifecycle state, per session in the sidebar.
+  **The OSC title yields only `idle` and `running`** (`statusFromTitle`): ✳ is
+  idle, a braille spinner is running, anything else is unrecognised. There is no
+  title that means `waiting`, so a Claude session's blocked state arrives from
+  the **`Notification` hook** instead (`writeHookSettings`), which is the only
+  signal Claude Code emits meaning "I need you". Anything that acts on
+  `waiting` — push notifications above all — depends on that hook being wired;
+  `blocked-signal.test.ts` is what keeps every provider's path to `waiting`
+  honest.
 - `claude:file-touch` — file paths from Write/Edit/Read tool uses (highlighted in file tree)
 
 **Fork** (in place, `sessionsStore.forkClaude`): branches a live session's whole
@@ -108,8 +116,9 @@ MCP tool.
 ### Session location & repo trail (hook-based)
 Each spawned Claude session is launched with a `--settings` file
 (`agents/claude.ts` `writeHookSettings`) wiring `UserPromptSubmit` +
-`PostToolUse` + `Stop` HTTP hooks to the per-window bridge's `/<token>/hooks`
-endpoint. (`Stop` serves agent messaging — see below.)
+`PostToolUse` + `Stop` + `Notification` HTTP hooks to the per-window bridge's
+`/<token>/hooks` endpoint. (`Stop` serves agent messaging — see below;
+`Notification` is the only route by which a Claude session reports `waiting`.)
 `mcp-bridge.ts` `handleHook`
 parses the body (`cwd-tracker.ts` `parseHookBody`) and drives the session's
 "touched repos" trail — which feeds the **repo picker dropdown**

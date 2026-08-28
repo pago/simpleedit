@@ -44,6 +44,13 @@ export interface HookSignal {
    */
   lastAssistantMessage: string | null
   /**
+   * On `Notification`, what the agent wants to tell the user — "Claude needs
+   * your permission to use Bash", or that the prompt has been idle. It is the
+   * only human-readable reason we ever get for a session being blocked, so it
+   * becomes the body of the push notification rather than a generic line.
+   */
+  message: string | null
+  /**
    * True when this `Stop` follows a turn a Stop hook already continued. Mail
    * must NOT be delivered on such a stop: doing so re-blocks the same turn and
    * the agent never reaches idle (Claude hard-caps this at 8 and then overrides).
@@ -89,6 +96,7 @@ export function parseHookBody(body: unknown): HookSignal | null {
   if (typeof sessionId !== 'string' || !sessionId) return null
   if (typeof cwd !== 'string' || !cwd) return null
   const lastAssistant = rec['last_assistant_message']
+  const message = rec['message']
   return {
     sessionId,
     terminalId: typeof terminalId === 'string' && terminalId ? terminalId : null,
@@ -96,6 +104,7 @@ export function parseHookBody(body: unknown): HookSignal | null {
     filePath: parseToolFilePath(rec['tool_input']),
     eventName: typeof eventName === 'string' && eventName ? eventName : null,
     lastAssistantMessage: typeof lastAssistant === 'string' ? lastAssistant : null,
+    message: typeof message === 'string' && message ? message : null,
     stopHookActive: rec['stop_hook_active'] === true,
   }
 }

@@ -599,6 +599,28 @@ export async function applyAgentSignal(
     registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
   }
 
+  // `Notification` is handled OUTSIDE that guard, for every provider, and
+  // deliberately not by folding it into the Codex event map.
+  //
+  // The guard above exists because deriving status from an event name races a
+  // provider that reports its own: a Stop-derived `idle` can land after a
+  // PostToolUse-derived `running`, and Claude's OSC-title parser is exactly
+  // such a reporter. `Notification` has no such competition — nothing else in
+  // this codebase produces `waiting` for Claude, because nothing else can see
+  // it: it never reaches the terminal title. So there is no race to reintroduce,
+  // and this is the one signal that must not be provider-specific, since a
+  // notification the user relies on has to mean the same thing whichever agent
+  // sent it.
+  if (signal.eventName === 'Notification') {
+    sendAgentStatus(webContents, {
+      worktreePath: cwd.worktreePath ?? signal.cwd,
+      status: 'waiting',
+      terminalId,
+      precise: true,
+      ...(signal.message ? { message: signal.message } : {}),
+    })
+  }
+
   if (!webContents.isDestroyed()) {
     webContents.send('session:cwd', {
       terminalId,

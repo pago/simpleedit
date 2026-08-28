@@ -26,6 +26,7 @@ describe('parseHookBody', () => {
       filePath: null,
       eventName: 'PostToolUse',
       lastAssistantMessage: null,
+      message: null,
       stopHookActive: false,
     })
   })
@@ -44,6 +45,7 @@ describe('parseHookBody', () => {
       filePath: null,
       eventName: null,
       lastAssistantMessage: null,
+      message: null,
       stopHookActive: false,
     })
   })
@@ -62,6 +64,7 @@ describe('parseHookBody', () => {
       filePath: '/other-repo/backend/src/app.ts',
       eventName: null,
       lastAssistantMessage: null,
+      message: null,
       stopHookActive: false,
     })
   })
@@ -79,6 +82,7 @@ describe('parseHookBody', () => {
       filePath: null,
       eventName: 'PermissionRequest',
       lastAssistantMessage: null,
+      message: null,
       stopHookActive: false,
     })
   })
@@ -138,8 +142,25 @@ describe('parseHookBody', () => {
       filePath: null,
       eventName: 'Stop',
       lastAssistantMessage: 'the answer',
+      message: null,
       stopHookActive: true,
     })
+  })
+
+  // The `Notification` message is the only human-readable reason we ever get
+  // for a session being blocked, and it becomes the body of a push a user reads
+  // on a lock screen — so an empty string must not pass as one.
+  it('surfaces a Notification message, and treats an empty one as absent', () => {
+    expect(
+      parseHookBody({
+        session_id: 's',
+        cwd: '/p',
+        hook_event_name: 'Notification',
+        message: 'Claude needs your permission to use Bash',
+      })?.message,
+    ).toBe('Claude needs your permission to use Bash')
+    expect(parseHookBody({ session_id: 's', cwd: '/p', message: '' })?.message).toBeNull()
+    expect(parseHookBody({ session_id: 's', cwd: '/p', message: 42 })?.message).toBeNull()
   })
 
   it('treats an absent stop_hook_active as false, not missing', () => {
