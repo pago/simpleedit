@@ -1,7 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Toggle from './Toggle.svelte'
-  import type { RemoteAccessConfig, RemoteAccessStatus, RemoteInterface, SttStatus } from '../../../shared/ipc-types'
+  import QrCode from './QrCode.svelte'
+  import { pairingTarget } from '../../../shared/remote-pairing'
+  import type {
+    RemoteAccessConfig,
+    RemoteAccessStatus,
+    RemoteInterface,
+    SttStatus,
+    TailscaleServeStatus,
+    TailscaleStatus,
+  } from '../../../shared/ipc-types'
 
   let config = $state<RemoteAccessConfig | null>(null)
   let status = $state<RemoteAccessStatus | null>(null)
@@ -11,23 +20,67 @@
   let hostError = $state<string | null>(null)
   let stt = $state<SttStatus | null>(null)
   let sttError = $state<string | null>(null)
+  let ts = $state<TailscaleStatus | null>(null)
+  let serve = $state<TailscaleServeStatus | null>(null)
+  let serveError = $state<string | null>(null)
 
   const enabled = $derived(config?.enabled ?? false)
   const tailscale = $derived(interfaces.find((i) => i.isTailscale) ?? null)
   const boundToLoopback = $derived(status?.host === '127.0.0.1' || status?.host === 'localhost')
+  const boundToTailscale = $derived(
+    interfaces.some((i) => i.isTailscale && i.address === status?.host),
+  )
+
+  /**
+   * What, if anything, is worth putting in front of a phone's camera. The
+   * decision lives in `shared/remote-pairing` so that "never a loopback URL"
+   * is a checked property rather than a rule this template remembers.
+   */
+  const pairing = $derived(
+    pairingTarget({
+      running: status?.running ?? false,
+      directUrl: status?.url ?? null,
+      boundToTailscale,
+      serveUrl: serve?.url ?? null,
+    }),
+  )
+
+  const serveOn = $derived(config?.serveEnabled ?? false)
 
   onMount(() => {
     void refresh()
-    return window.api.on('remote:status-changed', (next) => { status = next })
+    const offStatus = window.api.on('remote:status-changed', (next) => { status = next })
+    const offServe = window.api.on('remote:serve-changed', (next) => { serve = next })
+    return () => { offStatus(); offServe() }
   })
 
   async function refresh(): Promise<void> {
-    ;[config, status, interfaces, stt] = await Promise.all([
+    ;[config, status, interfaces, stt, ts, serve] = await Promise.all([
       window.api.invoke('remote:config'),
       window.api.invoke('remote:status'),
       window.api.invoke('remote:interfaces'),
       window.api.invoke('stt:status'),
+      window.api.invoke('tailscale:status'),
+      window.api.invoke('tailscale:serve-status'),
     ])
+  }
+
+  async function setServeEnabled(next: boolean): Promise<void> {
+    busy = true
+    serveError = null
+    try {
+      serve = await window.api.invoke('remote:set-serve-enabled', next)
+      config = await window.api.invoke('remote:config')
+    } catch (error) {
+      // Main refuses the opt-in when the bind is not loopback, and says why.
+      serveError = error instanceof Error ? error.message : String(error)
+    } finally {
+      busy = false
+    }
+  }
+
+  function openExternal(url: string): void {
+    void window.api.invoke('app:open-external', url)
   }
 
   async function pickModel(): Promise<void> {
@@ -138,6 +191,33 @@
     </section>
 
     <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+      <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Pair a phone</h2>
+      {#if pairing.url}
+        <div class="mt-3 flex flex-wrap items-start gap-4">
+          <QrCode value={pairing.url} label="Pairing code for remote access" />
+          <div class="min-w-0 flex-1 space-y-2">
+            <p class="text-[13px] leading-relaxed text-zinc-300">
+              Point the phone's camera at this. The code carries the link and the access token
+              together, so a photo of it is a password — and it stops working the moment remote
+              access is turned off, because the token is minted fresh on every start.
+            </p>
+            <code class="block break-all rounded-md bg-zinc-950 px-2.5 py-2 text-[11px] text-zinc-400">{pairing.url}</code>
+            {#if pairing.secure}
+              <p class="text-xs text-emerald-400">A real HTTPS certificate, so the phone will let the microphone open.</p>
+            {/if}
+            {#if pairing.note}
+              <p class="text-xs leading-relaxed text-amber-400">{pairing.note}</p>
+            {/if}
+          </div>
+        </div>
+      {:else}
+        <p class="mt-2 text-[13px] leading-relaxed text-zinc-400" data-testid="pairing-note">
+          {pairing.note ?? 'There is nothing to pair with yet.'}
+        </p>
+      {/if}
+    </section>
+
+    <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
       <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Sleep</h2>
       <p class="mt-2 text-[13px] text-zinc-300">
         {#if status.powerSaveBlocked}
@@ -197,6 +277,80 @@
       <p class="mt-3 text-xs leading-relaxed text-zinc-500">
         Bound to loopback, so only a browser on this Mac can connect. Pick the Tailscale address
         to reach a phone.
+      </p>
+    {/if}
+  </section>
+
+  <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+    <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Tailscale</h2>
+    {#if ts}
+      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+        <dt class="text-zinc-500">Command line</dt>
+        <dd class="min-w-0 break-all {ts.cli ? 'text-zinc-300' : 'text-amber-400'}">{ts.cli ?? 'not found'}</dd>
+        <dt class="text-zinc-500">This node</dt>
+        <dd class="min-w-0 break-all text-zinc-300">{ts.dnsName ?? '—'}</dd>
+        <dt class="text-zinc-500">HTTPS certificate</dt>
+        <dd class={ts.httpsReady ? 'text-emerald-400' : 'text-amber-400'}>
+          {ts.httpsReady ? 'issued for this node' : 'not issued'}
+        </dd>
+      </dl>
+      {#if ts.hint}
+        <p class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300">
+          {ts.hint}
+        </p>
+      {/if}
+    {/if}
+
+    <div class="mt-4 flex items-center justify-between gap-4 border-t border-zinc-800 pt-4">
+      <div class="min-w-0">
+        <p class="text-[13.5px] font-medium text-zinc-100">Publish over Tailscale Serve</p>
+        <p class="mt-0.5 text-xs leading-relaxed text-zinc-500">
+          Puts SimpleEdit on a real HTTPS address on your tailnet, which is the only kind of
+          origin a browser will open a microphone on. It also makes this reachable from every
+          device on the tailnet, so it is a separate decision from turning remote access on —
+          never implied by it.
+        </p>
+      </div>
+      <Toggle
+        checked={serveOn}
+        disabled={busy || config === null || !ts?.cli}
+        label="Publish over Tailscale Serve"
+        onchange={(v) => void setServeEnabled(v)}
+      />
+    </div>
+
+    {#if serveError}
+      <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{serveError}</p>
+    {/if}
+
+    {#if serve?.enableUrl}
+      {@const enableUrl = serve.enableUrl}
+      <div class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300">
+        <p>
+          Serve is switched off for your tailnet. That is an admin-console setting, so it cannot
+          be turned on from here — and the link below names this node, so it cannot be guessed
+          either.
+        </p>
+        <button
+          type="button"
+          onclick={() => openExternal(enableUrl)}
+          class="mt-2 break-all text-left text-blue-400 underline hover:text-blue-300"
+        >{enableUrl} ↗</button>
+      </div>
+    {:else if serve?.error}
+      <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{serve.error}</p>
+    {/if}
+
+    {#if serveOn && status?.running && !boundToLoopback}
+      <p class="mt-3 text-xs leading-relaxed text-amber-400">
+        Serve proxies to this Mac over loopback, so it stays idle while remote access is bound to
+        {status?.host}. Choose “This Mac only” above to publish again.
+      </p>
+    {:else if serve?.active && serve.port}
+      <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+        Serving port {serve.port}. The mapping is removed when remote access stops, when
+        SimpleEdit quits, and at the next launch if it ever crashes — it proxies the server root,
+        so the token is still required on every request.
       </p>
     {/if}
   </section>
