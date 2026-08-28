@@ -45,14 +45,27 @@
   import type { SttStatus } from '../shared/ipc-types'
 
   interface Props {
-    /** Resolves when the text has reached the PTY. Throwing surfaces here. */
+    /** Resolves when the text has been delivered. Throwing surfaces here. */
     onsend: (text: string) => Promise<void>
     placeholder?: string
+    /** What the send button says. A new session is Started, not Sent. */
+    sendLabel?: string
+    /**
+     * The draft, bindable so a host can react to it — the new-session sheet
+     * nudges on a thin brief and previews the label it will produce. The
+     * composer still OWNS it: it is what the transcript lands in and what Send
+     * clears, and there is no path from audio to delivery that skips it.
+     */
+    text?: string
   }
 
-  let { onsend, placeholder = 'Reply…' }: Props = $props()
+  let {
+    onsend,
+    placeholder = 'Reply…',
+    sendLabel = 'Send',
+    text = $bindable(''),
+  }: Props = $props()
 
-  let text = $state('')
   /** A microphone has been asked for but has not arrived. */
   let opening = $state(false)
   let recording = $state(false)
@@ -304,7 +317,7 @@
       data-testid="composer-send"
       class="min-h-11 flex-none rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white
              active:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-600"
-    >Send</button>
+    >{sending ? '…' : sendLabel}</button>
   </div>
 
   {#if transcribing}

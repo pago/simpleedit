@@ -14,10 +14,11 @@
    */
   import SessionsScreen from './SessionsScreen.svelte'
   import SessionScreen from './SessionScreen.svelte'
+  import NewSessionSheet from './NewSessionSheet.svelte'
   import { onOpenSession } from './lib/push-client'
   import { sessionFromUrl } from './lib/push-payload'
   import type { ConnectionState, RemoteConnection } from './api-shim'
-  import type { WindowSession } from '../shared/ipc-types'
+  import type { SessionCreateResult, WindowSession } from '../shared/ipc-types'
 
   interface Props {
     connection: RemoteConnection
@@ -55,6 +56,18 @@
    * the user on a list wondering what the buzz was about.
    */
   let deepLinkProblem = $state<string | null>(null)
+  /** The new-session sheet is up. Its brief lives and dies with it. */
+  let composingNew = $state(false)
+  /**
+   * A session this phone just started, held until the user acknowledges it.
+   *
+   * Without this, `+` → Start → the sheet closing is indistinguishable from
+   * nothing having happened: the list is main's and arrives on its own clock,
+   * and a session that is still booting looks like every other row. Opening it
+   * goes through `pendingSession` — the same resolution a notification tap
+   * uses, including its answer for a session this phone cannot see.
+   */
+  let startedNote = $state<SessionCreateResult | null>(null)
 
   function initialPending(): { terminalId: string; windowId: number | null } | null {
     const terminalId = sessionFromUrl(window.location.href)
@@ -165,6 +178,17 @@
       >‹ <span>Sessions</span></button>
     {/if}
     <h1 class="min-w-0 flex-1 truncate text-[15px] font-semibold" data-testid="screen-title">{title}</h1>
+    <!-- The one trailing action a top-level screen is allowed. -->
+    {#if !openSession && tab === 'sessions'}
+      <button
+        type="button"
+        onclick={() => { composingNew = true }}
+        aria-label="New session"
+        data-testid="new-session"
+        class="flex min-h-9 min-w-9 flex-none items-center justify-center rounded-md text-lg
+               text-zinc-300 active:bg-zinc-800"
+      >+</button>
+    {/if}
     <span
       class="h-2 w-2 flex-none rounded-full {dot}"
       title="Connection: {state}"
@@ -177,6 +201,31 @@
     {#if openSession}
       <SessionScreen session={openSession} {connection} focusComposer={arrivedFromNotification} />
     {:else if tab === 'sessions'}
+      {#if startedNote}
+        {@const note = startedNote}
+        <div class="px-3 pt-3" data-testid="started-note">
+          <div
+            class="flex items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300"
+          >
+            <span class="min-w-0 flex-1 truncate">Started “{note.label}”</span>
+            <button
+              type="button"
+              data-testid="open-started"
+              onclick={() => {
+                pendingSession = { terminalId: note.terminalId, windowId: connection.identity()?.windowId ?? null }
+                startedNote = null
+              }}
+              class="flex-none px-1 font-semibold underline"
+            >Open</button>
+            <button
+              type="button"
+              onclick={() => { startedNote = null }}
+              aria-label="Dismiss"
+              class="flex-none px-1 text-emerald-400/70"
+            >✕</button>
+          </div>
+        </div>
+      {/if}
       {#if deepLinkProblem}
         <div class="px-3 pt-3" data-testid="deep-link-problem">
           <div
@@ -195,6 +244,14 @@
       <SessionsScreen onopen={(session) => { openSession = session; arrivedFromNotification = false }} />
     {/if}
   </main>
+
+  {#if composingNew}
+    <NewSessionSheet
+      connection={state}
+      oncreated={(created) => { composingNew = false; startedNote = created; deepLinkProblem = null }}
+      onclose={() => { composingNew = false }}
+    />
+  {/if}
 
   <!-- Detail screens have no tab bar; the back button is the way out. -->
   {#if !openSession}
