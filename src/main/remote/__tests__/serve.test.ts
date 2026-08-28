@@ -46,6 +46,15 @@ To enable, visit:
 let fixtures = ''
 let stub = ''
 let log = ''
+/** The stub's stand-in for tailscaled's serve config: the port it proxies, or empty. */
+let state = ''
+
+/** The port the live (fake) serve config currently points at, or null. */
+function liveTarget(): number | null {
+  if (!existsSync(state)) return null
+  const raw = readFileSync(state, 'utf8').trim()
+  return raw ? Number(raw) : null
+}
 
 /** Every argv the stub was invoked with, one call per line. */
 function calls(): string[] {
@@ -65,6 +74,11 @@ beforeEach(() => {
   fixtures = mkdtempSync(join(tmpdir(), 'se-serve-'))
   stub = join(fixtures, 'tailscale')
   log = join(fixtures, 'calls.log')
+  state = join(fixtures, 'serve-state')
+  // A tailscale that actually HOLDS the mapping: `serve --bg` records the
+  // port, `off` clears it, `serve status --json` renders whatever is there.
+  // Without that state a test cannot tell "we removed our own mapping" from
+  // "we removed somebody else's".
   writeFileSync(
     stub,
     `#!/bin/sh
@@ -74,14 +88,26 @@ ${STATUS_JSON}
 JSON
   exit 0
 fi
-if [ "$1 $2" = "serve status" ]; then cat "$TS_STUB_SERVE_STATUS"; exit 0; fi
-if [ "$1 $2" = "serve --bg" ] && [ -n "$TS_STUB_SERVE_FAIL" ]; then
-  cat "$TS_STUB_SERVE_FAIL" >&2
-  exit 1
+if [ "$1 $2" = "serve status" ]; then
+  if [ -n "$TS_STUB_STATUS_FAIL" ]; then echo "failed to connect to local tailscaled" >&2; exit 1; fi
+  if [ -s "${state}" ]; then
+    printf '{"Web":{"mac.tail050858.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:%s"}}}}}' "$(cat ${state})"
+  else
+    echo '{}'
+  fi
+  exit 0
 fi
-if [ "$1 $2" = "serve --bg" ] && [ -n "$TS_STUB_SERVE_SLOW" ]; then
-  touch "$TS_STUB_SERVE_SLOW"
-  sleep 0.5
+if [ "$1 $2" = "serve --bg" ]; then
+  if [ -n "$TS_STUB_SERVE_FAIL" ]; then cat "$TS_STUB_SERVE_FAIL" >&2; exit 1; fi
+  if [ -n "$TS_STUB_SERVE_SLOW" ]; then touch "$TS_STUB_SERVE_SLOW"; sleep 0.5; fi
+  printf '%s' "\${3##*:}" > "${state}"
+  exit 0
+fi
+if [ "$1 $2 $3" = "serve --https=443 off" ]; then
+  if [ -n "$TS_STUB_OFF_FAIL" ]; then echo "$TS_STUB_OFF_FAIL" >&2; exit 1; fi
+  if [ ! -s "${state}" ]; then echo "error: failed to remove web serve: handler does not exist" >&2; exit 1; fi
+  rm -f "${state}"
+  exit 0
 fi
 exit 0
 `,
@@ -97,6 +123,8 @@ afterEach(() => {
   delete process.env.TS_STUB_SERVE_FAIL
   delete process.env.TS_STUB_SERVE_STATUS
   delete process.env.TS_STUB_SERVE_SLOW
+  delete process.env.TS_STUB_OFF_FAIL
+  delete process.env.TS_STUB_STATUS_FAIL
   rmSync(fixtures, { recursive: true, force: true })
 })
 
@@ -128,6 +156,16 @@ describe('parseServeFailure', () => {
   it('leaves an unrelated failure without a link', () => {
     expect(parseServeFailure('failed to connect to local tailscaled').enableUrl).toBeNull()
   })
+
+  it('does not mistake a documentation link for the admin console', () => {
+    // Over-firing is the damaging direction: the pane renders the link and the
+    // real message is what gets lost.
+    const parsed = parseServeFailure(
+      'error: HTTPS must be enabled first; visit https://tailscale.com/kb/1153/enabling-https',
+    )
+    expect(parsed.enableUrl).toBeNull()
+    expect(parsed.message).toContain('HTTPS must be enabled first')
+  })
 })
 
 describe('applyServe', () => {
@@ -147,8 +185,11 @@ describe('applyServe', () => {
   it('follows the ephemeral port: the old mapping is removed before the new one', async () => {
     await applyServe({ port: 52123, token: TOKEN })
     await applyServe({ port: 61000, token: TOKEN })
+    // The status read between them is the ownership check: `off` is only ever
+    // run against a config that still shows our own target.
     expect(calls().filter((c) => c.startsWith('serve'))).toEqual([
       'serve --bg http://127.0.0.1:52123',
+      'serve status --json',
       'serve --https=443 off',
       'serve --bg http://127.0.0.1:61000',
     ])
@@ -191,6 +232,7 @@ describe('applyServe', () => {
 
     expect(calls().filter((c) => c.startsWith('serve'))).toEqual([
       'serve --bg http://127.0.0.1:52123',
+      'serve status --json',
       'serve --https=443 off',
     ])
     expect(getServeStatus().active).toBe(false)
@@ -229,7 +271,7 @@ describe('applyServe', () => {
     expect(config.servePort).toBe(52123)
   })
 
-  it('still tears down after a failed serve, rather than stranding the claim', async () => {
+  it('still releases the claim after a failed serve, rather than stranding it', async () => {
     const failure = join(fixtures, 'fail.txt')
     writeFileSync(failure, NOT_ENABLED, 'utf8')
     process.env.TS_STUB_SERVE_FAIL = failure
@@ -237,7 +279,27 @@ describe('applyServe', () => {
 
     delete process.env.TS_STUB_SERVE_FAIL
     await applyServe(null)
-    expect(calls()).toContain('serve --https=443 off')
+    expect(liveTarget()).toBeNull()
+    expect(config.servePort).toBe(0)
+  })
+
+  it('re-installs when the token changes on the same port', async () => {
+    // The token is minted fresh on every server start, so a restart handed the
+    // same ephemeral port must not be mistaken for "already correct" — the QR
+    // would keep encoding a token that no longer opens anything.
+    await applyServe({ port: 52123, token: TOKEN })
+    const next = 'b'.repeat(64)
+    const status = await applyServe({ port: 52123, token: next })
+    expect(status.url).toBe(`https://mac.tail050858.ts.net/${next}/`)
+  })
+
+  it('leaves a mapping somebody repointed by hand alone', async () => {
+    await applyServe({ port: 52123, token: TOKEN })
+    // Someone points serve at their own dev server.
+    writeFileSync(state, '3000', 'utf8')
+
+    await applyServe(null)
+    expect(liveTarget()).toBe(3000)
     expect(config.servePort).toBe(0)
   })
 })
@@ -246,7 +308,7 @@ describe('stopServeSync', () => {
   it('removes the mapping without awaiting anything, for the quit path', async () => {
     await applyServe({ port: 52123, token: TOKEN })
     stopServeSync()
-    expect(calls()).toContain('serve --https=443 off')
+    expect(liveTarget()).toBeNull()
     expect(getServeStatus().active).toBe(false)
     expect(config.servePort).toBe(0)
   })
@@ -254,6 +316,53 @@ describe('stopServeSync', () => {
   it('does nothing when no mapping is owned', () => {
     stopServeSync()
     expect(calls()).toEqual([])
+  })
+
+  it('keeps the claim when the removal fails, so the next launch can reconcile', async () => {
+    // The failure this exists for: tailscaled is wedged, `off` times out or
+    // errors, and the mapping is still live. Releasing the claim here is
+    // unrecoverable — the next launch reads `servePort: 0`, reconciles
+    // nothing, and the mapping outlives its port forever.
+    await applyServe({ port: 52123, token: TOKEN })
+    process.env.TS_STUB_OFF_FAIL = 'tailscaled is not responding'
+
+    stopServeSync()
+    expect(liveTarget()).toBe(52123)
+    expect(config.servePort).toBe(52123)
+  })
+
+  it('keeps the claim when it cannot even read the serve config', async () => {
+    await applyServe({ port: 52123, token: TOKEN })
+    process.env.TS_STUB_STATUS_FAIL = '1'
+
+    stopServeSync()
+    // Nothing is removed on a guess: a tailscaled that will not answer a
+    // status read will not answer `off` either, and the claim is what turns
+    // that into a problem the next launch solves.
+    expect(liveTarget()).toBe(52123)
+    expect(config.servePort).toBe(52123)
+  })
+
+  it('keeps the claim when quit lands during an in-flight install', async () => {
+    // `claimedPort` is taken before the spawn, so quit can run `off` while the
+    // install is still talking to tailscaled — and the install then re-creates
+    // the handler behind it. Releasing the claim here strands that mapping.
+    process.env.TS_STUB_SERVE_SLOW = join(fixtures, 'serving')
+    const install = applyServe({ port: 52123, token: TOKEN })
+    await waitFor(() => existsSync(join(fixtures, 'serving')))
+
+    stopServeSync()
+    await install
+    expect(config.servePort).toBe(52123)
+  })
+
+  it('does not remove a mapping somebody repointed by hand', async () => {
+    await applyServe({ port: 52123, token: TOKEN })
+    writeFileSync(state, '3000', 'utf8')
+
+    stopServeSync()
+    expect(liveTarget()).toBe(3000)
+    expect(config.servePort).toBe(0)
   })
 })
 
@@ -274,30 +383,32 @@ describe('serveTargetsPort', () => {
 })
 
 describe('reclaimAbandonedServe', () => {
-  function serveStatusFile(body: string): void {
-    const file = join(fixtures, 'serve-status.json')
-    writeFileSync(file, body, 'utf8')
-    process.env.TS_STUB_SERVE_STATUS = file
-  }
-
   it('removes a mapping a previous run left pointing at a dead port', async () => {
     config = { ...config, servePort: 52123 }
-    serveStatusFile(
-      JSON.stringify({ Web: { 'mac:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:52123' } } } } }),
-    )
+    writeFileSync(state, '52123', 'utf8')
+
     await reclaimAbandonedServe()
-    expect(calls()).toContain('serve --https=443 off')
+    expect(liveTarget()).toBeNull()
     expect(config.servePort).toBe(0)
   })
 
   it('leaves a mapping somebody else repointed alone', async () => {
     config = { ...config, servePort: 52123 }
-    serveStatusFile(
-      JSON.stringify({ Web: { 'mac:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } } } }),
-    )
+    writeFileSync(state, '3000', 'utf8')
+
     await reclaimAbandonedServe()
-    expect(calls()).not.toContain('serve --https=443 off')
+    expect(liveTarget()).toBe(3000)
     expect(config.servePort).toBe(0)
+  })
+
+  it('keeps the claim when tailscaled will not say what it is holding', async () => {
+    config = { ...config, servePort: 52123 }
+    writeFileSync(state, '52123', 'utf8')
+    process.env.TS_STUB_STATUS_FAIL = '1'
+
+    await reclaimAbandonedServe()
+    expect(liveTarget()).toBe(52123)
+    expect(config.servePort).toBe(52123)
   })
 
   it('does nothing at all when no claim was recorded', async () => {

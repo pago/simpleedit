@@ -38,8 +38,11 @@ import type { TailscaleServeStatus } from '../../shared/ipc-types'
 /** Serve talks to tailscaled over a local socket; slow here means wedged. */
 const SERVE_TIMEOUT_MS = 20_000
 
-/** Quit is not a place to wait. Long enough for a local socket, no longer. */
-const SYNC_TIMEOUT_MS = 3_000
+/**
+ * Quit is not a place to wait, and the sync path now runs two commands — a
+ * status read and the removal — so this is the budget for each of them.
+ */
+const SYNC_TIMEOUT_MS = 2_000
 
 /** What we want to be true. Replaced synchronously; acted on in `step`. */
 let desired: { port: number; token: string } | null = null
@@ -50,6 +53,25 @@ let desired: { port: number; token: string } | null = null
  * so the obligation outlasts the success.
  */
 let claimedPort: number | null = null
+
+/**
+ * The token the claimed mapping was published for.
+ *
+ * A fresh token is minted on every server start, so the port alone cannot say
+ * whether the mapping is current: a restart handed the same ephemeral port
+ * would look already-correct while the published URL encoded a dead token.
+ */
+let claimedToken: string | null = null
+
+/**
+ * A `serve` child is talking to tailscaled right now.
+ *
+ * Quit can land in that window: the synchronous teardown runs `off` while the
+ * install is still in flight, and the install then re-creates the handler
+ * behind it. An in-flight install is therefore a reason to KEEP the persisted
+ * claim, never to release it.
+ */
+let installing = false
 
 /** Set only once `serve` has actually succeeded. Carries the access token. */
 let publishedUrl: string | null = null
@@ -95,6 +117,9 @@ export function buildServeArgs(port: number, token: string): readonly string[] {
 /** Removing the handler we install. Idempotent by intent; see `isAlreadyGone`. */
 const OFF_ARGS = ['serve', '--https=443', 'off'] as const
 
+/** Reading what tailscaled is actually holding, so removal only ever hits our own. */
+const SERVE_STATUS_ARGS = ['serve', 'status', '--json'] as const
+
 /** `off` against a handler that is not there is success, not failure. */
 function isAlreadyGone(text: string): boolean {
   return /handler does not exist|no serve config|not currently serving/i.test(text)
@@ -109,10 +134,20 @@ function isAlreadyGone(text: string): boolean {
  */
 export function parseServeFailure(text: string): { message: string; enableUrl: string | null } {
   const message = text.trim().replace(/\s*\n\s*/g, ' ')
-  if (!/not enabled|to enable|visit/i.test(message)) return { message, enableUrl: null }
-  const match = /https:\/\/[^\s<>"')\]]+/.exec(message)
-  const url = match ? match[0].replace(/[.,;]+$/, '') : null
-  return { message, enableUrl: url }
+  // Deliberately narrow on both halves. Over-firing is the damaging direction:
+  // the pane would render a documentation link as if it were the admin console
+  // and the real message is what the user then never sees. Anything this
+  // cannot classify with confidence falls through as plain text.
+  if (!/not enabled on your tailnet/i.test(message)) return { message, enableUrl: null }
+  for (const match of message.matchAll(/https:\/\/[^\s<>"')\]]+/g)) {
+    const url = match[0].replace(/[.,;]+$/, '')
+    try {
+      if (new URL(url).host === 'login.tailscale.com') return { message, enableUrl: url }
+    } catch {
+      /* not a URL after all; keep looking */
+    }
+  }
+  return { message, enableUrl: null }
 }
 
 /** Remember the port across a crash, so an orphaned mapping is still ours to remove. */
@@ -148,18 +183,24 @@ async function step(): Promise<void> {
     // Read here, not at call time: whatever the latest intent is, that is the
     // one this step implements. Superseded requests collapse into a no-op.
     const want = desired
-    if (want && claimedPort === want.port && publishedUrl !== null) return
+    if (want && claimedPort === want.port && claimedToken === want.token && publishedUrl !== null) return
     if (claimedPort !== null) await removeMapping()
     if (!want) {
       lastError = null
       enableUrl = null
       return
     }
+    if (claimedPort !== null) {
+      // The previous mapping could not be removed, and `rememberClaim` holds
+      // exactly one port. Installing a second one would overwrite the claim to
+      // the first and strand it for good.
+      return
+    }
     await installMapping(want.port, want.token)
   } finally {
     // Only the last step in the chain clears it; an intermediate one still has
     // work queued behind it, and the pane should stay disabled throughout.
-    pending -= 1
+    pending = Math.max(0, pending - 1)
     busy = pending > 0
   }
 }
@@ -190,9 +231,11 @@ async function installMapping(port: number, token: string): Promise<void> {
   // is persisted before it too — a crash in the next few milliseconds must
   // still leave something the next launch can clean up.
   claimedPort = port
+  claimedToken = token
   rememberClaim(port)
 
-  const run = await runTailscale(status.cli, args, SERVE_TIMEOUT_MS)
+  installing = true
+  const run = await runTailscale(status.cli, args, SERVE_TIMEOUT_MS).finally(() => { installing = false })
   if (run.code !== 0) {
     const failure = parseServeFailure(`${run.stderr}\n${run.stdout}`)
     lastError = failure.message || 'tailscale serve failed.'
@@ -205,26 +248,83 @@ async function installMapping(port: number, token: string): Promise<void> {
   publishedUrl = `https://${status.dnsName}/${token}/`
 }
 
+/**
+ * Remove the mapping — but only if tailscaled still shows OUR target.
+ *
+ * Every path out obeys one rule: the persisted claim is released only when the
+ * mapping is provably gone, or provably not ours. Anything else — no CLI, a
+ * status read that fails, an `off` that errors — keeps it, because the claim is
+ * the only thing that lets the next launch reconcile a mapping we could not
+ * remove now. Releasing it on a failure is unrecoverable: the mapping then
+ * outlives its ephemeral port forever, pointing at a dead or recycled one.
+ */
 async function removeMapping(): Promise<void> {
+  const port = claimedPort
+  if (port === null) return
+  publishedUrl = null
+
   const cli = await findTailscaleCli()
   if (!cli) {
-    // Nothing can be run, and holding the claim forever would mean never
-    // starting a new one. The persisted port survives for the next launch.
-    claimedPort = null
-    publishedUrl = null
+    lastError = 'No tailscale command is available to remove the serve mapping.'
+    return
+  }
+  const live = await runTailscale(cli, SERVE_STATUS_ARGS, SERVE_TIMEOUT_MS)
+  if (live.code !== 0) {
+    lastError = 'Could not read the Tailscale serve configuration.'
+    return
+  }
+  if (!serveTargetsPort(live.stdout, port)) {
+    // Somebody repointed serve, or it was never written. Either way there is
+    // nothing of ours out there, so we stop owning it rather than removing
+    // whatever took its place.
+    releaseClaim()
     return
   }
   const run = await runTailscale(cli, OFF_ARGS, SERVE_TIMEOUT_MS)
   if (run.code !== 0 && !isAlreadyGone(`${run.stderr}\n${run.stdout}`)) {
     lastError = parseServeFailure(`${run.stderr}\n${run.stdout}`).message
-    publishedUrl = null
-    // Claim kept: the mapping is still out there, and the next attempt — or the
-    // next launch — has to try again.
     return
   }
+  releaseClaim()
+}
+
+/** The mapping is gone, or was never ours: stop owning it, in memory and on disk. */
+function releaseClaim(): void {
   claimedPort = null
+  claimedToken = null
   publishedUrl = null
   forgetClaim()
+}
+
+/** What a synchronous CLI run produced, whether or not it exited cleanly. */
+interface SyncRun {
+  ok: boolean
+  stdout: string
+  /** stderr and stdout together, for the phrase checks. */
+  text: string
+}
+
+function textOf(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value instanceof Buffer) return value.toString('utf8')
+  return ''
+}
+
+/** `execFileSync` throws on a non-zero exit and on a timeout; both are answers. */
+function runSync(cli: string, args: readonly string[]): SyncRun {
+  try {
+    const stdout = execFileSync(cli, [...args], {
+      timeout: SYNC_TIMEOUT_MS,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return { ok: true, stdout, text: stdout }
+  } catch (error) {
+    const failure: { stdout?: unknown; stderr?: unknown } =
+      typeof error === 'object' && error !== null ? error : {}
+    const stdout = textOf(failure.stdout)
+    return { ok: false, stdout, text: `${textOf(failure.stderr)}\n${stdout}` }
+  }
 }
 
 /**
@@ -233,42 +333,62 @@ async function removeMapping(): Promise<void> {
  * Both of those tear down every server a client could attach to, so a mapping
  * left behind would point at nothing. An `await` in either handler never
  * settles, which is why this exists at all.
+ *
+ * It obeys the same two rules as the asynchronous path, and they matter more
+ * here because there is no second chance in this process:
+ *
+ *  - **Only remove what is still ours.** A status read comes first; if it will
+ *    not answer, nothing is removed on a guess — a tailscaled that cannot
+ *    answer a status read will not answer `off` either, and the claim turns
+ *    that into a problem the next launch solves.
+ *  - **Release the claim only when the mapping is provably gone.** A failed
+ *    `off` here used to clear it anyway, which left the mapping alive and the
+ *    next launch with nothing to reconcile.
  */
 export function stopServeSync(): void {
   desired = null
   publishedUrl = null
   enableUrl = null
-  if (claimedPort === null) return
+  pending = 0
+  busy = false
+
+  const port = claimedPort
+  if (port === null) return
   const cli = findTailscaleCliSync()
-  claimedPort = null
   if (!cli) return
-  try {
-    execFileSync(cli, [...OFF_ARGS], { timeout: SYNC_TIMEOUT_MS, stdio: 'ignore' })
-  } catch {
-    /* the persisted claim is what covers a failure here */
+
+  // An install whose child is still running can re-create the handler after
+  // this function returns, so whatever happens below the claim has to stand.
+  const inFlight = installing
+
+  const live = runSync(cli, SERVE_STATUS_ARGS)
+  if (!live.ok) return
+  if (!serveTargetsPort(live.stdout, port)) {
+    if (!inFlight) releaseClaim()
+    else claimedPort = null
+    return
   }
-  forgetClaim()
+  const off = runSync(cli, OFF_ARGS)
+  if (!off.ok && !isAlreadyGone(off.text)) return
+  if (inFlight) {
+    claimedPort = null
+    return
+  }
+  releaseClaim()
 }
 
 /**
  * Remove a mapping left behind by a crash, at launch, before anything starts.
  *
  * The previous server is definitively gone, so any mapping we recorded points
- * at a dead port. It is removed only when tailscaled still shows OUR target —
+ * at a dead port. `removeMapping` is what decides whether it is still ours —
  * a person who repointed serve by hand in the meantime keeps their mapping.
  */
 export async function reclaimAbandonedServe(): Promise<void> {
   const port = getRemoteConfig().servePort
   if (!port) return
-  const cli = await findTailscaleCli()
-  if (!cli) return
-  const run = await runTailscale(cli, ['serve', 'status', '--json'])
-  if (run.code !== 0) return
-  if (!serveTargetsPort(run.stdout, port)) {
-    forgetClaim()
-    return
-  }
   claimedPort = port
+  claimedToken = null
   await removeMapping()
 }
 
@@ -306,6 +426,8 @@ export function serveTargetsPort(stdout: string, port: number): boolean {
 export function resetServeStateForTests(): void {
   desired = null
   claimedPort = null
+  claimedToken = null
+  installing = false
   publishedUrl = null
   enableUrl = null
   lastError = null
