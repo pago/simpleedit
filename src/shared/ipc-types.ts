@@ -686,6 +686,16 @@ export interface SessionCreateRequest {
  * intent is still safe to re-ask. Recognising it by prose would make the
  * difference between one agent and two depend on a wording tweak.
  */
+/**
+ * Stands where a diff was cut short for a client that cannot receive all of it.
+ *
+ * Part of the diff text rather than a flag beside it, so a reader sees that
+ * something is missing even if nothing special handles it — and shared so the
+ * surface that CAN say more recognises it exactly.
+ */
+export const DIFF_TRUNCATED_MARKER =
+  '*** This diff is too large to send to a phone. Open it at the desk to see the rest. ***'
+
 export const SESSION_CREATE_UNWITNESSED =
   'SimpleEdit did not confirm the new session in time. Check the list before starting it again.'
 

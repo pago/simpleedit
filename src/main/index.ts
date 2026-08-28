@@ -44,6 +44,7 @@ import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub, currentRemoteToken } from './remote/server'
+import { capDiffForRemote } from './remote/payload-cap'
 import { getTailscaleStatus } from './remote/tailscale'
 import { applyServe, getServeStatus, reclaimAbandonedServe, stopServeSync } from './remote/serve'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
@@ -187,6 +188,14 @@ function clientKeyOf(sender: RemoteClient): PtyClientId {
  * already ran: an MCP bridge nothing will stop, watchers installed after the
  * unwatch, a repo map entry for a window that is gone.
  */
+/**
+ * A diff bounded for whoever asked, which is only ever a socket client. A real
+ * `WebContents` has no `clientKey`; every other transport does.
+ */
+function capForClient(sender: RemoteClient, diff: string): string {
+  return sender.clientKey === undefined ? diff : capDiffForRemote(diff)
+}
+
 function hubFor(sender: RemoteClient): ClientHub {
   const existing = clientHubs.get(sender.id)
   if (existing) return existing
@@ -870,8 +879,12 @@ function registerAllHandlers(): void {
     return getCommitLog(worktreePath, count)
   })
 
-  handleInvoke('git:diff', (_event, worktreePath: string, commitHash: string) => {
-    return getCommitDiff(worktreePath, commitHash)
+  // Diffs are the one read with no upper bound, and an oversized reply on a
+  // socket does not arrive slowly — it disconnects the client and takes its
+  // live terminal stream with it. Bounded for a socket only: the window's own
+  // renderer reaches this over IPC and renders diffs in Monaco.
+  handleInvoke('git:diff', async (event, worktreePath: string, commitHash: string) => {
+    return capForClient(event.sender, await getCommitDiff(worktreePath, commitHash))
   })
 
   handleInvoke('git:commit-files', (_event, worktreePath: string, commitHash: string) => {
@@ -886,8 +899,8 @@ function registerAllHandlers(): void {
     return getStagingFiles(worktreePath)
   })
 
-  handleInvoke('git:staging-diff', (_event, worktreePath: string) => {
-    return getStagingDiff(worktreePath)
+  handleInvoke('git:staging-diff', async (event, worktreePath: string) => {
+    return capForClient(event.sender, await getStagingDiff(worktreePath))
   })
 
   handleInvoke('git:file-at-head', (_event, worktreePath: string, filePath: string) => {

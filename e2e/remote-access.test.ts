@@ -2,6 +2,8 @@ import { test as base, expect, chromium, _electron as electron } from '@playwrig
 import type { Browser, ElectronApplication, Page } from '@playwright/test'
 import path from 'path'
 import os from 'os'
+import { writeFileSync } from 'fs'
+import { execSync } from 'child_process'
 import {
   MAIN,
   launchEnv,
@@ -12,6 +14,7 @@ import {
   awaitPtySize,
   type TempRepo,
 } from './fixtures'
+import { DIFF_TRUNCATED_MARKER } from '../src/shared/ipc-types'
 import type { RemoteAccessStatus } from '../src/shared/ipc-types'
 
 /**
@@ -486,6 +489,60 @@ test('reads the log and the diff of the worktree the session is in', async ({ wi
   // The terminal was hidden behind Changes, never torn down.
   await page.getByTestId('pane-terminal').click()
   await expect(page.locator('.xterm-rows')).toContainText(/\S/, { timeout: 15_000 })
+
+  await page.close()
+})
+
+/**
+ * A diff big enough to hang up on the client that asked for it.
+ *
+ * A phone reads a diff over the SAME socket its terminal streams on, and that
+ * socket is closed with 1013 as soon as its buffer passes a megabyte. So an
+ * uncapped diff is not a slow read — it disconnects the client, drops the live
+ * PTY stream, and the pane's reconnect handler re-issues the identical read.
+ *
+ * The cap belongs to the transport, so it is applied where the transport is
+ * known: the desktop asks the same channel over IPC and still gets all of it.
+ */
+test('bounds a huge diff for a socket, and only for a socket', async ({ repo, window, browser }) => {
+  const bulk = Array.from({ length: 40_000 }, (_, i) => `line ${i} ${'x'.repeat(60)}`).join('\n')
+  writeFileSync(path.join(repo.mainWorktreePath, 'big.txt'), `${bulk}\n`)
+  execSync('git add . && git commit -m "a big one"', {
+    cwd: repo.mainWorktreePath,
+    stdio: 'pipe',
+    env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 't@e.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 't@e.com' },
+  })
+  const head = execSync('git rev-parse HEAD', { cwd: repo.mainWorktreePath, env: process.env })
+    .toString()
+    .trim()
+
+  const status = await enableRemote(window)
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await page.waitForFunction(() => 'api' in window, undefined, { timeout: 15_000 })
+
+  const overSocket = (await page.evaluate(
+    ([wt, sha]) => (window as unknown as { api: Api }).api.invoke('git:diff', wt, sha),
+    [repo.mainWorktreePath, head] as const,
+  )) as string
+
+  expect(new TextEncoder().encode(overSocket).byteLength).toBeLessThanOrEqual(256 * 1024)
+  expect(overSocket).toContain(DIFF_TRUNCATED_MARKER)
+  // Cut on a line boundary: half a hunk line is a corrupt diff, not a smaller one.
+  const body = overSocket.slice(0, overSocket.indexOf(DIFF_TRUNCATED_MARKER)).trimEnd()
+  expect(body.endsWith('x')).toBe(true)
+
+  // The socket that carried it is still the client's.
+  await expect(page.getByTestId('connection-dot')).toHaveAttribute('data-state', 'open')
+
+  // The desktop reaches the same handler over IPC and is not capped: it is
+  // where you go to read the rest.
+  const atTheDesk = (await window.evaluate(
+    ([wt, sha]) => (window as unknown as { api: Api }).api.invoke('git:diff', wt, sha),
+    [repo.mainWorktreePath, head] as const,
+  )) as string
+  expect(atTheDesk.length).toBeGreaterThan(overSocket.length)
+  expect(atTheDesk).not.toContain(DIFF_TRUNCATED_MARKER)
 
   await page.close()
 })

@@ -50,6 +50,7 @@
     worktreeChoices,
     type ReviewEntry,
   } from './lib/review'
+  import { DIFF_TRUNCATED_MARKER } from '../shared/ipc-types'
   import type { RemoteConnection } from './api-shim'
   import type {
     DiffFileEntry,
@@ -115,7 +116,27 @@
   let logSeq = 0
   let diffSeq = 0
 
+  /**
+   * What the reconnect handler has already re-tried on its own, so it never
+   * re-tries the same read twice.
+   *
+   * Keyed by what is being read rather than by a bare flag: moving to another
+   * worktree or another commit is a different read and deserves its own
+   * automatic attempt. A manual Retry clears it — that is the user asking for
+   * exactly one more, which is a decision rather than a loop.
+   */
+  let retriedLog: string | null = null
+  let retriedDiff: string | null = null
+
+  /** Identity of a diff read: the pair that decides what is fetched. */
+  function entryKey(worktree: string | null, target: ReviewEntry | null): string {
+    if (worktree === null || target === null) return ''
+    return `${worktree}\u0000${target.kind}\u0000${target.kind === 'commit' ? target.hash : ''}`
+  }
+
   const worktrees = $derived(worktreeChoices(trailWorktrees(trail, repoPath), listed))
+  /** Main cut this diff short for the transport, and said so inside it. */
+  const truncated = $derived(diff !== null && diff.includes(DIFF_TRUNCATED_MARKER))
   const hasUncommitted = $derived(stagingFiles.length > 0)
 
   function fail(err: unknown): string {
@@ -260,12 +281,27 @@
     // A read that was rejected by the socket dying has no other way back: the
     // reconnect backoff is between half a second and ten, and the user cannot
     // see it. Anything that survived the gap is a snapshot from before it.
+    //
+    // ONE automatic attempt per thing being read, though. If the read is what
+    // KILLED the socket — a reply too large for it to buffer — then re-issuing
+    // it on reconnect kills the socket again, forever, with the phone showing
+    // a spinner and no way to tell why. Retry stays for the second attempt,
+    // because that one is the user's decision rather than a loop.
     let wasOpen = connection.state() === 'open'
     const offState = connection.onStateChange((state) => {
       const isOpen = state === 'open'
       if (isOpen && !wasOpen) {
-        if (logError !== null) void loadLog(worktreePath, entry === null)
-        if (diffError !== null) void loadDiff(worktreePath, entry)
+        const retryLog = logError !== null && retriedLog !== worktreePath
+        const diffKey = entryKey(worktreePath, entry)
+        const retryDiff = diffError !== null && retriedDiff !== diffKey
+        if (retryLog) {
+          retriedLog = worktreePath
+          void loadLog(worktreePath, entry === null)
+        }
+        if (retryDiff) {
+          retriedDiff = diffKey
+          void loadDiff(worktreePath, entry)
+        }
         if (logError === null && diffError === null) stale = true
       }
       wasOpen = isOpen
@@ -347,12 +383,24 @@
           <p class="leading-relaxed" data-testid="diff-error">{diffError}</p>
           <button
             type="button"
-            onclick={() => void loadDiff(worktreePath, entry)}
+            onclick={() => { retriedDiff = null; void loadDiff(worktreePath, entry) }}
             data-testid="diff-retry"
             class="mt-1 underline">Retry</button
           >
         </div>
       {:else if diff !== null}
+        {#if truncated}
+          <!-- Main bounds a diff for a socket: an oversized reply does not
+               arrive slowly, it disconnects the client. Said plainly, because
+               a diff that stops halfway with no explanation reads as a bug. -->
+          <div
+            class="m-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2.5 text-xs leading-relaxed text-amber-300"
+            data-testid="diff-truncated"
+          >
+            This diff is too large to send to a phone. What follows is the start
+            of it — open the commit at the desk to read the rest.
+          </div>
+        {/if}
         {#if diff.trim() === '' && entry.kind === 'uncommitted' && stagingFiles.length > 0}
           <!-- `git diff HEAD` cannot see a file git has never been told about,
                so a worktree whose only changes are new files reads as empty.
@@ -381,7 +429,7 @@
           <p class="leading-relaxed" data-testid="log-error">{logError}</p>
           <button
             type="button"
-            onclick={() => void loadLog(worktreePath, true)}
+            onclick={() => { retriedLog = null; void loadLog(worktreePath, true) }}
             data-testid="log-retry"
             class="mt-1 underline">Retry</button
           >
