@@ -23,6 +23,7 @@
  */
 import { randomUUID } from 'crypto'
 import { labelFromBrief } from '../shared/brief'
+import { SESSION_CREATE_UNWITNESSED } from '../shared/ipc-types'
 import type {
   SessionCreateOutcome,
   SessionCreateRequest,
@@ -188,7 +189,7 @@ async function run(
       // The request was delivered. A session may exist, so this must not be
       // retried into a second one.
       retryable: false,
-      reason: 'SimpleEdit did not confirm the new session in time. Check the list before starting it again.',
+      reason: SESSION_CREATE_UNWITNESSED,
     }
   }
   if (!outcome.ok) return { ok: false, retryable: true, reason: outcome.reason }

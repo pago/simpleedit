@@ -43,6 +43,7 @@
   import { onMount, tick } from 'svelte'
   import VoiceComposer from './VoiceComposer.svelte'
   import { briefNudge, labelFromBrief } from '../shared/brief'
+  import { SESSION_CREATE_UNWITNESSED } from '../shared/ipc-types'
   import type { ConnectionState } from './api-shim'
   import type { SessionCreateResult } from '../shared/ipc-types'
 
@@ -125,12 +126,44 @@
     }
   }
 
-  /** Abandon the stuck intent and ask for a session outright. */
+  /**
+   * The only outcome where a session may exist that nobody has seen.
+   *
+   * Compared against main's exact wording rather than sniffed for, because
+   * everything below turns on this one distinction.
+   */
+  function unwitnessed(error: unknown): boolean {
+    return error instanceof Error && error.message === SESSION_CREATE_UNWITNESSED
+  }
+
+  /**
+   * Take the duplicate risk — but only after establishing there is one.
+   *
+   * Abandoning the intent outright would have re-spawned a session that
+   * SUCCEEDED: main caches the answer, so a socket that drops before the
+   * result frame arrives leaves the phone with a rejection and main with a
+   * live session. Re-asking the SAME intent is what tells the two apart —
+   * main hands the cached session straight back, and this ends with one agent
+   * instead of two.
+   *
+   * Only when that re-ask comes back unwitnessed again is a fresh intent the
+   * user's deliberate choice rather than an accident of the transport.
+   */
   async function startAnyway(): Promise<void> {
     if (starting || !hasBrief) return
+    anywayError = null
+    try {
+      await start(brief.trim())
+      return
+    } catch (error) {
+      if (!unwitnessed(error)) {
+        anywayError = error instanceof Error ? error.message : String(error)
+        return
+      }
+    }
+
     requestId = null
     stalled = false
-    anywayError = null
     try {
       await start(brief.trim())
     } catch (error) {

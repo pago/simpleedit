@@ -677,6 +677,18 @@ export interface SessionCreateRequest {
   brief: string
 }
 
+/**
+ * What main says when it delivered a create request and never heard back.
+ *
+ * Shared, and compared exactly, because a client has to ACT on this ONE
+ * outcome differently from every other failure: it is the only one where a
+ * session may exist that nobody has seen. Every other rejection means the
+ * intent is still safe to re-ask. Recognising it by prose would make the
+ * difference between one agent and two depend on a wording tweak.
+ */
+export const SESSION_CREATE_UNWITNESSED =
+  'SimpleEdit did not confirm the new session in time. Check the list before starting it again.'
+
 /** The session a `session:create` produced — enough to open it. */
 export interface SessionCreateResult {
   terminalId: string

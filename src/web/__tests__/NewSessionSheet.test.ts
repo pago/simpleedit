@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import NewSessionSheet from '../NewSessionSheet.svelte'
+import { SESSION_CREATE_UNWITNESSED } from '../../shared/ipc-types'
 
 /**
  * The sheet's promises, not the composer's mechanism.
@@ -27,6 +28,18 @@ function mount(connection: 'open' | 'connecting' | 'closed' = 'open') {
       onclose: () => { closed++ },
     },
   })
+}
+
+/** Every `session:create` the sheet has issued, oldest first. */
+function creates(): { requestId: string; brief: string }[] {
+  return invoke.mock.calls
+    .filter((call) => call[0] === 'session:create')
+    .map((call) => call[1] as { requestId: string; brief: string })
+}
+
+/** Wait until the sheet has issued exactly `n` create calls. */
+async function untilCreates(n: number): Promise<void> {
+  await waitFor(() => expect(creates()).toHaveLength(n))
 }
 
 /** Type a brief into the composer's field, as a user with a keyboard would. */
@@ -169,30 +182,70 @@ describe('NewSessionSheet', () => {
     expect(closed).toBe(1)
   })
 
-  it('offers a way out when a start leaves the outcome unknown', async () => {
+  it('asks the same intent again before it will make a second session', async () => {
     mount()
     await type(FULL_BRIEF)
     await fireEvent.click(screen.getByTestId('composer-send'))
-    await waitFor(() => expect(fail).not.toBeNull())
+    await untilCreates(1)
+
+    // The session was made and main cached the answer; the socket dropped
+    // before the result frame arrived. From here the phone cannot tell this
+    // apart from a start that did nothing — so the escape must ASK, not assume.
+    fail!(new Error('Connection lost'))
+    await screen.findByTestId('composer-error')
+
+    await fireEvent.click(await screen.findByTestId('start-anyway'))
+    await untilCreates(2)
+    expect(creates()[1].requestId).toBe(creates()[0].requestId)
+
+    // Main hands back the session it already has, and that is the end of it.
+    answer!({ terminalId: 'agent-1', label: 'The mobile session list' })
+    await waitFor(() => expect(created).toHaveLength(1))
+    expect(creates()).toHaveLength(2)
+  })
+
+  it('only mints a new intent once the old one comes back unwitnessed', async () => {
+    mount()
+    await type(FULL_BRIEF)
+    await fireEvent.click(screen.getByTestId('composer-send'))
+    await untilCreates(1)
     // Main never re-spawns an intent nobody witnessed, so every plain retry
     // returns this same uncertainty. Without an exit the only escape is
     // Discard, which destroys the brief the user just dictated.
-    fail!(new Error('SimpleEdit did not confirm the new session in time.'))
+    fail!(new Error(SESSION_CREATE_UNWITNESSED))
     await screen.findByTestId('composer-error')
 
-    const anyway = await screen.findByTestId('start-anyway')
-    const before = invoke.mock.calls.find((c) => c[0] === 'session:create')![1].requestId
-    await fireEvent.click(anyway)
-    await waitFor(() =>
-      expect(invoke.mock.calls.filter((c) => c[0] === 'session:create')).toHaveLength(2),
-    )
-    const second = invoke.mock.calls.filter((c) => c[0] === 'session:create')[1][1]
+    await fireEvent.click(await screen.findByTestId('start-anyway'))
+    // First the same intent, one more time — the only way to learn whether it
+    // produced something.
+    await untilCreates(2)
+    expect(creates()[1].requestId).toBe(creates()[0].requestId)
+    fail!(new Error(SESSION_CREATE_UNWITNESSED))
 
-    // A NEW intent — the point is to accept the duplicate risk deliberately —
-    // carrying the brief that was never lost.
-    expect(second.requestId).not.toBe(before)
-    expect(second.brief).toBe(FULL_BRIEF)
+    // Still unwitnessed. NOW the duplicate risk is the user's deliberate
+    // choice, and the brief they dictated goes with it.
+    await untilCreates(3)
+    expect(creates()[2].requestId).not.toBe(creates()[0].requestId)
+    expect(creates()[2].brief).toBe(FULL_BRIEF)
     expect((screen.getByTestId('composer-text') as HTMLTextAreaElement).value).toBe(FULL_BRIEF)
+  })
+
+  it('reports a plain failure from the escape without asking again', async () => {
+    mount()
+    await type(FULL_BRIEF)
+    await fireEvent.click(screen.getByTestId('composer-send'))
+    await untilCreates(1)
+    fail!(new Error('Connection lost'))
+    await screen.findByTestId('composer-error')
+
+    await fireEvent.click(await screen.findByTestId('start-anyway'))
+    await untilCreates(2)
+    fail!(new Error('That SimpleEdit window has no repo open yet.'))
+
+    const reported = await screen.findByTestId('anyway-error')
+    expect(reported.textContent).toContain('no repo open')
+    // Not an unwitnessed outcome, so nothing here may quietly try a new intent.
+    expect(creates()).toHaveLength(2)
   })
 
   it('does not offer the way out before anything has failed', async () => {
