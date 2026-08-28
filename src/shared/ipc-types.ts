@@ -579,10 +579,50 @@ export interface SerializedSession {
   groups?: SerializedGroup[]
 }
 
+/**
+ * A session as a client that is NOT the window's own renderer sees it.
+ *
+ * The renderer owns the session list — labels, provider, worktree and status
+ * all live in its stores — so main cannot derive this. The renderer pushes it
+ * (`session:sync`) and main keeps it per window, which is what lets a second
+ * transport on that window's hub read the same list without reimplementing
+ * any of it.
+ */
+export interface WindowSessionInput {
+  /** The PTY terminal id. Doubles as the session id renderer-side. */
+  terminalId: string
+  label: string
+  kind: 'agent' | 'agents' | 'terminal'
+  /** Absent on a plain terminal — there is no agent in front of the shell. */
+  provider?: AgentProviderId
+  worktreePath: string
+  status: AgentStatus | 'unknown'
+}
+
+export interface WindowSession extends WindowSessionInput {
+  /**
+   * Epoch ms of the last change to `status`, stamped by MAIN.
+   *
+   * A client cannot compute this: it stamps only what it has witnessed, so a
+   * session that blocked twenty minutes before the phone connected would read
+   * as freshly blocked — the one number this surface exists to show.
+   */
+  statusSince: number
+}
+
 export interface SessionInvokeMap {
   'session:save': { args: [payload: SerializedSession]; result: void }
   'session:load': { args: [repoPath: string]; result: SerializedSession | null }
   'session:clear': { args: [repoPath: string]; result: void }
+  /** Renderer → main: the whole list, whenever any part of it changes. */
+  'session:sync': { args: [sessions: WindowSessionInput[]]; result: void }
+  /** Any client → main: the current list for the window it is attached to. */
+  'session:list': { args: []; result: WindowSession[] }
+}
+
+export interface SessionEventMap {
+  /** Fanned out to every transport on the window whose list changed. */
+  'session:list-changed': WindowSession[]
 }
 
 // ── Models (local Ollama + cloud Claude) ──────────────────
@@ -1044,4 +1084,5 @@ export type EventMap = WorktreeEventMap &
   UpdateEventMap &
   EditorEventMap &
   RemoteEventMap &
+  SessionEventMap &
   ModelsEventMap

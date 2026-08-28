@@ -61,8 +61,9 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, RemoteAccessStatus } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, RemoteAccessStatus, WindowSessionInput } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
+import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
@@ -874,6 +875,20 @@ function registerAllHandlers(): void {
     clearSession(repoPath)
   })
 
+  // ── The window's live session list ──────────────────────
+  // Pushed by the renderer that owns it, read by anything else attached to the
+  // same window. The fan-out goes through the hub, so the renderer that just
+  // pushed hears its own list back — harmless, and cheaper than teaching the
+  // hub to exclude one transport.
+  handleInvoke('session:sync', (event, sessions: WindowSessionInput[]) => {
+    if (!syncWindowSessions(event.sender.id, sessions)) return
+    hubFor(event.sender).send('session:list-changed', getWindowSessions(event.sender.id))
+  })
+
+  handleInvoke('session:list', (event) => {
+    return getWindowSessions(event.sender.id)
+  })
+
   // ── Agent-to-agent messaging ────────────────────────────
   handleInvoke('agent-bus:sync', (_event, peers: AgentPeer[]) => {
     syncPeers(peers)
@@ -909,6 +924,7 @@ app.whenReady().then(() => {
     window.webContents.once('destroyed', () => {
       closeSocketsForHub(id)
       clientHubs.delete(id)
+      forgetWindowSessions(id)
     })
   })
 

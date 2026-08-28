@@ -9,7 +9,7 @@
  */
 import { untrack } from 'svelte'
 import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
-import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, NativeModelAgentId, ReasoningEffort } from '../../shared/ipc-types'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, NativeModelAgentId, ReasoningEffort, WindowSessionInput } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -998,6 +998,29 @@ function peerSnapshot(): AgentPeer[] {
 }
 
 /**
+ * The window's session list as anything ELSE attached to this window sees it —
+ * a second desktop window, or a phone on the same hub.
+ *
+ * Broader than `peerSnapshot`: a plain terminal and an Agent View can't receive
+ * mail, but they are sessions you can look at, so they belong on a list whose
+ * job is "pick something to attend to". `pendingResume` entries are left out —
+ * they have no PTY behind them, so a client that picked one would attach to
+ * nothing.
+ */
+function windowSessionSnapshot(): WindowSessionInput[] {
+  return _sessions
+    .filter((s) => !s.pendingResume)
+    .map((s) => ({
+      terminalId: s.id,
+      label: s.label,
+      kind: s.kind,
+      provider: s.provider,
+      worktreePath: s.worktreePath,
+      status: s.exited ? ('exited' as const) : getAgentStatusForTerminal(s.id),
+    }))
+}
+
+/**
  * Global listeners that keep the registry in sync with main. Call once at
  * app startup; returns an unsubscribe.
  */
@@ -1079,6 +1102,11 @@ export function initSessionListeners(): () => void {
   const stopPeerSync = $effect.root(() => {
     $effect(() => {
       void window.api.invoke('agent-bus:sync', peerSnapshot())
+    })
+    // The same push, for the wider list a second client renders. Main drops it
+    // when nothing changed, so sharing the effect's firing rate costs nothing.
+    $effect(() => {
+      void window.api.invoke('session:sync', windowSessionSnapshot())
     })
   })
 
