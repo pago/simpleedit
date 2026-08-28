@@ -816,6 +816,51 @@ export interface RemoteAccessConfig {
   host: string
   /** 0 for an ephemeral port. */
   port: number
+  /**
+   * Absolute path to a whisper.cpp GGML model file. Empty until a person picks
+   * one — nothing is bundled and nothing is downloaded.
+   */
+  sttModelPath: string
+}
+
+// ── Speech to text ────────────────────────────────────────
+/**
+ * Whether dictation can run, and what to do about it when it cannot.
+ *
+ * Voice is an accelerant on this surface, never a requirement: the composer
+ * takes typed input whatever this says. So `hint` is advice, not an error.
+ */
+export interface SttStatus {
+  /** A whisper.cpp CLI was found on PATH. */
+  installed: boolean
+  /** Which command was found, so the pane can name it. */
+  binary: string | null
+  /** The configured model file. Empty when never set. */
+  modelPath: string
+  /** That file exists and is readable. */
+  modelReady: boolean
+  /** Both of the above — dictation will actually work. */
+  ready: boolean
+  /** What is missing and how to fix it. Null when ready. */
+  hint: string | null
+}
+
+export interface SttInvokeMap {
+  'stt:status': { args: []; result: SttStatus }
+  /** Persists the model path and re-reports. An unusable path is rejected. */
+  'stt:set-model-path': { args: [path: string]; result: SttStatus }
+  /**
+   * Base64 of a 16 kHz mono 16-bit PCM WAV. Base64 because this channel is
+   * reached over a JSON WebSocket as well as over Electron IPC, and a
+   * `Uint8Array` does not survive the former.
+   */
+  'stt:transcribe': { args: [audioBase64: string]; result: string }
+  /**
+   * Native file picker for the model. Desktop only in practice — it opens a
+   * dialog on the Mac, which is no use to a phone, so the pane that calls it
+   * is the settings pane and the mobile surface never does.
+   */
+  'stt:pick-model': { args: []; result: SttStatus | null }
 }
 
 export interface RemoteAccessStatus {
@@ -1071,6 +1116,7 @@ export type InvokeMap = WorktreeInvokeMap &
   UpdateInvokeMap &
   ModelsInvokeMap &
   RemoteInvokeMap &
+  SttInvokeMap &
   AgentBusInvokeMap
 
 export type SendMap = LspSendMap

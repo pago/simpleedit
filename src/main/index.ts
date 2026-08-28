@@ -45,6 +45,7 @@ import { ClientHub, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub } from './remote/server'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
+import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions } from './remote/stt'
 import { listRemoteInterfaces, isAllowedBindHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
@@ -525,6 +526,26 @@ function registerAllHandlers(): void {
     const status = await applyRemoteConfig()
     broadcastRemoteStatus(status)
     return status
+  })
+
+  // ── Speech to text ──────────────────────────────────────
+  // Reachable over the socket by design: the phone is where dictation happens,
+  // and a transcription is a pure function of the bytes it is handed.
+  handleInvoke('stt:status', () => getSttStatus())
+
+  handleInvoke('stt:set-model-path', (_event, path: string) => setSttModelPath(path))
+
+  handleInvoke('stt:transcribe', (_event, audioBase64: string) => transcribe(audioBase64))
+
+  handleInvoke('stt:pick-model', async (event) => {
+    const win = getWindowForContents(event.sender.id)
+    const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
+      title: 'Select a whisper.cpp model',
+      filters: [{ name: 'GGML model', extensions: ['bin'] }],
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return await setSttModelPath(result.filePaths[0])
   })
 
   // ── PTY ─────────────────────────────────────────────────
@@ -1023,6 +1044,7 @@ app.on('before-quit', () => {
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { stopRemoteServer() } catch { /* ignore */ }
+  try { cancelTranscriptions() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
@@ -1051,6 +1073,7 @@ app.on('window-all-closed', () => {
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { stopRemoteServer() } catch { /* ignore */ }
+  try { cancelTranscriptions() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }

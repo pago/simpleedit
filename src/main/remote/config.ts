@@ -13,7 +13,7 @@ import type { RemoteAccessConfig } from '../../shared/ipc-types'
 import { REMOTE_DEFAULT_HOST } from './interfaces'
 
 function defaults(): RemoteAccessConfig {
-  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0 }
+  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0, sttModelPath: '' }
 }
 
 function filePath(): string {
@@ -45,6 +45,10 @@ export function getRemoteConfig(): RemoteAccessConfig {
       port: typeof parsed.port === 'number' && Number.isInteger(parsed.port) && parsed.port >= 0 && parsed.port <= 65535
         ? parsed.port
         : base.port,
+      // Shape only, like `host`: whether the file is actually there is decided
+      // when dictation runs, not on read. A model on an unmounted volume must
+      // not silently erase the preference on the next write.
+      sttModelPath: typeof parsed.sttModelPath === 'string' ? parsed.sttModelPath : base.sttModelPath,
     }
   } catch {
     return defaults()

@@ -107,6 +107,13 @@ let socketSeq = 0
 const MAX_BUFFERED_BYTES = 1024 * 1024
 
 /**
+ * Cap on ONE inbound frame. Comfortably above the largest legitimate call —
+ * base64 of a capped audio recording — and far below what `ws` allows by
+ * default. A client past it has its socket closed by the library.
+ */
+const MAX_FRAME_BYTES = 16 * 1024 * 1024
+
+/**
  * One WebSocket seen as a `RemoteClient`. `id` is the hub's — this transport
  * joined that identity — while `clientKey` is its own, which is what lets PTY
  * size ownership distinguish the phone from the window it attached to.
@@ -450,7 +457,10 @@ let stopRequested = false
 async function openServer(options: RemoteServerOptions): Promise<RemoteAccessStatus> {
   stopRequested = false
   const token = randomBytes(32).toString('hex')
-  const wss = new WebSocketServer({ noServer: true })
+  // Bounded. `stt:transcribe` carries base64 audio, which is the first frame
+  // on this socket a client can make large on purpose; `ws` would otherwise
+  // buffer up to 100 MB into main's heap before anything looked at it.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
   const http = createServer((req, res) => handleRequest(req, res))
 
   // Built before `listen` so the request handlers have somewhere to record
