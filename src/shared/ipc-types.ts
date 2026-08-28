@@ -928,22 +928,21 @@ export interface RemoteInvokeMap {
  * failure to report.
  */
 export interface TailscaleStatus {
-  /** The CLI that answered, or null when none was found. */
+  /** The command we would run, or null when no candidate exists at all. */
   cli: string | null
   /**
-   * The installed Tailscale.app came from the Mac App Store. That build is
-   * sandboxed and has historically shipped no CLI reachable from outside it,
-   * so a probe failing is expected rather than broken — and the pane says so
-   * instead of reporting a mystery.
+   * That command actually answered with a status we could parse.
+   *
+   * Not the same as `cli !== null`, and the difference is load-bearing: the
+   * `$PATH` fallback hands back a bare name on Windows without verifying it,
+   * and the Mac App Store bundle contains a binary that may not speak CLI at
+   * all. This is the field anything that has to DRIVE Tailscale gates on.
    */
-  appStoreBuild: boolean
+  cliUsable: boolean
   /** `Running`, `Stopped`, `NeedsLogin`, … Null when the CLI did not answer. */
   backendState: string | null
   /** `Self.DNSName`, trailing dot removed — the host part of the HTTPS URL. */
   dnsName: string | null
-  magicDnsSuffix: string | null
-  /** Names Tailscale holds certificates for. Empty when HTTPS is off. */
-  certDomains: string[]
   /** A certificate exists for `dnsName`, so an HTTPS URL will actually load. */
   httpsReady: boolean
   /** What is missing and what to do about it. Null when nothing is. */

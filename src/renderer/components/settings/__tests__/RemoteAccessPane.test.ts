@@ -30,11 +30,9 @@ function status(over: Partial<RemoteAccessStatus> = {}): RemoteAccessStatus {
 function tailscale(over: Partial<TailscaleStatus> = {}): TailscaleStatus {
   return {
     cli: '/usr/local/bin/tailscale',
-    appStoreBuild: false,
+    cliUsable: true,
     backendState: 'Running',
     dnsName: 'mac.tail050858.ts.net',
-    magicDnsSuffix: 'tail050858.ts.net',
-    certDomains: ['mac.tail050858.ts.net'],
     httpsReady: true,
     hint: null,
     ...over,
@@ -137,11 +135,33 @@ describe('Tailscale Serve', () => {
   })
 
   it('cannot be turned on when no Tailscale CLI was found', async () => {
-    answers['tailscale:status'] = tailscale({ cli: null, hint: 'No tailscale command was found.' })
+    answers['tailscale:status'] = tailscale({
+      cli: null,
+      cliUsable: false,
+      backendState: null,
+      hint: 'No tailscale command was found.',
+    })
     render(RemoteAccessPane)
     await loaded()
 
     expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeDisabled()
     expect(screen.getByText(/No tailscale command was found\./)).toBeInTheDocument()
+  })
+
+  it('cannot be turned on when a command was found but never answered', async () => {
+    // The Windows shape: the `$PATH` fallback hands back a bare name it never
+    // verified, so a machine with no Tailscale at all still reports a command.
+    answers['tailscale:status'] = tailscale({
+      cli: 'tailscale',
+      cliUsable: false,
+      backendState: null,
+      dnsName: null,
+      httpsReady: false,
+      hint: 'tailscale did not answer.',
+    })
+    render(RemoteAccessPane)
+    await loaded()
+
+    expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeDisabled()
   })
 })

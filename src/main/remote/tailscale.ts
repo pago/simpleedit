@@ -25,6 +25,7 @@
  */
 import { execFile } from 'child_process'
 import { existsSync } from 'fs'
+import { join } from 'path'
 import { resolveExecutable } from '../lib/shell-path'
 import type { TailscaleStatus } from '../../shared/ipc-types'
 
@@ -41,6 +42,14 @@ const MAS_RECEIPT = '/Applications/Tailscale.app/Contents/_MASReceipt/receipt'
  * install alongside it should win rather than be shadowed.
  */
 function absoluteCandidates(): string[] {
+  if (process.platform === 'win32') {
+    // The installer's own location, so the synchronous quit-time teardown has
+    // somewhere to look: it deliberately skips the login-shell `$PATH` probe.
+    const programFiles = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]
+    return programFiles
+      .filter((dir): dir is string => typeof dir === 'string' && dir.length > 0)
+      .map((dir) => join(dir, 'Tailscale', 'tailscale.exe'))
+  }
   if (process.platform !== 'darwin') return ['/usr/bin/tailscale', '/usr/local/bin/tailscale']
   const brew = ['/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
   return isAppStoreBuild() ? [...brew, MAC_APP_CLI] : [MAC_APP_CLI, ...brew]
@@ -138,12 +147,18 @@ export function parseStatusJson(stdout: string): {
 const MAS_HINT =
   'The Mac App Store build of Tailscale is sandboxed and does not expose a command line this app can drive. Install the standalone app from tailscale.com/download, or run `brew install tailscale`, then re-check.'
 
-const NOT_FOUND_HINT =
-  'No tailscale command was found. Install the standalone macOS app from tailscale.com/download, or run `brew install tailscale`, then re-check.'
+/** Where to get a CLI, which is not the same advice on every platform. */
+function installAdvice(): string {
+  if (process.platform === 'darwin') {
+    return 'Install the standalone macOS app from tailscale.com/download, or run `brew install tailscale`'
+  }
+  if (process.platform === 'win32') return 'Install Tailscale for Windows from tailscale.com/download'
+  return 'Install Tailscale from tailscale.com/download, or through your package manager'
+}
 
 /** No CLI at all. The App Store build is the one case with a specific answer. */
 export function missingCliHint(appStoreBuild: boolean): string {
-  return appStoreBuild ? MAS_HINT : NOT_FOUND_HINT
+  return appStoreBuild ? MAS_HINT : `No tailscale command was found. ${installAdvice()}, then re-check.`
 }
 
 /**
@@ -170,11 +185,9 @@ export async function getTailscaleStatus(): Promise<TailscaleStatus> {
   if (!cli) {
     return {
       cli: null,
-      appStoreBuild,
+      cliUsable: false,
       backendState: null,
       dnsName: null,
-      magicDnsSuffix: null,
-      certDomains: [],
       httpsReady: false,
       hint: missingCliHint(appStoreBuild),
     }
@@ -183,13 +196,15 @@ export async function getTailscaleStatus(): Promise<TailscaleStatus> {
   const run = await runTailscale(cli, ['status', '--json'])
   const parsed = run.code === 0 ? parseStatusJson(run.stdout) : null
   if (!parsed) {
+    // `cli` is what we WOULD run, and on Windows `resolveExecutable` hands
+    // back a bare name it never verified — so a machine with no Tailscale at
+    // all still produces a non-null path here. `cliUsable` is the field that
+    // means "this answered", and it is what the pane gates on.
     return {
       cli,
-      appStoreBuild,
+      cliUsable: false,
       backendState: null,
       dnsName: null,
-      magicDnsSuffix: null,
-      certDomains: [],
       httpsReady: false,
       hint: unusableCliHint(cli, appStoreBuild, run.stderr.trim() || run.stdout.trim()),
     }
@@ -198,11 +213,9 @@ export async function getTailscaleStatus(): Promise<TailscaleStatus> {
   const httpsReady = parsed.dnsName !== null && parsed.certDomains.includes(parsed.dnsName)
   return {
     cli,
-    appStoreBuild,
+    cliUsable: true,
     backendState: parsed.backendState,
     dnsName: parsed.dnsName,
-    magicDnsSuffix: parsed.magicDnsSuffix,
-    certDomains: parsed.certDomains,
     httpsReady,
     hint: statusHint(parsed.backendState, parsed.dnsName, httpsReady),
   }

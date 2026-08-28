@@ -286,7 +286,11 @@
     {#if ts}
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
         <dt class="text-zinc-500">Command line</dt>
-        <dd class="min-w-0 break-all {ts.cli ? 'text-zinc-300' : 'text-amber-400'}">{ts.cli ?? 'not found'}</dd>
+        <dd class="min-w-0 break-all {ts.cliUsable ? 'text-zinc-300' : 'text-amber-400'}">{ts.cli ?? 'not found'}</dd>
+        <dt class="text-zinc-500">Connection</dt>
+        <dd class={ts.backendState === 'Running' ? 'text-emerald-400' : 'text-amber-400'}>
+          {ts.backendState ?? 'no answer'}
+        </dd>
         <dt class="text-zinc-500">This node</dt>
         <dd class="min-w-0 break-all text-zinc-300">{ts.dnsName ?? '—'}</dd>
         <dt class="text-zinc-500">HTTPS certificate</dt>
@@ -313,7 +317,7 @@
       </div>
       <Toggle
         checked={serveOn}
-        disabled={busy || config === null || !ts?.cli}
+        disabled={busy || config === null || !ts?.cliUsable}
         label="Publish over Tailscale Serve"
         onchange={(v) => void setServeEnabled(v)}
       />

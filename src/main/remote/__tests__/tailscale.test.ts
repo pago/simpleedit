@@ -58,7 +58,9 @@ describe('findTailscaleCli', () => {
 
 describe('parseStatusJson', () => {
   it('strips the trailing dot from the MagicDNS name', () => {
-    expect(parseStatusJson(REAL_STATUS)?.dnsName).toBe('infras-macbook-air.tail050858.ts.net')
+    const parsed = parseStatusJson(REAL_STATUS)
+    expect(parsed?.dnsName).toBe('infras-macbook-air.tail050858.ts.net')
+    expect(parsed?.magicDnsSuffix).toBe('tail050858.ts.net')
   })
 
   it('returns null rather than throwing on output that is not JSON', () => {
@@ -79,7 +81,7 @@ describe('getTailscaleStatus', () => {
     expect(status.cli).toBe(stub)
     expect(status.backendState).toBe('Running')
     expect(status.dnsName).toBe('infras-macbook-air.tail050858.ts.net')
-    expect(status.magicDnsSuffix).toBe('tail050858.ts.net')
+    expect(status.cliUsable).toBe(true)
     expect(status.httpsReady).toBe(true)
     expect(status.hint).toBeNull()
   })
@@ -108,6 +110,8 @@ describe('getTailscaleStatus', () => {
     writeStub('echo "failed to connect to local tailscaled" >&2\nexit 1')
     const status = await getTailscaleStatus()
     expect(status.cli).toBe(stub)
+    // Present but silent: the path is reported, driving it is not offered.
+    expect(status.cliUsable).toBe(false)
     expect(status.backendState).toBeNull()
     expect(status.hint).toContain('did not answer')
     expect(status.hint).toContain('failed to connect to local tailscaled')
@@ -117,6 +121,7 @@ describe('getTailscaleStatus', () => {
     process.env.SIMPLEEDIT_TAILSCALE_CLI = join(fixtures, 'missing')
     const status = await getTailscaleStatus()
     expect(status.cli).toBeNull()
+    expect(status.cliUsable).toBe(false)
     expect(status.hint).toMatch(/No tailscale command was found/)
   })
 })
