@@ -440,3 +440,52 @@ test('a repeated intent starts one session, not two', async ({ window, browser }
 
   await page.close()
 })
+
+/**
+ * The review surface, end to end.
+ *
+ * The component tests drive a mocked `window.api`; only this proves the reads
+ * survive the trip — that `git:log` and `git:diff` resolve the window's repo
+ * for a socket sender, and that the session's trail actually reaches the phone
+ * rather than being derived there from paths it cannot map.
+ */
+test('reads the log and the diff of the worktree the session is in', async ({ window, browser, repo }) => {
+  const terminalId = await spawnTerminalSession(window)
+  const status = await enableRemote(window)
+
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+
+  const row = page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`)
+  await expect(row).toBeVisible({ timeout: 15_000 })
+  await row.click()
+
+  // Detail chrome: two genuine panes is the one thing that earns a segmented
+  // control, and it is labelled for this screen.
+  await expect(page.getByTestId('pane-terminal')).toHaveText('Terminal')
+  await expect(page.getByTestId('pane-changes')).toHaveText('Changes')
+  await page.getByTestId('pane-changes').click()
+
+  // The picker is the session's own trail, and the fixture's tree is clean, so
+  // it opens on the newest commit — the same substitution the desk makes.
+  await expect(page.getByTestId('worktree-select')).toHaveValue(repo.mainWorktreePath, {
+    timeout: 15_000,
+  })
+  await expect(page.getByTestId('entry-title')).toHaveText('third commit', { timeout: 15_000 })
+  await expect(page.getByTestId('session-diff')).toContainText('src/c.ts')
+  await expect(page.getByTestId('session-diff')).toContainText('export const c = 3')
+
+  // Back to the log, and an older commit's diff.
+  await page.getByTestId('changes-back').click()
+  const commits = page.getByTestId('entry-commit')
+  await expect(commits).toHaveCount(3)
+  await commits.nth(1).click()
+  await expect(page.getByTestId('entry-title')).toHaveText('second commit')
+  await expect(page.getByTestId('session-diff')).toContainText('export const b = 2')
+
+  // The terminal was hidden behind Changes, never torn down.
+  await page.getByTestId('pane-terminal').click()
+  await expect(page.locator('.xterm-rows')).toContainText(/\S/, { timeout: 15_000 })
+
+  await page.close()
+})
