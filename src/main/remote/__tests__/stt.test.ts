@@ -77,6 +77,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // A test that leaves a child running would leak its slot into the next one.
+  cancelTranscriptions()
   rmSync(fixtures, { recursive: true, force: true })
 })
 
@@ -220,6 +222,18 @@ describe('audio left on disk', () => {
     expect(existsSync(stale)).toBe(false)
   })
 
+  // Directories from a build that predates the pid tag are exactly what a
+  // sweep introduced to clean up after a crash has to be able to remove.
+  it('sweeps an untagged directory from before the tag existed', () => {
+    const legacy = mkdtempSync(join(tmpdir(), 'simpleedit-stt-'))
+    writeFileSync(join(legacy, 'audio.wav'), wav())
+    // Only once it is far too old to belong to a running transcription.
+    sweepAbandonedAudio()
+    expect(existsSync(legacy)).toBe(true)
+    sweepAbandonedAudio(Date.now() + 60 * 60 * 1000)
+    expect(existsSync(legacy)).toBe(false)
+  })
+
   it('ignores anything in tmpdir that is not ours', () => {
     const other = mkdtempSync(join(tmpdir(), 'not-simpleedit-'))
     sweepAbandonedAudio()
@@ -244,22 +258,47 @@ describe('audio left on disk', () => {
 })
 
 describe('concurrency', () => {
-  it('refuses more than the ceiling, without writing their audio', async () => {
-    writeFileSync(fakeWhisper, '#!/bin/sh\nsleep 30\n')
+  // The cap used to count SPAWNED children and was checked before three awaits,
+  // so calls arriving together all sailed past it. `server.ts` dispatches each
+  // socket frame with a bare `void`, so that is one pipelining client away.
+  it('binds on calls that arrive in the same tick', async () => {
+    writeFileSync(fakeWhisper, '#!/bin/sh\nsleep 1\nprintf "rebase once more before you merge"\n')
     chmodSync(fakeWhisper, 0o755)
 
-    const running = [
-      transcribe(wav().toString('base64')).catch(() => 'killed'),
-      transcribe(wav().toString('base64')).catch(() => 'killed'),
-    ]
-    await vi.waitFor(() => expect(sttTempDirs().length).toBe(2))
+    // No awaits in between: nothing has reached `spawn` when the sixth is made,
+    // so a cap that counts spawned children sees zero for all six.
+    const calls = Array.from({ length: 6 }, () => transcribe(wav().toString('base64')))
+    const outcomes = await Promise.allSettled(calls)
 
-    // Each of these loads the whole model; the per-request caps bound one
-    // request and nothing bounded the fleet.
-    await expect(transcribe(wav().toString('base64'))).rejects.toThrow(/Already transcribing/)
-    expect(sttTempDirs().length).toBe(2)
+    const refused = outcomes.filter(
+      (r) => r.status === 'rejected' && /Already transcribing/.test(String(r.reason)),
+    )
+    expect(refused).toHaveLength(4)
+    expect(outcomes.filter((r) => r.status === 'fulfilled')).toHaveLength(2)
+  })
 
-    cancelTranscriptions()
-    await Promise.all(running)
+  it('frees a slot when a transcription finishes', async () => {
+    await transcribe(wav().toString('base64'))
+    await transcribe(wav().toString('base64'))
+    // A leaked slot would have refused this one.
+    await expect(transcribe(wav().toString('base64'))).resolves.toContain('rebase')
+  })
+
+  it('frees a slot when a transcription fails', async () => {
+    writeFileSync(fakeWhisper, '#!/bin/sh\nexit 1\n')
+    chmodSync(fakeWhisper, 0o755)
+    await expect(transcribe(wav().toString('base64'))).rejects.toThrow()
+    await expect(transcribe(wav().toString('base64'))).rejects.toThrow()
+
+    writeFileSync(fakeWhisper, '#!/bin/sh\nprintf "rebase once more before you merge"\n')
+    chmodSync(fakeWhisper, 0o755)
+    await expect(transcribe(wav().toString('base64'))).resolves.toContain('rebase')
+  })
+
+  it('frees a slot when the audio is refused before any work starts', async () => {
+    await expect(transcribe('not-a-wav')).rejects.toThrow()
+    await expect(transcribe('not-a-wav')).rejects.toThrow()
+    await expect(transcribe('not-a-wav')).rejects.toThrow()
+    await expect(transcribe(wav().toString('base64'))).resolves.toContain('rebase')
   })
 })

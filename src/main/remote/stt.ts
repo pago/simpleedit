@@ -72,6 +72,18 @@ const MAX_CONCURRENT = 2
 const live = new Map<ChildProcess, string>()
 
 /**
+ * Slots taken, which is NOT the same as children running.
+ *
+ * Counting `live` was a time-of-check/time-of-use gap: the check ran before
+ * `resolveExecutable`, `mkdtemp` and `writeFile`, and the entry appeared only
+ * at spawn. `server.ts` dispatches each socket frame with a bare `void`, so a
+ * client pipelining frames got as many whisper processes as it sent — each
+ * loading the whole model. The slot is taken synchronously on entry instead,
+ * and released on every exit.
+ */
+let slotsTaken = 0
+
+/**
  * Temp directories this module makes, tagged with the pid that owns them.
  *
  * The tag is what makes the sweep safe. Two SimpleEdit instances share one
@@ -131,11 +143,19 @@ export function sweepAbandonedAudio(now: number = Date.now()): void {
     return
   }
   for (const entry of entries) {
-    const owner = entry.startsWith(TEMP_PREFIX)
-      ? Number.parseInt(entry.slice(TEMP_PREFIX.length).split('-')[0], 10)
-      : Number.NaN
-    if (!Number.isInteger(owner)) continue
+    if (!entry.startsWith(TEMP_PREFIX)) continue
     const dir = join(tmpdir(), entry)
+    // `<pid>-` only. A `mkdtemp` suffix never contains a dash, so an entry
+    // without one is UNTAGGED — audio from a build that predates the tag, whose
+    // crash is exactly what this sweep exists to clean up after.
+    const tagged = /^(\d+)-/.exec(entry.slice(TEMP_PREFIX.length))
+    if (!tagged) {
+      // No pid to ask about, so age is the only safe test. Well past the
+      // transcription cap, so it cannot race a live one.
+      if (olderThan(dir, now, STALE_MS)) removeQuietly(dir)
+      continue
+    }
+    const owner = Number(tagged[1])
     if (owner !== process.pid && isRunning(owner) && !olderThan(dir, now, STALE_MS)) continue
     removeQuietly(dir)
   }
@@ -227,6 +247,20 @@ function looksLikeWav(audio: Buffer): boolean {
  * the dictation and nothing else.
  */
 export async function transcribe(audioBase64: string): Promise<string> {
+  // Taken BEFORE the first await, so the cap binds regardless of arrival
+  // timing — six calls in one tick used to produce six whisper processes.
+  if (slotsTaken >= MAX_CONCURRENT) {
+    throw new Error('Already transcribing. Try again in a moment.')
+  }
+  slotsTaken++
+  try {
+    return await runTranscription(audioBase64)
+  } finally {
+    slotsTaken--
+  }
+}
+
+async function runTranscription(audioBase64: string): Promise<string> {
   const binary = await resolveWhisper()
   if (!binary) throw new Error(hintFor(false, '', false)!)
 
@@ -249,10 +283,6 @@ export async function transcribe(audioBase64: string): Promise<string> {
     throw new Error('That audio is not a WAV recording.')
   }
 
-  if (live.size >= MAX_CONCURRENT) {
-    throw new Error('Already transcribing. Try again in a moment.')
-  }
-
   // `mkdtemp(3)` creates with mode 0700 — the directory is this process's
   // alone before the audio ever lands in it.
   const dir = await mkdtemp(join(tmpdir(), tempPrefixFor(process.pid)))
@@ -269,12 +299,31 @@ export async function transcribe(audioBase64: string): Promise<string> {
   }
 }
 
+/** Kill the child and anything it spawned, falling back to the child alone. */
+function killTree(child: ChildProcess): void {
+  try {
+    // Negative pid addresses the process group `detached` gave it.
+    if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL')
+  } catch {
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 function runWhisper(binary: string, modelPath: string, wavPath: string, dir: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     // No shell: every argument is passed as an argument, so a model path with
     // a space, a quote or a `;` in it is a path and nothing else.
+    // `detached` puts the child in its own process group, so a kill reaches
+    // whatever it spawned. `runWhisper` settles on `close`, which waits for
+    // every holder of the pipe — a wrapper script's grandchild would otherwise
+    // keep it open long past the kill.
     const child = spawn(binary, ['-m', modelPath, '-f', wavPath, '-nt'], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     })
     live.set(child, dir)
 
@@ -285,7 +334,7 @@ function runWhisper(binary: string, modelPath: string, wavPath: string, dir: str
     const timer = setTimeout(() => {
       if (settled) return
       settled = true
-      child.kill('SIGKILL')
+      killTree(child)
       reject(new Error('Transcription timed out.'))
     }, TRANSCRIBE_TIMEOUT_MS)
 
@@ -329,11 +378,7 @@ function runWhisper(binary: string, modelPath: string, wavPath: string, dir: str
  */
 export function cancelTranscriptions(): void {
   for (const [child, dir] of [...live]) {
-    try {
-      child.kill('SIGKILL')
-    } catch {
-      /* already gone */
-    }
+    killTree(child)
     live.delete(child)
     removeQuietly(dir)
   }
