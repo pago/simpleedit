@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Toggle from './Toggle.svelte'
-  import type { RemoteAccessConfig, RemoteAccessStatus, RemoteInterface } from '../../../shared/ipc-types'
+  import type { RemoteAccessConfig, RemoteAccessStatus, RemoteInterface, SttStatus } from '../../../shared/ipc-types'
 
   let config = $state<RemoteAccessConfig | null>(null)
   let status = $state<RemoteAccessStatus | null>(null)
@@ -9,6 +9,8 @@
   let busy = $state(false)
   let copied = $state(false)
   let hostError = $state<string | null>(null)
+  let stt = $state<SttStatus | null>(null)
+  let sttError = $state<string | null>(null)
 
   const enabled = $derived(config?.enabled ?? false)
   const tailscale = $derived(interfaces.find((i) => i.isTailscale) ?? null)
@@ -20,11 +22,31 @@
   })
 
   async function refresh(): Promise<void> {
-    ;[config, status, interfaces] = await Promise.all([
+    ;[config, status, interfaces, stt] = await Promise.all([
       window.api.invoke('remote:config'),
       window.api.invoke('remote:status'),
       window.api.invoke('remote:interfaces'),
+      window.api.invoke('stt:status'),
     ])
+  }
+
+  async function pickModel(): Promise<void> {
+    sttError = null
+    try {
+      const next = await window.api.invoke('stt:pick-model')
+      if (next) stt = next
+    } catch (error) {
+      sttError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  async function clearModel(): Promise<void> {
+    sttError = null
+    try {
+      stt = await window.api.invoke('stt:set-model-path', '')
+    } catch (error) {
+      sttError = error instanceof Error ? error.message : String(error)
+    }
   }
 
   async function setEnabled(next: boolean): Promise<void> {
@@ -176,6 +198,58 @@
         Bound to loopback, so only a browser on this Mac can connect. Pick the Tailscale address
         to reach a phone.
       </p>
+    {/if}
+  </section>
+
+  <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+    <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Dictation</h2>
+    <p class="mt-2 text-xs leading-relaxed text-zinc-500">
+      The remote composer can take a spoken reply. Audio is captured in the browser, transcribed
+      on this Mac by whisper.cpp, and never leaves your network — and never touches disk beyond a
+      temporary file that is deleted as soon as the transcription finishes.
+      Typing always works, whether or not any of this is set up.
+    </p>
+
+    {#if stt}
+      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+        <dt class="text-zinc-500">whisper.cpp</dt>
+        <dd class={stt.installed ? 'text-emerald-400' : 'text-amber-400'}>
+          {stt.installed ? stt.binary : 'not installed'}
+        </dd>
+        <dt class="text-zinc-500">Model</dt>
+        <dd class="min-w-0 break-all {stt.modelReady ? 'text-zinc-300' : 'text-amber-400'}">
+          {stt.modelPath || 'none selected'}
+        </dd>
+      </dl>
+
+      {#if stt.hint}
+        <p class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300">
+          {stt.hint}
+        </p>
+      {/if}
+      {#if sttError}
+        <p class="mt-2 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{sttError}</p>
+      {/if}
+
+      <div class="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          onclick={() => void pickModel()}
+          class="rounded-md bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
+        >{stt.modelPath ? 'Change model…' : 'Choose model…'}</button>
+        {#if stt.modelPath}
+          <button
+            type="button"
+            onclick={() => void clearModel()}
+            class="rounded-md px-2.5 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          >Clear</button>
+        {/if}
+        <button
+          type="button"
+          onclick={() => void refresh()}
+          class="ml-auto rounded-md px-2.5 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+        >Re-check</button>
+      </div>
     {/if}
   </section>
 </div>
