@@ -560,7 +560,15 @@ function registerAllHandlers(): void {
   handleInvoke('tailscale:status', () => getTailscaleStatus())
   handleInvoke('tailscale:serve-status', () => getServeStatus())
 
-  handleInvoke('remote:set-serve-enabled', async (_event, enabled: boolean) => {
+  handleInvoke('remote:set-serve-enabled', async (event, enabled: boolean) => {
+    // Not reachable over the socket. Every other `remote:*` setter decides what
+    // THIS Mac does; this one decides what the tailnet can reach, and a token
+    // holder must not be able to widen the surface from loopback-only to every
+    // device on the tailnet in a single call. `clientKey` is stamped by main
+    // from the call's origin, so a socket cannot claim to be a window.
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('Tailscale Serve is not available to remote clients')
+    }
     const config = getRemoteConfig()
     // Refused up front so the pane can say why, rather than leaving the user
     // with a toggle that is on and a mapping that never appears. `syncServe`

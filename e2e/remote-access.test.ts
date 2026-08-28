@@ -298,6 +298,34 @@ test('a remote client cannot overwrite the window\'s session list', async ({ win
   await page.close()
 })
 
+// Turning Serve on publishes this app to every device on the tailnet. A token
+// holder already has the machine, but widening what the TAILNET reaches is a
+// decision that belongs at the desk, not to whoever holds a link.
+test('a remote client cannot switch on Tailscale Serve', async ({ window, browser }) => {
+  const status = await enableRemote(window)
+
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await page.waitForFunction(() => 'api' in window, undefined, { timeout: 15_000 })
+
+  const refused = await page.evaluate(async () => {
+    try {
+      await (window as unknown as { api: Api }).api.invoke('remote:set-serve-enabled', true)
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  })
+  expect(refused).toMatch(/not available to remote clients/)
+
+  const config = (await window.evaluate(() =>
+    (window as unknown as { api: Api }).api.invoke('remote:config'),
+  )) as { serveEnabled: boolean }
+  expect(config.serveEnabled).toBe(false)
+
+  await page.close()
+})
+
 test('a socket disconnect leaves the window transport intact', async ({ window, browser }) => {
   await enableRemote(window)
   const status = await enableRemote(window)
