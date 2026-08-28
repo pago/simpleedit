@@ -21,6 +21,7 @@ import {
   waitForReply,
   type Message,
 } from './agent-bus'
+import { sendAgentStatus } from './agent-status'
 
 interface BridgeInstance {
   server: Server
@@ -697,7 +698,7 @@ function registerCodexIdentityAndStatus(
   }
   const status = signal.eventName ? statusByEvent[signal.eventName] : undefined
   if (status) {
-    webContents.send('agent:status', {
+    sendAgentStatus(webContents, {
       worktreePath,
       status,
       terminalId,

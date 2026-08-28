@@ -328,8 +328,25 @@ export interface AgentCapabilities {
   modelCatalog: boolean
 }
 
+/**
+ * One agent's lifecycle state, as main reports it.
+ *
+ * `precise` separates a state the agent ITSELF told us about (a hook, a
+ * control-channel event, an OSC title it writes deliberately) from one we
+ * inferred. Anything that acts on a status rather than merely displaying it —
+ * a push notification, above all — must require it: a mis-parsed title
+ * buzzing a phone is worse than no notification at all.
+ */
+export interface AgentStatusEvent {
+  worktreePath: string
+  status: AgentStatus
+  terminalId: string
+  precise: boolean
+  message?: string
+}
+
 export interface AgentEventMap {
-  'agent:status': { worktreePath: string; status: AgentStatus; terminalId: string; precise: boolean; message?: string }
+  'agent:status': AgentStatusEvent
   'agent:session-id': { terminalId: string; sessionId: string }
   /** The agent's own name for the conversation (see `reportsSessionTitle`). */
   'agent:session-title': { terminalId: string; title: string }

@@ -1,6 +1,7 @@
 import type { RemoteClient } from './client-hub'
 import type { AgentProviderId, AgentStatus } from '../shared/ipc-types'
 import { tryGetProvider } from './agents/provider'
+import { sendAgentStatus } from './agent-status'
 
 interface TerminalAttachment {
   worktreePath: string
@@ -95,9 +96,7 @@ function sendStatus(
   worktreePath: string,
   status: AgentStatus
 ): void {
-  if (!webContents.isDestroyed()) {
-    webContents.send('agent:status', { worktreePath, status, terminalId, precise: true })
-  }
+  sendAgentStatus(webContents, { worktreePath, status, terminalId, precise: true })
 }
 
 /**

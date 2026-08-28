@@ -6,6 +6,7 @@ import { emitPtyData } from './claude-stream'
 import { getProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
 import { applyAgentSignal } from './mcp-bridge'
+import { sendAgentStatus } from './agent-status'
 import './agents/codex'
 import './agents/opencode'
 
@@ -285,16 +286,21 @@ function spawnAgentTerminal(
     terminals.delete(id)
     ptyOwner.delete(id)
     ptyClients.delete(id)
+    if (opts.clearStatusOnExit) {
+      // Clear the worktree's Claude status so the worktree picker (#87) and
+      // sidebar badges don't show stale 'running' for an exited tab. The
+      // status is per-worktreePath, so this only fires when the LAST Claude
+      // tab for this worktree exits — earlier exits leave the status as
+      // whichever still-alive tab last reported. Acceptable: the indicator
+      // tracks "is *any* Claude active here", not "is this specific tab".
+      //
+      // Reported outside the liveness guard: `sendAgentStatus` skips a dead
+      // client on its own, and an exit is the event that lets everything
+      // keyed by this terminal id let go of it. Skipping it for a closed
+      // window would leak one entry per session, forever.
+      sendAgentStatus(webContents, { worktreePath, status: 'exited', terminalId: id, precise: false })
+    }
     if (!webContents.isDestroyed()) {
-      if (opts.clearStatusOnExit) {
-        // Clear the worktree's Claude status so the worktree picker (#87) and
-        // sidebar badges don't show stale 'running' for an exited tab. The
-        // status is per-worktreePath, so this only fires when the LAST Claude
-        // tab for this worktree exits — earlier exits leave the status as
-        // whichever still-alive tab last reported. Acceptable: the indicator
-        // tracks "is *any* Claude active here", not "is this specific tab".
-        webContents.send('agent:status', { worktreePath, status: 'exited', terminalId: id, precise: false })
-      }
       webContents.send('pty:exit', { id, exitCode })
     }
   })
@@ -397,7 +403,7 @@ export async function spawnAgentTerminalForProvider(
     return
   }
 
-  webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
+  sendAgentStatus(webContents, { worktreePath, status: 'initializing', terminalId: id, precise: false })
 
   // A provider that reports out-of-band opens its control channel here. Its
   // signals go through the very handler an HTTP hook would hit, so status, the
@@ -406,8 +412,7 @@ export async function spawnAgentTerminalForProvider(
   if (provider.attach) {
     const detach = provider.attach(plan, ctx, {
       status: (status, message) => {
-        if (webContents.isDestroyed()) return
-        webContents.send('agent:status', {
+        sendAgentStatus(webContents, {
           worktreePath,
           status,
           terminalId: id,
