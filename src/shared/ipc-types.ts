@@ -1004,6 +1004,59 @@ export interface RemoteInterface {
 export interface RemoteEventMap {
   'remote:status-changed': RemoteAccessStatus
   'remote:serve-changed': TailscaleServeStatus
+  'push:status-changed': PushStatus
+}
+
+// ── Push notifications ────────────────────────────────────
+/**
+ * One registered device, as the UI is allowed to see it.
+ *
+ * Deliberately NOT the endpoint. A push endpoint is a bearer capability to
+ * send notifications to that device, and `push:status` is reachable over the
+ * remote socket like every other channel — so the pane gets an id it can
+ * address and a service host it can name, and nothing that could be replayed.
+ */
+export interface PushDevice {
+  /** Stable digest of the endpoint. What `push:unsubscribe` takes. */
+  id: string
+  /** What the device called itself when it registered. */
+  label: string
+  /** The push service's host — `web.push.apple.com`, `fcm.googleapis.com`, … */
+  service: string
+  createdAt: number
+  /** Epoch ms of the last successful delivery, or null. */
+  lastPushAt: number | null
+  /** Why the last delivery failed, or null. Never a reason to prune on its own. */
+  lastError: string | null
+}
+
+export interface PushStatus {
+  /**
+   * The VAPID public key, which a browser needs in order to subscribe.
+   * Its private half never leaves the main process — not to a renderer, not
+   * to the web bundle, not into a log.
+   */
+  vapidPublicKey: string
+  devices: PushDevice[]
+  error: string | null
+}
+
+/** Exactly what `PushSubscription.toJSON()` yields, plus a name for the row. */
+export interface PushSubscriptionInput {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+  /** How the device should be listed. Trimmed and length-capped by main. */
+  label?: string
+}
+
+export interface PushInvokeMap {
+  'push:status': { args: []; result: PushStatus }
+  /** Register or refresh this device. Idempotent per endpoint. */
+  'push:subscribe': { args: [subscription: PushSubscriptionInput]; result: PushStatus }
+  /** Forget one device, by endpoint (what a browser knows) or by id (what the pane shows). */
+  'push:unsubscribe': { args: [endpointOrId: string]; result: PushStatus }
+  /** Forget every device. The way out when a phone is lost. */
+  'push:forget-all': { args: []; result: PushStatus }
 }
 
 // ── LSP ───────────────────────────────────────────────────
@@ -1218,6 +1271,7 @@ export type InvokeMap = WorktreeInvokeMap &
   UpdateInvokeMap &
   ModelsInvokeMap &
   RemoteInvokeMap &
+  PushInvokeMap &
   SttInvokeMap &
   AgentBusInvokeMap
 

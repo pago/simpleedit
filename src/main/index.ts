@@ -47,7 +47,18 @@ import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHu
 import { getTailscaleStatus } from './remote/tailscale'
 import { applyServe, getServeStatus, reclaimAbandonedServe, stopServeSync } from './remote/serve'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
+import { pairingTarget } from '../shared/remote-pairing'
 import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepAbandonedAudio } from './remote/stt'
+import {
+  addSubscription,
+  configurePush,
+  getPushStatus,
+  handleAgentStatus,
+  removeAllSubscriptions,
+  removeSubscription,
+} from './remote/push'
+import { startPresenceTracking, stopPresenceTracking } from './remote/presence'
+import { onAgentStatus } from './agent-status'
 import { listRemoteInterfaces, isAllowedBindHost, isLoopbackHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
@@ -65,7 +76,7 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { getProvider, registeredProviderIds } from './agents/provider'
@@ -255,6 +266,12 @@ function broadcastRemoteStatus(status: RemoteAccessStatus): void {
   }
 }
 
+function broadcastPushStatus(status: PushStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('push:status-changed', status)
+  }
+}
+
 function broadcastServeStatus(status: TailscaleServeStatus): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('remote:serve-changed', status)
@@ -295,6 +312,40 @@ function syncServe(): Promise<TailscaleServeStatus> {
     return next
   })
 }
+
+// ── Push notifications ────────────────────────────────────
+/**
+ * Where a notification tap should land, or null when nothing would work.
+ *
+ * The same decision the pairing QR makes, reused rather than restated: never a
+ * loopback URL (it resolves, on the phone, to the phone), HTTPS-over-Serve
+ * first, and nothing at all when the server is down. A notification whose tap
+ * opens a dead page is worse than no notification, so this returning null is
+ * what makes `handleAgentStatus` stay quiet.
+ */
+function pushTargetUrl(): string | null {
+  const status = getRemoteStatus()
+  const serve = getServeStatus()
+  return pairingTarget({
+    running: status.running,
+    directUrl: status.url,
+    boundToTailscale: listRemoteInterfaces().some((i) => i.isTailscale && i.address === status.host),
+    serveUrl: serve.url,
+  }).url
+}
+
+configurePush({
+  targetUrl: pushTargetUrl,
+  // The renderer owns session labels; main only holds the list it was handed.
+  labelFor: (windowId, terminalId) =>
+    getWindowSessions(windowId).find((session) => session.terminalId === terminalId)?.label ?? null,
+  onStatusChange: broadcastPushStatus,
+})
+
+// The trigger. Registered at module load, beside the rest of the remote
+// wiring, so it is on before any window exists — a session can block while
+// the settings pane has never been opened.
+onAgentStatus((event, client) => handleAgentStatus(event, client.id))
 
 /**
  * Serialised. Two `remote:set-*` calls landing together would otherwise each
@@ -602,6 +653,21 @@ function registerAllHandlers(): void {
     broadcastRemoteStatus(status)
     return status
   })
+
+  // ── Push notifications ──────────────────────────────────
+  // Reachable over the socket by design: the phone is where a subscription is
+  // made. `push:status` carries the VAPID PUBLIC key (a browser needs it to
+  // subscribe) and device rows without endpoints — never the private key, and
+  // never a capability that could be replayed.
+  handleInvoke('push:status', () => getPushStatus())
+
+  handleInvoke('push:subscribe', (_event, subscription: PushSubscriptionInput) =>
+    addSubscription(subscription),
+  )
+
+  handleInvoke('push:unsubscribe', (_event, endpointOrId: string) => removeSubscription(endpointOrId))
+
+  handleInvoke('push:forget-all', () => removeAllSubscriptions())
 
   // ── Speech to text ──────────────────────────────────────
   // Reachable over the socket by design: the phone is where dictation happens,
@@ -1041,6 +1107,12 @@ app.whenReady().then(() => {
   registerAllHandlers()
   initAutoUpdater()
 
+  // Tell Claude Code when you are actually at this machine, so its own Remote
+  // Control push stays quiet while ours would duplicate it. Started before any
+  // window, because the env var it sets has to be in place before the first
+  // PTY inherits it.
+  startPresenceTracking()
+
   // Remote access survives a restart if it was on. `attachTarget` is resolved
   // per socket, not now, so starting before any window exists is fine.
   //
@@ -1124,6 +1196,10 @@ app.whenReady().then(() => {
         console.error('[SimpleEdit] Failed to restart remote access:', err)
       })
     }
+    // Stopped with the last window, for the same reason: with nothing on
+    // screen there is nobody to be present at, and a marker saying otherwise
+    // would silence Claude Code's own push indefinitely.
+    startPresenceTracking()
   })
 })
 
@@ -1144,6 +1220,9 @@ app.on('before-quit', () => {
   // that outlives its port is the failure mode this whole module guards.
   try { stopServeSync() } catch { /* ignore */ }
   try { cancelTranscriptions() } catch { /* ignore */ }
+  // A marker left on disk would tell Claude Code you are at a machine running
+  // an app that has quit — silencing its push for the whole next session.
+  try { stopPresenceTracking() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
@@ -1176,6 +1255,9 @@ app.on('window-all-closed', () => {
   // that outlives its port is the failure mode this whole module guards.
   try { stopServeSync() } catch { /* ignore */ }
   try { cancelTranscriptions() } catch { /* ignore */ }
+  // A marker left on disk would tell Claude Code you are at a machine running
+  // an app that has quit — silencing its push for the whole next session.
+  try { stopPresenceTracking() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
