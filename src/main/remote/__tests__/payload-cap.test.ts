@@ -47,10 +47,17 @@ describe('capDiffForRemote', () => {
   })
 
   it('measures bytes, not characters, and never cuts one in half', () => {
-    // A budget counted in characters would let a diff of astral characters
-    // through at four times the size the socket can take.
-    const capped = capDiffForRemote(`${'🙂'.repeat(200_000)}\n`, 1024)
+    // Sized to sit in the GAP: 400 emoji are 800 UTF-16 units — under a
+    // 1024 budget counted either of the wrong ways — but 1600 bytes on the
+    // wire, which is what the socket's buffer actually holds. A length-based
+    // check waves this straight through at well over the cap.
+    const astral = `${'🙂'.repeat(400)}\n`
+    expect(astral.length).toBeLessThan(1024)
+    expect(Buffer.byteLength(astral, 'utf8')).toBeGreaterThan(1024)
+
+    const capped = capDiffForRemote(astral, 1024)
     expect(Buffer.byteLength(capped, 'utf8')).toBeLessThanOrEqual(1024)
+    expect(capped).toContain(DIFF_TRUNCATED_MARKER)
     expect(capped).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
     expect(capped).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
   })
