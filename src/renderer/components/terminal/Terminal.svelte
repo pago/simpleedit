@@ -8,6 +8,7 @@
   import { capabilitiesFor } from '../../stores/agent-capabilities.svelte'
   import { clientKey } from '../../lib/clientKey'
   import { hasUserAttention as isAttended } from '../../lib/attention'
+  import { attachPty, type PtyAttachment } from '../../lib/pty-attach'
 
   interface Props {
     terminalId: string
@@ -31,9 +32,7 @@
 
   let term: Terminal | undefined
   let fitAddon: FitAddon | undefined
-  let cleanupDataListener: (() => void) | undefined
-  let cleanupExitListener: (() => void) | undefined
-  let cleanupOwnerListener: (() => void) | undefined
+  let attachment: PtyAttachment | undefined
   let resizeObserver: ResizeObserver | undefined
 
   // Scroll position preservation across tab switches
@@ -181,61 +180,19 @@
       }
     }
 
-    // The PTY spawns before this component mounts, so output emitted in that
-    // window (all of it, for a process that crashes at spawn) never reaches
-    // this listener. Replay main's backlog first; `written` tracks the
-    // absolute byte offset already rendered so live chunks that overlap the
-    // replay are deduped. Live chunks arriving before the replay resolves are
-    // queued to keep byte order.
-    let written = 0
-    let replayDone = false
-    const queued: Array<{ data: string; offset: number }> = []
-
-    function writeDeduped(chunk: { data: string; offset: number }): void {
-      const chunkEnd = chunk.offset + chunk.data.length
-      if (chunkEnd <= written) return
-      writeChunk(chunk.data.slice(Math.max(0, written - chunk.offset)))
-      written = chunkEnd
-    }
-
-    cleanupDataListener = window.api.on('pty:data', (payload) => {
-      if (payload.id !== id || !term) return
-      if (!replayDone) {
-        queued.push({ data: payload.data, offset: payload.offset })
-        return
-      }
-      writeDeduped(payload)
-    })
-
-    void window.api
-      .invoke('pty:backlog', id)
-      .then((b) => {
-        if (term && b.end > written) {
-          writeDeduped({ data: b.data, offset: b.start })
-        }
-      })
-      .catch(() => { /* degrade to live-only output */ })
-      .finally(() => {
-        replayDone = true
-        for (const chunk of queued) writeDeduped(chunk)
-        queued.length = 0
-      })
-
-    cleanupExitListener = window.api.on('pty:exit', (payload) => {
-      if (payload.id !== id) return
-      // Main drops the owner entry on exit, so this client's belief about it
-      // must go too — otherwise a dead terminal keeps claiming to be sized by
-      // somebody.
-      sizeOwner = null
-      if (term) term.write(`\r\n[Process exited with code ${payload.exitCode}]`)
-    })
-
-    // Main's answer about who sizes this PTY. Not a gate on anything — it is
-    // what lets this view say it is being sized by another device instead of
-    // silently rendering at a width the PTY abandoned.
-    cleanupOwnerListener = window.api.on('pty:owner-changed', (payload) => {
-      if (payload.id !== id) return
-      sizeOwner = payload.owner
+    // Backlog replay, live output, exit and ownership all live in the shared
+    // attachment — the phone renders the same stream through the same code,
+    // which is the point: a second implementation of this would eventually
+    // disagree with the PTY about what the user is looking at.
+    attachment = attachPty(id, {
+      write: writeChunk,
+      onExit: (exitCode) => {
+        if (term) term.write(`\r\n[Process exited with code ${exitCode}]`)
+      },
+      // Not a gate on anything — it is what lets this view say it is being
+      // sized by another device instead of silently rendering at a width the
+      // PTY abandoned.
+      onOwnerChange: (owner) => { sizeOwner = owner },
     })
 
     // Auto-resize on container size change.
@@ -262,12 +219,8 @@
     sizeOwner = null
     resizeObserver?.disconnect()
     resizeObserver = undefined
-    cleanupDataListener?.()
-    cleanupDataListener = undefined
-    cleanupExitListener?.()
-    cleanupExitListener = undefined
-    cleanupOwnerListener?.()
-    cleanupOwnerListener = undefined
+    attachment?.dispose()
+    attachment = undefined
     term?.dispose()
     term = undefined
     fitAddon = undefined
