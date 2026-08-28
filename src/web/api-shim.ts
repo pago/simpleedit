@@ -32,11 +32,20 @@ export interface RemoteIdentity {
 export type ConnectionState = 'connecting' | 'open' | 'closed'
 
 export interface RemoteConnection {
-  /** Resolves the first time the server's `hello` frame arrives. */
-  readonly identity: Promise<RemoteIdentity>
   readonly state: () => ConnectionState
+  /**
+   * Who this socket currently is, or null before the first `hello`.
+   *
+   * NOT stable for the life of the page. A reconnect is a new socket and the
+   * server mints it a new `clientKey`, so anything comparing an announced PTY
+   * owner against "me" has to re-read this — a cached key would have the view
+   * claiming it lost the terminal's size to itself.
+   */
+  readonly identity: () => RemoteIdentity | null
   /** Called on every state change, so a UI can show the connection honestly. */
   onStateChange: (fn: (state: ConnectionState) => void) => () => void
+  /** Called on every `hello`, including a reconnect's. */
+  onIdentity: (fn: (identity: RemoteIdentity) => void) => () => void
 }
 
 const RECONNECT_MIN_MS = 500
@@ -62,8 +71,8 @@ export function installRemoteApi(): RemoteConnection {
   /** Frames written before the socket opened. Flushed in order on open. */
   const outbox: string[] = []
 
-  let resolveIdentity: (id: RemoteIdentity) => void = () => {}
-  const identity = new Promise<RemoteIdentity>((res) => { resolveIdentity = res })
+  let identity: RemoteIdentity | null = null
+  const identityWatchers = new Set<(identity: RemoteIdentity) => void>()
 
   function setState(next: ConnectionState): void {
     if (state === next) return
@@ -79,7 +88,8 @@ export function installRemoteApi(): RemoteConnection {
 
   function handle(frame: ServerFrame): void {
     if (frame.kind === 'hello') {
-      resolveIdentity({ windowId: frame.windowId, clientKey: frame.clientKey })
+      identity = { windowId: frame.windowId, clientKey: frame.clientKey }
+      for (const fn of identityWatchers) fn(identity)
       return
     }
     if (frame.kind === 'event') {
@@ -117,6 +127,9 @@ export function installRemoteApi(): RemoteConnection {
     socket.addEventListener('close', () => {
       if (ws !== socket) return
       ws = null
+      // The key belonged to THAT socket. Holding it would have the next
+      // `pty:owner-changed` compared against an identity that no longer exists.
+      identity = null
       setState('closed')
       // Every in-flight call dies with the socket. Leaving them pending would
       // hang whatever awaited them for the rest of the page's life.
@@ -178,11 +191,16 @@ export function installRemoteApi(): RemoteConnection {
   ;(globalThis as unknown as { api: typeof api }).api = api
 
   return {
-    identity,
     state: () => state,
+    identity: () => identity,
     onStateChange(fn) {
       stateWatchers.add(fn)
       return () => { stateWatchers.delete(fn) }
+    },
+    onIdentity(fn) {
+      identityWatchers.add(fn)
+      if (identity) fn(identity)
+      return () => { identityWatchers.delete(fn) }
     },
   }
 }
