@@ -238,35 +238,3 @@ test('speaks a reply, reviews it, sends it, and sees it in the terminal', async 
   await context.close()
   await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:set-enabled', false))
 })
-
-test('the accessory keys write the bytes a physical key sends', async ({ window, browser }) => {
-  const terminalId = await spawnTerminalSession(window)
-  const status = (await window.evaluate(() =>
-    (window as unknown as { api: Api }).api.invoke('remote:set-enabled', true),
-  )) as RemoteAccessStatus
-  const url = new URL(status.url!)
-  url.hostname = 'localhost'
-
-  const page = await browser.newPage()
-  await page.goto(url.toString())
-  await page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`).click()
-
-  // Put a command on the line without submitting it, then let the key bar's
-  // Enter be the thing that runs it — which is what a TUI menu needs from it.
-  await page.getByTestId('composer-text').fill('echo keybar-proof')
-  await page.getByTestId('composer-send').click()
-  await expect(page.locator('.xterm-rows')).toContainText('keybar-proof', { timeout: 20_000 })
-
-  // Up recalls the previous command; Enter runs it again.
-  await page.getByTestId('key-up').click()
-  await page.getByTestId('key-enter').click()
-  await expect
-    .poll(
-      async () => (await page.locator('.xterm-rows').innerText()).match(/keybar-proof/g)?.length ?? 0,
-      { timeout: 20_000 },
-    )
-    .toBeGreaterThanOrEqual(3)
-
-  await page.close()
-  await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:set-enabled', false))
-})

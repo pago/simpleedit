@@ -207,6 +207,11 @@
     attachment = attachPty(id, {
       write: writeChunk,
       onExit: (exitCode) => {
+        // Main drops the owner entry on exit, so this client's belief about it
+        // has to go too — a dead terminal must not keep claiming to be sized by
+        // somebody. Distinct from an ownership RELEASE, which resyncs geometry;
+        // there is nothing left here to size.
+        sizeOwner = null
         if (term) term.write(`\r\n[Process exited with code ${exitCode}]`)
       },
       // Not a gate on anything — it is what lets this view say it is being

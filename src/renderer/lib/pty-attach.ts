@@ -26,7 +26,14 @@ export interface PtyAttachOptions {
   /** Called with output to render, already deduplicated and in byte order. */
   write: (data: string) => void
   onExit?: (exitCode: number) => void
-  /** Main's word on who sizes this PTY. `null` means nobody does. */
+  /**
+   * Main's word on who sizes this PTY. `null` means the owner's transport went
+   * away and the PTY is still live at ITS geometry — so a view that can see
+   * the terminal should re-assert its own size.
+   *
+   * Never fired for `pty:exit`: a dead terminal needs no size, and treating the
+   * two the same has a view fitting and claiming a PTY that is gone.
+   */
   onOwnerChange?: (owner: PtyClientId | null) => void
   /**
    * Bytes were produced that this view will never see — the disconnect outlasted
@@ -105,9 +112,11 @@ export function attachPty(id: string, options: PtyAttachOptions): PtyAttachment 
 
   const offExit = window.api.on('pty:exit', (payload) => {
     if (payload.id !== id || disposed) return
-    // Main drops the owner entry on exit, so a client's belief about it has to
-    // go too — a dead terminal must not keep claiming to be sized by somebody.
-    options.onOwnerChange?.(null)
+    // NOT reported as an ownership change. Main does drop the owner entry here,
+    // but `onOwnerChange(null)` means "the owner went away and this PTY still
+    // needs sizing" — and a view acting on that would fit and claim a terminal
+    // that no longer exists. A dead terminal has no owner and needs no size;
+    // the view clears its own belief in `onExit`.
     options.onExit?.(payload.exitCode)
   })
 

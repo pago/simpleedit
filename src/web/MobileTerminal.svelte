@@ -107,6 +107,10 @@
       write: (data) => term?.write(data),
       onExit: (code) => {
         exitCode = code
+        // Main drops the owner entry on exit. Distinct from a RELEASE, which
+        // resyncs geometry — there is nothing left here to size, and claiming
+        // it would name this client the owner of a PTY main has none for.
+        sizeOwner = null
         term?.write(`\r\n[Process exited with code ${code}]`)
       },
       // The backlog could not reach back far enough to cover the disconnect.
@@ -187,7 +191,7 @@
     <button
       type="button"
       onclick={dismissGapNotice}
-      class="absolute inset-x-2 top-2 z-10 rounded bg-amber-950/95 px-2 py-1 text-left text-[10px] text-amber-300 shadow"
+      class="absolute inset-x-2 bottom-2 z-10 rounded bg-amber-950/95 px-2 py-1 text-left text-[10px] text-amber-300 shadow"
     >Output was missed while disconnected — this screen may be incomplete. Tap to dismiss.</button>
   {/if}
   {#if exitCode !== null}

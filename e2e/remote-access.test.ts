@@ -239,6 +239,65 @@ test('a released terminal is resized back to the view that is left', async ({ wi
   expect(restored).toEqual(desktop)
 })
 
+// Needs no whisper and no model, so it does not belong behind the dictation
+// gate — where it never ran on CI at all.
+test('the accessory keys reach the PTY', async ({ window, browser }) => {
+  const terminalId = await spawnTerminalSession(window)
+  const status = await enableRemote(window)
+
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`).click()
+
+  await page.getByTestId('composer-text').fill('echo keybar-proof')
+  await page.getByTestId('composer-send').click()
+  await expect(page.locator('.xterm-rows')).toContainText('keybar-proof', { timeout: 20_000 })
+
+  // Up recalls the previous command; Enter runs it again. Both are the bar's.
+  await page.getByTestId('key-up').click()
+  await page.getByTestId('key-enter').click()
+  await expect
+    .poll(
+      async () => (await page.locator('.xterm-rows').innerText()).match(/keybar-proof/g)?.length ?? 0,
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(3)
+
+  await page.close()
+})
+
+// The list is per-window state a socket must not be able to write: a socket
+// joins an existing hub, so `sender.id` IS the window's id, and the renderer
+// re-pushes only when its own state changes — so nothing would put it back.
+test('a remote client cannot overwrite the window\'s session list', async ({ window, browser }) => {
+  const terminalId = await spawnTerminalSession(window)
+  const status = await enableRemote(window)
+
+  const page = await browser.newPage()
+  await page.goto(byName(status.url!))
+  await expect(page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`)).toBeVisible({
+    timeout: 15_000,
+  })
+
+  const refused = await page.evaluate(async () => {
+    try {
+      await (window as unknown as { api: Api }).api.invoke('session:sync', [])
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  })
+  expect(refused).toMatch(/not available to remote clients/)
+
+  // And the list is still the window's own.
+  const sessions = (await window.evaluate(() =>
+    (window as unknown as { api: Api }).api.invoke('session:list'),
+  )) as { terminalId: string }[]
+  expect(sessions.map((s) => s.terminalId)).toContain(terminalId)
+
+  await page.close()
+})
+
 test('a socket disconnect leaves the window transport intact', async ({ window, browser }) => {
   await enableRemote(window)
   const status = await enableRemote(window)
