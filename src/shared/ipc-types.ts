@@ -821,6 +821,25 @@ export interface RemoteAccessConfig {
    * one — nothing is bundled and nothing is downloaded.
    */
   sttModelPath: string
+  /**
+   * Drive `tailscale serve` while remote access is on.
+   *
+   * Explicit opt-in, separate from `enabled`, and never implied by it: Serve
+   * publishes this app to every device on the tailnet under a stable HTTPS
+   * name. Turning remote access on is a decision about this Mac; turning Serve
+   * on is a decision about the tailnet.
+   */
+  serveEnabled: boolean
+  /**
+   * The loopback port a serve mapping was last created for, or 0.
+   *
+   * Not a preference — a claim ticket. The mapping lives inside tailscaled and
+   * outlives a crash, so the port is written down before the mapping exists
+   * and cleared once it is gone. At launch a non-zero value means some earlier
+   * run left a mapping behind, and it is removed only if tailscaled still
+   * points at exactly that target.
+   */
+  servePort: number
 }
 
 // ── Speech to text ────────────────────────────────────────
@@ -890,8 +909,14 @@ export interface RemoteInvokeMap {
   'remote:set-host': { args: [host: string]; result: RemoteAccessStatus }
   /** Candidate bind addresses, so the pane can offer them instead of a text field. */
   'remote:interfaces': { args: []; result: RemoteInterface[] }
+  /**
+   * Opt in to, or out of, `tailscale serve`. Persisted, and applied against
+   * the running server's current port.
+   */
+  'remote:set-serve-enabled': { args: [enabled: boolean]; result: TailscaleServeStatus }
   /** Probe the Tailscale CLI. Spawns a subprocess, so it is called on demand. */
   'tailscale:status': { args: []; result: TailscaleStatus }
+  'tailscale:serve-status': { args: []; result: TailscaleServeStatus }
 }
 
 /**
@@ -925,6 +950,33 @@ export interface TailscaleStatus {
   hint: string | null
 }
 
+/**
+ * The serve mapping this app owns.
+ *
+ * Its lifetime is the remote server's: created when the server starts,
+ * re-pointed when the ephemeral port changes, removed when it stops.
+ */
+export interface TailscaleServeStatus {
+  /** A mapping exists and is published. */
+  active: boolean
+  /** The loopback port we are responsible for, whether or not it published. */
+  port: number | null
+  /** The HTTPS URL Serve publishes, token included. Null unless active. */
+  url: string | null
+  /** A serve or an unserve is in flight. */
+  busy: boolean
+  /**
+   * Where to switch Serve on for the tailnet.
+   *
+   * `tailscale serve` refuses with `Serve is not enabled on your tailnet. To
+   * enable, visit: <url>`, and that URL names the node, so it cannot be
+   * derived. It is also the thing a terminal truncates. Parsed out so the pane
+   * can render it as a link rather than a dead end.
+   */
+  enableUrl: string | null
+  error: string | null
+}
+
 export interface RemoteInterface {
   name: string
   address: string
@@ -935,6 +987,7 @@ export interface RemoteInterface {
 
 export interface RemoteEventMap {
   'remote:status-changed': RemoteAccessStatus
+  'remote:serve-changed': TailscaleServeStatus
 }
 
 // ── LSP ───────────────────────────────────────────────────

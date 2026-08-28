@@ -13,7 +13,7 @@ import type { RemoteAccessConfig } from '../../shared/ipc-types'
 import { REMOTE_DEFAULT_HOST } from './interfaces'
 
 function defaults(): RemoteAccessConfig {
-  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0, sttModelPath: '' }
+  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0, sttModelPath: '', serveEnabled: false, servePort: 0 }
 }
 
 function filePath(): string {
@@ -49,6 +49,14 @@ export function getRemoteConfig(): RemoteAccessConfig {
       // when dictation runs, not on read. A model on an unmounted volume must
       // not silently erase the preference on the next write.
       sttModelPath: typeof parsed.sttModelPath === 'string' ? parsed.sttModelPath : base.sttModelPath,
+      serveEnabled: typeof parsed.serveEnabled === 'boolean' ? parsed.serveEnabled : base.serveEnabled,
+      // A claim ticket for a mapping inside tailscaled, not a preference. A
+      // corrupt value here would strand a real mapping, so it falls back to
+      // "we own nothing" rather than to something plausible.
+      servePort: typeof parsed.servePort === 'number' && Number.isInteger(parsed.servePort)
+        && parsed.servePort >= 0 && parsed.servePort <= 65535
+        ? parsed.servePort
+        : base.servePort,
     }
   } catch {
     return defaults()

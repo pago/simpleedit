@@ -73,6 +73,16 @@ export function listRemoteInterfaces(): RemoteInterface[] {
 }
 
 /**
+ * Does this bind address reach only this machine?
+ *
+ * Serve is offered for a loopback bind and nothing else, so this decides more
+ * than a label — see `syncServe` in `index.ts`.
+ */
+export function isLoopbackHost(host: string | null): boolean {
+  return host === REMOTE_DEFAULT_HOST || host === 'localhost' || host === '::1'
+}
+
+/**
  * May the server bind here? Validated in MAIN at every entry point — the
  * setting is reachable over the socket, so a token holder must not be able to
  * name an address the pane would never have offered.
