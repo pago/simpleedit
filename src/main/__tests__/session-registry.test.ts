@@ -14,6 +14,7 @@ function session(overrides: Partial<WindowSessionInput> = {}): WindowSessionInpu
     provider: 'claude',
     worktreePath: '/repo/feat/parser',
     status: 'running',
+    trail: [{ repoPath: '/repo.git', worktrees: ['/repo/feat/parser'] }],
     ...overrides,
   }
 }
@@ -77,6 +78,47 @@ describe('session registry', () => {
     syncWindowSessions(2, [session({ terminalId: 'b' })], 1000)
     expect(getWindowSessions(1).map((s) => s.terminalId)).toEqual(['a'])
     expect(getWindowSessions(2).map((s) => s.terminalId)).toEqual(['b'])
+  })
+
+  it('reports a change when only the repo trail moved', () => {
+    // The trail is what the second client's repo and worktree pickers read, and
+    // an agent stepping into a sibling repo changes nothing else on the session
+    // — so a gate blind to it would leave every picker on the phone stale until
+    // some unrelated field happened to move.
+    syncWindowSessions(1, [session()], 1000)
+    expect(
+      syncWindowSessions(
+        1,
+        [session({ trail: [
+          { repoPath: '/other.git', worktrees: ['/other/wip'] },
+          { repoPath: '/repo.git', worktrees: ['/repo/feat/parser'] },
+        ] })],
+        2000,
+      ),
+    ).toBe(true)
+    expect(getWindowSessions(1)[0].trail[0].repoPath).toBe('/other.git')
+  })
+
+  it('reports a change when a worktree is added within one repo', () => {
+    syncWindowSessions(1, [session()], 1000)
+    expect(
+      syncWindowSessions(
+        1,
+        [session({ trail: [{ repoPath: '/repo.git', worktrees: ['/repo/feat/other', '/repo/feat/parser'] }] })],
+        2000,
+      ),
+    ).toBe(true)
+  })
+
+  it('reports no change when an identical trail is re-sent', () => {
+    syncWindowSessions(1, [session()], 1000)
+    expect(
+      syncWindowSessions(
+        1,
+        [session({ trail: [{ repoPath: '/repo.git', worktrees: ['/repo/feat/parser'] }] })],
+        2000,
+      ),
+    ).toBe(false)
   })
 
   it('drops a window\'s list when the window goes', () => {

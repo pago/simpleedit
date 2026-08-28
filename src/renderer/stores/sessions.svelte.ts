@@ -9,7 +9,7 @@
  */
 import { untrack } from 'svelte'
 import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
-import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, WindowSessionInput } from '../../shared/ipc-types'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, SessionRepoTrail, WindowSessionInput } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -1065,6 +1065,20 @@ function peerSnapshot(): AgentPeer[] {
  * they have no PTY behind them, so a client that picked one would attach to
  * nothing.
  */
+/**
+ * The repo trail in the shape a client that is not this renderer can use.
+ *
+ * Built from the very functions the desktop repo and worktree pickers read, so
+ * a second client's pickers cannot list a different set of places than the
+ * sidebar does.
+ */
+function trailFor(session: Session): SessionRepoTrail[] {
+  return touchedReposForSession(session).map((repoPath) => ({
+    repoPath,
+    worktrees: touchedWorktreesForRepo(session, repoPath),
+  }))
+}
+
 function windowSessionSnapshot(): WindowSessionInput[] {
   return _sessions
     .filter((s) => !s.pendingResume)
@@ -1075,6 +1089,7 @@ function windowSessionSnapshot(): WindowSessionInput[] {
       provider: s.provider,
       worktreePath: s.worktreePath,
       status: s.exited ? ('exited' as const) : getAgentStatusForTerminal(s.id),
+      trail: trailFor(s),
     }))
 }
 

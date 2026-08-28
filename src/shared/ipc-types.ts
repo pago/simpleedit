@@ -609,6 +609,22 @@ export interface SerializedSession {
  * transport on that window's hub read the same list without reimplementing
  * any of it.
  */
+/**
+ * One repo a session has worked in, and the worktrees it touched there.
+ *
+ * Grouped by repo in MAIN's copy of the list because the grouping cannot be
+ * redone anywhere else: mapping a worktree path back to its bare repo needs
+ * the per-repo worktree lists, which only the renderer that loaded them holds.
+ * A second client handed bare paths would have to guess, and a phone guessing
+ * which repo a path belongs to is how the picker starts lying.
+ */
+export interface SessionRepoTrail {
+  /** Bare repo path — the key the `worktree:*` channels take. */
+  repoPath: string
+  /** Worktrees touched in this repo, most-recently-first. Never empty. */
+  worktrees: string[]
+}
+
 export interface WindowSessionInput {
   /** The PTY terminal id. Doubles as the session id renderer-side. */
   terminalId: string
@@ -618,6 +634,13 @@ export interface WindowSessionInput {
   provider?: AgentProviderId
   worktreePath: string
   status: AgentStatus | 'unknown'
+  /**
+   * Where this session has been, most-recently-first.
+   *
+   * Seeded with the session's own worktree, so it is empty only before the
+   * renderer has ever synced. The desktop repo picker reads the same trail.
+   */
+  trail: SessionRepoTrail[]
 }
 
 export interface WindowSession extends WindowSessionInput {

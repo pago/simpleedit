@@ -17,18 +17,38 @@
  * blocked at 08:50 as freshly blocked — and the length of that block is the
  * whole reason the list exists.
  */
-import type { WindowSession, WindowSessionInput } from '../shared/ipc-types'
+import type { SessionRepoTrail, WindowSession, WindowSessionInput } from '../shared/ipc-types'
 
 const byWindow = new Map<number, WindowSession[]>()
 
-/** Everything except the derived stamp — what the renderer actually sent. */
+function sameTrail(a: SessionRepoTrail[], b: SessionRepoTrail[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (repo, i) =>
+        repo.repoPath === b[i].repoPath &&
+        repo.worktrees.length === b[i].worktrees.length &&
+        repo.worktrees.every((worktree, j) => worktree === b[i].worktrees[j]),
+    )
+  )
+}
+
+/**
+ * Everything except the derived stamp — what the renderer actually sent.
+ *
+ * The trail is compared like every other field, and for the same reason: this
+ * predicate is the only gate on the fan-out, so a field left out of it reaches
+ * main's copy and then waits there for some OTHER field to change before any
+ * client is told. An agent roaming into a second repo changes nothing else.
+ */
 function sameInput(a: WindowSession, b: WindowSessionInput): boolean {
   return (
     a.label === b.label &&
     a.kind === b.kind &&
     a.provider === b.provider &&
     a.worktreePath === b.worktreePath &&
-    a.status === b.status
+    a.status === b.status &&
+    sameTrail(a.trail, b.trail)
   )
 }
 
