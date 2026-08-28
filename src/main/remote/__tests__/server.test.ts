@@ -28,6 +28,7 @@ let hub: ClientHub
 handleInvoke('test:remote-echo', (_event, value: string) => `echo:${value}`)
 handleInvoke('test:remote-who', (event) => event.sender.clientKey ?? String(event.sender.id))
 handleInvoke('test:remote-boom', () => { throw new Error('handler exploded') })
+handleInvoke('test:remote-is-window', (event) => event.sender.clientKey === undefined)
 
 async function start(): Promise<{ url: string; token: string }> {
   const status = await startRemoteServer({
@@ -351,6 +352,23 @@ describe('remote server', () => {
     ws.close()
     await waitFor(() => gone.length > 0)
     expect(gone).toEqual([key])
+  })
+
+  // A socket joins an existing hub, so `sender.id` is the window's id and a
+  // handler keyed by it cannot tell the two apart on its own. Channels that
+  // WRITE per-window state have to; `clientKey` is what distinguishes them.
+  it('carries a clientKey a handler can refuse, unlike the window itself', async () => {
+    const { url, token } = await start()
+    const { ws, frames, hello } = await connect(url, token)
+
+    invoke(ws, 9, 'test:remote-is-window')
+    await waitFor(() => frames.length > 1)
+    expect(frames[1]).toEqual({ kind: 'result', id: 9, ok: true, value: false })
+    // Same hub id as the window it joined — which is exactly why the id is not
+    // enough to tell them apart.
+    expect((hello as { windowId: number }).windowId).toBe(hub.id)
+
+    ws.close()
   })
 
   it('pushes a hub event to the attached socket', async () => {

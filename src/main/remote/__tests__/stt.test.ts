@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSync } from 'fs'
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  chmodSync,
+  existsSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -21,7 +29,14 @@ vi.mock('../config', () => ({
   setRemoteConfig: (next: typeof config) => { config = next },
 }))
 
-import { transcribe, getSttStatus, setSttModelPath, MAX_AUDIO_BYTES } from '../stt'
+import {
+  transcribe,
+  getSttStatus,
+  setSttModelPath,
+  cancelTranscriptions,
+  sweepAbandonedAudio,
+  MAX_AUDIO_BYTES,
+} from '../stt'
 
 /** A minimal but structurally honest 16 kHz mono 16-bit PCM WAV. */
 function wav(samples = 160): Buffer {
@@ -160,5 +175,50 @@ describe('transcribe', () => {
     const oversized = 'A'.repeat(Math.ceil((MAX_AUDIO_BYTES * 4) / 3) + 64)
     await expect(transcribe(oversized)).rejects.toThrow(/too long/)
     expect(sttTempDirs()).toEqual([])
+  })
+})
+
+describe('audio left on disk', () => {
+  it('sweeps what a crash left behind', () => {
+    const orphan = mkdtempSync(join(tmpdir(), 'simpleedit-stt-'))
+    writeFileSync(join(orphan, 'audio.wav'), wav())
+    sweepAbandonedAudio()
+    expect(existsSync(orphan)).toBe(false)
+  })
+
+  // Quitting skips the `finally` in `transcribe` entirely: the promise that
+  // would remove the directory is one nothing left alive will settle.
+  it('removes a running transcription\'s audio synchronously on quit', async () => {
+    writeFileSync(fakeWhisper, '#!/bin/sh\nsleep 30\n')
+    chmodSync(fakeWhisper, 0o755)
+
+    const running = transcribe(wav().toString('base64')).catch(() => 'killed')
+    await vi.waitFor(() => expect(sttTempDirs().length).toBe(1))
+
+    cancelTranscriptions()
+
+    expect(sttTempDirs()).toEqual([])
+    await running
+  })
+})
+
+describe('concurrency', () => {
+  it('refuses more than the ceiling, without writing their audio', async () => {
+    writeFileSync(fakeWhisper, '#!/bin/sh\nsleep 30\n')
+    chmodSync(fakeWhisper, 0o755)
+
+    const running = [
+      transcribe(wav().toString('base64')).catch(() => 'killed'),
+      transcribe(wav().toString('base64')).catch(() => 'killed'),
+    ]
+    await vi.waitFor(() => expect(sttTempDirs().length).toBe(2))
+
+    // Each of these loads the whole model; the per-request caps bound one
+    // request and nothing bounded the fleet.
+    await expect(transcribe(wav().toString('base64'))).rejects.toThrow(/Already transcribing/)
+    expect(sttTempDirs().length).toBe(2)
+
+    cancelTranscriptions()
+    await Promise.all(running)
   })
 })

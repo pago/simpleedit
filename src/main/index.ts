@@ -45,7 +45,7 @@ import { ClientHub, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub } from './remote/server'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
-import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions } from './remote/stt'
+import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepAbandonedAudio } from './remote/stt'
 import { listRemoteInterfaces, isAllowedBindHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
@@ -904,6 +904,15 @@ function registerAllHandlers(): void {
   // pushed hears its own list back — harmless, and cheaper than teaching the
   // hub to exclude one transport.
   handleInvoke('session:sync', (event, sessions: WindowSessionInput[]) => {
+    // Only the window's OWN renderer may write this list. A socket joins an
+    // existing hub, so its `sender.id` IS the window's id — without this check
+    // a remote client could replace the desktop's session list with anything,
+    // and the renderer's `$effect` pushes only when its own state changes, so
+    // nothing would ever put it back. A real `WebContents` has no `clientKey`;
+    // every transport that is not one does.
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('session:sync is not available to remote clients')
+    }
     if (!syncWindowSessions(event.sender.id, sessions)) return
     hubFor(event.sender).send('session:list-changed', getWindowSessions(event.sender.id))
   })
@@ -927,6 +936,9 @@ function registerAllHandlers(): void {
 app.whenReady().then(() => {
   inheritShellPath()
   electronApp.setAppUserModelId('com.simpleedit')
+  // A crash mid-transcription skips the cleanup in `transcribe`, leaving
+  // somebody's voice in tmpdir. Swept before anything can add more.
+  try { sweepAbandonedAudio() } catch { /* nothing better to do at launch */ }
 
   if (isUnobtrusiveTest && process.platform === 'darwin') {
     // Accessory apps never activate on launch and have no Dock presence —

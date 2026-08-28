@@ -9,10 +9,15 @@
  * ── Audio is user data ────────────────────────────────────────────────────
  * A recording is a few seconds of somebody's room. It is held in memory and
  * spilled to one 0600 file inside a 0700 temp directory only because
- * whisper.cpp reads from disk; that directory is removed on EVERY path out —
- * success, rejection, timeout, and a whisper that dies on its own. Nothing is
- * written under `userData`, nothing is kept after the call, and neither the
- * audio nor the transcript is ever logged.
+ * whisper.cpp reads from disk; that directory is removed on every path out of
+ * `transcribe` — success, rejection, timeout, and a whisper that dies on its
+ * own. Nothing is written under `userData`, and neither the audio nor the
+ * transcript is ever logged.
+ *
+ * Two paths skip that `finally` entirely: a quit and a crash mid-transcription.
+ * So the quit path removes synchronously (an awaited unlink during teardown is
+ * a promise nothing will settle), and launch sweeps anything a crash left
+ * behind. Without both, "removed on every path" is a comment, not a property.
  *
  * ── Lifetime ──────────────────────────────────────────────────────────────
  * A transcription belongs to the CALL, not to the client that made it. A socket
@@ -23,7 +28,7 @@
  */
 import { spawn, type ChildProcess } from 'child_process'
 import { mkdtemp, rm, writeFile } from 'fs/promises'
-import { existsSync, statSync } from 'fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { isAbsolute, join } from 'path'
 import { resolveExecutable, type KnownExecutable } from '../lib/shell-path'
@@ -52,7 +57,49 @@ export const MAX_AUDIO_BYTES = 8 * 1024 * 1024
  */
 const TRANSCRIBE_TIMEOUT_MS = 60_000
 
-const live = new Set<ChildProcess>()
+/**
+ * Ceiling on transcriptions running at once.
+ *
+ * Each one loads the whole GGML model, so N calls is N copies of it resident
+ * and N processes competing for the same cores. The per-request size caps bound
+ * ONE request; nothing bounded the fleet, and every client on the socket can
+ * start one. Two is room for a phone and the desk without letting a third
+ * make the first two slower than useless.
+ */
+const MAX_CONCURRENT = 2
+
+/** Each running child, with the directory holding its audio. */
+const live = new Map<ChildProcess, string>()
+
+/** Temp directories this module makes. Also the sweep's pattern — keep in step. */
+const TEMP_PREFIX = 'simpleedit-stt-'
+
+function removeQuietly(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    /* the OS reclaims tmpdir; there is nothing further to try */
+  }
+}
+
+/**
+ * Delete audio a previous run left behind.
+ *
+ * A crash or a kill -9 mid-transcription skips the cleanup in `transcribe`, and
+ * what is left is somebody's voice sitting in `tmpdir()` until the OS gets
+ * round to it. Called at launch, synchronously, before anything can add more.
+ */
+export function sweepAbandonedAudio(): void {
+  let entries: string[]
+  try {
+    entries = readdirSync(tmpdir())
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (entry.startsWith(TEMP_PREFIX)) removeQuietly(join(tmpdir(), entry))
+  }
+}
 
 async function resolveWhisper(): Promise<string | null> {
   for (const name of WHISPER_BINARIES) {
@@ -154,13 +201,17 @@ export async function transcribe(audioBase64: string): Promise<string> {
     throw new Error('That audio is not a WAV recording.')
   }
 
+  if (live.size >= MAX_CONCURRENT) {
+    throw new Error('Already transcribing. Try again in a moment.')
+  }
+
   // `mkdtemp(3)` creates with mode 0700 — the directory is this process's
   // alone before the audio ever lands in it.
-  const dir = await mkdtemp(join(tmpdir(), 'simpleedit-stt-'))
+  const dir = await mkdtemp(join(tmpdir(), TEMP_PREFIX))
   try {
     const wav = join(dir, 'audio.wav')
     await writeFile(wav, audio, { mode: 0o600 })
-    return await runWhisper(binary, modelPath, wav)
+    return await runWhisper(binary, modelPath, wav, dir)
   } finally {
     // Every path out, including a throw above and a timeout below. The one
     // thing this module must never do is leave somebody's voice on disk.
@@ -170,14 +221,14 @@ export async function transcribe(audioBase64: string): Promise<string> {
   }
 }
 
-function runWhisper(binary: string, modelPath: string, wavPath: string): Promise<string> {
+function runWhisper(binary: string, modelPath: string, wavPath: string, dir: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     // No shell: every argument is passed as an argument, so a model path with
     // a space, a quote or a `;` in it is a path and nothing else.
     const child = spawn(binary, ['-m', modelPath, '-f', wavPath, '-nt'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    live.add(child)
+    live.set(child, dir)
 
     let out = ''
     let err = ''
@@ -221,17 +272,21 @@ function runWhisper(binary: string, modelPath: string, wavPath: string): Promise
 }
 
 /**
- * Kill every transcription still running. Called before quit: an in-flight
- * child with a pipe main is still reading holds the process open, and a quit
- * that hangs orphans every agent PTY.
+ * Kill every transcription still running, and delete its audio.
+ *
+ * Called before quit, so both halves have to be synchronous: an in-flight child
+ * with a pipe main is still reading holds the process open — a quit that hangs
+ * orphans every agent PTY — and the `finally` that would normally remove the
+ * directory is a promise nothing left alive will settle.
  */
 export function cancelTranscriptions(): void {
-  for (const child of [...live]) {
+  for (const [child, dir] of [...live]) {
     try {
       child.kill('SIGKILL')
     } catch {
       /* already gone */
     }
     live.delete(child)
+    removeQuietly(dir)
   }
 }
