@@ -7,14 +7,25 @@
    * two panes now, which is the one thing that earns a segmented control, and
    * it is labelled for this screen: Terminal / Changes.
    *
-   * The terminal stays MOUNTED behind Changes rather than being torn down and
-   * rebuilt. Its attachment is what fills the gap after a disconnect by byte
-   * offset, and its scrollback is the conversation — unmounting it to look at a
-   * diff would throw both away and hand back a blank screen on the way out.
+   * NOTHING here is unmounted by a pane switch; the inactive pane is hidden.
+   * The rule is one rule because every part of this screen holds something a
+   * switch must not destroy:
    *
-   * The keys and the composer belong to the terminal, and stay with it. There
-   * is nothing on the Changes pane to type at: it reads, and reading is all it
-   * can do.
+   *  - The terminal's attachment fills the gap after a disconnect by byte
+   *    offset, and its scrollback is the conversation.
+   *  - The composer holds a half-typed reply, and unmounting it DISCARDS a
+   *    live recording (see the lifetime note in `VoiceComposer`) — so tapping
+   *    Changes and back would silently eat what someone had just dictated.
+   *  - Changes holds the repo/worktree/commit the reader picked, and four
+   *    reads paid for it. Re-issuing those on every visit is the same waste
+   *    the terminal's rule exists to avoid, over a link that is worse.
+   *
+   * Changes is mounted LAZILY — its first visit builds it — because a session
+   * that is only ever read as a terminal should not pay for it at all. After
+   * that it stays.
+   *
+   * The keys and the composer belong to the terminal and are hidden with it:
+   * there is nothing on the Changes pane to type at.
    */
   import MobileTerminal from './MobileTerminal.svelte'
   import ChangesPane from './ChangesPane.svelte'
@@ -45,6 +56,11 @@
     { id: 'changes', label: 'Changes' },
   ] as const
   let pane = $state<(typeof PANES)[number]['id']>('terminal')
+  /** Changes has been opened at least once, so it exists from here on. */
+  let changesBuilt = $state(false)
+  $effect(() => {
+    if (pane === 'changes') changesBuilt = true
+  })
 
   $effect(() => {
     if (focusComposer) composer?.focusField()
@@ -110,16 +126,18 @@
     <MobileTerminal bind:this={terminal} terminalId={session.terminalId} {connection} />
   </div>
 
-  {#if pane === 'changes'}
-    <div class="min-h-0 flex-1">
+  <!-- Built on first visit, hidden thereafter — never unmounted. -->
+  {#if changesBuilt}
+    <div class="min-h-0 flex-1 {pane === 'changes' ? '' : 'hidden'}">
       <ChangesPane {session} {connection} />
     </div>
   {/if}
 
-  {#if pane === 'terminal'}
-    <div class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-      <KeyBar onkey={writeKey} />
-      <VoiceComposer bind:this={composer} onsend={send} placeholder="Reply to {session.label}…" />
-    </div>
-  {/if}
+  <div
+    class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]
+      {pane === 'terminal' ? '' : 'hidden'}"
+  >
+    <KeyBar onkey={writeKey} />
+    <VoiceComposer bind:this={composer} onsend={send} placeholder="Reply to {session.label}…" />
+  </div>
 </div>

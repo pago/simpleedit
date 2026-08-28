@@ -235,6 +235,7 @@
   role="dialog"
   aria-modal="true"
   aria-label="New session"
+  tabindex="-1"
   class="fixed inset-0 z-40 flex flex-col justify-end"
   data-testid="new-session-sheet"
 >
@@ -323,6 +324,7 @@
       role="dialog"
       aria-modal="true"
       aria-label="Discard this brief?"
+      tabindex="-1"
       class="relative w-full max-w-xs rounded-xl border border-zinc-800 bg-zinc-900 p-4"
       data-testid="discard-confirm"
     >

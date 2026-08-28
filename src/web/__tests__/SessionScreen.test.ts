@@ -82,15 +82,39 @@ describe('SessionScreen', () => {
     expect(screen.getByTestId('pane-changes').getAttribute('aria-selected')).toBe('true')
   })
 
-  // Reading is all the Changes pane can do, so it offers nothing to type at.
-  it('puts the keys and the composer away while the diff is up', async () => {
+  // Reading is all the Changes pane can do, so it offers nothing to type at —
+  // but "offers nothing" has to mean HIDDEN, never unmounted.
+  it('puts the keys and the composer away without destroying what was typed', async () => {
     render(SessionScreen, { props: { session, connection } })
+    const composer = screen.getByTestId('composer-text') as HTMLTextAreaElement
+    await fireEvent.input(composer, { target: { value: 'rebase once more before you merge' } })
+
     await fireEvent.click(screen.getByTestId('pane-changes'))
     await waitFor(() => expect(screen.getByTestId('changes-pane')).toBeTruthy())
-    expect(screen.queryByTestId('composer-text')).toBeNull()
+    expect(composer.closest('.hidden')).toBeTruthy()
 
     await fireEvent.click(screen.getByTestId('pane-terminal'))
-    expect(screen.getByTestId('composer-text')).toBeTruthy()
+    // The same element, still holding the reply. Unmounting it would have eaten
+    // a half-typed reply — and DISCARDED a live recording, which is the one
+    // thing the composer's lifetime rules exist to prevent.
+    expect(screen.getByTestId('composer-text')).toBe(composer)
+    expect(composer.value).toBe('rebase once more before you merge')
+    expect(screen.getByTestId('changes-pane').closest('.hidden')).toBeTruthy()
+  })
+
+  it('builds the changes pane once and then keeps it', async () => {
+    render(SessionScreen, { props: { session, connection } })
+    // Never opened, never built: a session read only as a terminal should not
+    // pay for four reads it will not look at.
     expect(screen.queryByTestId('changes-pane')).toBeNull()
+
+    await fireEvent.click(screen.getByTestId('pane-changes'))
+    const pane = await screen.findByTestId('changes-pane')
+    await fireEvent.click(screen.getByTestId('pane-terminal'))
+    await fireEvent.click(screen.getByTestId('pane-changes'))
+
+    // The same pane, so the repo/worktree/commit the reader picked survives
+    // and the reads that produced it are not re-issued per visit.
+    expect(screen.getByTestId('changes-pane')).toBe(pane)
   })
 })
