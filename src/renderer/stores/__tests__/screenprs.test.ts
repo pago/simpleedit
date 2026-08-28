@@ -99,6 +99,7 @@ describe('screenPrsStore ingestion', () => {
     handlers['screenprs:deep-result']!({
       url: 'u1',
       findings: [{ lens: 'soundness', severity: 'blocking', file: 'a.ts', title: 'npe', detail: 'guard' }],
+      headSha: 'sha1',
     })
     handlers['screenprs:deep-status']!({ url: 'u1', status: 'done' })
 
@@ -106,6 +107,10 @@ describe('screenPrsStore ingestion', () => {
     expect(d?.status).toBe('done')
     expect(d?.lenses.soundness).toBe('done')
     expect(d?.findings).toHaveLength(1)
+    // Kept, not discarded: a finding's line numbers are meaningless without the
+    // commit they were computed against, and a comment lifted from one is
+    // stamped with THIS, not with whatever head happens to be live at the tap.
+    expect(d?.headSha).toBe('sha1')
     // A different PR is unaffected.
     expect(screenPrsStore.deepFor('other')).toBeUndefined()
   })
