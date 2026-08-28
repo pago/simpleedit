@@ -179,6 +179,37 @@ describe('session:create-request listener', () => {
     }
   })
 
+  it('reports a throw instead of letting main record an unwitnessed outcome', async () => {
+    // The bridge throws SYNCHRONOUSLY when a payload will not structured-clone
+    // — the failure `createAgent` snapshots its target to avoid. Unreported,
+    // main waits out its timeout and then remembers the intent as one that may
+    // have started something, so the user cannot retry what in fact failed.
+    const spawnBoom = vi.fn((channel: string, ...rest: unknown[]) => {
+      if (channel === 'agent:spawn') throw new Error('could not be cloned')
+      return invoke(channel, ...rest)
+    })
+    ;(window as unknown as { api: Record<string, unknown> }).api = {
+      invoke: spawnBoom,
+      on: vi.fn((channel: string, handler: Handler) => {
+        handlers.set(channel, handler)
+        return () => handlers.delete(channel)
+      }),
+    }
+
+    const off = initSessionListeners()
+    try {
+      handlers.get('session:create-request')!({ correlationId: 'c1', brief: 'ship it' })
+      await flush()
+
+      const reported = spawnBoom.mock.calls
+        .filter((call) => call[0] === 'session:created')
+        .map((call) => call[2])
+      expect(reported).toEqual([{ ok: false, reason: expect.stringContaining('cloned') }])
+    } finally {
+      off()
+    }
+  })
+
   it('reports a refusal rather than leaving main to time out', async () => {
     // A window with nothing open: nowhere to launch. Main must be able to tell
     // this apart from silence, because it remembers silence as "a session may

@@ -989,27 +989,38 @@ function isNativeModelAgent(provider: AgentProviderId): provider is NativeModelA
 async function createSessionFromBrief(
   data: import('../../shared/ipc-types').SessionEventMap['session:create-request'],
 ): Promise<void> {
+  let answered = false
   const answer = (outcome: import('../../shared/ipc-types').SessionCreateOutcome): void => {
+    if (answered) return
+    answered = true
     void window.api.invoke('session:created', data.correlationId, outcome)
   }
 
-  const wt = mainWorktree()
-  const root = projectRoot() ?? wt?.path
-  if (!root || !wt) {
-    answer({ ok: false, reason: 'That SimpleEdit window has no repo open yet.' })
-    return
-  }
+  try {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (!root || !wt) {
+      answer({ ok: false, reason: 'That SimpleEdit window has no repo open yet.' })
+      return
+    }
 
-  // A config that cannot be read is not a reason to refuse: the fallback is
-  // the same plain Claude session an absent `lastUsed` would have produced.
-  const config = await window.api.invoke('models:config-get').catch(() => null)
-  const id = createSessionFromDefaults(config, root, wt.path, {
-    initialPrompt: data.brief,
-    // Provisional: the brief's first clause is a stand-in the agent replaces
-    // as soon as it names the conversation, exactly as at the desk.
-    ...(data.label ? { provisionalLabel: data.label } : {}),
-  })
-  answer({ ok: true, terminalId: id, label: sessionsStore.get(id)?.label ?? id })
+    // A config that cannot be read is not a reason to refuse: the fallback is
+    // the same plain Claude session an absent `lastUsed` would have produced.
+    const config = await window.api.invoke('models:config-get').catch(() => null)
+    const id = createSessionFromDefaults(config, root, wt.path, {
+      initialPrompt: data.brief,
+      // Provisional: the brief's first clause is a stand-in the agent replaces
+      // as soon as it names the conversation, exactly as at the desk.
+      ...(data.label ? { provisionalLabel: data.label } : {}),
+    })
+    answer({ ok: true, terminalId: id, label: sessionsStore.get(id)?.label ?? id })
+  } catch (err) {
+    // Anything unforeseen still has to come back as an ANSWER. Main cannot see
+    // a throw here — it only sees silence, which it remembers as "a session
+    // may exist" and will not let the user retry. The bridge throwing
+    // synchronously on an unclonable payload is the realistic one.
+    answer({ ok: false, reason: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 /**
