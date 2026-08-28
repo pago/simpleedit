@@ -4,6 +4,7 @@
   import QrCode from './QrCode.svelte'
   import { pairingTarget } from '../../../shared/remote-pairing'
   import type {
+    PushStatus,
     RemoteAccessConfig,
     RemoteAccessStatus,
     RemoteInterface,
@@ -23,6 +24,8 @@
   let ts = $state<TailscaleStatus | null>(null)
   let serve = $state<TailscaleServeStatus | null>(null)
   let serveError = $state<string | null>(null)
+  let push = $state<PushStatus | null>(null)
+  let pushError = $state<string | null>(null)
 
   const enabled = $derived(config?.enabled ?? false)
   const tailscale = $derived(interfaces.find((i) => i.isTailscale) ?? null)
@@ -51,17 +54,21 @@
     void refresh()
     const offStatus = window.api.on('remote:status-changed', (next) => { status = next })
     const offServe = window.api.on('remote:serve-changed', (next) => { serve = next })
-    return () => { offStatus(); offServe() }
+    // A phone registering itself changes this pane while nobody is touching
+    // it — that is the whole point of the list.
+    const offPush = window.api.on('push:status-changed', (next) => { push = next })
+    return () => { offStatus(); offServe(); offPush() }
   })
 
   async function refresh(): Promise<void> {
-    ;[config, status, interfaces, stt, ts, serve] = await Promise.all([
+    ;[config, status, interfaces, stt, ts, serve, push] = await Promise.all([
       window.api.invoke('remote:config'),
       window.api.invoke('remote:status'),
       window.api.invoke('remote:interfaces'),
       window.api.invoke('stt:status'),
       window.api.invoke('tailscale:status'),
       window.api.invoke('tailscale:serve-status'),
+      window.api.invoke('push:status'),
     ])
   }
 
@@ -124,6 +131,29 @@
     } finally {
       busy = false
     }
+  }
+
+  async function forgetDevice(id: string): Promise<void> {
+    pushError = null
+    try {
+      push = await window.api.invoke('push:unsubscribe', id)
+    } catch (error) {
+      pushError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  async function forgetAllDevices(): Promise<void> {
+    pushError = null
+    try {
+      push = await window.api.invoke('push:forget-all')
+    } catch (error) {
+      pushError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  function when(at: number | null): string {
+    if (at === null) return 'never'
+    return new Date(at).toLocaleString()
   }
 
   async function copyUrl(): Promise<void> {
@@ -221,7 +251,8 @@
       <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Sleep</h2>
       <p class="mt-2 text-[13px] text-zinc-300">
         {#if status.powerSaveBlocked}
-          Holding a power assertion — this Mac will not sleep while remote access is on.
+          Holding a power assertion — this Mac will not fall asleep on its own while remote access
+          is on.
         {:else}
           <span class="text-amber-400">No power assertion is held.</span>
           This Mac can sleep, and your agents stop with it.
@@ -230,6 +261,16 @@
       <p class="mt-1.5 text-xs leading-relaxed text-zinc-500">
         Sleeping stops the agents, not just the notifications — and it does so silently, which is
         why this is stated rather than assumed. The display is still allowed to sleep.
+      </p>
+      <!--
+        Said plainly because the notification depends on it, and because
+        "will not sleep" is the sentence a user would otherwise carry away.
+        The assertion covers IDLE sleep only; nothing an app can hold stops
+        macOS sleeping when the lid closes.
+      -->
+      <p class="mt-1.5 text-xs leading-relaxed text-zinc-500">
+        What it does not cover: closing the lid. A MacBook asleep in a bag runs no agents and sends
+        no notifications, whatever assertion is held. Leave it open, or attach a display.
       </p>
     </section>
   {/if}
@@ -367,6 +408,108 @@
         SimpleEdit quits, and at the next launch if it ever crashes — it proxies the server root,
         so the token is still required on every request.
       </p>
+    {/if}
+  </section>
+
+  <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+    <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Notifications</h2>
+    <p class="mt-2 text-xs leading-relaxed text-zinc-500">
+      A phone gets one notification when a session stops and needs you, and nothing else. It fires
+      only on a signal the agent reported itself — never on a guess — because a buzz that might
+      mean nothing teaches you to ignore the one that mattered. It covers every provider, which is
+      why it exists: Claude Code's own Remote Control only notifies for Claude.
+    </p>
+    <p class="mt-2 text-xs leading-relaxed text-zinc-500">
+      The message is encrypted end to end. Apple relays it without being able to read it, and the
+      signing key never leaves this Mac.
+    </p>
+
+    <!--
+      The one thing that must be explained rather than discovered. On iOS the
+      push APIs do not exist in a Safari tab at all, so the button on the phone
+      is not merely disabled — the page cannot ask.
+    -->
+    <ol class="mt-3 space-y-1.5 text-xs leading-relaxed text-zinc-400" data-testid="push-install-steps">
+      <li>
+        <span class="font-semibold text-zinc-300">1.</span>
+        Open the pairing link on the phone. It has to be the <span class="text-zinc-300">https://</span>
+        one — turn on Tailscale Serve above if there isn't one yet.
+      </li>
+      <li>
+        <span class="font-semibold text-zinc-300">2.</span>
+        In Safari, tap Share → <span class="text-zinc-300">Add to Home Screen</span>. iOS will not
+        let a page ask for notification permission until it has been installed, so this step is not
+        optional and there is no way to do it from here.
+      </li>
+      <li>
+        <span class="font-semibold text-zinc-300">3.</span>
+        Open SimpleEdit from the Home Screen icon and tap
+        <span class="text-zinc-300">Turn on notifications</span> on the Sessions screen. The
+        permission prompt only appears from that tap.
+      </li>
+    </ol>
+
+    {#if !status?.running}
+      <p class="mt-3 text-xs leading-relaxed text-amber-400" data-testid="push-needs-server">
+        Remote access is off, so nothing would be sent: a notification has to open something, and
+        with the server down there is no address to open.
+      </p>
+    {/if}
+
+    {#if pushError}
+      <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{pushError}</p>
+    {:else if push?.error}
+      <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{push.error}</p>
+    {/if}
+
+    {#if push}
+      <div class="mt-4 border-t border-zinc-800 pt-3">
+        <div class="flex items-center justify-between gap-4">
+          <h3 class="text-[13px] font-medium text-zinc-100">Registered devices</h3>
+          {#if push.devices.length > 0}
+            <button
+              type="button"
+              onclick={() => void forgetAllDevices()}
+              data-testid="forget-all-devices"
+              class="rounded-md px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            >Forget all</button>
+          {/if}
+        </div>
+
+        {#if push.devices.length === 0}
+          <p class="mt-2 text-xs leading-relaxed text-zinc-500" data-testid="no-push-devices">
+            No device is registered yet. A device registers itself from the mobile app — there is
+            nothing to do here.
+          </p>
+        {:else}
+          <ul class="mt-2 space-y-1.5" data-testid="push-devices">
+            {#each push.devices as device (device.id)}
+              <li class="flex items-center gap-3 rounded-md border border-zinc-800 px-3 py-2 text-xs">
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-[13px] text-zinc-200">{device.label}</span>
+                  <span class="block truncate text-zinc-500">
+                    {device.service} · last notified {when(device.lastPushAt)}
+                  </span>
+                  {#if device.lastError}
+                    <span class="block truncate text-amber-400">{device.lastError}</span>
+                  {/if}
+                </span>
+                <button
+                  type="button"
+                  onclick={() => void forgetDevice(device.id)}
+                  data-testid="forget-device"
+                  class="flex-none rounded-md px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                >Forget</button>
+              </li>
+            {/each}
+          </ul>
+          <p class="mt-2 text-xs leading-relaxed text-zinc-500">
+            A device is listed by the push service it uses, never by its address — that address is
+            itself permission to notify it. One that the push service reports as gone is dropped on
+            the next attempt, without being retried forever.
+          </p>
+        {/if}
+      </div>
     {/if}
   </section>
 
