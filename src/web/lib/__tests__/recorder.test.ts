@@ -16,6 +16,7 @@ class FakeRecorder implements RecorderLike {
   readonly mimeType = 'audio/webm'
   private onData: ((event: { data: Blob }) => void)[] = []
   private onStop: (() => void)[] = []
+  private onError: (() => void)[] = []
 
   start(): void {
     this.state = 'recording'
@@ -30,10 +31,18 @@ class FakeRecorder implements RecorderLike {
     })
   }
 
+  /** Drive the recorder's own `error` event, which destroys the recording. */
+  fail(): void {
+    this.state = 'inactive'
+    for (const fn of this.onError) fn()
+  }
+
   addEventListener(type: 'dataavailable', fn: (event: { data: Blob }) => void): void
   addEventListener(type: 'stop', fn: () => void): void
+  addEventListener(type: 'error', fn: (event: unknown) => void): void
   addEventListener(type: string, fn: unknown): void {
     if (type === 'dataavailable') this.onData.push(fn as (event: { data: Blob }) => void)
+    else if (type === 'error') this.onError.push(fn as () => void)
     else this.onStop.push(fn as () => void)
   }
 }
@@ -113,5 +122,46 @@ describe('driveRecorder', () => {
     driveRecorder(new FakeRecorder(), fakeStream(), { onAudio: vi.fn(), onAutoStop, maxMs: 5 }).finish()
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(onAutoStop).not.toHaveBeenCalled()
+  })
+})
+
+describe('driveRecorder failures', () => {
+  it('reports a stop that throws, rather than going quiet', async () => {
+    class ThrowingRecorder extends FakeRecorder {
+      override stop(): void {
+        throw new Error('InvalidStateError')
+      }
+    }
+    const onError = vi.fn()
+    const onAudio = vi.fn()
+    driveRecorder(new ThrowingRecorder(), fakeStream(), { onAudio, onError }).finish()
+    await settle()
+    // Neither a transcript nor silence: the caller is told its audio is gone.
+    expect(onAudio).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
+  })
+
+  it('says nothing when a discard cannot stop cleanly', async () => {
+    class ThrowingRecorder extends FakeRecorder {
+      override stop(): void {
+        throw new Error('InvalidStateError')
+      }
+    }
+    const onError = vi.fn()
+    driveRecorder(new ThrowingRecorder(), fakeStream(), { onAudio: vi.fn(), onError }).discard()
+    await settle()
+    // The user threw the audio away; its failure to stop is not news.
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('destroys the audio when the recorder itself errors', async () => {
+    const recorder = new FakeRecorder()
+    const onAudio = vi.fn()
+    const onError = vi.fn()
+    driveRecorder(recorder, fakeStream(), { onAudio, onError })
+    recorder.fail()
+    await settle()
+    expect(onAudio).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
   })
 })

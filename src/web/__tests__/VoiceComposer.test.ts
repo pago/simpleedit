@@ -49,9 +49,24 @@ class FakeMediaRecorder {
 
 let tracksStopped = 0
 let invoke: ReturnType<typeof vi.fn>
+let getUserMediaCalls = 0
+/**
+ * Held open so a test can act DURING `getUserMedia` — the window between the
+ * user's tap and a live microphone, which is where the composer's second
+ * blocker lived. Null means resolve immediately.
+ */
+let openMic: (() => void) | null = null
+let holdingMic = false
+
+function newStream(): MediaStream {
+  return { getTracks: () => [{ stop: (): void => { tracksStopped++ } }] } as unknown as MediaStream
+}
 
 beforeEach(() => {
   tracksStopped = 0
+  getUserMediaCalls = 0
+  openMic = null
+  holdingMic = false
   FakeMediaRecorder.instances = []
 
   invoke = vi.fn(async (channel: string) => {
@@ -65,12 +80,26 @@ beforeEach(() => {
   vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
   vi.stubGlobal('navigator', {
     mediaDevices: {
-      getUserMedia: async () => ({
-        getTracks: () => [{ stop: (): void => { tracksStopped++ } }],
-      }),
+      getUserMedia: async () => {
+        getUserMediaCalls++
+        if (holdingMic) await new Promise<void>((resolve) => { openMic = resolve })
+        return newStream()
+      },
     },
   })
 })
+
+/** Make the next `getUserMedia` hang until `releaseMic()`. */
+function holdMic(): void {
+  holdingMic = true
+}
+
+async function releaseMic(): Promise<void> {
+  holdingMic = false
+  openMic?.()
+  openMic = null
+  await new Promise((resolve) => setTimeout(resolve, 50))
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -125,6 +154,68 @@ describe('VoiceComposer', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(transcribeCalls()).toHaveLength(0)
+  })
+
+  // The window between the tap and a live microphone had no owner: `handle` is
+  // assigned only after `getUserMedia` resolves, so a cleanup during it found
+  // `null` and did nothing — and the promise then resolved into a live recorder
+  // belonging to a component that is gone.
+  it('never opens a recorder for a composer that has already gone', async () => {
+    holdMic()
+    const view = render(VoiceComposer, { onsend: async () => {} })
+    await fireEvent.click(mic())
+
+    view.unmount()
+    await releaseMic()
+
+    expect(FakeMediaRecorder.instances).toHaveLength(0)
+    expect(transcribeCalls()).toHaveLength(0)
+    // The microphone was opened; it has to be handed back.
+    expect(tracksStopped).toBe(1)
+  })
+
+  it('never opens a recorder after the user cancelled during the prompt', async () => {
+    holdMic()
+    render(VoiceComposer, { onsend: async () => {} })
+    await fireEvent.click(mic())
+
+    // Cancelling has to be reachable while the permission prompt is up, which
+    // means the recording UI is shown from the tap, not from the stream.
+    await fireEvent.click(screen.getByTestId('mic-cancel'))
+    await releaseMic()
+
+    expect(FakeMediaRecorder.instances).toHaveLength(0)
+    expect(transcribeCalls()).toHaveLength(0)
+    expect(tracksStopped).toBe(1)
+  })
+
+  it('opens one microphone however many times the button is tapped', async () => {
+    holdMic()
+    render(VoiceComposer, { onsend: async () => {} })
+    await fireEvent.click(mic())
+    // A second tap during the window used to open a second microphone that no
+    // button could then reach — and whose time cap would upload it.
+    await fireEvent.click(screen.getByTestId('mic-stop'))
+
+    await releaseMic()
+    expect(getUserMediaCalls).toBe(1)
+    expect(FakeMediaRecorder.instances.length).toBeLessThanOrEqual(1)
+  })
+
+  // The phone locks while the permission prompt is up.
+  it('abandons a pending microphone when the page is hidden', async () => {
+    holdMic()
+    render(VoiceComposer, { onsend: async () => {} })
+    await fireEvent.click(mic())
+
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await releaseMic()
+    vi.restoreAllMocks()
+
+    expect(FakeMediaRecorder.instances).toHaveLength(0)
+    expect(transcribeCalls()).toHaveLength(0)
+    expect(tracksStopped).toBe(1)
   })
 
   it('releases the microphone whichever way the recording ends', async () => {

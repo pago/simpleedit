@@ -29,6 +29,14 @@ export interface RecorderOptions {
   onAudio: (audio: Blob) => void
   /** Stopped for a reason the caller did not ask for — the time cap. */
   onAutoStop?: () => void
+  /**
+   * The recorder failed and will hand nothing over.
+   *
+   * Without this a `stop()` that throws releases the microphone but never
+   * fires `stop`, so `finish()` produces neither a transcript nor an error and
+   * the UI returns to idle with no account of itself.
+   */
+  onError?: (message: string) => void
   /** Hard cap, so a microphone left open by accident closes itself. */
   maxMs?: number
 }
@@ -44,6 +52,7 @@ export interface RecorderLike {
   readonly mimeType: string
   addEventListener(type: 'dataavailable', fn: (event: { data: Blob }) => void): void
   addEventListener(type: 'stop', fn: () => void): void
+  addEventListener(type: 'error', fn: (event: unknown) => void): void
 }
 
 /** The `MediaStream` surface used here — just the tracks, so they can be closed. */
@@ -90,6 +99,12 @@ export function driveRecorder(
     options.onAudio(new Blob(captured, { type: captured[0].type || recorder.mimeType }))
   })
 
+  recorder.addEventListener('error', () => {
+    if (outcome === 'discard') return
+    stop('discard')
+    options.onError?.('The recording failed. Type your reply instead.')
+  })
+
   function releaseMicrophone(): void {
     clearTimeout(cap)
     for (const track of stream.getTracks()) track.stop()
@@ -104,7 +119,9 @@ export function driveRecorder(
       try {
         recorder.stop()
       } catch {
-        /* already stopping; the handlers above still run */
+        // The microphone is released below, but `stop` will never fire — so
+        // nothing else would ever tell the caller its audio is not coming.
+        if (next === 'keep') options.onError?.('The recording could not be stopped cleanly.')
       }
     }
     releaseMicrophone()

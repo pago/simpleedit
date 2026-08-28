@@ -16,10 +16,20 @@
    * is never left with no way to reply.
    *
    * ── Lifetime ────────────────────────────────────────────────────────────
-   * The recording belongs to this component and to nothing else. It is stopped —
-   * and the microphone track with it — on stop, on discard, on unmount, when the
-   * page is hidden, and at a hard time cap. A recording that outlived any of
-   * those would be a hot mic. Two of those paths DISCARD rather than transcribe:
+   * The recording's life starts at the TAP, not when `getUserMedia` resolves.
+   * That await is a permission prompt the user can sit in front of for as long
+   * as they like, and everything reachable in it — leaving the screen, tapping
+   * ✕, the phone locking, tapping again — has to be able to end the attempt.
+   * `attempt` is what owns that window: every start takes the next number and
+   * every stop burns it, so a stream that arrives for a number no longer
+   * current is handed straight back instead of becoming a live recorder in a
+   * component that is gone.
+   *
+   * Past that point the recording belongs to this component and to nothing
+   * else. It is stopped — and the microphone track with it — on stop, on
+   * discard, on unmount, when the page is hidden, and at a hard time cap. A
+   * recording that outlived any of those would be a hot mic. Two of those
+   * paths DISCARD rather than transcribe:
    * the ✕ button, and unmounting, since there is no longer a field for a
    * transcript to be reviewed in. `lib/recorder.ts` owns that decision, because
    * the audio arrives after `stop()` returns and clearing a buffer beforehand
@@ -43,6 +53,8 @@
   let { onsend, placeholder = 'Reply…' }: Props = $props()
 
   let text = $state('')
+  /** A microphone has been asked for but has not arrived. */
+  let opening = $state(false)
   let recording = $state(false)
   let elapsedMs = $state(0)
   let transcribing = $state(false)
@@ -53,6 +65,11 @@
 
   let handle: RecorderHandle | null = null
   let tickTimer: ReturnType<typeof setInterval> | undefined
+  /**
+   * Which attempt is current. Incremented by every start AND every stop, so a
+   * `getUserMedia` that resolves against a stale number knows it was abandoned.
+   */
+  let attempt = 0
 
   const micUsable = $derived(
     typeof navigator !== 'undefined' &&
@@ -60,6 +77,14 @@
       typeof MediaRecorder !== 'undefined',
   )
   const canSend = $derived(text.trim().length > 0 && !sending)
+  /**
+   * The user has asked for the microphone, whether or not it is open yet.
+   *
+   * The recording controls are shown from the tap, because the permission
+   * prompt is exactly when cancelling has to be reachable — and because a mic
+   * button that stays enabled through it opens a second microphone.
+   */
+  const armed = $derived(opening || recording)
 
   onMount(() => {
     void window.api
@@ -82,22 +107,36 @@
     }
   })
 
+  /** End the current attempt, whatever stage it reached. */
   function endRecording(): void {
     clearInterval(tickTimer)
     tickTimer = undefined
+    // Burn the number. Anything still in flight for it is now abandoned.
+    attempt++
+    opening = false
     recording = false
+    handle = null
   }
 
   async function startRecording(): Promise<void> {
+    if (armed) return
     error = null
     if (!micUsable) {
       error = 'This browser cannot record audio. Type your reply instead.'
       return
     }
+
+    const mine = ++attempt
+    opening = true
+    elapsedMs = 0
+
     let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (err) {
+      // A newer attempt, or none at all, owns the UI now — so this one must not
+      // write an error into it.
+      if (mine !== attempt) return
       // Denied, or no secure context. `http://localhost` IS one; a plain-HTTP
       // LAN address is not, which is why the transport is Tailscale.
       const name = err instanceof Error ? err.name : 'Error'
@@ -109,27 +148,48 @@
       return
     }
 
+    if (mine !== attempt) {
+      // Abandoned while the prompt was up. The microphone is open and nothing
+      // will ever ask it for audio, so hand it straight back — and build no
+      // recorder, which is the difference between a cancelled attempt and one
+      // that quietly records for a screen nobody is on.
+      for (const track of stream.getTracks()) track.stop()
+      return
+    }
+
+    opening = false
+    recording = true
     handle = driveRecorder(new MediaRecorder(stream), stream, {
       onAudio: (audio) => void transcribe(audio),
       onAutoStop: endRecording,
+      onError: (message) => {
+        // The recorder failed to hand anything over. Without this the UI would
+        // return to idle having produced neither a transcript nor a reason.
+        error = message
+        endRecording()
+      },
       maxMs: DEFAULT_MAX_RECORDING_MS,
     })
 
-    recording = true
     const startedAt = Date.now()
-    elapsedMs = 0
     tickTimer = setInterval(() => { elapsedMs = Date.now() - startedAt }, 200)
   }
 
-  /** Stop and transcribe. */
+  /**
+   * Stop and transcribe.
+   *
+   * While still `opening` there is no audio to keep, so this abandons the
+   * attempt — which is what the user asked for either way.
+   */
   function stopRecording(): void {
-    if (!handle?.active) return
-    handle.finish()
+    if (!armed) return
+    handle?.finish()
     endRecording()
   }
 
   /** Stop and destroy the audio — the mic was opened by mistake. */
   function cancelRecording(): void {
+    if (!armed) return
     handle?.discard()
     endRecording()
   }
@@ -199,13 +259,13 @@
              text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
     ></textarea>
 
-    {#if recording}
+    {#if armed}
       <button
         type="button"
         onclick={stopRecording}
         data-testid="mic-stop"
         class="min-h-11 flex-none rounded-lg bg-red-600 px-3 text-xs font-semibold text-white active:bg-red-500"
-      >Stop {seconds}s</button>
+      >{recording ? `Stop ${seconds}s` : 'Stop'}</button>
       <button
         type="button"
         onclick={cancelRecording}
