@@ -5,8 +5,8 @@
    * There is nothing else to ask. Agents launch at the project root and create
    * their own worktrees, so there is no branch to name and no directory to
    * browse — the two things that would be miserable here do not exist. Provider
-   * and model come from the same default ⌘T uses; a phone is not where you
-   * comparison-shop models.
+   * and model come from the same default the ✦ button and ⌘T use; a phone is
+   * not where you comparison-shop models.
    *
    * The composer is the reply composer, unchanged: the same hold-to-talk, the
    * same mandatory transcript review. Only the button's word differs.
@@ -21,8 +21,9 @@
    * ── Lifetimes ───────────────────────────────────────────────────────────
    * **The brief's lifetime is the sheet's.** It is never persisted and never
    * resurrected: a half-finished brief replayed into a live spawn days later
-   * is worse than saying it again. Dismissing therefore discards it — but not
-   * silently, so a non-empty brief asks first.
+   * is worse than saying it again. So every way out of the sheet asks first —
+   * ✕, the scrim, Escape, and the browser itself, since an iOS PWA reclaiming
+   * the tab is the likeliest way to lose one that was just dictated.
    *
    * The socket is deliberately NOT one of its boundaries. The text is local, so
    * a drop costs nothing; Start is what waits for the connection, and says so.
@@ -30,9 +31,16 @@
    * **The intent's lifetime spans the attempts.** `requestId` is minted at the
    * first Start and kept until one succeeds, so a tap that fails — or whose
    * answer never arrives — retries the same intent rather than asking for a
-   * second session. Main is what enforces that; this only has to stop naming
-   * the same intent twice.
+   * second session. Main is what enforces that.
+   *
+   * The corner that needs an exit: main deliberately never re-spawns an intent
+   * whose outcome nobody witnessed, so once it holds one, every retry returns
+   * the same uncertainty. Without a way out, a timed-out Start becomes a dead
+   * end whose only escape destroys the brief. Hence "Start a new session
+   * anyway" — a fresh intent, the brief kept, and the duplicate risk named
+   * rather than taken on the user's behalf.
    */
+  import { onMount, tick } from 'svelte'
   import VoiceComposer from './VoiceComposer.svelte'
   import { briefNudge, labelFromBrief } from '../shared/brief'
   import type { ConnectionState } from './api-shim'
@@ -50,15 +58,23 @@
   let brief = $state('')
   let starting = $state(false)
   let confirmingDiscard = $state(false)
+  /** An attempt has failed, so main may be holding an outcome nobody saw. */
+  let stalled = $state(false)
+  /** Only the escape hatch reports here; the composer shows its own failures. */
+  let anywayError = $state<string | null>(null)
+  let sheetEl = $state<HTMLElement | undefined>()
+  let composer = $state<VoiceComposer | undefined>()
   /**
    * The user's intent, not this call. Null until they first commit to starting
-   * a session, and cleared only once one exists.
+   * a session, and cleared only once one exists — or once they deliberately
+   * abandon it.
    */
   let requestId: string | null = null
 
   const nudge = $derived(briefNudge(brief))
   const label = $derived(labelFromBrief(brief))
   const offline = $derived(connection !== 'open')
+  const hasBrief = $derived(brief.trim().length > 0)
 
   /**
    * `randomUUID` needs a secure context, which the Tailscale HTTPS transport
@@ -72,6 +88,18 @@
     )
   }
 
+  onMount(() => {
+    void tick().then(() => composer?.focusField())
+    // The last boundary of the brief's life. It is held nowhere else, so a
+    // reclaimed tab or a closed window would take it with no warning at all.
+    const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+      if (!brief.trim()) return
+      event.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  })
+
   /**
    * Throwing is how the composer learns it failed: it keeps the brief in the
    * field and shows the reason, which is exactly what a failed start needs.
@@ -82,30 +110,101 @@
     }
     requestId ??= mintRequestId()
     starting = true
+    anywayError = null
     try {
       const created = await window.api.invoke('session:create', { requestId, brief: text })
       // The intent is spent. A later Start in this sheet is a NEW session.
       requestId = null
+      stalled = false
       oncreated(created)
+    } catch (error) {
+      stalled = true
+      throw error
     } finally {
       starting = false
+    }
+  }
+
+  /** Abandon the stuck intent and ask for a session outright. */
+  async function startAnyway(): Promise<void> {
+    if (starting || !hasBrief) return
+    requestId = null
+    stalled = false
+    anywayError = null
+    try {
+      await start(brief.trim())
+    } catch (error) {
+      anywayError = error instanceof Error ? error.message : String(error)
     }
   }
 
   /** Leaving discards the brief, so anything worth losing is asked about. */
   function requestClose(): void {
     if (starting) return
-    if (brief.trim()) {
+    if (hasBrief) {
       confirmingDiscard = true
       return
     }
     onclose()
   }
+
+  /**
+   * Keep Tab inside the sheet.
+   *
+   * Not only an accessibility nicety: tabbing OUT while a start is in flight
+   * put the discard button within reach, and discarding unmounts the sheet
+   * mid-call — the session appears nowhere, so the natural next move is to tap
+   * `+` and start a second one.
+   */
+  function trapTab(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      // Stopped here, or the window handler below sees the confirm this very
+      // keystroke just opened and closes it again on the same event.
+      event.stopPropagation()
+      requestClose()
+      return
+    }
+    if (event.key !== 'Tab' || !sheetEl) return
+    const stops = [...sheetEl.querySelectorAll<HTMLElement>('button, textarea, [href], input, select')].filter(
+      (el) => !el.hasAttribute('disabled') && el.tabIndex !== -1,
+    )
+    if (stops.length === 0) return
+    const first = stops[0]
+    const last = stops[stops.length - 1]
+    const active = document.activeElement
+    if (!event.shiftKey && active === last) {
+      event.preventDefault()
+      first.focus()
+    } else if (event.shiftKey && active === first) {
+      event.preventDefault()
+      last.focus()
+    }
+  }
 </script>
 
+<svelte:window
+  onkeydown={(event) => {
+    if (event.key !== 'Escape' || !confirmingDiscard) return
+    event.preventDefault()
+    confirmingDiscard = false
+  }}
+/>
+
 <!-- A bottom sheet. Line comments and new sessions arrive this way; confirms
-     are centred modals, which is why the discard prompt below is not one. -->
-<div class="fixed inset-0 z-40 flex flex-col justify-end" data-testid="new-session-sheet">
+     are centred modals, which is why the discard prompt below is not one.
+     `inert` while the confirm is up: the sheet is not merely covered, it is
+     unreachable — a keyboard could otherwise still reach Start behind it. -->
+<div
+  bind:this={sheetEl}
+  onkeydown={trapTab}
+  inert={confirmingDiscard}
+  role="dialog"
+  aria-modal="true"
+  aria-label="New session"
+  class="fixed inset-0 z-40 flex flex-col justify-end"
+  data-testid="new-session-sheet"
+>
   <button
     type="button"
     aria-label="Dismiss"
@@ -134,6 +233,7 @@
     </p>
 
     <VoiceComposer
+      bind:this={composer}
       bind:text={brief}
       onsend={start}
       sendLabel="Start"
@@ -157,6 +257,28 @@
         Appears as “{label}” until it renames itself.
       </p>
     {/if}
+
+    {#if stalled && !starting}
+      <div class="mt-2 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-2" data-testid="stalled">
+        {#if anywayError}
+          <p class="mb-1.5 text-[11px] leading-relaxed text-red-300" data-testid="anyway-error">
+            {anywayError}
+          </p>
+        {/if}
+        <p class="mb-1.5 text-[11px] leading-relaxed text-zinc-400">
+          Start retries the same request, so it can only ever give you one session — including
+          one it may already have made. If nothing shows up in the list, ask for a new one:
+        </p>
+        <button
+          type="button"
+          onclick={() => void startAnyway()}
+          disabled={!hasBrief}
+          data-testid="start-anyway"
+          class="min-h-10 w-full rounded-lg border border-zinc-700 text-xs font-semibold text-zinc-200
+                 active:bg-zinc-800 disabled:opacity-40"
+        >Start a new session anyway</button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -176,8 +298,10 @@
         It isn't kept anywhere — leaving loses what you dictated.
       </p>
       <div class="mt-4 flex gap-2">
+        <!-- svelte-ignore a11y_autofocus -->
         <button
           type="button"
+          autofocus
           onclick={() => { confirmingDiscard = false }}
           class="min-h-10 flex-1 rounded-lg border border-zinc-700 text-sm text-zinc-200"
         >Keep writing</button>

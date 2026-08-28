@@ -169,6 +169,77 @@ describe('NewSessionSheet', () => {
     expect(closed).toBe(1)
   })
 
+  it('offers a way out when a start leaves the outcome unknown', async () => {
+    mount()
+    await type(FULL_BRIEF)
+    await fireEvent.click(screen.getByTestId('composer-send'))
+    await waitFor(() => expect(fail).not.toBeNull())
+    // Main never re-spawns an intent nobody witnessed, so every plain retry
+    // returns this same uncertainty. Without an exit the only escape is
+    // Discard, which destroys the brief the user just dictated.
+    fail!(new Error('SimpleEdit did not confirm the new session in time.'))
+    await screen.findByTestId('composer-error')
+
+    const anyway = await screen.findByTestId('start-anyway')
+    const before = invoke.mock.calls.find((c) => c[0] === 'session:create')![1].requestId
+    await fireEvent.click(anyway)
+    await waitFor(() =>
+      expect(invoke.mock.calls.filter((c) => c[0] === 'session:create')).toHaveLength(2),
+    )
+    const second = invoke.mock.calls.filter((c) => c[0] === 'session:create')[1][1]
+
+    // A NEW intent — the point is to accept the duplicate risk deliberately —
+    // carrying the brief that was never lost.
+    expect(second.requestId).not.toBe(before)
+    expect(second.brief).toBe(FULL_BRIEF)
+    expect((screen.getByTestId('composer-text') as HTMLTextAreaElement).value).toBe(FULL_BRIEF)
+  })
+
+  it('does not offer the way out before anything has failed', async () => {
+    mount()
+    await type(FULL_BRIEF)
+    expect(screen.queryByTestId('start-anyway')).toBeNull()
+  })
+
+  it('puts Start out of reach while the discard confirm is up', async () => {
+    mount()
+    await type(FULL_BRIEF)
+    await fireEvent.click(screen.getByTestId('sheet-close'))
+    await screen.findByTestId('discard-confirm')
+
+    // Not merely covered — unreachable. A keyboard user could otherwise tab
+    // back to Start, fire it, then discard: the sheet unmounts mid-call, the
+    // session appears nowhere, and the obvious next move starts a second one.
+    expect(screen.getByTestId('new-session-sheet')).toHaveAttribute('inert')
+  })
+
+  it('treats Escape as a way out, and asks before it costs the brief', async () => {
+    mount()
+    await fireEvent.keyDown(screen.getByTestId('new-session-sheet'), { key: 'Escape' })
+    expect(closed).toBe(1)
+
+    closed = 0
+    await type(FULL_BRIEF)
+    await fireEvent.keyDown(screen.getByTestId('new-session-sheet'), { key: 'Escape' })
+    await screen.findByTestId('discard-confirm')
+    expect(closed).toBe(0)
+  })
+
+  it('warns the browser before it takes the brief away', async () => {
+    mount()
+    const unloadWith = (): boolean => {
+      const event = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    // Nothing to lose yet.
+    expect(unloadWith()).toBe(false)
+
+    await type(FULL_BRIEF)
+    // An iOS PWA reclaiming the tab is the likeliest way a dictated brief goes.
+    expect(unloadWith()).toBe(true)
+  })
+
   it('closes straight away when there is nothing to lose', async () => {
     mount()
     await fireEvent.click(screen.getByTestId('sheet-close'))
