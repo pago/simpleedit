@@ -82,7 +82,10 @@ describe('pushCapability', () => {
       fakeWindow({ secure: false, serviceWorker: true, pushManager: true, notification: 'default' }),
     )
     expect(capability.blocker).toBe('insecure-context')
-    expect(blockerMessage(capability)).toMatch(/Tailscale Serve/)
+    // Points at the pane rather than naming one fix: a node can hold HTTPS
+    // certificates while tailscaled is stopped, and Serve is not the answer then.
+    expect(blockerMessage(capability)).toMatch(/Settings → Remote access/)
+    expect(blockerMessage(capability)).not.toMatch(/Turn on Tailscale Serve/)
   })
 
   it('reports a denial the user has to undo in device settings', () => {

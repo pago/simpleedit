@@ -77,7 +77,12 @@ export function pushCapability(win: Window = window): PushCapability {
 export function blockerMessage(capability: PushCapability): string | null {
   switch (capability.blocker) {
     case 'insecure-context':
-      return 'Notifications need an HTTPS address. Turn on Tailscale Serve in Settings → Remote access and reopen this page on the https:// link.'
+      // Deliberately not "turn on Tailscale Serve": Serve is only one of the
+      // things that can be missing, and a node can hold HTTPS certificates
+      // while tailscaled is stopped. Settings → Remote access already
+      // diagnoses this properly; prescribing one action here would be wrong
+      // more often than it would be right.
+      return 'Notifications need an HTTPS address. Open Settings → Remote access on the Mac — it says what this node still needs — then reopen this page on the https:// link.'
     case 'needs-install':
       return 'Add this page to your Home Screen first — Share, then “Add to Home Screen” — and open it from there. iOS only allows notifications for an installed app.'
     case 'denied':

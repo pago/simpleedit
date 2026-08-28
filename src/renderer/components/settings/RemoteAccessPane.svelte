@@ -433,7 +433,7 @@
       <li>
         <span class="font-semibold text-zinc-300">1.</span>
         Open the pairing link on the phone. It has to be the <span class="text-zinc-300">https://</span>
-        one — turn on Tailscale Serve above if there isn't one yet.
+        one; if there isn't one, the Tailscale section above says what this node still needs.
       </li>
       <li>
         <span class="font-semibold text-zinc-300">2.</span>
