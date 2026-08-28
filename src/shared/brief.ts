@@ -51,12 +51,18 @@ export function labelFromBrief(brief: string): string | null {
   let label = (clause ?? flat).trim()
   if (!label) label = flat
 
-  if (label.length > LABEL_MAX) {
-    const cut = label.slice(0, LABEL_MAX)
+  // Counted in CHARACTERS, not UTF-16 code units: an astral character is two
+  // units, so a length-based slice can both halve the real budget and land
+  // between the halves of one — emitting a lone surrogate that renders as a
+  // replacement glyph. Emoji in a dictated brief are rare; a broken label is
+  // not the way to find that out.
+  const chars = [...label]
+  if (chars.length > LABEL_MAX) {
+    const cut = chars.slice(0, LABEL_MAX).join('')
     // Prefer a word boundary, but only when one is late enough that the label
     // still says something — otherwise take the hard cut.
     const lastSpace = cut.lastIndexOf(' ')
-    label = `${(lastSpace > LABEL_MAX / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`
+    label = `${(lastSpace > cut.length / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`
   }
   return label || null
 }

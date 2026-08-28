@@ -36,6 +36,20 @@ describe('labelFromBrief', () => {
     expect(label).toBe(`${'x'.repeat(42)}…`)
   })
 
+  it('never cuts a character in half', () => {
+    // Astral characters are two UTF-16 units each, so a length-based slice can
+    // land between the halves of one and emit a lone surrogate — an unpaired
+    // code unit that renders as a replacement glyph in the sidebar.
+    // An odd leading character puts the cut boundary INSIDE a surrogate pair.
+    const label = labelFromBrief(`x${'🙂'.repeat(60)}`)
+    expect(label).not.toBeNull()
+    expect(label).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+    expect(label).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+    // And the budget is counted in characters, not code units, so a label of
+    // astral characters is not silently half the length of an ASCII one.
+    expect([...label!].length).toBe(43)
+  })
+
   it('is null when there is nothing to name', () => {
     expect(labelFromBrief('   \n  ')).toBeNull()
     expect(labelFromBrief('')).toBeNull()
