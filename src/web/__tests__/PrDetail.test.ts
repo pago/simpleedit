@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import PrDetail from '../PrDetail.svelte'
 import { screenPrsStore } from '../../renderer/stores/screenprs.svelte'
 import { unknownOutcome, verdictChoice } from '../lib/prs.svelte'
@@ -40,9 +40,47 @@ const CARD: ScreenPrCard = {
 let invoke: ReturnType<typeof vi.fn>
 let submitResult: () => Promise<unknown>
 let diffResult: () => Promise<string>
+/**
+ * Releases a deliberately-pending submit.
+ *
+ * Always called in `afterEach`: the store's `_submitting` set is a module
+ * singleton cleared in `submitReview`'s `finally`, so a submit left hanging by
+ * one test leaves every later one thinking a post is in flight — four failures
+ * pointing at healthy code.
+ */
+let releasePendingSubmit: () => void = () => {}
 
 function submitCalls(): unknown[][] {
   return invoke.mock.calls.filter(([channel]) => channel === 'screenprs:submit-review')
+}
+
+/**
+ * What actually went to GitHub.
+ *
+ * Every anchoring assertion reads this, not the banner. Two rounds of this
+ * predicate were wrong in ways a notice-only test could not see: once the
+ * notice contradicted the payload, once the notice was deleted and the payload
+ * left as it was.
+ */
+function postedComments(): { line?: string; sha?: string; text: string }[] {
+  const [, request] = submitCalls()[0] as [string, { draft: { comments: { line?: string; sha?: string; text: string }[] } }]
+  return request.draft.comments
+}
+
+afterEach(() => {
+  releasePendingSubmit()
+})
+
+/** Choose a verdict and open the confirm, so its contents can be inspected. */
+async function openConfirm(verdict: 'approve' | 'comment' | 'request_changes' = 'comment'): Promise<void> {
+  await fireEvent.click(screen.getByTestId(`verdict-${verdict}`))
+  await fireEvent.click(screen.getByTestId('review-submit'))
+}
+
+/** Confirm, and return once the invoke has landed. */
+async function confirmPost(): Promise<void> {
+  await fireEvent.click(screen.getByTestId('confirm-post'))
+  await waitFor(() => expect(submitCalls()).toHaveLength(1))
 }
 
 beforeEach(() => {
@@ -62,8 +100,9 @@ beforeEach(() => {
   screenPrsStore.resetSubmitted(URL_)
   verdictChoice.reset(URL_)
   unknownOutcome.clear(URL_)
-  screenPrsStore._onDeepResult(URL_, [])
+  screenPrsStore._onDeepResult(URL_, [], '')
   screenPrsStore._onDeepStatus(URL_, 'idle')
+  releasePendingSubmit = () => {}
   screenPrsStore._onQueued([CARD])
   screenPrsStore._onCard(CARD)
 })
@@ -217,88 +256,15 @@ describe('PR detail — the path to GitHub', () => {
     expect(screen.getByTestId('confirm-post')).toBeEnabled()
   })
 
-  it('un-anchors a comment when the branch moves under it', async () => {
-    // The reviews API carries no `commit_id`: GitHub anchors against whatever
-    // the head is at POST time. A comment written at sha1 and posted at sha2
-    // would land on whatever now occupies line 11 — no 422, no fold, no warning.
-    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
-    await commentOnAddedLine('this gate is inverted')
-
-    screenPrsStore._onCard({ ...CARD, headSha: 'sha2' })
-    await rerender({ pr: CARD, connected: true })
-
-    await fireEvent.click(screen.getByTestId('review-toggle'))
-    expect(screen.getByTestId('stale-notice')).toBeInTheDocument()
-
-    await fireEvent.click(screen.getByTestId('verdict-comment'))
-    await fireEvent.click(screen.getByTestId('review-submit'))
-    expect(screen.getByTestId('confirm-anchored')).toHaveTextContent('0 line comments anchored')
-    expect(screen.getByTestId('confirm-folded')).toHaveTextContent('1 folded into the summary')
-
-    await fireEvent.click(screen.getByTestId('confirm-post'))
-    await waitFor(() => expect(submitCalls()).toHaveLength(1))
-    const [, request] = submitCalls()[0] as [string, { draft: { comments: { line?: string }[] } }]
-    expect(request.draft.comments[0].line).toBeUndefined()
-  })
-
-  it('does not call a comment stale while the head is merely unknown', async () => {
-    // `screenprs:queued` replaces every entry with a bare ref — a re-screen
-    // started at the DESK reaches the phone as one — so `context`, and with it
-    // `headSha`, is gone until this PR's metadata comes back: a `gh pr view`
-    // and a `gh pr checks` away, seconds to minutes.
-    //
-    // Unknown is not the same as different. Reading it as different made the
-    // confirm say "1 line comment anchored" and "1 was written against an
-    // earlier commit" in the same box, while posting the anchor anyway.
-    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
-    await commentOnAddedLine('this gate is inverted')
-
-    screenPrsStore._onQueued([CARD])
-    await rerender({ pr: CARD, connected: true })
-
-    await fireEvent.click(screen.getByTestId('review-toggle'))
-    expect(screen.queryByTestId('stale-notice')).toBeNull()
-
-    await fireEvent.click(screen.getByTestId('verdict-comment'))
-    await fireEvent.click(screen.getByTestId('review-submit'))
-    expect(screen.queryByTestId('confirm-stale')).toBeNull()
-    expect(screen.getByTestId('confirm-anchored')).toHaveTextContent('1 line comment anchored')
-
-    await fireEvent.click(screen.getByTestId('confirm-post'))
-    await waitFor(() => expect(submitCalls()).toHaveLength(1))
-    const [, request] = submitCalls()[0] as [string, { draft: { comments: { line?: string }[] } }]
-    // What the confirm counted is what went: the head never moved.
-    expect(request.draft.comments[0].line).toBe('11')
-  })
-
-  it('stamps nothing rather than "" when a finding is lifted with the head unknown', async () => {
-    // `_deep` survives `_onQueued`, so these ＋ buttons are live in that window.
-    // A comment stamped `''` there is stale against every real head forever:
-    // anchor dropped, user told the branch moved, nothing having moved.
-    screenPrsStore._onDeepStatus(URL_, 'done')
-    screenPrsStore._onDeepResult(URL_, [
-      { lens: 'soundness', severity: 'concern', file: 'src/gate.ts', line: '11', title: 'off by one', detail: 'check the bound' },
-    ])
-    screenPrsStore._onQueued([CARD])
-
-    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
-    await fireEvent.click(screen.getByTestId('add-deep'))
-
-    screenPrsStore._onCard(CARD)
-    await rerender({ pr: CARD, connected: true })
-
-    await fireEvent.click(screen.getByTestId('review-toggle'))
-    expect(screen.queryByTestId('stale-notice')).toBeNull()
-    expect(screen.getByTestId('draft-count')).toHaveTextContent('1')
-  })
-
   it('keeps focus inside the dialog once Post is pressed', async () => {
     // Post disables itself and Cancel becomes a paragraph, so the element
     // holding focus disappears mid-write. Left alone, focus falls to <body> —
     // outside the element that owns the key handler — and Tab walks into the
     // board behind while an irreversible write is in flight.
-    let release: (value: unknown) => void = () => {}
-    submitResult = () => new Promise((resolve) => { release = resolve })
+    submitResult = () =>
+      new Promise((resolve) => {
+        releasePendingSubmit = () => resolve({ ok: true, foldedComments: false })
+      })
 
     render(PrDetail, { pr: CARD, connected: true })
     await fireEvent.click(screen.getByTestId('review-toggle'))
@@ -313,8 +279,6 @@ describe('PR detail — the path to GitHub', () => {
     await fireEvent.click(postButton)
     await screen.findByTestId('not-cancellable')
     expect(dialog.contains(document.activeElement)).toBe(true)
-
-    release({ ok: true, foldedComments: false })
   })
 
   it('hands focus back to whatever opened it', async () => {
@@ -348,6 +312,132 @@ describe('PR detail — the path to GitHub', () => {
 
     await rerender({ pr: CARD, connected: true })
     expect(await screen.findAllByTestId('diff-line')).not.toHaveLength(0)
+  })
+
+  it('anchors a comment that is verified against the head on screen', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+
+    expect(screen.queryByTestId('moved-notice')).toBeNull()
+    expect(screen.queryByTestId('unverified-notice')).toBeNull()
+    await openConfirm()
+    expect(screen.getByTestId('confirm-anchored')).toHaveTextContent('1 line comment anchored')
+
+    await confirmPost()
+    expect(postedComments()[0].line).toBe('11')
+  })
+
+  it('folds an anchor it cannot check rather than posting it', async () => {
+    // `screenprs:queued` — which a re-screen started at the DESK delivers here —
+    // leaves the head unknown for as long as a `gh pr view` takes. Unverifiable
+    // is not the same as verified: on a write other people see, it must fold.
+    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+
+    screenPrsStore._onQueued([CARD])
+    await rerender({ pr: CARD, connected: true })
+
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    expect(screen.getByTestId('unverified-notice')).toBeInTheDocument()
+
+    await openConfirm()
+    expect(screen.getByTestId('confirm-anchored')).toHaveTextContent('0 line comments anchored')
+    expect(screen.getByTestId('confirm-unverified')).toBeInTheDocument()
+
+    await confirmPost()
+    expect(postedComments()[0].line).toBeUndefined()
+    expect(postedComments()[0].text).toBe('this gate is inverted')
+  })
+
+  it('folds every sibling when the head moves, not just the one it can see', async () => {
+    // Two comments read off the same commit must share a fate. One folding
+    // while its sibling posts against the new head is the failure that made the
+    // three-state model necessary.
+    screenPrsStore._onDeepStatus(URL_, 'done')
+    screenPrsStore._onDeepResult(
+      URL_,
+      [{ lens: 'soundness', severity: 'concern', file: 'src/gate.ts', line: '11', title: 'off by one', detail: 'check the bound' }],
+      'sha1',
+    )
+    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('add-deep'))
+    await commentOnAddedLine('this gate is inverted')
+
+    screenPrsStore._onCard({ ...CARD, headSha: 'sha2' })
+    await rerender({ pr: CARD, connected: true })
+
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    expect(screen.getByTestId('moved-notice')).toBeInTheDocument()
+
+    await openConfirm()
+    expect(screen.getByTestId('confirm-moved')).toBeInTheDocument()
+
+    await confirmPost()
+    expect(postedComments()).toHaveLength(2)
+    expect(postedComments().map((c) => c.line)).toEqual([undefined, undefined])
+  })
+
+  it('stamps a lifted finding with the head it was computed against', async () => {
+    // The `＋` buttons stay live while the queue is bare, because `_deep`
+    // survives `_onQueued`. Stamping the LIVE head there records nothing, and a
+    // comment with no stamp can never be shown to have gone stale.
+    screenPrsStore._onDeepStatus(URL_, 'done')
+    screenPrsStore._onDeepResult(
+      URL_,
+      [{ lens: 'soundness', severity: 'concern', file: 'src/gate.ts', line: '11', title: 'off by one', detail: 'check the bound' }],
+      'sha1',
+    )
+    screenPrsStore._onQueued([CARD])
+
+    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('add-deep'))
+    expect(screenPrsStore.draftFor(URL_).comments[0].sha).toBe('sha1')
+
+    // Back at the SAME head: the stamp checks out, so it anchors.
+    screenPrsStore._onCard(CARD)
+    await rerender({ pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await openConfirm()
+    await confirmPost()
+    expect(postedComments()[0].line).toBe('11')
+  })
+
+  it('treats a killed `gh` as unknown, not as a refusal', async () => {
+    // A POST the Mac gave up waiting on may still have been received, so this
+    // has to latch like a dropped socket rather than read as "nothing happened".
+    submitResult = async () => ({ ok: false, error: 'gh api did not finish within 120000ms', delivered: 'unknown' })
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await openConfirm('approve')
+    await confirmPost()
+
+    const err = await screen.findByTestId('confirm-error')
+    expect(err).toHaveTextContent('isn’t known whether the review posted')
+    expect(screen.getByTestId('confirm-post')).toBeDisabled()
+    expect(screen.getByTestId('confirm-acknowledge')).toBeInTheDocument()
+  })
+
+  it('leaves the confirm on Escape even mid-post, and reports the outcome outside it', async () => {
+    // A hung `gh` must not seal the reviewer inside a focus trap whose only
+    // enabled control is one that does nothing.
+    submitResult = () =>
+      new Promise((resolve) => {
+        releasePendingSubmit = () => resolve({ ok: false, error: 'timed out', delivered: 'unknown' })
+      })
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await openConfirm('approve')
+
+    const dialog = screen.getByTestId('confirm-submit').firstElementChild as HTMLElement
+    await confirmPost()
+    await screen.findByTestId('not-cancellable')
+
+    await fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.queryByTestId('confirm-submit')).toBeNull()
+
+    releasePendingSubmit()
+    await waitFor(() => expect(screen.getByTestId('sheet-outcome')).toHaveTextContent('isn’t known'))
   })
 
   it('closes the confirm on Escape', async () => {

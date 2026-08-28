@@ -475,7 +475,16 @@ export interface SubmitReviewRequest {
 
 export type SubmitReviewResult =
   | { ok: true; reviewUrl?: string; foldedComments: boolean }
-  | { ok: false; error: string }
+  | {
+      ok: false
+      error: string
+      /**
+       * Set when the call was killed in flight, so GitHub may or may not have
+       * received it. Absent means GitHub answered and nothing was posted —
+       * which is safe to retry, and this is not.
+       */
+      delivered?: 'unknown'
+    }
 
 export interface ScreenPrsEventMap {
   /** The queue is known (right after search): seed placeholders before gathering. */
@@ -490,8 +499,9 @@ export interface ScreenPrsEventMap {
   'screenprs:status': { status: ScreenPrsRunStatus; error?: string; total?: number }
   /** Per-lens progress for a PR's deep review (keyed by the PR url). */
   'screenprs:deep-lens': { url: string; lens: DeepLensId; status: DeepLensStatus }
-  /** The synthesized, curated deep-review findings for a PR. */
-  'screenprs:deep-result': { url: string; findings: DeepFinding[] }
+  /** The synthesized, curated deep-review findings for a PR, plus the head they
+   *  were computed against — a finding's line number means nothing without it. */
+  'screenprs:deep-result': { url: string; findings: DeepFinding[]; headSha: string }
   'screenprs:deep-status': { url: string; status: DeepReviewStatus; error?: string }
 }
 

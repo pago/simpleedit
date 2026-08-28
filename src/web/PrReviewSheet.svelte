@@ -26,13 +26,14 @@
    * line anchors into a head SHA that has moved.
    *
    * Within a session that same move is handled rather than prevented: the
-   * `draft` arriving here has already been through `reanchorForHead`, so a
-   * comment written against an older commit has lost its line and folds into
-   * the body instead of landing on whatever now occupies that number.
+   * `draft` arriving here has already been through `anchorsForHead`, so a line
+   * anchor survives only where it was verified against the head on screen.
+   * Everything else — moved, or simply not checkable — folds into the body,
+   * and the two reasons are reported apart because they mean different things
+   * to the person deciding whether to post.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import { staleAnchorCount } from '../shared/screenprs'
-  import type { PrRef, PrReviewCommentSource, PrReviewDraft, PrReviewVerdict } from '../shared/screenprs'
+  import type { AnchorState, PrRef, PrReviewCommentSource, PrReviewDraft, PrReviewVerdict } from '../shared/screenprs'
   import { unknownOutcome, verdictChoice, type SubmitOutcome } from './lib/prs.svelte'
   import { NotSentError } from './api-shim'
   import ComposeSheet from './ComposeSheet.svelte'
@@ -46,13 +47,17 @@
      * what is counted in the confirm, and what is sent are the same object.
      */
     draft: PrReviewDraft
-    /** The head the diff on screen belongs to; '' while the PR is still screening. */
-    headSha: string
+    /**
+     * How many comments are in each anchor state, counted on the draft BEFORE
+     * folding. Passed in rather than derived here so the sheet, the confirm and
+     * the payload are three views of one computation.
+     */
+    anchors: Record<AnchorState, number>
     /** Whether the socket is open right now — read at the point of use. */
     connected: boolean
   }
 
-  let { pr, draft, headSha, connected }: Props = $props()
+  let { pr, draft, anchors, connected }: Props = $props()
 
   let url = $derived(pr.url)
   let submitted = $derived(screenPrsStore.submittedFor(url))
@@ -60,7 +65,6 @@
   let draftError = $derived(screenPrsStore.draftError(url))
   let chosen = $derived(verdictChoice.made(url))
   let latched = $derived(unknownOutcome.pending(url))
-  let staleCount = $derived(staleAnchorCount(draft, headSha))
 
   let open = $state(false)
   let confirming = $state(false)
@@ -122,8 +126,18 @@
         // Posted and done with: a follow-up starts from no verdict.
         verdictChoice.reset(url)
         unknownOutcome.clear(url)
+      } else if (res.delivered === 'unknown') {
+        // Main answered, but only to say it killed the call in flight. GitHub
+        // may have taken it, so this latches exactly like a dropped socket.
+        outcome = {
+          kind: 'unknown',
+          message:
+            `The Mac gave up waiting on GitHub, so it isn’t known whether the review posted. ` +
+            `Check ${pr.repo}#${pr.number} — posting again would post twice if it did.`,
+        }
+        unknownOutcome.raise(url)
       } else {
-        // Main answered. Whatever went wrong, nothing was posted.
+        // GitHub answered. Whatever it said, nothing was posted.
         outcome = { kind: 'refused', message: `GitHub refused it: ${res.error}` }
       }
     } catch (err) {
@@ -186,14 +200,33 @@
 
     {#if open}
       <div class="flex max-h-[52vh] flex-col gap-2.5 overflow-y-auto px-3 pb-3">
-        {#if staleCount > 0}
+        {#if outcome}
+          <p
+            class="rounded-md border px-2.5 py-1.5 text-[11px] leading-relaxed
+              {outcome.kind === 'unknown'
+                ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+                : 'border-red-500/30 bg-red-500/10 text-red-300'}"
+            data-testid="sheet-outcome"
+          >{outcome.message}</p>
+        {/if}
+        {#if anchors.moved > 0}
           <p
             class="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200"
-            data-testid="stale-notice"
+            data-testid="moved-notice"
           >
-            The branch moved since {staleCount === 1 ? 'a comment was' : `${staleCount} comments were`} written.
-            {staleCount === 1 ? 'Its' : 'Their'} line number would now point at different code, so
-            {staleCount === 1 ? 'it goes' : 'they go'} in the summary instead of on a line.
+            The branch moved since {anchors.moved === 1 ? 'a comment was' : `${anchors.moved} comments were`}
+            written. {anchors.moved === 1 ? 'Its' : 'Their'} line number would now point at different code, so
+            {anchors.moved === 1 ? 'it goes' : 'they go'} in the summary instead of on a line.
+          </p>
+        {/if}
+        {#if anchors.unverified > 0}
+          <p
+            class="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200"
+            data-testid="unverified-notice"
+          >
+            {anchors.unverified === 1 ? 'A comment' : `${anchors.unverified} comments`} can’t be checked against
+            the commit currently on this branch, so {anchors.unverified === 1 ? 'it goes' : 'they go'} in the
+            summary rather than risk landing on a line nobody read.
           </p>
         {/if}
 
@@ -293,7 +326,7 @@
     {draft}
     {submitting}
     {connected}
-    {staleCount}
+    {anchors}
     {outcome}
     {latched}
     onacknowledge={() => unknownOutcome.clear(url)}

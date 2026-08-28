@@ -72,7 +72,7 @@ export async function startDeepReview(ctx: PrContext, webContents: RemoteClient)
   })
   const cached = getCachedDeep(ctx.url, ctx.headSha, deepFingerprint)
   if (cached) {
-    send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: cached })
+    send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: cached, headSha: ctx.headSha })
     sendStatus('done')
     activeDeep.delete(ctx.url)
     return
@@ -121,7 +121,7 @@ export async function startDeepReview(ctx: PrContext, webContents: RemoteClient)
 
       curated.sort(compareDeepFindings)
       putDeep(ctx.url, ctx.headSha, curated, deepFingerprint)
-      send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: curated })
+      send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: curated, headSha: ctx.headSha })
       sendStatus('done')
     } finally {
       rmSync(analysisDir, { recursive: true, force: true })

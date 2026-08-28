@@ -13,7 +13,7 @@
    * of the one PR you open.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, reanchorForHead } from '../shared/screenprs'
+  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, anchorCounts, anchorsForHead } from '../shared/screenprs'
   import type {
     DeepFinding,
     DeepSeverity,
@@ -56,15 +56,20 @@
   /**
    * The draft as it would be posted.
    *
-   * A force-push between raising a comment and posting it leaves the comment's
-   * line number pointing at whatever now occupies it, and the reviews API takes
-   * no `commit_id` — GitHub would anchor it there without complaint. Re-anchored
-   * once, here, so the diff, the sheet, the confirm's counts and the submit all
-   * see the same thing. An empty `headSha` — the window a re-screen opens — is
-   * handled by `reanchorForHead` itself, so this and `staleAnchorCount` cannot
-   * disagree about what it means.
+   * A line anchor survives only where it can be shown to belong to the head on
+   * screen. The reviews API carries no commit id, so GitHub attaches whatever
+   * it is given to whatever the head is at that moment — silently. Resolved
+   * once, here, so the diff, the sheet, the confirm's counts and the submitted
+   * payload cannot disagree.
    */
-  let draft = $derived(reanchorForHead(screenPrsStore.draftFor(url), headSha))
+  let rawDraft = $derived(screenPrsStore.draftFor(url))
+  let draft = $derived(anchorsForHead(rawDraft, headSha))
+  /**
+   * Counted on the RAW draft, because `draft` has already had the failing
+   * anchors removed — classifying it would report every one of them as "never
+   * had a line" and the reviewer would be told nothing.
+   */
+  let anchors = $derived(anchorCounts(rawDraft, headSha))
   let diff = $state('')
   let diffError = $state<string | null>(null)
   let loadingDiff = $state(false)
@@ -108,23 +113,33 @@
   let target = $state<CommentTarget | null>(null)
 
   /**
-   * The head a comment's line was read off. Without it there is no way to tell
-   * later that the branch moved under the comment.
+   * A comment is stamped with the head ITS OWN line was computed against, which
+   * is not always the head that is live when the button is tapped.
    *
-   * `undefined` when the head is unknown — never `''`. A comment stamped with
-   * the empty string belongs to a head that exists nowhere, so it would read as
-   * stale against every real one, forever.
+   * A tapped diff row belongs to the diff on screen. A triage finding belongs
+   * to the card it was produced from. A deep finding belongs to the commit the
+   * lenses ran over — and deep findings outlive their card, because `_deep`
+   * survives the `_onQueued` that empties the queue, so their `＋` buttons are
+   * live in a window where the live head is not known at all.
+   *
+   * Reading the live head there would stamp nothing, and an unstamped comment
+   * can never be shown to have gone stale — a permanently un-checkable anchor
+   * rather than a transiently un-checkable one.
    */
-  let stampSha = $derived(headSha || undefined)
-
   function addLineComment(text: string): void {
     const t = target
     if (!t) return
-    screenPrsStore.addComment(url, { source: 'you', file: t.file, line: t.line, text, sha: stampSha })
+    screenPrsStore.addComment(url, { source: 'you', file: t.file, line: t.line, text, sha: headSha || undefined })
   }
 
   function addTriage(f: TriageFinding): void {
-    screenPrsStore.addComment(url, { source: 'triage', file: f.file, line: f.line, text: f.title, sha: stampSha })
+    screenPrsStore.addComment(url, {
+      source: 'triage',
+      file: f.file,
+      line: f.line,
+      text: f.title,
+      sha: card?.headSha,
+    })
   }
   function addDeep(f: DeepFinding): void {
     screenPrsStore.addComment(url, {
@@ -132,7 +147,7 @@
       file: f.file,
       line: f.line,
       text: f.detail ? `${f.title} — ${f.detail}` : f.title,
-      sha: stampSha,
+      sha: deep?.headSha,
     })
   }
 
@@ -330,7 +345,7 @@
     {/if}
   </div>
 
-  <PrReviewSheet {pr} {draft} {headSha} {connected} />
+  <PrReviewSheet {pr} {draft} {anchors} {connected} />
 </div>
 
 {#if target}

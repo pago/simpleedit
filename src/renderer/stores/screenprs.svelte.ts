@@ -24,6 +24,15 @@ export interface DeepState {
   status: DeepReviewStatus
   lenses: Partial<Record<DeepLensId, DeepLensStatus>>
   findings: DeepFinding[]
+  /**
+   * The head these findings' line numbers were computed against.
+   *
+   * Carried because a finding outlives the card it came from — `_deep` survives
+   * the `_onQueued` that replaces the queue with bare refs — so a comment
+   * lifted from one cannot take its stamp from whatever the live head happens
+   * to be at the moment of the tap.
+   */
+  headSha?: string
   error?: string
 }
 
@@ -158,7 +167,7 @@ export const screenPrsStore = {
     return _deep.get(url)
   },
   async startDeep(context: PrContext): Promise<void> {
-    setDeep(context.url, { status: 'running', lenses: {}, findings: [], error: undefined })
+    setDeep(context.url, { status: 'running', lenses: {}, findings: [], headSha: context.headSha, error: undefined })
     // Snapshot: `context` is a $state proxy from the store — IPC can't clone it.
     await window.api.invoke('screenprs:deep-start', $state.snapshot(context))
   },
@@ -234,8 +243,8 @@ export const screenPrsStore = {
     const cur = _deep.get(url)
     setDeep(url, { lenses: { ...(cur?.lenses ?? {}), [lens]: status } })
   },
-  _onDeepResult(url: string, findings: DeepFinding[]): void {
-    setDeep(url, { findings })
+  _onDeepResult(url: string, findings: DeepFinding[], headSha: string): void {
+    setDeep(url, { findings, headSha })
   },
   _onDeepStatus(url: string, status: DeepReviewStatus, error?: string): void {
     setDeep(url, { status, error })
@@ -282,7 +291,7 @@ export function initScreenPrsListeners(): () => void {
   const unsubCard = window.api.on('screenprs:card', (d) => screenPrsStore._onCard(d.card))
   const unsubStatus = window.api.on('screenprs:status', (d) => screenPrsStore._onStatus(d.status, d.total, d.error))
   const unsubDeepLens = window.api.on('screenprs:deep-lens', (d) => screenPrsStore._onDeepLens(d.url, d.lens, d.status))
-  const unsubDeepResult = window.api.on('screenprs:deep-result', (d) => screenPrsStore._onDeepResult(d.url, d.findings))
+  const unsubDeepResult = window.api.on('screenprs:deep-result', (d) => screenPrsStore._onDeepResult(d.url, d.findings, d.headSha))
   const unsubDeepStatus = window.api.on('screenprs:deep-status', (d) => screenPrsStore._onDeepStatus(d.url, d.status, d.error))
   return () => {
     unsubQueued()

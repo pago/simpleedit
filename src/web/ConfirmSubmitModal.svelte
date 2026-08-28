@@ -22,7 +22,7 @@
    *    key, so posting again after an outcome nobody knows is how one review
    *    becomes two. Re-arming takes an explicit acknowledgement.
    */
-  import { buildReviewPayload, type PrReviewDraft, type PrReviewVerdict } from '../shared/screenprs'
+  import { buildReviewPayload, type AnchorState, type PrReviewDraft, type PrReviewVerdict } from '../shared/screenprs'
   import type { SubmitOutcome } from './lib/prs.svelte'
 
   interface Props {
@@ -31,8 +31,9 @@
     draft: PrReviewDraft
     submitting: boolean
     connected: boolean
-    /** Comments whose anchor was dropped because the head moved under them. */
-    staleCount: number
+    /** How many comments are in each anchor state, so the two reasons a line
+     *  was dropped can be named apart. */
+    anchors: Record<AnchorState, number>
     /** How the last attempt ended, or null if there hasn't been one. */
     outcome: SubmitOutcome | null
     /** True while an unanswered submit is holding the post button down. */
@@ -43,7 +44,7 @@
   }
 
   let {
-    repo, number, draft, submitting, connected, staleCount, outcome, latched,
+    repo, number, draft, submitting, connected, anchors, outcome, latched,
     onacknowledge, onconfirm, oncancel,
   }: Props = $props()
 
@@ -91,8 +92,11 @@
 
   function onkeydown(e: KeyboardEvent): void {
     if (e.key === 'Escape') {
+      // Dismisses even mid-post. It does NOT cancel the write — nothing can —
+      // but a `gh` that hangs must not leave the reviewer sealed inside a focus
+      // trap with no key that does anything. The outcome lands in the sheet.
       e.preventDefault()
-      if (!submitting) oncancel()
+      oncancel()
       return
     }
     if (e.key !== 'Tab') return
@@ -155,11 +159,15 @@
           >
         {/if}
       </div>
-      {#if staleCount > 0}
-        <p class="text-[11px] leading-relaxed text-amber-300/90" data-testid="confirm-stale">
-          {staleCount} of these {staleCount === 1 ? 'was' : 'were'} written against an earlier commit. The branch
-          has moved since, so {staleCount === 1 ? 'its' : 'their'} line number no longer points at the code you read
-          — {staleCount === 1 ? 'it goes' : 'they go'} in the summary instead.
+      {#if anchors.moved > 0}
+        <p class="text-[11px] leading-relaxed text-amber-300/90" data-testid="confirm-moved">
+          {anchors.moved} written against an earlier commit — the branch has moved, so
+          {anchors.moved === 1 ? 'that line no longer points' : 'those lines no longer point'} at the code you read.
+        </p>
+      {/if}
+      {#if anchors.unverified > 0}
+        <p class="text-[11px] leading-relaxed text-amber-300/90" data-testid="confirm-unverified">
+          {anchors.unverified} that can’t be checked against this branch’s current commit.
         </p>
       {/if}
       {#if payload.body.trim()}
@@ -203,7 +211,7 @@
       >{submitting ? 'Posting…' : `Post ${v.label.toLowerCase()} on GitHub`}</button>
       {#if submitting}
         <p class="text-center text-[11px] text-zinc-500" data-testid="not-cancellable">
-          Already sent to GitHub — this can’t be cancelled.
+          Already sent to GitHub — this can’t be cancelled. Esc closes this box; the result appears below.
         </p>
       {:else}
         <button

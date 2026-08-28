@@ -218,48 +218,65 @@ export function parseLineAnchor(line?: string): number | null {
 }
 
 /**
- * True for a comment whose line was read off a head that is no longer current.
+ * Whether a comment's line anchor may be posted, and if not, why not.
  *
- * Both unknowns are exempt, and for the same reason: staleness is a claim that
- * the code under a line CHANGED, and neither an unstamped comment nor an
- * unknown current head is evidence of that. `headSha` is empty exactly while a
- * re-screen has replaced the queue with bare refs — a window a desktop
- * `screenprs:queued` opens on the phone, and one that a force-push makes MORE
- * likely, not less.
+ * Three states, not two. Two rounds of this code asked "is it stale?", which
+ * has no answer when the stamp or the current head is missing — and both times
+ * the missing answer was resolved as "go ahead". On a write other people see,
+ * ONLY a positive match may anchor: a line number that cannot be checked is a
+ * line number that might land on code the reviewer never read, and GitHub
+ * accepts it silently because the reviews API carries no commit id.
  */
-function isStaleAnchor(c: PrReviewComment, headSha: string): boolean {
-  // A falsy sha on EITHER side is an unknown, not a mismatch. Making that one
-  // rule here is the point: a caller that guards only its own side leaves the
-  // other half of the trap set.
-  if (!headSha || !c.sha) return false
-  return c.sha !== headSha
+export type AnchorState =
+  /** No line was raised — a file-level note. Nothing to anchor either way. */
+  | 'none'
+  /** Read off the head that is on screen now. The only state that anchors. */
+  | 'current'
+  /** Read off a different head: the code under that line has changed. */
+  | 'moved'
+  /** Unstamped, or the current head is unknown. Cannot be checked. */
+  | 'unverified'
+
+export function anchorState(c: PrReviewComment, headSha: string): AnchorState {
+  if (c.line === undefined) return 'none'
+  if (!c.sha || !headSha) return 'unverified'
+  return c.sha === headSha ? 'current' : 'moved'
+}
+
+/** The states whose anchor must not reach GitHub. */
+function foldsAway(state: AnchorState): boolean {
+  return state === 'moved' || state === 'unverified'
 }
 
 /**
- * Strip the line anchor from every comment raised against a different head.
+ * Keep a line anchor only where it is verified against `headSha`.
  *
- * A force-push between raising a comment and posting it leaves the number
- * pointing at whatever now occupies that line — and the reviews API carries no
- * `commit_id`, so GitHub would anchor it there without complaint: no 422, no
- * fold, no warning, a review comment on code the reviewer never read. Dropping
- * the anchor keeps the file and the text, so `buildReviewPayload` folds it into
- * the body exactly as it does an unanchorable finding.
+ * Everything else loses its line and keeps its file and text, so
+ * `buildReviewPayload` folds it into the review body — the same treatment an
+ * unanchorable finding already gets. Nothing is dropped; placement is what is
+ * given up, and only where placement could not be shown to be right.
  *
- * Returns the draft unchanged when nothing is stale — including when `headSha`
- * is empty, which means the current head is unknown rather than different — so
- * a caller can compare by identity.
+ * Returns the draft unchanged when every anchor is verified, so a caller can
+ * compare by identity.
  */
-export function reanchorForHead(draft: PrReviewDraft, headSha: string): PrReviewDraft {
-  if (!draft.comments.some((c) => c.line !== undefined && isStaleAnchor(c, headSha))) return draft
+export function anchorsForHead(draft: PrReviewDraft, headSha: string): PrReviewDraft {
+  if (!draft.comments.some((c) => foldsAway(anchorState(c, headSha)))) return draft
   return {
     ...draft,
-    comments: draft.comments.map((c) => (isStaleAnchor(c, headSha) ? { ...c, line: undefined } : c)),
+    comments: draft.comments.map((c) =>
+      foldsAway(anchorState(c, headSha)) ? { ...c, line: undefined } : c
+    ),
   }
 }
 
-/** How many of a draft's comments were raised against an older head. */
-export function staleAnchorCount(draft: PrReviewDraft, headSha: string): number {
-  return draft.comments.filter((c) => isStaleAnchor(c, headSha)).length
+/**
+ * How many comments are in each anchor state — so the UI can say WHICH reason
+ * cost a comment its line, rather than reporting one number for two causes.
+ */
+export function anchorCounts(draft: PrReviewDraft, headSha: string): Record<AnchorState, number> {
+  const counts: Record<AnchorState, number> = { none: 0, current: 0, moved: 0, unverified: 0 }
+  for (const c of draft.comments) counts[anchorState(c, headSha)]++
+  return counts
 }
 
 function foldedBullet(c: PrReviewComment): string {
