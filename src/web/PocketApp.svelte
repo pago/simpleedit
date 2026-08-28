@@ -8,19 +8,25 @@
    *    tab bar. Never a segmented control.
    *  - A **detail** screen has a back button and a title, and no tab bar. It
    *    may have a segmented control, but only when it genuinely has two panes,
-   *    and labelled for that screen — Session's is Terminal / Changes.
+   *    and labelled for that screen — Session's is Terminal / Changes, PR's is
+   *    Conversation / Files. The control belongs to the screen; this header
+   *    never carries one.
    *
-   * There is one tab today. It is a tab bar rather than a bare title because
-   * the second one (PRs) is a later phase, and a bar that appears when a second
-   * screen lands moves everything under the user's thumb on the day it ships.
+   * Two tabs, each with at most one detail screen on top of it, and sheets and
+   * modals above that. Depth stops there deliberately — nothing here needs a
+   * navigation stack, and a back button that could mean four different things
+   * is worse than one that always means "out of this detail".
    */
   import SessionsScreen from './SessionsScreen.svelte'
   import SessionScreen from './SessionScreen.svelte'
   import NewSessionSheet from './NewSessionSheet.svelte'
+  import PrBoard from './PrBoard.svelte'
+  import PrDetail from './PrDetail.svelte'
   import { onOpenSession } from './lib/push-client'
   import { sessionFromUrl } from './lib/push-payload'
   import type { ConnectionState, RemoteConnection } from './api-shim'
   import type { SessionCreateResult, WindowSession } from '../shared/ipc-types'
+  import type { PrRef } from '../shared/screenprs'
 
   interface Props {
     connection: RemoteConnection
@@ -28,14 +34,20 @@
 
   let { connection }: Props = $props()
 
-  type Tab = { id: 'sessions'; label: string; icon: string }
-  const TABS: Tab[] = [{ id: 'sessions', label: 'Sessions', icon: '◆' }]
+  type Tab = { id: 'sessions' | 'prs'; label: string; icon: string }
+  const TABS: Tab[] = [
+    { id: 'sessions', label: 'Sessions', icon: '◆' },
+    { id: 'prs', label: 'PRs', icon: '⑂' },
+  ]
 
   let tab = $state<Tab['id']>('sessions')
   /** Non-null means a detail screen is on top of `tab`. */
   let openSession = $state<WindowSession | null>(null)
   /** This screen was reached by tapping a notification, not by tapping a row. */
   let arrivedFromNotification = $state(false)
+  /** The PR whose detail is open. The `PrRef` is enough to render the header
+   *  even if a re-screen empties the board underneath it. */
+  let openPr = $state<PrRef | null>(null)
   let state = $state<ConnectionState>('connecting')
   /**
    * The session a notification asked for, held until the list arrives.
@@ -151,6 +163,10 @@
     if (match) {
       arrivedFromNotification = true
       deepLinkProblem = null
+      // A tap has to land on the session whatever was on screen, including the
+      // PR board — the phone was buzzed about a blocked agent, not about a PR.
+      tab = 'sessions'
+      openPr = null
       openSession = match
       return
     }
@@ -161,7 +177,28 @@
       : 'That session is no longer running.'
   }
 
-  const title = $derived(openSession ? openSession.label : (TABS.find((t) => t.id === tab)?.label ?? ''))
+  const tabLabel = $derived(TABS.find((t) => t.id === tab)?.label ?? '')
+  const detail = $derived(tab === 'sessions' ? openSession !== null : openPr !== null)
+  const title = $derived(
+    tab === 'sessions'
+      ? (openSession?.label ?? tabLabel)
+      : openPr
+        ? `${openPr.repo}#${openPr.number}`
+        : tabLabel,
+  )
+
+  /**
+   * Out of whichever detail is open.
+   *
+   * `arrivedFromNotification` goes with the session it described: left set, the
+   * next session opened by a tap on a row would autofocus the composer as
+   * though a notification had sent the user there.
+   */
+  function back(): void {
+    openSession = null
+    arrivedFromNotification = false
+    openPr = null
+  }
   const dot = $derived(
     state === 'open' ? 'bg-emerald-400' : state === 'connecting' ? 'bg-amber-400' : 'bg-red-500',
   )
@@ -171,17 +208,17 @@
   <header
     class="flex flex-none items-center gap-2 border-b border-zinc-800 px-2 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2"
   >
-    {#if openSession}
+    {#if detail}
       <button
         type="button"
-        onclick={() => { openSession = null; arrivedFromNotification = false }}
+        onclick={back}
         data-testid="back"
         class="-ml-1 flex min-h-9 items-center gap-1 rounded-md px-2 text-sm text-zinc-400 active:bg-zinc-800"
-      >‹ <span>Sessions</span></button>
+      >‹ <span>{tabLabel}</span></button>
     {/if}
     <h1 class="min-w-0 flex-1 truncate text-[15px] font-semibold" data-testid="screen-title">{title}</h1>
     <!-- The one trailing action a top-level screen is allowed. -->
-    {#if !openSession && tab === 'sessions'}
+    {#if !detail && tab === 'sessions'}
       <button
         type="button"
         onclick={() => { composingNew = true }}
@@ -200,50 +237,59 @@
   </header>
 
   <main class="flex min-h-0 flex-1 flex-col">
-    {#if openSession}
-      <SessionScreen session={openSession} {connection} focusComposer={arrivedFromNotification} />
-    {:else if tab === 'sessions'}
-      {#if startedNote}
-        {@const note = startedNote}
-        <div class="px-3 pt-3" data-testid="started-note">
-          <div
-            class="flex items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300"
-          >
-            <span class="min-w-0 flex-1 truncate">Started “{note.label}”</span>
-            <button
-              type="button"
-              data-testid="open-started"
-              onclick={() => {
-                pendingSession = { terminalId: note.terminalId, windowId: connection.identity()?.windowId ?? null }
-                startedNote = null
-              }}
-              class="flex-none px-1 font-semibold underline"
-            >Open</button>
-            <button
-              type="button"
-              onclick={() => { startedNote = null }}
-              aria-label="Dismiss"
-              class="flex-none px-1 text-emerald-400/70"
-            >✕</button>
+    {#if tab === 'sessions'}
+      {#if openSession}
+        <SessionScreen session={openSession} {connection} focusComposer={arrivedFromNotification} />
+      {:else}
+        {#if startedNote}
+          {@const note = startedNote}
+          <div class="px-3 pt-3" data-testid="started-note">
+            <div
+              class="flex items-center gap-2 rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300"
+            >
+              <span class="min-w-0 flex-1 truncate">Started “{note.label}”</span>
+              <button
+                type="button"
+                data-testid="open-started"
+                onclick={() => {
+                  pendingSession = { terminalId: note.terminalId, windowId: connection.identity()?.windowId ?? null }
+                  startedNote = null
+                }}
+                class="flex-none px-1 font-semibold underline"
+              >Open</button>
+              <button
+                type="button"
+                onclick={() => { startedNote = null }}
+                aria-label="Dismiss"
+                class="flex-none px-1 text-emerald-400/70"
+              >✕</button>
+            </div>
           </div>
-        </div>
-      {/if}
-      {#if deepLinkProblem}
-        <div class="px-3 pt-3" data-testid="deep-link-problem">
-          <div
-            class="flex items-start gap-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300"
-          >
-            <span class="min-w-0 flex-1">{deepLinkProblem}</span>
-            <button
-              type="button"
-              onclick={() => { deepLinkProblem = null }}
-              aria-label="Dismiss"
-              class="flex-none px-1 text-amber-400/70"
-            >✕</button>
+        {/if}
+        {#if deepLinkProblem}
+          <div class="px-3 pt-3" data-testid="deep-link-problem">
+            <div
+              class="flex items-start gap-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300"
+            >
+              <span class="min-w-0 flex-1">{deepLinkProblem}</span>
+              <button
+                type="button"
+                onclick={() => { deepLinkProblem = null }}
+                aria-label="Dismiss"
+                class="flex-none px-1 text-amber-400/70"
+              >✕</button>
+            </div>
           </div>
-        </div>
+        {/if}
+        <SessionsScreen
+          connected={state === 'open'}
+          onopen={(session) => { openSession = session; arrivedFromNotification = false }}
+        />
       {/if}
-      <SessionsScreen onopen={(session) => { openSession = session; arrivedFromNotification = false }} />
+    {:else if openPr}
+      <PrDetail pr={openPr} connected={state === 'open'} />
+    {:else}
+      <PrBoard onopen={(pr) => { openPr = pr }} />
     {/if}
   </main>
 
@@ -256,7 +302,7 @@
   {/if}
 
   <!-- Detail screens have no tab bar; the back button is the way out. -->
-  {#if !openSession}
+  {#if !detail}
     <nav
       class="flex flex-none border-t border-zinc-800 pb-[max(0.25rem,env(safe-area-inset-bottom))]"
       data-testid="tab-bar"
