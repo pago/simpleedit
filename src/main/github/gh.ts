@@ -179,19 +179,25 @@ export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
 }
 
 /**
- * True for a value `gh` will read as a PR URL rather than as an option.
+ * True for a pull-request URL — `http(s)://<host>/<owner>/<repo>/pull/<n>`.
  *
- * `spawn` takes no shell, so there is nothing to inject — but an argument
- * beginning with `-` is a FLAG, and `screenprs:pr-diff` takes its url from
- * whatever asked, including a socket. Enterprise hosts are real, so this checks
- * the shape (absolute http/https) rather than the hostname.
+ * `spawn` takes no shell, so there is nothing to inject; the hazard is that an
+ * argument beginning with `-` is a FLAG, and `screenprs:pr-diff` takes its url
+ * from whatever asked, including a socket. The host is deliberately not
+ * constrained — enterprise instances are real — but the path is, so that the
+ * check means what its name says rather than merely "some absolute URL".
  */
+const PR_PATH = /^\/[^/]+\/[^/]+\/pull\/\d+$/
+
 export function isPrUrl(value: string): boolean {
+  let url: URL
   try {
-    return ['http:', 'https:'].includes(new URL(value).protocol)
+    url = new URL(value)
   } catch {
     return false
   }
+  if (!['http:', 'https:'].includes(url.protocol)) return false
+  return PR_PATH.test(url.pathname.replace(/\/$/, ''))
 }
 
 /** The expensive-to-refetch half: the unified diff. Skipped on a cache hit. */

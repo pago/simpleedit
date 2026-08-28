@@ -24,6 +24,21 @@ describe('isPrUrl', () => {
   it('rejects a non-http scheme', () => {
     expect(isPrUrl('file:///etc/passwd')).toBe(false)
   })
+
+  it('rejects an absolute URL that is not a pull request', () => {
+    // The name, the doc and the channel's contract all say PR URL. A check that
+    // accepted any absolute URL would be a different check wearing that name —
+    // and `gh pr diff` would be handed a repo, an issue, or a stranger's host.
+    expect(isPrUrl('https://github.com/acme/widgets')).toBe(false)
+    expect(isPrUrl('https://github.com/acme/widgets/issues/7')).toBe(false)
+    expect(isPrUrl('https://github.com/acme/widgets/pull/7/files')).toBe(false)
+    expect(isPrUrl('https://github.com/acme/widgets/pull/abc')).toBe(false)
+    expect(isPrUrl('https://example.com/')).toBe(false)
+  })
+
+  it('tolerates a trailing slash', () => {
+    expect(isPrUrl('https://github.com/acme/widgets/pull/7/')).toBe(true)
+  })
 })
 
 describe('getPrDiff', () => {
