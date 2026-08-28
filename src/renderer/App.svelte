@@ -11,7 +11,7 @@
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
   import { initAgentCapabilities } from './stores/agent-capabilities.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
-  import { sessionsStore, initSessionListeners } from './stores/sessions.svelte'
+  import { sessionsStore, initSessionListeners, createSessionFromDefaults } from './stores/sessions.svelte'
   import { hydrateSession, serializeSession } from './lib/sessionPersistence'
   import UpdateBanner from './components/UpdateBanner.svelte'
   import SettingsWindow from './components/settings/SettingsWindow.svelte'
@@ -142,10 +142,7 @@
       if (!root || !wt) return
       e.preventDefault()
       void window.api.invoke('models:config-get').then((config) => {
-        const id = config.lastUsed?.provider === 'openai'
-          ? sessionsStore.createCodex(root, wt.path, { model: config.lastUsed.model, reasoningEffort: config.lastUsed.reasoningEffort })
-          : sessionsStore.createClaude(root, wt.path)
-        sessionsStore.requestTerminalFocus(id)
+        sessionsStore.requestTerminalFocus(createSessionFromDefaults(config, root, wt.path))
       })
     }
   }

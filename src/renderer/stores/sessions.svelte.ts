@@ -9,7 +9,7 @@
  */
 import { untrack } from 'svelte'
 import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
-import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, NativeModelAgentId, ReasoningEffort, WindowSessionInput } from '../../shared/ipc-types'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, WindowSessionInput } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -909,6 +909,64 @@ export function touchedWorktreesForRepo(
 }
 
 /**
+ * Start the session a bare "new session" gesture asks for — ⌘T at the desk,
+ * `+` on the phone.
+ *
+ * One definition of "the default", because two would drift and the phone
+ * deliberately offers no picker to correct a drifted one. The rule is the last
+ * model a session was launched against: Codex when that was Codex, otherwise
+ * plain Claude, which lets Claude pick up whatever the harness itself defaults
+ * to rather than pinning a model id here.
+ */
+export function createSessionFromDefaults(
+  config: ModelConfig | null,
+  launchDir: string,
+  worktreePath: string,
+  opts: { initialPrompt?: string; label?: string } = {},
+): string {
+  const lastUsed = config?.lastUsed
+  if (lastUsed?.provider !== 'openai') return sessionsStore.createClaude(launchDir, worktreePath, opts)
+  return sessionsStore.createCodex(launchDir, worktreePath, {
+    ...opts,
+    ...(lastUsed.model ? { model: lastUsed.model } : {}),
+    ...(lastUsed.reasoningEffort ? { reasoningEffort: lastUsed.reasoningEffort } : {}),
+  })
+}
+
+/**
+ * Handle a `session:create-request`: a client with no session of its own — the
+ * phone — asked for one, seeded with a spoken brief.
+ *
+ * Every answer path reports back. Main is holding a call open on the other
+ * end, and it deliberately cannot tell a refusal from a renderer that never
+ * answered: silence there is remembered as "a session may exist", which would
+ * leave the user unable to retry an intent that in fact started nothing.
+ */
+async function createSessionFromBrief(
+  data: import('../../shared/ipc-types').SessionEventMap['session:create-request'],
+): Promise<void> {
+  const answer = (outcome: import('../../shared/ipc-types').SessionCreateOutcome): void => {
+    void window.api.invoke('session:created', data.correlationId, outcome)
+  }
+
+  const wt = mainWorktree()
+  const root = projectRoot() ?? wt?.path
+  if (!root || !wt) {
+    answer({ ok: false, reason: 'That SimpleEdit window has no repo open yet.' })
+    return
+  }
+
+  // A config that cannot be read is not a reason to refuse: the fallback is
+  // the same plain Claude session an absent `lastUsed` would have produced.
+  const config = await window.api.invoke('models:config-get').catch(() => null)
+  const id = createSessionFromDefaults(config, root, wt.path, {
+    initialPrompt: data.brief,
+    ...(data.label ? { label: data.label } : {}),
+  })
+  answer({ ok: true, terminalId: id, label: sessionsStore.get(id)?.label ?? id })
+}
+
+/**
  * Handle a `spawn_session` MCP call: create a fresh primary Claude session
  * seeded with the agent-authored brief. Launches at the project root (shared
  * Claude memory, like every Claude session); the workspace points at the named
@@ -1096,6 +1154,11 @@ export function initSessionListeners(): () => void {
     void spawnSessionFromAgent(data)
   })
 
+  // A client with no session of its own (the phone) asked to start one.
+  const offCreate = window.api.on('session:create-request', (data) => {
+    void createSessionFromBrief(data)
+  })
+
   // Keep the messaging bus's peer list current. Labels, provider and status live
   // here, so main can't derive them — this pushes a fresh snapshot whenever any
   // of them changes. $effect.root because this runs outside a component.
@@ -1117,6 +1180,7 @@ export function initSessionListeners(): () => void {
     offCwd()
     offRepoTouch()
     offSpawn()
+    offCreate()
     stopPeerSync()
   }
 }
