@@ -116,6 +116,45 @@ describe('session:create-request listener', () => {
     }
   })
 
+  // The ✦ menu's own "New Codex session · configured default" entry starts a
+  // native agent with NO model id. If that fails to record which agent ran,
+  // `lastUsed` is written as undefined — an explicit clear — so using the menu
+  // entry for an agent silently makes every later new-session gesture start
+  // Claude instead, and the phone has no picker to correct it.
+  it('remembers the agent even when the launch names no model', async () => {
+    const off = initSessionListeners()
+    try {
+      sessionsStore.createNativeAgent('codex', PROJECT_ROOT, MAIN_WT)
+      await flush()
+
+      const remembered = invoke.mock.calls
+        .filter((call) => call[0] === 'models:config-set')
+        .map((call) => call[1])
+      expect(remembered).toEqual([{ lastUsed: { provider: 'openai' } }])
+    } finally {
+      off()
+    }
+  })
+
+  it('starts that same agent again from the memory it just wrote', async () => {
+    const off = initSessionListeners()
+    try {
+      sessionsStore.createNativeAgent('codex', PROJECT_ROOT, MAIN_WT)
+      await flush()
+      const written = invoke.mock.calls.find((call) => call[0] === 'models:config-set')![1]
+      sessionsStore.reset()
+
+      // Round-tripped through the config rather than hand-written: this is the
+      // pairing that broke, and either half alone reads as fine.
+      config = { defaults: {}, submenuAllowlist: [], ...(written as { lastUsed?: ModelConfig['lastUsed'] }) }
+      handlers.get('session:create-request')!({ correlationId: 'c1', brief: 'ship it' })
+      await flush()
+      expect(sessionsStore.sessions()[0].provider).toBe('codex')
+    } finally {
+      off()
+    }
+  })
+
   it('lets the agent rename what the brief provisionally called it', async () => {
     const off = initSessionListeners()
     try {

@@ -356,13 +356,19 @@ export const sessionsStore = {
     // as undefined: `setModelConfig` treats a present-but-undefined key as an
     // explicit clear, which is how starting a default session resets the
     // remembered model. Dropping the key instead would silently keep it.
+    //
+    // A model-less launch still records WHICH AGENT ran — the brand alone is a
+    // valid ModelRef for every native provider, and it is what the next
+    // new-session gesture reads. Requiring an id here meant the ✦ menu's own
+    // "configured default" entry for an agent cleared the memory instead of
+    // writing it, sending ⌘T, ✦ and the phone back to Claude.
     const lastUsed: ModelRef | undefined =
       target.provider === 'claude'
         ? target.model
-        : caps?.nativeModelBrand && target.model
+        : caps?.nativeModelBrand
           ? {
               provider: caps.nativeModelBrand,
-              model: target.model,
+              ...(target.model ? { model: target.model } : {}),
               ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}),
             }
           : undefined
