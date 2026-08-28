@@ -75,41 +75,57 @@ beforeEach(() => {
   stub = join(fixtures, 'tailscale')
   log = join(fixtures, 'calls.log')
   state = join(fixtures, 'serve-state')
-  // A tailscale that actually HOLDS the mapping: `serve --bg` records the
-  // port, `off` clears it, `serve status --json` renders whatever is there.
-  // Without that state a test cannot tell "we removed our own mapping" from
-  // "we removed somebody else's".
+  // A tailscale that HOLDS the mapping and REJECTS argv the real one would
+  // reject. Both halves matter. Without state, a test cannot tell "removed our
+  // own mapping" from "removed somebody else's". Without strictness, the stub
+  // accepts anything and the argv we send is only ever compared against strings
+  // this file invented — so a wrong subcommand name would pass every test and
+  // fail only against a real CLI. The accepted forms below, and the wording of
+  // the rejection, are copied from tailscale 1.102.3.
   writeFileSync(
     stub,
     `#!/bin/sh
-echo "$@" >> "${log}"
-if [ "$1 $2" = "status --json" ]; then cat <<'JSON'
+ARGV="$*"
+echo "$ARGV" >> "${log}"
+case "$ARGV" in
+  "status --json")
+    cat <<'JSON'
 ${STATUS_JSON}
 JSON
-  exit 0
-fi
-if [ "$1 $2" = "serve status" ]; then
-  if [ -n "$TS_STUB_STATUS_FAIL" ]; then echo "failed to connect to local tailscaled" >&2; exit 1; fi
-  if [ -s "${state}" ]; then
-    printf '{"Web":{"mac.tail050858.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:%s"}}}}}' "$(cat ${state})"
-  else
-    echo '{}'
-  fi
-  exit 0
-fi
-if [ "$1 $2" = "serve --bg" ]; then
-  if [ -n "$TS_STUB_SERVE_FAIL" ]; then cat "$TS_STUB_SERVE_FAIL" >&2; exit 1; fi
-  if [ -n "$TS_STUB_SERVE_SLOW" ]; then touch "$TS_STUB_SERVE_SLOW"; sleep 0.5; fi
-  printf '%s' "\${3##*:}" > "${state}"
-  exit 0
-fi
-if [ "$1 $2 $3" = "serve --https=443 off" ]; then
-  if [ -n "$TS_STUB_OFF_FAIL" ]; then echo "$TS_STUB_OFF_FAIL" >&2; exit 1; fi
-  if [ ! -s "${state}" ]; then echo "error: failed to remove web serve: handler does not exist" >&2; exit 1; fi
-  rm -f "${state}"
-  exit 0
-fi
-exit 0
+    exit 0
+    ;;
+  "serve status --json")
+    if [ -n "$TS_STUB_STATUS_FAIL" ]; then echo "failed to connect to local tailscaled" >&2; exit 1; fi
+    if [ -s "${state}" ]; then
+      printf '{"Web":{"mac.tail050858.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:%s"}}}}}' "$(cat ${state})"
+    else
+      echo '{}'
+    fi
+    exit 0
+    ;;
+  "serve --bg http://127.0.0.1:"*)
+    if [ -n "$TS_STUB_SERVE_FAIL" ]; then cat "$TS_STUB_SERVE_FAIL" >&2; exit 1; fi
+    if [ -n "$TS_STUB_SERVE_SLOW" ]; then touch "$TS_STUB_SERVE_SLOW"; sleep 0.5; fi
+    printf '%s' "\${3##*:}" > "${state}"
+    exit 0
+    ;;
+  "serve --https=443 off")
+    if [ -n "$TS_STUB_OFF_UNSUPPORTED" ]; then
+      echo "tailscale: unknown subcommand: $ARGV" >&2
+      echo "try \\\`tailscale serve --help\\\` for usage info" >&2
+      exit 1
+    fi
+    if [ -n "$TS_STUB_OFF_FAIL" ]; then echo "$TS_STUB_OFF_FAIL" >&2; exit 1; fi
+    if [ ! -s "${state}" ]; then echo "error: failed to remove web serve: handler does not exist" >&2; exit 1; fi
+    rm -f "${state}"
+    exit 0
+    ;;
+  *)
+    echo "tailscale: unknown subcommand: $ARGV" >&2
+    echo "try \\\`tailscale serve --help\\\` for usage info" >&2
+    exit 1
+    ;;
+esac
 `,
     'utf8',
   )
@@ -125,6 +141,7 @@ afterEach(() => {
   delete process.env.TS_STUB_SERVE_SLOW
   delete process.env.TS_STUB_OFF_FAIL
   delete process.env.TS_STUB_STATUS_FAIL
+  delete process.env.TS_STUB_OFF_UNSUPPORTED
   rmSync(fixtures, { recursive: true, force: true })
 })
 
@@ -354,6 +371,35 @@ describe('stopServeSync', () => {
     stopServeSync()
     await install
     expect(config.servePort).toBe(52123)
+  })
+
+  it('refuses to reach for `reset` when the removal form is rejected', async () => {
+    // The one failure that cannot be retried, and the one where guessing does
+    // damage: `serve reset` is the CLI's only other removal and it clears the
+    // whole node. The mapping is kept, named, and handed back to the user.
+    await applyServe({ port: 52123, token: TOKEN })
+    process.env.TS_STUB_OFF_UNSUPPORTED = '1'
+
+    const status = await applyServe(null)
+    expect(status.error).toContain('127.0.0.1:52123')
+    expect(status.error).toMatch(/will not fall back to `tailscale serve reset`/)
+    expect(liveTarget()).toBe(52123)
+    expect(config.servePort).toBe(52123)
+    expect(calls()).not.toContain('serve reset')
+  })
+
+  it('does not stack a second mapping on top of one it could not remove', async () => {
+    await applyServe({ port: 52123, token: TOKEN })
+    process.env.TS_STUB_OFF_UNSUPPORTED = '1'
+    await applyServe(null)
+
+    // A new server comes up on a new port. `rememberClaim` holds exactly one
+    // port, so installing here would overwrite the record of the stranded one.
+    const status = await applyServe({ port: 61000, token: TOKEN })
+    expect(status.active).toBe(false)
+    expect(liveTarget()).toBe(52123)
+    expect(config.servePort).toBe(52123)
+    expect(calls()).not.toContain('serve --bg http://127.0.0.1:61000')
   })
 
   it('does not remove a mapping somebody repointed by hand', async () => {

@@ -114,8 +114,23 @@ export function buildServeArgs(port: number, token: string): readonly string[] {
   return args
 }
 
-/** Removing the handler we install. Idempotent by intent; see `isAlreadyGone`. */
-const OFF_ARGS = ['serve', '--https=443', 'off'] as const
+/**
+ * Removing the handler we install. Idempotent by intent; see `isAlreadyGone`.
+ *
+ * `off` is a TARGET, not a subcommand, which is why `tailscale serve --help`
+ * lists it nowhere — the usage block shows `tailscale serve <target>` and the
+ * SUBCOMMANDS section covers `status`, `reset` and the service verbs. Reading
+ * that block is enough to conclude this form does not exist; running it is what
+ * settles it. Verified against 1.102.3, and pinned by
+ * `tailscale-contract.test.ts` so the answer is re-checked rather than
+ * remembered.
+ *
+ * `tailscale serve reset` is NOT a fallback. It clears the whole node's serve
+ * config, so on a machine with any other mapping it destroys somebody's work to
+ * tidy up ours. If a future CLI rejects the form below, this refuses and says
+ * so — see `isUnsupportedSyntax`.
+ */
+export const OFF_ARGS = ['serve', '--https=443', 'off'] as const
 
 /** Reading what tailscaled is actually holding, so removal only ever hits our own. */
 const SERVE_STATUS_ARGS = ['serve', 'status', '--json'] as const
@@ -123,6 +138,28 @@ const SERVE_STATUS_ARGS = ['serve', 'status', '--json'] as const
 /** `off` against a handler that is not there is success, not failure. */
 function isAlreadyGone(text: string): boolean {
   return /handler does not exist|no serve config|not currently serving/i.test(text)
+}
+
+/**
+ * The CLI rejected the ARGV rather than the operation.
+ *
+ * Worth telling apart from every other failure, because it is the one that
+ * cannot be retried and the one where guessing does damage: the only other
+ * removal this CLI offers is `serve reset`, which clears the whole node's
+ * config. A mapping we cannot remove is kept as a claim and named to the user,
+ * never traded for somebody else's.
+ */
+function isUnsupportedSyntax(text: string): boolean {
+  return /unknown subcommand|invalid argument format|flag provided but not defined/i.test(text)
+}
+
+function unsupportedTeardownMessage(port: number): string {
+  return (
+    `This Tailscale build rejected \`tailscale ${OFF_ARGS.join(' ')}\`, so the serve mapping to ` +
+    `127.0.0.1:${port} is still in place. SimpleEdit will not fall back to \`tailscale serve reset\`, ` +
+    `which clears every mapping on this node rather than only this one. Remove it with the form your ` +
+    'version documents (`tailscale serve --help`), then re-check.'
+  )
 }
 
 /**
@@ -186,8 +223,13 @@ async function step(): Promise<void> {
     if (want && claimedPort === want.port && claimedToken === want.token && publishedUrl !== null) return
     if (claimedPort !== null) await removeMapping()
     if (!want) {
-      lastError = null
-      enableUrl = null
+      // Only a removal that actually succeeded clears the error. Wiping it
+      // unconditionally here threw away the one report of a mapping we could
+      // not remove — the claim survived, but nothing said why.
+      if (claimedPort === null) {
+        lastError = null
+        enableUrl = null
+      }
       return
     }
     if (claimedPort !== null) {
@@ -281,8 +323,11 @@ async function removeMapping(): Promise<void> {
     return
   }
   const run = await runTailscale(cli, OFF_ARGS, SERVE_TIMEOUT_MS)
-  if (run.code !== 0 && !isAlreadyGone(`${run.stderr}\n${run.stdout}`)) {
-    lastError = parseServeFailure(`${run.stderr}\n${run.stdout}`).message
+  const output = `${run.stderr}\n${run.stdout}`
+  if (run.code !== 0 && !isAlreadyGone(output)) {
+    lastError = isUnsupportedSyntax(output)
+      ? unsupportedTeardownMessage(port)
+      : parseServeFailure(output).message
     return
   }
   releaseClaim()
