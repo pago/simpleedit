@@ -60,9 +60,30 @@
 
   let dialog = $state<HTMLDivElement | undefined>()
 
-  // Focus lands here on open so the keyboard is inside the trap from the first
-  // Tab, not on whatever was behind.
-  $effect(() => { dialog?.focus() })
+  // Captured during init, before the effect below moves focus, so it can be
+  // handed back when this closes.
+  const opener = typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
+  $effect(() => () => opener?.focus())
+
+  /**
+   * Keep focus inside the dialog — on open, and again whenever the element
+   * holding it goes away.
+   *
+   * That second case is not hypothetical: pressing Post disables it and
+   * replaces Cancel with a paragraph, so `activeElement` falls back to `body`,
+   * OUTSIDE the element that owns `onkeydown`. Tab would then walk into the
+   * sheet behind and Escape would reach nothing — while an irreversible write
+   * is in flight, which is the worst moment for either.
+   */
+  $effect(() => {
+    void submitting
+    void latched
+    const here = document.activeElement
+    if (!dialog || here === dialog || (here instanceof Node && dialog.contains(here))) return
+    dialog.focus()
+  })
 
   function focusable(): HTMLElement[] {
     return [...(dialog?.querySelectorAll<HTMLElement>('button:not([disabled])') ?? [])]

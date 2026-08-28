@@ -159,6 +159,11 @@ export interface PrReviewComment {
    * the head is when the review is POSTed. If the head moved after the comment
    * was raised, that number now points at different code — see
    * `reanchorForHead`, which is what has to run before a draft is posted.
+   *
+   * `undefined` means UNKNOWN, and unknown is not "a different head": a comment
+   * with no stamp is never treated as stale. Never store `''` here — that is a
+   * head this comment demonstrably does not belong to, which is the opposite of
+   * what an absent head means.
    */
   sha?: string
 }
@@ -212,9 +217,22 @@ export function parseLineAnchor(line?: string): number | null {
   return n > 0 ? n : null
 }
 
-/** True for a comment whose line was read off a head that is no longer current. */
+/**
+ * True for a comment whose line was read off a head that is no longer current.
+ *
+ * Both unknowns are exempt, and for the same reason: staleness is a claim that
+ * the code under a line CHANGED, and neither an unstamped comment nor an
+ * unknown current head is evidence of that. `headSha` is empty exactly while a
+ * re-screen has replaced the queue with bare refs — a window a desktop
+ * `screenprs:queued` opens on the phone, and one that a force-push makes MORE
+ * likely, not less.
+ */
 function isStaleAnchor(c: PrReviewComment, headSha: string): boolean {
-  return c.sha !== undefined && c.sha !== headSha
+  // A falsy sha on EITHER side is an unknown, not a mismatch. Making that one
+  // rule here is the point: a caller that guards only its own side leaves the
+  // other half of the trap set.
+  if (!headSha || !c.sha) return false
+  return c.sha !== headSha
 }
 
 /**
@@ -227,8 +245,9 @@ function isStaleAnchor(c: PrReviewComment, headSha: string): boolean {
  * the anchor keeps the file and the text, so `buildReviewPayload` folds it into
  * the body exactly as it does an unanchorable finding.
  *
- * Returns the draft unchanged when nothing is stale, so a caller can compare by
- * identity.
+ * Returns the draft unchanged when nothing is stale — including when `headSha`
+ * is empty, which means the current head is unknown rather than different — so
+ * a caller can compare by identity.
  */
 export function reanchorForHead(draft: PrReviewDraft, headSha: string): PrReviewDraft {
   if (!draft.comments.some((c) => c.line !== undefined && isStaleAnchor(c, headSha))) return draft

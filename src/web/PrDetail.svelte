@@ -60,12 +60,11 @@
    * line number pointing at whatever now occupies it, and the reviews API takes
    * no `commit_id` — GitHub would anchor it there without complaint. Re-anchored
    * once, here, so the diff, the sheet, the confirm's counts and the submit all
-   * see the same thing. Skipped while the head is unknown, which would make
-   * every stamped comment look stale for the moment a re-screen takes.
+   * see the same thing. An empty `headSha` — the window a re-screen opens — is
+   * handled by `reanchorForHead` itself, so this and `staleAnchorCount` cannot
+   * disagree about what it means.
    */
-  let draft = $derived(
-    headSha ? reanchorForHead(screenPrsStore.draftFor(url), headSha) : screenPrsStore.draftFor(url),
-  )
+  let draft = $derived(reanchorForHead(screenPrsStore.draftFor(url), headSha))
   let diff = $state('')
   let diffError = $state<string | null>(null)
   let loadingDiff = $state(false)
@@ -73,6 +72,10 @@
   $effect(() => {
     const sha = headSha
     const target = url
+    // Read so a reconnect re-runs this. During the backoff there is no socket
+    // and `invoke` refuses rather than queueing, so without this a read that
+    // failed while the connection was down would have nothing to retry it.
+    const online = connected
     diffError = null
     if (!sha) {
       diff = ''
@@ -86,6 +89,10 @@
       return
     }
     diff = ''
+    if (!online) {
+      loadingDiff = false
+      return
+    }
     loadingDiff = true
     // The fetch belongs to this PR at this SHA. Switching PRs mid-flight must
     // not let the old diff land on the new screen.
@@ -100,16 +107,24 @@
   // ── line comments ──
   let target = $state<CommentTarget | null>(null)
 
-  // Every comment is stamped with the head its line was read off. Without that
-  // there is no way to tell later that the branch moved under it.
+  /**
+   * The head a comment's line was read off. Without it there is no way to tell
+   * later that the branch moved under the comment.
+   *
+   * `undefined` when the head is unknown — never `''`. A comment stamped with
+   * the empty string belongs to a head that exists nowhere, so it would read as
+   * stale against every real one, forever.
+   */
+  let stampSha = $derived(headSha || undefined)
+
   function addLineComment(text: string): void {
     const t = target
     if (!t) return
-    screenPrsStore.addComment(url, { source: 'you', file: t.file, line: t.line, text, sha: headSha })
+    screenPrsStore.addComment(url, { source: 'you', file: t.file, line: t.line, text, sha: stampSha })
   }
 
   function addTriage(f: TriageFinding): void {
-    screenPrsStore.addComment(url, { source: 'triage', file: f.file, line: f.line, text: f.title, sha: headSha })
+    screenPrsStore.addComment(url, { source: 'triage', file: f.file, line: f.line, text: f.title, sha: stampSha })
   }
   function addDeep(f: DeepFinding): void {
     screenPrsStore.addComment(url, {
@@ -117,7 +132,7 @@
       file: f.file,
       line: f.line,
       text: f.detail ? `${f.title} — ${f.detail}` : f.title,
-      sha: headSha,
+      sha: stampSha,
     })
   }
 
@@ -303,6 +318,10 @@
     {:else if !headSha}
       <p class="p-4 text-[12px] text-zinc-500" data-testid="diff-waiting">
         Waiting for this PR to finish screening…
+      </p>
+    {:else if !connected && !diff}
+      <p class="p-4 text-[12px] text-zinc-500" data-testid="diff-offline">
+        Waiting for the connection to come back…
       </p>
     {:else if loadingDiff}
       <p class="p-4 text-[12px] text-zinc-500" data-testid="diff-loading">Fetching the diff…</p>

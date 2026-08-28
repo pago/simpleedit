@@ -158,6 +158,21 @@ describe('reanchorForHead', () => {
     expect(payload.body).toContain('a.ts — note 11')
   })
 
+  it('treats an unknown current head as unknown, not as a different one', () => {
+    // The queue is replaced by bare refs while a re-screen runs, so the head is
+    // simply not known for as long as a `gh pr view` takes. Reading that as a
+    // moved branch drops every anchor and tells the reviewer the code changed.
+    const draft: PrReviewDraft = { comments: [at('sha1', '11')], summary: '', verdict: 'comment' }
+    expect(reanchorForHead(draft, '')).toBe(draft)
+    expect(staleAnchorCount(draft, '')).toBe(0)
+  })
+
+  it('treats an empty stamp as unknown too, so neither side can set the trap', () => {
+    const draft: PrReviewDraft = { comments: [at('', '11')], summary: '', verdict: 'comment' }
+    expect(reanchorForHead(draft, 'sha2')).toBe(draft)
+    expect(staleAnchorCount(draft, 'sha2')).toBe(0)
+  })
+
   it('counts what went stale, so the reviewer can be told', () => {
     const draft: PrReviewDraft = {
       comments: [at('sha1', '11'), at('sha2', '40'), at(undefined, '7')],

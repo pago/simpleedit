@@ -87,13 +87,25 @@
 
   let blocked = $derived(!chosen ? 'Choose a verdict first.' : draftError)
 
+  /**
+   * Clear the last attempt's message — unless it is the one holding the latch
+   * down, in which case removing it leaves a dead Post button and no
+   * explanation of why it is dead.
+   */
+  function clearOutcome(): void {
+    if (!latched) outcome = null
+  }
+
   function chooseVerdict(v: PrReviewVerdict): void {
     screenPrsStore.setVerdict(url, v)
     verdictChoice.make(url)
-    outcome = null
+    clearOutcome()
   }
 
   async function post(): Promise<void> {
+    // The button is disabled while a post is in flight; this is the backstop,
+    // held to the same doctrine as the connection check below.
+    if (submitting) return
     // Re-checked here, not just on the disabled button: a tap can be in flight
     // when the socket goes, and the shim's own refusal is the backstop, not the
     // thing the user should have to read.
@@ -252,7 +264,7 @@
 
         <button
           type="button"
-          onclick={() => { outcome = null; confirming = true }}
+          onclick={() => { clearOutcome(); confirming = true }}
           disabled={blocked != null}
           title={blocked ?? undefined}
           data-testid="review-submit"
