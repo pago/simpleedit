@@ -18,7 +18,7 @@ export default defineConfig({
         plugins: [svelte(), tailwindcss()],
         test: {
           name: 'browser',
-          include: ['src/renderer/**/*.test.ts'],
+          include: ['src/{renderer,web}/**/*.test.ts'],
           setupFiles: ['src/renderer/test-setup.ts'],
           browser: {
             enabled: true,

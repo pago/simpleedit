@@ -7,6 +7,7 @@
   },
   "include": [
     "src/renderer/**/*.test.ts",
-    "src/renderer/test-setup.ts"
+    "src/renderer/test-setup.ts",
+    "src/web/**/*.test.ts"
   ]
 }

@@ -17,14 +17,21 @@
    *
    * ── Lifetime ────────────────────────────────────────────────────────────
    * The recording belongs to this component and to nothing else. It is stopped —
-   * and the microphone track with it — on send, on cancel, on unmount, when the
+   * and the microphone track with it — on stop, on discard, on unmount, when the
    * page is hidden, and at a hard time cap. A recording that outlived any of
-   * those would be a hot mic. The transcription is a plain `invoke`: it belongs
-   * to the call, so a socket that drops mid-flight rejects it and the user sees
-   * why. The pending transcript is just text, so it survives a reconnect.
+   * those would be a hot mic. Two of those paths DISCARD rather than transcribe:
+   * the ✕ button, and unmounting, since there is no longer a field for a
+   * transcript to be reviewed in. `lib/recorder.ts` owns that decision, because
+   * the audio arrives after `stop()` returns and clearing a buffer beforehand
+   * cancels nothing.
+   *
+   * The transcription is a plain `invoke`: it belongs to the call, so a socket
+   * that drops mid-flight rejects it and the user sees why. The pending
+   * transcript is just text, so it survives a reconnect.
    */
   import { onMount } from 'svelte'
   import { blobToWavBase64 } from './lib/audio'
+  import { driveRecorder, DEFAULT_MAX_RECORDING_MS, type RecorderHandle } from './lib/recorder'
   import type { SttStatus } from '../shared/ipc-types'
 
   interface Props {
@@ -35,12 +42,6 @@
 
   let { onsend, placeholder = 'Reply…' }: Props = $props()
 
-  /**
-   * Hard cap on one recording. Comfortably past a spoken reply, and short
-   * enough that a mic left running by accident stops on its own.
-   */
-  const MAX_RECORDING_MS = 120_000
-
   let text = $state('')
   let recording = $state(false)
   let elapsedMs = $state(0)
@@ -50,10 +51,7 @@
   let stt = $state<SttStatus | null>(null)
   let fieldEl = $state<HTMLTextAreaElement | undefined>()
 
-  let recorder: MediaRecorder | null = null
-  let stream: MediaStream | null = null
-  let chunks: Blob[] = []
-  let stopTimer: ReturnType<typeof setTimeout> | undefined
+  let handle: RecorderHandle | null = null
   let tickTimer: ReturnType<typeof setInterval> | undefined
 
   const micUsable = $derived(
@@ -69,29 +67,24 @@
       .then((status) => { stt = status })
       .catch(() => { /* the field still works; that is the point */ })
 
-    // A phone that locks, or an app switch, must not leave the mic live.
+    // A phone that locks, or an app switch, must not leave the mic live. The
+    // audio is KEPT: the user was talking, and the transcript waits in the
+    // field for them to come back to.
     const onHidden = (): void => {
-      if (document.hidden && recording) stopRecording()
+      if (document.hidden) stopRecording()
     }
     document.addEventListener('visibilitychange', onHidden)
     return () => {
       document.removeEventListener('visibilitychange', onHidden)
-      teardownRecording()
+      // Going away DISCARDS. There is no field left to review a transcript in,
+      // so transcribing here would upload audio for a screen nobody is on.
+      cancelRecording()
     }
   })
 
-  /** Release the microphone. Idempotent, and the only place tracks are stopped. */
-  function teardownRecording(): void {
-    clearTimeout(stopTimer)
+  function endRecording(): void {
     clearInterval(tickTimer)
-    stopTimer = undefined
     tickTimer = undefined
-    if (recorder && recorder.state !== 'inactive') {
-      try { recorder.stop() } catch { /* already stopping */ }
-    }
-    recorder = null
-    for (const track of stream?.getTracks() ?? []) track.stop()
-    stream = null
     recording = false
   }
 
@@ -101,6 +94,7 @@
       error = 'This browser cannot record audio. Type your reply instead.'
       return
     }
+    let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (err) {
@@ -111,41 +105,33 @@
         name === 'NotAllowedError'
           ? 'Microphone access was refused. Type your reply instead.'
           : `Could not open the microphone (${name}). Type your reply instead.`
-      teardownRecording()
+      endRecording()
       return
     }
 
-    chunks = []
-    const media = new MediaRecorder(stream)
-    recorder = media
-    media.addEventListener('dataavailable', (event) => {
-      if (event.data.size > 0) chunks.push(event.data)
+    handle = driveRecorder(new MediaRecorder(stream), stream, {
+      onAudio: (audio) => void transcribe(audio),
+      onAutoStop: endRecording,
+      maxMs: DEFAULT_MAX_RECORDING_MS,
     })
-    media.addEventListener('stop', () => {
-      const captured = chunks
-      chunks = []
-      const type = captured[0]?.type || media.mimeType || 'audio/webm'
-      if (captured.length > 0) void transcribe(new Blob(captured, { type }))
-    })
-    media.start()
 
     recording = true
     const startedAt = Date.now()
     elapsedMs = 0
     tickTimer = setInterval(() => { elapsedMs = Date.now() - startedAt }, 200)
-    stopTimer = setTimeout(stopRecording, MAX_RECORDING_MS)
   }
 
-  /** Stop and transcribe. The `stop` handler above picks the audio up. */
+  /** Stop and transcribe. */
   function stopRecording(): void {
-    if (!recording) return
-    teardownRecording()
+    if (!handle?.active) return
+    handle.finish()
+    endRecording()
   }
 
-  /** Stop and throw the audio away — the mic was opened by mistake. */
+  /** Stop and destroy the audio — the mic was opened by mistake. */
   function cancelRecording(): void {
-    chunks = []
-    teardownRecording()
+    handle?.discard()
+    endRecording()
   }
 
   async function transcribe(blob: Blob): Promise<void> {
