@@ -89,7 +89,10 @@ describe('parseUnifiedDiff — markers inside a hunk are content', () => {
     '@@ -1,3 +1,4 @@',
     ' intro',
     '+++ nested bullet',
-    '-- struck through',
+    // A removed line whose own text is `-- struck through`. Three dashes, so
+    // the `--- ` guard has something to get wrong — the two-dash version this
+    // fixture used to carry could never have matched it.
+    '--- struck through',
     ' outro',
   ].join('\n')
 
@@ -104,14 +107,17 @@ describe('parseUnifiedDiff — markers inside a hunk are content', () => {
     expect(file.deletions).toBe(1)
     const added = file.rows.find((r) => r.kind === 'add')
     expect(added).toEqual({ kind: 'add', text: '++ nested bullet', newNo: 2 })
+    // Swallowing either marker line leaves this row numbered against the wrong
+    // side — which is the number a review comment would be anchored to.
     expect(file.rows.at(-1)).toEqual({ kind: 'ctx', text: 'outro', oldNo: 3, newNo: 3 })
   })
 
-  it('keeps a removed line whose text starts with --', () => {
+  it('keeps a removed line whose text starts with --, and counts it', () => {
     const [file] = parseUnifiedDiff(diff)
     expect(file.rows.find((r) => r.kind === 'del')).toEqual({
-      kind: 'del', text: '- struck through', oldNo: 2,
+      kind: 'del', text: '-- struck through', oldNo: 2,
     })
+    expect(file.deletions).toBe(1)
   })
 
   it('still reads the real headers, including a rename to /dev/null', () => {
