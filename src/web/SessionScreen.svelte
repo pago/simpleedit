@@ -11,6 +11,7 @@
   import KeyBar from './KeyBar.svelte'
   import VoiceComposer from './VoiceComposer.svelte'
   import type { RemoteConnection } from './api-shim'
+  import type { AccessoryKey } from './lib/keys'
   import type { AgentCapabilities, WindowSession } from '../shared/ipc-types'
 
   interface Props {
@@ -21,6 +22,9 @@
   let { session, connection }: Props = $props()
 
   let caps = $state<AgentCapabilities | null>(null)
+  // The terminal owns key encoding: what an arrow sends depends on the cursor
+  // mode, which only it knows.
+  let terminal = $state<MobileTerminal | undefined>()
 
   // How this agent wants a newline. Read from main's provider descriptor
   // rather than branched on a provider name, exactly as the desktop does.
@@ -34,8 +38,8 @@
       .catch(() => { /* fall back to the safe encoding below */ })
   })
 
-  function writeKey(bytes: string): void {
-    void window.api.invoke('pty:write', session.terminalId, bytes)
+  function writeKey(key: AccessoryKey): void {
+    terminal?.pressKey(key)
   }
 
   /**
@@ -61,7 +65,7 @@
 
 <div class="flex h-full min-h-0 flex-col" data-testid="session-screen">
   <div class="min-h-0 flex-1">
-    <MobileTerminal terminalId={session.terminalId} {connection} />
+    <MobileTerminal bind:this={terminal} terminalId={session.terminalId} {connection} />
   </div>
 
   <div class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">

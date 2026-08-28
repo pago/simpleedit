@@ -22,6 +22,7 @@
   import '@xterm/xterm/css/xterm.css'
   import { attachPty, type PtyAttachment } from '../renderer/lib/pty-attach'
   import { hasUserAttention } from '../renderer/lib/attention'
+  import { keyBytes, type AccessoryKey } from './lib/keys'
   import type { RemoteConnection } from './api-shim'
   import type { PtyClientId } from '../shared/ipc-types'
 
@@ -36,6 +37,7 @@
   let sizeOwner = $state<PtyClientId | null>(null)
   let myClientKey = $state('')
   let exitCode = $state<number | null>(null)
+  let missedOutput = $state(false)
 
   const sizedElsewhere = $derived(
     sizeOwner !== null && myClientKey !== '' && sizeOwner !== myClientKey,
@@ -43,6 +45,22 @@
 
   let term: Terminal | undefined
   let fitAddon: FitAddon | undefined
+
+  /**
+   * Send what a physical key sends.
+   *
+   * Which bytes that is depends on the terminal's cursor-key mode, and the
+   * terminal is the only thing that knows it — so the accessory bar names the
+   * key and this translates it.
+   */
+  export function pressKey(key: AccessoryKey): void {
+    const application = term?.modes.applicationCursorKeysMode ?? false
+    void window.api.invoke('pty:write', terminalId, keyBytes(key, application))
+  }
+
+  export function dismissGapNotice(): void {
+    missedOutput = false
+  }
 
   /** Fit first, then claim: a claim carries the geometry it is claiming with. */
   function fitAndClaim(): void {
@@ -91,6 +109,11 @@
         exitCode = code
         term?.write(`\r\n[Process exited with code ${code}]`)
       },
+      // The backlog could not reach back far enough to cover the disconnect.
+      // The arithmetic still lines up, but an escape sequence was cut in half
+      // somewhere — so say the screen may be wrong rather than let it read as
+      // a rendering bug.
+      onGap: () => { missedOutput = true },
       onOwnerChange: (owner) => {
         sizeOwner = owner
         // Nobody owns it — the previous owner's transport went away and the PTY
@@ -159,6 +182,13 @@
     <div
       class="pointer-events-none absolute right-2 top-2 z-10 rounded bg-zinc-800/90 px-2 py-1 text-[10px] text-zinc-400 shadow"
     >Sized by another device</div>
+  {/if}
+  {#if missedOutput}
+    <button
+      type="button"
+      onclick={dismissGapNotice}
+      class="absolute inset-x-2 top-2 z-10 rounded bg-amber-950/95 px-2 py-1 text-left text-[10px] text-amber-300 shadow"
+    >Output was missed while disconnected — this screen may be incomplete. Tap to dismiss.</button>
   {/if}
   {#if exitCode !== null}
     <div

@@ -28,6 +28,16 @@ export interface PtyAttachOptions {
   onExit?: (exitCode: number) => void
   /** Main's word on who sizes this PTY. `null` means nobody does. */
   onOwnerChange?: (owner: PtyClientId | null) => void
+  /**
+   * Bytes were produced that this view will never see — the disconnect outlasted
+   * main's backlog window.
+   *
+   * The offsets still add up, so nothing is written twice, but an escape
+   * sequence was cut somewhere in the missing span and the screen after it can
+   * be wrong in ways no later output corrects. Silently papering over that is
+   * how a terminal comes to lie.
+   */
+  onGap?: () => void
 }
 
 export interface PtyAttachment {
@@ -53,6 +63,11 @@ export function attachPty(id: string, options: PtyAttachOptions): PtyAttachment 
   function writeDeduped(chunk: { data: string; offset: number }): void {
     const chunkEnd = chunk.offset + chunk.data.length
     if (chunkEnd <= written) return
+    // A chunk starting past what we have rendered means the bytes in between
+    // are gone for good. `written > 0` distinguishes it from the first write of
+    // a terminal whose backlog has already been trimmed, where there is no
+    // earlier state to be inconsistent with.
+    if (chunk.offset > written && written > 0) options.onGap?.()
     options.write(chunk.data.slice(Math.max(0, written - chunk.offset)))
     written = chunkEnd
   }
