@@ -15,3 +15,10 @@ drops before the answer arrives, or a retried call all resolve to the one
 session. The web `window.api` shim no longer replays a queued call whose
 promise it already rejected, which was the other way one confirmation became
 two.
+
+The brief's provisional name is a stand-in, not a choice: the agent replaces it
+with its own conversation title exactly as it does at the desk. The sheet traps
+focus, leaves on Escape, and warns before the browser takes an unsent brief. If
+a start times out, its outcome is genuinely unknown — so rather than silently
+starting a second agent, there is an explicit "Start a new session anyway" that
+keeps the brief and names the risk.
