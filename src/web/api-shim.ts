@@ -23,6 +23,22 @@ interface Pending {
   reject: (reason: Error) => void
 }
 
+/** A frame waiting for the CURRENT socket to open. */
+interface Queued {
+  raw: string
+  /** Set for an `invoke`, so a close can tell which promises never went out. */
+  id?: number
+}
+
+/**
+ * Thrown for a call that provably never left the device.
+ *
+ * Distinguished from a plain failure because the difference decides what the
+ * user is told: a call that was never sent had no effect, while one that was
+ * sent and never answered may have had every effect it asked for.
+ */
+export class NotSentError extends Error {}
+
 /** What the socket learned about itself when it attached. */
 export interface RemoteIdentity {
   windowId: number
@@ -69,17 +85,19 @@ export function installRemoteApi(): RemoteConnection {
   const listeners = new Map<string, Set<Listener>>()
   const stateWatchers = new Set<(state: ConnectionState) => void>()
   /**
-   * Frames written before the socket opened. Flushed in order on open.
+   * Frames waiting for a socket to carry them, flushed in order when one opens.
    *
-   * A frame and the promise waiting on it share ONE fate. A close rejects
-   * every pending call, so anything still queued here has already been
-   * reported as failed and must not be replayed — otherwise a call the user
-   * saw fail (and re-made) arrives twice on reconnect, and a channel like
-   * `session:create` turns one confirmed intent into two sessions. Frames
-   * queued AFTER a close belong to the next socket and still have a live
-   * promise, so those flush as normal.
+   * A frame and the promise waiting on it share ONE fate. A close rejects every
+   * pending call, so anything queued at that moment has already been reported
+   * as failed and must not be replayed — otherwise a call the user saw fail
+   * (and re-made) arrives twice on reconnect: two sessions from one confirmed
+   * `session:create`, or a review posted after the user was told it might not
+   * have been and a second time when they act on that advice.
+   *
+   * Frames queued AFTER a close belong to the next socket and still have a live
+   * promise, so those flush as normal — that gap is what the outbox is for.
    */
-  const outbox: string[] = []
+  const outbox: Queued[] = []
 
   let identity: RemoteIdentity | null = null
   const identityWatchers = new Set<(identity: RemoteIdentity) => void>()
@@ -90,10 +108,15 @@ export function installRemoteApi(): RemoteConnection {
     for (const fn of stateWatchers) fn(next)
   }
 
-  function post(frame: object): void {
+  /**
+   * Send a frame, or hold it until a socket can carry it — the case every
+   * screen hits on load, because the page mounts while the first socket is
+   * still connecting, and again during a reconnect backoff.
+   */
+  function post(frame: object, id?: number): void {
     const raw = JSON.stringify(frame)
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(raw)
-    else outbox.push(raw)
+    else outbox.push({ raw, id })
   }
 
   function handle(frame: ServerFrame): void {
@@ -121,7 +144,7 @@ export function installRemoteApi(): RemoteConnection {
     socket.addEventListener('open', () => {
       backoff = RECONNECT_MIN_MS
       setState('open')
-      for (const raw of outbox.splice(0)) socket.send(raw)
+      for (const { raw } of outbox.splice(0)) socket.send(raw)
     })
 
     socket.addEventListener('message', (event: MessageEvent<string>) => {
@@ -141,14 +164,21 @@ export function installRemoteApi(): RemoteConnection {
       // `pty:owner-changed` compared against an identity that no longer exists.
       identity = null
       setState('closed')
+      // The outbox goes with the socket it was filled for. Anything still in it
+      // never left the device, which is a materially different thing to tell the
+      // caller than "sent, no answer" — so those calls are rejected apart.
+      const neverSent = new Set(outbox.map((queued) => queued.id))
+      outbox.length = 0
       // Every in-flight call dies with the socket. Leaving them pending would
       // hang whatever awaited them for the rest of the page's life.
-      for (const [, waiting] of pending) waiting.reject(new Error('Connection lost'))
+      for (const [id, waiting] of pending) {
+        waiting.reject(
+          neverSent.has(id)
+            ? new NotSentError('The connection went before the call was sent')
+            : new Error('Connection lost'),
+        )
+      }
       pending.clear()
-      // …and so does everything queued behind it, for the same reason: those
-      // promises were just rejected, so replaying their frames on the next
-      // socket would run a call the caller has already been told failed.
-      outbox.length = 0
       setTimeout(connect, backoff)
       backoff = Math.min(backoff * 2, RECONNECT_MAX_MS)
     })
@@ -169,7 +199,9 @@ export function installRemoteApi(): RemoteConnection {
       const id = nextId++
       return new Promise<InvokeMap[K]['result']>((resolve, reject) => {
         pending.set(id, { resolve: resolve as (value: never) => void, reject })
-        post({ kind: 'invoke', id, channel, args })
+        // `id` rides along so a close can tell this frame apart from one that
+        // already went out — see `NotSentError`.
+        post({ kind: 'invoke', id, channel, args }, id)
       })
     },
 

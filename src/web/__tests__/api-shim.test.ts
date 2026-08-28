@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installRemoteApi } from '../api-shim'
+import { installRemoteApi, NotSentError } from '../api-shim'
 
 /**
  * The shim's queue, which is a correctness surface and not a convenience.
@@ -36,6 +36,11 @@ class FakeSocket {
   open(): void {
     this.readyState = FakeSocket.OPEN
     this.fire('open')
+  }
+
+  /** The server started a close: `readyState` moves first, the event follows. */
+  beginClose(): void {
+    this.readyState = 2
   }
 
   close(): void {
@@ -94,7 +99,10 @@ describe('api-shim outbox', () => {
       brief: 'refill the fleet',
     })
     first.close()
-    await expect(call).rejects.toThrow(/Connection lost/)
+    // Rejected as NEVER SENT rather than merely lost: this frame was still in
+    // the outbox, so nothing reached the Mac and the caller is free to retry
+    // without checking what happened first.
+    await expect(call).rejects.toBeInstanceOf(NotSentError)
 
     // The caller saw a failure and re-made the call, as any honest retry does.
     vi.advanceTimersByTime(1000)
@@ -118,6 +126,51 @@ describe('api-shim outbox', () => {
       value: { terminalId: 't1', label: 'refill the fleet' },
     })
     await expect(retry).resolves.toMatchObject({ terminalId: 't1' })
+  })
+
+  it('never replays a submit written while the socket was closing', async () => {
+    // `readyState` reaches CLOSING a round trip before the `close` EVENT fires,
+    // so no guard built on the observable connection state can cover this: the
+    // frame is buffered, the close then rejects its promise, and the next
+    // socket would carry it. For `screenprs:submit-review` that is a review
+    // posted after the user was told it might not have been.
+    installRemoteApi()
+    const first = FakeSocket.instances[0]
+    first.open()
+
+    first.beginClose()
+    const posted = window.api.invoke('screenprs:submit-review', {
+      pr: { owner: 'acme', repo: 'acme/widgets', number: 7, url: 'u' },
+      draft: { comments: [], summary: '', verdict: 'approve' },
+    })
+    const settled = posted.then(() => 'resolved').catch(() => 'rejected')
+
+    first.close()
+    expect(await settled).toBe('rejected')
+    expect(invokes(first)).toHaveLength(0)
+
+    vi.advanceTimersByTime(1000)
+    const second = FakeSocket.instances[1]
+    second.open()
+    expect(invokes(second)).toHaveLength(0)
+  })
+
+  it('says a call never left when it never left, and stays silent when it might have', async () => {
+    // The difference decides what the user is told about an irreversible write:
+    // a call that was never sent had no effect, while one that was sent and
+    // never answered may have had every effect it asked for. Only the first is
+    // safe to retry without checking GitHub first.
+    installRemoteApi()
+    const first = FakeSocket.instances[0]
+    first.open()
+
+    const sent = window.api.invoke('session:list')
+    first.beginClose()
+    const held = window.api.invoke('session:list')
+    first.close()
+
+    await expect(sent).rejects.not.toBeInstanceOf(NotSentError)
+    await expect(held).rejects.toBeInstanceOf(NotSentError)
   })
 
   it('still delivers a call made while waiting for the reconnect', async () => {
