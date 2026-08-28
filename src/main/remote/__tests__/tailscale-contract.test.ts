@@ -18,6 +18,10 @@
  *     error: failed to remove web serve: handler does not exist
  *
  * — the removal code path, which an unrecognised target would never reach.
+ * `off` is absent from `tailscale serve --help` even so, which is the whole
+ * reason this file exists: the help output lists subcommands and a `<target>`
+ * placeholder, never the values that placeholder takes, so absence from it says
+ * nothing either way.
  *
  * Skipped unless a CLI is installed AND the backend is `Running`: a stopped
  * tailscaled answers `Tailscale is stopped.` before it validates the target,

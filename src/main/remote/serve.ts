@@ -117,17 +117,18 @@ export function buildServeArgs(port: number, token: string): readonly string[] {
 /**
  * Removing the handler we install. Idempotent by intent; see `isAlreadyGone`.
  *
- * `off` is a TARGET, not a subcommand, which is why `tailscale serve --help`
- * lists it nowhere — the usage block shows `tailscale serve <target>` and the
- * SUBCOMMANDS section covers `status`, `reset` and the service verbs. Reading
- * that block is enough to conclude this form does not exist; running it is what
- * settles it. Verified against 1.102.3, and pinned by
- * `tailscale-contract.test.ts` so the answer is re-checked rather than
- * remembered.
+ * `off` is a documented TARGET, not a subcommand: Tailscale's own docs give
+ * `tailscale serve --https=443 /path off` and note the target may be omitted.
+ * It does not appear in `tailscale serve --help` at all — so **the help output
+ * cannot be used to conclude a form is unsupported.** It lists subcommands and
+ * a `<target>` placeholder, not the values that placeholder accepts, and a
+ * reviewer reading it concluded this command did not exist. Absence there is
+ * not evidence; the only way to know is to run it, which is what
+ * `tailscale-contract.test.ts` does against the installed binary.
  *
  * `tailscale serve reset` is NOT a fallback. It clears the whole node's serve
  * config, so on a machine with any other mapping it destroys somebody's work to
- * tidy up ours. If a future CLI rejects the form below, this refuses and says
+ * tidy up ours. If a build ever rejects the form below, this refuses and says
  * so — see `isUnsupportedSyntax`.
  */
 export const OFF_ARGS = ['serve', '--https=443', 'off'] as const
@@ -145,7 +146,7 @@ function isAlreadyGone(text: string): boolean {
  *
  * Worth telling apart from every other failure, because it is the one that
  * cannot be retried and the one where guessing does damage: the only other
- * removal this CLI offers is `serve reset`, which clears the whole node's
+ * removal the CLI offers is `serve reset`, which clears the whole node's
  * config. A mapping we cannot remove is kept as a claim and named to the user,
  * never traded for somebody else's.
  */
@@ -153,12 +154,21 @@ function isUnsupportedSyntax(text: string): boolean {
   return /unknown subcommand|invalid argument format|flag provided but not defined/i.test(text)
 }
 
+/**
+ * Not the expected outcome, and the message says so.
+ *
+ * This is the documented removal form, so a build rejecting it means something
+ * has changed rather than that we were guessing. `tailscale serve --help` is
+ * deliberately NOT offered as the place to look: it does not list `off` even
+ * where `off` works, so it would send the user somewhere that answers nothing.
+ */
 function unsupportedTeardownMessage(port: number): string {
   return (
-    `This Tailscale build rejected \`tailscale ${OFF_ARGS.join(' ')}\`, so the serve mapping to ` +
+    `\`tailscale ${OFF_ARGS.join(' ')}\` was rejected by this Tailscale build. That is the ` +
+    `documented way to remove a serve mapping, so this is unexpected — and the mapping to ` +
     `127.0.0.1:${port} is still in place. SimpleEdit will not fall back to \`tailscale serve reset\`, ` +
-    `which clears every mapping on this node rather than only this one. Remove it with the form your ` +
-    'version documents (`tailscale serve --help`), then re-check.'
+    'which clears every mapping on this node rather than only this one. Run the command yourself to ' +
+    'see what it reports, then re-check.'
   )
 }
 
