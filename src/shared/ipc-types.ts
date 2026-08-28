@@ -890,6 +890,39 @@ export interface RemoteInvokeMap {
   'remote:set-host': { args: [host: string]; result: RemoteAccessStatus }
   /** Candidate bind addresses, so the pane can offer them instead of a text field. */
   'remote:interfaces': { args: []; result: RemoteInterface[] }
+  /** Probe the Tailscale CLI. Spawns a subprocess, so it is called on demand. */
+  'tailscale:status': { args: []; result: TailscaleStatus }
+}
+
+/**
+ * What the Tailscale CLI says about this node.
+ *
+ * `interfaces.ts` can only recognise the interface. Everything a phone needs —
+ * the MagicDNS name, whether HTTPS certificates exist, whether Serve can run —
+ * comes from the CLI, so its absence is a first-class state rather than a
+ * failure to report.
+ */
+export interface TailscaleStatus {
+  /** The CLI that answered, or null when none was found. */
+  cli: string | null
+  /**
+   * The installed Tailscale.app came from the Mac App Store. That build is
+   * sandboxed and has historically shipped no CLI reachable from outside it,
+   * so a probe failing is expected rather than broken — and the pane says so
+   * instead of reporting a mystery.
+   */
+  appStoreBuild: boolean
+  /** `Running`, `Stopped`, `NeedsLogin`, … Null when the CLI did not answer. */
+  backendState: string | null
+  /** `Self.DNSName`, trailing dot removed — the host part of the HTTPS URL. */
+  dnsName: string | null
+  magicDnsSuffix: string | null
+  /** Names Tailscale holds certificates for. Empty when HTTPS is off. */
+  certDomains: string[]
+  /** A certificate exists for `dnsName`, so an HTTPS URL will actually load. */
+  httpsReady: boolean
+  /** What is missing and what to do about it. Null when nothing is. */
+  hint: string | null
 }
 
 export interface RemoteInterface {

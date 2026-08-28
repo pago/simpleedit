@@ -44,6 +44,7 @@ import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub } from './remote/server'
+import { getTailscaleStatus } from './remote/tailscale'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
 import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepAbandonedAudio } from './remote/stt'
 import { listRemoteInterfaces, isAllowedBindHost } from './remote/interfaces'
@@ -506,7 +507,7 @@ function registerAllHandlers(): void {
   handleInvoke('remote:status', () => getRemoteStatus())
   handleInvoke('remote:config', () => getRemoteConfig())
   handleInvoke('remote:interfaces', () => listRemoteInterfaces())
-
+  handleInvoke('tailscale:status', () => getTailscaleStatus())
   handleInvoke('remote:set-enabled', async (_event, enabled: boolean) => {
     setRemoteConfig({ ...getRemoteConfig(), enabled })
     const status = await applyRemoteConfig()

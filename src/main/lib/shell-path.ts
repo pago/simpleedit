@@ -28,7 +28,7 @@ export type AgentExecutable = 'claude' | 'codex' | 'opencode'
  * is interpolated into a shell command below, and the shell is what makes an
  * open one dangerous.
  */
-export type KnownExecutable = AgentExecutable | 'whisper-cli' | 'whisper-cpp'
+export type KnownExecutable = AgentExecutable | 'whisper-cli' | 'whisper-cpp' | 'tailscale'
 
 export function resolveExecutable(name: KnownExecutable): Promise<string | null> {
   const hit = cachedPaths.get(name)
