@@ -314,4 +314,90 @@ export function makeRepoTest(repoPath: string) {
   })
 }
 
+// ── Asking the PTY what size it thinks it is ──────────────
+/**
+ * Ask the shell itself with `stty size`. The only honest check: it reports what
+ * the kernel believes the terminal is, not what xterm happened to draw.
+ *
+ * The marker is assembled from two string literals so the echo of the command
+ * never matches — only its output does.
+ */
+const SIZE_COMMAND = `stty size | awk '{print "SI" "ZE=" $1 "x" $2}'\r`
+
+export interface PtySize {
+  rows: number
+  cols: number
+}
+
+type SizeApi = { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+
+export async function askPtySize(window: Page, id: string): Promise<void> {
+  await window.evaluate(
+    ([terminalId, command]) =>
+      (window as unknown as { api: SizeApi }).api.invoke('pty:write', terminalId, command),
+    [id, SIZE_COMMAND],
+  )
+}
+
+export async function readPtySize(window: Page, id: string): Promise<PtySize | null> {
+  const backlog = (await window.evaluate(
+    (terminalId) => (window as unknown as { api: SizeApi }).api.invoke('pty:backlog', terminalId),
+    id,
+  )) as { data: string }
+  const last = [...backlog.data.matchAll(/SIZE=(\d+)x(\d+)/g)].at(-1)
+  return last ? { rows: Number(last[1]), cols: Number(last[2]) } : null
+}
+
+/**
+ * Run `stty size` until the answer satisfies `matches`.
+ *
+ * Waiting for "any change" is not enough when a second client is attaching: it
+ * fits, then claims, then its ResizeObserver fits again, so a poll that accepts
+ * the first different value can catch an intermediate geometry and then compare
+ * against it.
+ */
+export async function awaitPtySize(
+  window: Page,
+  id: string,
+  matches: (size: PtySize) => boolean,
+): Promise<PtySize> {
+  let latest: PtySize | null = null
+  await expect
+    .poll(
+      async () => {
+        await askPtySize(window, id)
+        const size = await readPtySize(window, id)
+        if (!size || !matches(size)) return false
+        latest = size
+        return true
+      },
+      { timeout: 20_000, intervals: [500] },
+    )
+    .toBe(true)
+  return latest!
+}
+
+/** Run `stty size` until it answers, optionally waiting for a CHANGED answer. */
+export async function measurePtySize(
+  window: Page,
+  id: string,
+  previous?: PtySize,
+): Promise<PtySize> {
+  let latest: PtySize | null = null
+  await expect
+    .poll(
+      async () => {
+        await askPtySize(window, id)
+        const size = await readPtySize(window, id)
+        if (!size) return false
+        if (previous && size.rows === previous.rows && size.cols === previous.cols) return false
+        latest = size
+        return true
+      },
+      { timeout: 20_000, intervals: [500] },
+    )
+    .toBe(true)
+  return latest!
+}
+
 export { expect }

@@ -8,6 +8,8 @@ import {
   createTempRepo,
   removeTempRepo,
   spawnTerminalSession,
+  measurePtySize,
+  awaitPtySize,
   type TempRepo,
 } from './fixtures'
 import type { RemoteAccessStatus } from '../src/shared/ipc-types'
@@ -203,7 +205,38 @@ test('a socket that goes releases the terminal size it was holding', async ({ wi
         await window.evaluate(() => (window as unknown as { __owners__: (string | null)[] }).__owners__),
       { timeout: 15_000 },
     )
-    .toEqual([expect.stringMatching(/^w\d+\./), null])
+    .toEqual([expect.stringMatching(/^w\d+\./), null, expect.anything()])
+})
+
+// Clearing the banner is not the point; the PTY's geometry is. Ownership moving
+// without geometry following is the phase-2 blocker in a new place: the desktop
+// would go on drawing a phone-shaped terminal into a desktop-shaped view, with
+// no event left to correct it — the ResizeObserver fires only on a container
+// change and a claim only on an attention change.
+test('a released terminal is resized back to the view that is left', async ({ window, browser }) => {
+  const terminalId = await spawnTerminalSession(window)
+  const status = await enableRemote(window)
+
+  const desktop = await measurePtySize(window, terminalId)
+
+  // A phone-shaped viewport, so its claim is unmistakably a different geometry.
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await page.goto(byName(status.url!))
+  await page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`).click()
+
+  const phone = await awaitPtySize(window, terminalId, (size) => size.cols < desktop.cols)
+  expect(phone.cols).toBeLessThan(desktop.cols)
+
+  // The tunnel drops. Nothing on the desktop changed size, and nothing gained
+  // or lost focus — so this only recovers if the release itself drives it.
+  await page.close()
+
+  const restored = await awaitPtySize(
+    window,
+    terminalId,
+    (size) => size.cols === desktop.cols && size.rows === desktop.rows,
+  )
+  expect(restored).toEqual(desktop)
 })
 
 test('a socket disconnect leaves the window transport intact', async ({ window, browser }) => {

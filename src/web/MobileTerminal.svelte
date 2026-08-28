@@ -91,7 +91,14 @@
         exitCode = code
         term?.write(`\r\n[Process exited with code ${code}]`)
       },
-      onOwnerChange: (owner) => { sizeOwner = owner },
+      onOwnerChange: (owner) => {
+        sizeOwner = owner
+        // Nobody owns it — the previous owner's transport went away and the PTY
+        // is still at ITS geometry. Ownership moving without geometry following
+        // is how a terminal ends up drawing into a viewport of the wrong size,
+        // and neither the ResizeObserver nor a claim has an event left to fire.
+        if (owner === null) fitAndClaim()
+      },
     })
 
     // The container has no size until layout has run once.

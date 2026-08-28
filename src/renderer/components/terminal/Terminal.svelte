@@ -76,6 +76,26 @@
     void window.api.invoke('pty:claim', id, term.cols, term.rows)
   }
 
+  /**
+   * Re-assert this view's geometry on the PTY.
+   *
+   * Called when main says the PTY is UNOWNED — the client that was sizing it
+   * went away. Ownership moving without geometry following is how a terminal
+   * ends up drawing into a viewport of the wrong height: the ResizeObserver
+   * fires only on a container change and `pty:claim` only on an attention
+   * change, so a window already sitting on this terminal has no event left and
+   * would render 40-column output in a 200-column view indefinitely.
+   */
+  function resyncGeometry(id: string): void {
+    if (!term || !fitAddon || !containerEl) return
+    if (containerEl.offsetWidth === 0 || containerEl.offsetHeight === 0) return
+    fitPreservingScroll()
+    // Attention takes the size outright; anything else just reports it, which
+    // an unowned PTY accepts.
+    if (hasUserAttention()) claimPty(id)
+    else window.api.invoke('pty:resize', id, term.cols, term.rows)
+  }
+
   function isScrolledToBottom(): boolean {
     if (!term) return true
     const buf = term.buffer.active
@@ -192,7 +212,12 @@
       // Not a gate on anything — it is what lets this view say it is being
       // sized by another device instead of silently rendering at a width the
       // PTY abandoned.
-      onOwnerChange: (owner) => { sizeOwner = owner },
+      onOwnerChange: (owner) => {
+        sizeOwner = owner
+        // Nobody owns it: the previous owner's transport is gone and the PTY is
+        // still at ITS geometry. Say what this view is actually rendering.
+        if (owner === null) resyncGeometry(id)
+      },
     })
 
     // Auto-resize on container size change.
