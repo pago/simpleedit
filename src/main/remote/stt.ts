@@ -71,8 +71,38 @@ const MAX_CONCURRENT = 2
 /** Each running child, with the directory holding its audio. */
 const live = new Map<ChildProcess, string>()
 
-/** Temp directories this module makes. Also the sweep's pattern — keep in step. */
+/**
+ * Temp directories this module makes, tagged with the pid that owns them.
+ *
+ * The tag is what makes the sweep safe. Two SimpleEdit instances share one
+ * `tmpdir()`, so an untagged sweep at launch deletes the WAV another instance's
+ * whisper is reading — which is not a hypothetical: it broke a passing test
+ * within minutes of being written.
+ */
 const TEMP_PREFIX = 'simpleedit-stt-'
+
+function tempPrefixFor(pid: number): string {
+  return `${TEMP_PREFIX}${pid}-`
+}
+
+/**
+ * How long a directory belonging to a pid we cannot account for is left alone.
+ *
+ * Backstop for a recycled pid: if a dead instance's number now belongs to some
+ * unrelated process, the liveness check says "in use" forever. Ten minutes is
+ * well past the 60 s transcription cap, so this can never race a live one.
+ */
+const STALE_MS = 10 * 60 * 1000
+
+function isRunning(pid: number): boolean {
+  try {
+    // Signal 0 checks for the process without touching it.
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 
 function removeQuietly(dir: string): void {
   try {
@@ -83,13 +113,17 @@ function removeQuietly(dir: string): void {
 }
 
 /**
- * Delete audio a previous run left behind.
+ * Delete audio a previous run left behind — and only that.
  *
- * A crash or a kill -9 mid-transcription skips the cleanup in `transcribe`, and
- * what is left is somebody's voice sitting in `tmpdir()` until the OS gets
+ * A crash or a `kill -9` mid-transcription skips the cleanup in `transcribe`,
+ * and what is left is somebody's voice sitting in `tmpdir()` until the OS gets
  * round to it. Called at launch, synchronously, before anything can add more.
+ *
+ * A directory whose pid is still running belongs to another live instance and
+ * is left strictly alone until it is old enough that no transcription could
+ * still be using it.
  */
-export function sweepAbandonedAudio(): void {
+export function sweepAbandonedAudio(now: number = Date.now()): void {
   let entries: string[]
   try {
     entries = readdirSync(tmpdir())
@@ -97,7 +131,21 @@ export function sweepAbandonedAudio(): void {
     return
   }
   for (const entry of entries) {
-    if (entry.startsWith(TEMP_PREFIX)) removeQuietly(join(tmpdir(), entry))
+    const owner = entry.startsWith(TEMP_PREFIX)
+      ? Number.parseInt(entry.slice(TEMP_PREFIX.length).split('-')[0], 10)
+      : Number.NaN
+    if (!Number.isInteger(owner)) continue
+    const dir = join(tmpdir(), entry)
+    if (owner !== process.pid && isRunning(owner) && !olderThan(dir, now, STALE_MS)) continue
+    removeQuietly(dir)
+  }
+}
+
+function olderThan(dir: string, now: number, ms: number): boolean {
+  try {
+    return now - statSync(dir).mtimeMs > ms
+  } catch {
+    return false
   }
 }
 
@@ -207,7 +255,7 @@ export async function transcribe(audioBase64: string): Promise<string> {
 
   // `mkdtemp(3)` creates with mode 0700 — the directory is this process's
   // alone before the audio ever lands in it.
-  const dir = await mkdtemp(join(tmpdir(), TEMP_PREFIX))
+  const dir = await mkdtemp(join(tmpdir(), tempPrefixFor(process.pid)))
   try {
     const wav = join(dir, 'audio.wav')
     await writeFile(wav, audio, { mode: 0o600 })

@@ -58,8 +58,11 @@ function wav(samples = 160): Buffer {
   return Buffer.concat([header, data])
 }
 
+/** A pid nothing is using — this process's, far enough away to be free. */
+const DEAD_PID = 2_000_000
+
 function sttTempDirs(): string[] {
-  return readdirSync(tmpdir()).filter((name) => name.startsWith('simpleedit-stt-'))
+  return readdirSync(tmpdir()).filter((name) => name.startsWith(`simpleedit-stt-${process.pid}-`))
 }
 
 beforeEach(() => {
@@ -180,10 +183,48 @@ describe('transcribe', () => {
 
 describe('audio left on disk', () => {
   it('sweeps what a crash left behind', () => {
-    const orphan = mkdtempSync(join(tmpdir(), 'simpleedit-stt-'))
+    // A pid that is not running: this process's own, plus a large offset.
+    const orphan = mkdtempSync(join(tmpdir(), `simpleedit-stt-${DEAD_PID}-`))
     writeFileSync(join(orphan, 'audio.wav'), wav())
     sweepAbandonedAudio()
     expect(existsSync(orphan)).toBe(false)
+  })
+
+  // Two instances share one tmpdir. An untagged sweep at launch deletes the WAV
+  // another instance's whisper is reading — which is not hypothetical; it broke
+  // a passing E2E within minutes of the sweep being written.
+  it('leaves a live instance\'s audio alone', () => {
+    const theirs = mkdtempSync(join(tmpdir(), `simpleedit-stt-${process.pid}-`))
+    writeFileSync(join(theirs, 'audio.wav'), wav())
+    // Swept as if by a DIFFERENT process, so this pid reads as somebody else's.
+    vi.spyOn(process, 'pid', 'get').mockReturnValue(DEAD_PID)
+    try {
+      sweepAbandonedAudio()
+      expect(existsSync(theirs)).toBe(true)
+    } finally {
+      vi.restoreAllMocks()
+    }
+    rmSync(theirs, { recursive: true, force: true })
+  })
+
+  // Backstop for a recycled pid, where the liveness check would otherwise say
+  // "in use" for ever.
+  it('sweeps a live pid\'s directory once it is far too old to be in use', () => {
+    const stale = mkdtempSync(join(tmpdir(), `simpleedit-stt-${process.pid}-`))
+    vi.spyOn(process, 'pid', 'get').mockReturnValue(DEAD_PID)
+    try {
+      sweepAbandonedAudio(Date.now() + 60 * 60 * 1000)
+    } finally {
+      vi.restoreAllMocks()
+    }
+    expect(existsSync(stale)).toBe(false)
+  })
+
+  it('ignores anything in tmpdir that is not ours', () => {
+    const other = mkdtempSync(join(tmpdir(), 'not-simpleedit-'))
+    sweepAbandonedAudio()
+    expect(existsSync(other)).toBe(true)
+    rmSync(other, { recursive: true, force: true })
   })
 
   // Quitting skips the `finally` in `transcribe` entirely: the promise that
