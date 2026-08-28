@@ -68,7 +68,17 @@ export function installRemoteApi(): RemoteConnection {
   const pending = new Map<number, Pending>()
   const listeners = new Map<string, Set<Listener>>()
   const stateWatchers = new Set<(state: ConnectionState) => void>()
-  /** Frames written before the socket opened. Flushed in order on open. */
+  /**
+   * Frames written before the socket opened. Flushed in order on open.
+   *
+   * A frame and the promise waiting on it share ONE fate. A close rejects
+   * every pending call, so anything still queued here has already been
+   * reported as failed and must not be replayed — otherwise a call the user
+   * saw fail (and re-made) arrives twice on reconnect, and a channel like
+   * `session:create` turns one confirmed intent into two sessions. Frames
+   * queued AFTER a close belong to the next socket and still have a live
+   * promise, so those flush as normal.
+   */
   const outbox: string[] = []
 
   let identity: RemoteIdentity | null = null
@@ -135,6 +145,10 @@ export function installRemoteApi(): RemoteConnection {
       // hang whatever awaited them for the rest of the page's life.
       for (const [, waiting] of pending) waiting.reject(new Error('Connection lost'))
       pending.clear()
+      // …and so does everything queued behind it, for the same reason: those
+      // promises were just rejected, so replaying their frames on the next
+      // socket would run a call the caller has already been told failed.
+      outbox.length = 0
       setTimeout(connect, backoff)
       backoff = Math.min(backoff * 2, RECONNECT_MAX_MS)
     })
