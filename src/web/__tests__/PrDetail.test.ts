@@ -132,6 +132,26 @@ describe('PR detail — the path to GitHub', () => {
     expect(submitCalls()).toHaveLength(0)
   })
 
+  it('refuses a post that the shim would queue rather than reject', async () => {
+    // A socket that closes between the confirm appearing and the tap: the button
+    // is disabled, but the enforcement has to be in `post`, because an invoke on
+    // a closed socket is buffered and would fire on reconnect.
+    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await fireEvent.click(screen.getByTestId('verdict-approve'))
+    await fireEvent.click(screen.getByTestId('review-submit'))
+    await rerender({ pr: CARD, connected: false })
+
+    // Re-enabled by hand to stand in for the race the disabled attribute cannot
+    // cover: a tap already on its way when the socket went.
+    const post = screen.getByTestId('confirm-post') as HTMLButtonElement
+    post.disabled = false
+    await fireEvent.click(post)
+
+    expect(submitCalls()).toHaveLength(0)
+    expect(screen.getByTestId('confirm-error')).toHaveTextContent('nothing was sent')
+  })
+
   it('calls a dropped connection unknown rather than failed, and does not retry', async () => {
     submitResult = () => Promise.reject(new Error('Connection lost'))
     render(PrDetail, { pr: CARD, connected: true })

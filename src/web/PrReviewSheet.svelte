@@ -80,6 +80,13 @@
 
   async function post(): Promise<void> {
     error = null
+    // Re-checked here, not just on the disabled button: an `invoke` written to a
+    // closed socket is QUEUED by the shim, not rejected — it would post on the
+    // next reconnect, while this modal claimed it had already gone.
+    if (!connected) {
+      error = 'Not connected to the Mac — nothing was sent.'
+      return
+    }
     try {
       const res = await screenPrsStore.submitReview(pr, draft)
       if (res.ok) {
