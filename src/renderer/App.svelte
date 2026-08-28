@@ -141,9 +141,16 @@
       const root = projectRoot() ?? wt?.path
       if (!root || !wt) return
       e.preventDefault()
-      void window.api.invoke('models:config-get').then((config) => {
-        sessionsStore.requestTerminalFocus(createSessionFromDefaults(config, root, wt.path))
-      })
+      // A config that cannot be read is not a reason to start nothing: null
+      // falls back to plain Claude, which is what the ✦ button and the phone
+      // both do. Without this, ⌘T was the one gesture of the three that
+      // silently did nothing at all.
+      void window.api
+        .invoke('models:config-get')
+        .catch(() => null)
+        .then((config) => {
+          sessionsStore.requestTerminalFocus(createSessionFromDefaults(config, root, wt.path))
+        })
     }
   }
 

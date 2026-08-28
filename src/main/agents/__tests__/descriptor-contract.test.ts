@@ -4,10 +4,12 @@ vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => '/app' },
 }))
 
-import { claudeProvider } from '../claude'
-import { codexProvider } from '../codex'
-import { opencodeProvider } from '../opencode'
-import type { AgentProvider } from '../provider'
+// Imported for their SIDE EFFECT: each module registers itself on import, and
+// the registry is what this file iterates.
+import '../claude'
+import '../codex'
+import '../opencode'
+import { getProvider, registeredProviderIds } from '../provider'
 
 /**
  * Contracts every descriptor owes, asserted against the REAL descriptors.
@@ -22,9 +24,21 @@ import type { AgentProvider } from '../provider'
  * Every renderer-side test of that path built its own capability fixtures, so
  * they all passed against a world production could not produce.
  */
-const PROVIDERS: AgentProvider[] = [claudeProvider, codexProvider, opencodeProvider]
+/**
+ * Every REGISTERED provider, not a list written here.
+ *
+ * Hand-enumerating them would reintroduce the very gap this file exists to
+ * close: a fourth provider would be absent from the list, pass by not being
+ * looked at, and then be silently rejected by `isNativeModelAgent` — the same
+ * "green against a world nobody checked" shape as the missing brand itself.
+ */
+const PROVIDERS = registeredProviderIds().map((id) => getProvider(id))
 
 describe('agent descriptor contracts', () => {
+  it('has providers to check, so a broken import cannot pass by iterating nothing', () => {
+    expect(PROVIDERS.length).toBeGreaterThanOrEqual(3)
+  })
+
   it.each(PROVIDERS.map((p) => [p.id, p] as const))(
     '%s: a model-id provider names the ModelRef brand its bare ids belong to',
     (_id, provider) => {
