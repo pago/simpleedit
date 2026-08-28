@@ -86,9 +86,9 @@ import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
-import type { PrContext } from '../shared/screenprs'
+import type { PrContext, PrRef } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
-import { postReview } from './github/gh'
+import { getPrDiff, postReview } from './github/gh'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -943,6 +943,10 @@ function registerAllHandlers(): void {
 
   handleInvoke('screenprs:cancel', (event) => {
     cancelScreening(hubFor(event.sender))
+  })
+
+  handleInvoke('screenprs:pr-diff', (_event, pr: Pick<PrRef, 'url'>) => {
+    return getPrDiff(pr)
   })
 
   handleInvoke('screenprs:deep-start', (event, context: PrContext) => {

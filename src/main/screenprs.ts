@@ -32,6 +32,27 @@ const activeRuns = new Map<number, AbortController>()
 function send(wc: RemoteClient, channel: string, data: unknown): void {
   if (!wc.isDestroyed()) wc.send(channel, data)
 }
+
+/**
+ * The same card/context, with the diff emptied — what a remote client gets.
+ *
+ * `PrContext.diff` is the FULL unified diff and screening defaults to every org
+ * where you're a reviewer, so a board is dozens of complete diffs pushed down a
+ * WebSocket to a phone that will open one of them. The field is emptied rather
+ * than dropped so the payload still is a `PrContext` (a missing-but-typed
+ * `string` is the kind of lie that surfaces three call sites away); the client
+ * fetches the real diff with `screenprs:pr-diff` when it opens a PR.
+ */
+function withoutDiff<T extends PrContext>(value: T): T {
+  return { ...value, diff: '' }
+}
+
+/** Push `local` to the window's renderer and the diff-less `remote` to sockets. */
+function sendSplit(wc: RemoteClient, channel: string, local: unknown, remote: unknown): void {
+  if (wc.isDestroyed()) return
+  if (wc.sendSplit) wc.sendSplit(channel, local, remote)
+  else wc.send(channel, local)
+}
 function sendStatus(wc: RemoteClient, status: ScreenPrsRunStatus, extra: { error?: string; total?: number } = {}): void {
   send(wc, 'screenprs:status', { status, ...extra })
 }
@@ -101,7 +122,7 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
 
     const emitCard = (ctx: PrContext, result: TriageResult): void => {
       const card: ScreenPrCard = { ...ctx, ...result, bucket: bucketOf({ ...ctx, ...result }) }
-      send(webContents, 'screenprs:card', { card })
+      sendSplit(webContents, 'screenprs:card', { card }, { card: withoutDiff(card) })
     }
 
     // Cache hit (same head SHA) → reuse the diff + triage, no model call. Miss (or
@@ -119,7 +140,9 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
     const contexts = (
       await mapLimit(toTriage, 5, async (m) => {
         const ctx = { ...m, diff: await getPrDiff(m) }
-        if (!controller.signal.aborted) send(webContents, 'screenprs:screening', { context: ctx })
+        if (!controller.signal.aborted) {
+          sendSplit(webContents, 'screenprs:screening', { context: ctx }, { context: withoutDiff(ctx) })
+        }
         return ctx
       })
     ).filter((c): c is PrContext => c !== null)

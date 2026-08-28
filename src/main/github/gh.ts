@@ -179,7 +179,7 @@ export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
 }
 
 /** The expensive-to-refetch half: the unified diff. Skipped on a cache hit. */
-export function getPrDiff(ref: PrRef): Promise<string> {
+export function getPrDiff(ref: Pick<PrRef, 'url'>): Promise<string> {
   return runGh(['pr', 'diff', ref.url])
 }
 

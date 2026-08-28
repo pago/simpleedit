@@ -24,6 +24,15 @@ export interface RemoteClient {
    */
   readonly clientKey?: string
   send(channel: string, data: unknown): void
+  /**
+   * Fan a channel out with a DIFFERENT payload for socket transports.
+   *
+   * Present only on a `ClientHub`. A bare `WebContents` doesn't have it —
+   * which is what keeps a real `WebContents` structurally satisfying this
+   * interface — so callers fall back to `send` with the local payload, which
+   * is all a lone window renderer ever received.
+   */
+  sendSplit?(channel: string, local: unknown, remote: unknown): void
   isDestroyed(): boolean
 }
 
@@ -63,6 +72,18 @@ export class ClientHub implements RemoteClient {
 
   send(channel: string, data: unknown): void {
     for (const t of this.live()) t.send(channel, data)
+  }
+
+  /**
+   * `local` to the window's own renderer, `remote` to every socket transport.
+   *
+   * A socket transport carries a `clientKey`; a `WebContents` never does — the
+   * same discriminator `index.ts` already uses to tell a phone apart from the
+   * window it joined. Only for payloads a remote client should receive a
+   * cheaper version of; ordinary pushes stay on `send`.
+   */
+  sendSplit(channel: string, local: unknown, remote: unknown): void {
+    for (const t of this.live()) t.send(channel, t.clientKey === undefined ? local : remote)
   }
 
   /** True once no live transport remains — including before any is attached. */

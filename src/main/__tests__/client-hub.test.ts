@@ -26,6 +26,20 @@ describe('ClientHub', () => {
     expect(hub.id).toBe(42)
   })
 
+  it('splits a payload by transport: the window gets `local`, a socket `remote`', () => {
+    // A socket transport is the one carrying a `clientKey`; a WebContents never
+    // has one. Screen PRs rides this to keep full diffs off the wire.
+    const windowTransport = makeTransport()
+    const socket = { ...makeTransport(), clientKey: 'w1.3' }
+    const hub = new ClientHub(1, windowTransport)
+    hub.register(socket)
+
+    hub.sendSplit('screenprs:card', { card: { diff: 'full' } }, { card: { diff: '' } })
+
+    expect(windowTransport.send).toHaveBeenCalledWith('screenprs:card', { card: { diff: 'full' } })
+    expect(socket.send).toHaveBeenCalledWith('screenprs:card', { card: { diff: '' } })
+  })
+
   it('fans one send out to every registered transport', () => {
     const a = makeTransport()
     const b = makeTransport()
