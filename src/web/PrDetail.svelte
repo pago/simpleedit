@@ -13,7 +13,7 @@
    * of the one PR you open.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER } from '../shared/screenprs'
+  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, reanchorForHead } from '../shared/screenprs'
   import type {
     DeepFinding,
     DeepSeverity,
@@ -41,7 +41,6 @@
   let card = $derived(entry?.card)
   let context = $derived(entry?.context)
   let deep = $derived(screenPrsStore.deepFor(url))
-  let draft = $derived(screenPrsStore.draftFor(url))
 
   const PANES = [
     { id: 'conversation', label: 'Conversation' },
@@ -54,6 +53,19 @@
   // instead of showing yesterday's code under today's line numbers. Nothing is
   // fetched until the SHA is known — a URL alone would cache under the wrong key.
   let headSha = $derived(context?.headSha ?? '')
+  /**
+   * The draft as it would be posted.
+   *
+   * A force-push between raising a comment and posting it leaves the comment's
+   * line number pointing at whatever now occupies it, and the reviews API takes
+   * no `commit_id` — GitHub would anchor it there without complaint. Re-anchored
+   * once, here, so the diff, the sheet, the confirm's counts and the submit all
+   * see the same thing. Skipped while the head is unknown, which would make
+   * every stamped comment look stale for the moment a re-screen takes.
+   */
+  let draft = $derived(
+    headSha ? reanchorForHead(screenPrsStore.draftFor(url), headSha) : screenPrsStore.draftFor(url),
+  )
   let diff = $state('')
   let diffError = $state<string | null>(null)
   let loadingDiff = $state(false)
@@ -88,14 +100,16 @@
   // ── line comments ──
   let target = $state<CommentTarget | null>(null)
 
+  // Every comment is stamped with the head its line was read off. Without that
+  // there is no way to tell later that the branch moved under it.
   function addLineComment(text: string): void {
     const t = target
     if (!t) return
-    screenPrsStore.addComment(url, { source: 'you', file: t.file, line: t.line, text })
+    screenPrsStore.addComment(url, { source: 'you', file: t.file, line: t.line, text, sha: headSha })
   }
 
   function addTriage(f: TriageFinding): void {
-    screenPrsStore.addComment(url, { source: 'triage', file: f.file, line: f.line, text: f.title })
+    screenPrsStore.addComment(url, { source: 'triage', file: f.file, line: f.line, text: f.title, sha: headSha })
   }
   function addDeep(f: DeepFinding): void {
     screenPrsStore.addComment(url, {
@@ -103,6 +117,7 @@
       file: f.file,
       line: f.line,
       text: f.detail ? `${f.title} — ${f.detail}` : f.title,
+      sha: headSha,
     })
   }
 
@@ -296,7 +311,7 @@
     {/if}
   </div>
 
-  <PrReviewSheet {pr} {connected} />
+  <PrReviewSheet {pr} {draft} {headSha} {connected} />
 </div>
 
 {#if target}

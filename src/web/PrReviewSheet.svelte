@@ -4,15 +4,18 @@
    *
    * The invariant it exists to hold: **nothing reaches `screenprs:submit-review`
    * without the user having seen the verdict and the comment count and confirmed
-   * that exact action.** Three things enforce it, none of them a comment:
+   * that exact action.** Four things enforce it, none of them a comment:
    *
    *  - The verdict must be TAPPED. `emptyReviewDraft()` starts at `approve`,
    *    which at a desk is a sensible default and on a phone would make approval
    *    the result of not deciding. Submit stays dead until `verdictChoice`.
    *  - Submit opens a confirm; only the confirm invokes. Never a swipe, and the
    *    microphone can reach neither (`ComposeSheet` only ever adds draft text).
-   *  - A closed socket disables the post outright, so the write is never
-   *    attempted into a connection that will reject it.
+   *  - A closed socket refuses the post outright, checked here and not only on
+   *    the button, so a tap that raced the socket going down cannot slip past.
+   *  - An unanswered submit LATCHES (`unknownOutcome`). Reviews have no
+   *    idempotency key, so a second tap after an outcome nobody knows is how
+   *    one review becomes two.
    *
    * ── Draft lifetime ───────────────────────────────────────────────────────
    * The draft lives in the shared store, keyed by PR url, for the life of the
@@ -20,35 +23,49 @@
    * dictated, which on a phone is the difference between a usable review and a
    * lost one; a reconnect keeps it too, since nothing about it lives on the Mac.
    * A reload drops it, deliberately: a draft restored days later would carry
-   * line anchors into a head SHA that has moved, and a stale anchor is worse
-   * than retyping. Nothing is ever posted from a resurrected draft without the
-   * confirm naming its verdict and counts first.
+   * line anchors into a head SHA that has moved.
+   *
+   * Within a session that same move is handled rather than prevented: the
+   * `draft` arriving here has already been through `reanchorForHead`, so a
+   * comment written against an older commit has lost its line and folds into
+   * the body instead of landing on whatever now occupies that number.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import type { PrRef, PrReviewCommentSource, PrReviewVerdict } from '../shared/screenprs'
-  import { verdictChoice } from './lib/prs.svelte'
+  import { staleAnchorCount } from '../shared/screenprs'
+  import type { PrRef, PrReviewCommentSource, PrReviewDraft, PrReviewVerdict } from '../shared/screenprs'
+  import { unknownOutcome, verdictChoice, type SubmitOutcome } from './lib/prs.svelte'
+  import { NotSentError } from './api-shim'
   import ComposeSheet from './ComposeSheet.svelte'
   import ConfirmSubmitModal from './ConfirmSubmitModal.svelte'
 
   interface Props {
     pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>
+    /**
+     * The draft as it would be POSTED — already re-anchored for the current
+     * head. Passed in rather than read from the store so that what is shown,
+     * what is counted in the confirm, and what is sent are the same object.
+     */
+    draft: PrReviewDraft
+    /** The head the diff on screen belongs to; '' while the PR is still screening. */
+    headSha: string
     /** Whether the socket is open right now — read at the point of use. */
     connected: boolean
   }
 
-  let { pr, connected }: Props = $props()
+  let { pr, draft, headSha, connected }: Props = $props()
 
   let url = $derived(pr.url)
-  let draft = $derived(screenPrsStore.draftFor(url))
   let submitted = $derived(screenPrsStore.submittedFor(url))
   let submitting = $derived(screenPrsStore.isSubmitting(url))
   let draftError = $derived(screenPrsStore.draftError(url))
   let chosen = $derived(verdictChoice.made(url))
+  let latched = $derived(unknownOutcome.pending(url))
+  let staleCount = $derived(staleAnchorCount(draft, headSha))
 
   let open = $state(false)
   let confirming = $state(false)
   let summaryOpen = $state(false)
-  let error = $state<string | null>(null)
+  let outcome = $state<SubmitOutcome | null>(null)
 
   const VERDICTS: PrReviewVerdict[] = ['approve', 'comment', 'request_changes']
   const VERDICT_LABEL: Record<PrReviewVerdict, string> = {
@@ -68,41 +85,50 @@
     you: 'bg-zinc-700 text-zinc-200',
   }
 
-  let blocked = $derived(
-    !chosen ? 'Choose a verdict first.' : draftError,
-  )
+  let blocked = $derived(!chosen ? 'Choose a verdict first.' : draftError)
 
   function chooseVerdict(v: PrReviewVerdict): void {
     screenPrsStore.setVerdict(url, v)
     verdictChoice.make(url)
-    error = null
+    outcome = null
   }
 
   async function post(): Promise<void> {
-    error = null
-    // Re-checked here, not just on the disabled button: an `invoke` written to a
-    // closed socket is QUEUED by the shim, not rejected — it would post on the
-    // next reconnect, while this modal claimed it had already gone.
+    // Re-checked here, not just on the disabled button: a tap can be in flight
+    // when the socket goes, and the shim's own refusal is the backstop, not the
+    // thing the user should have to read.
     if (!connected) {
-      error = 'Not connected to the Mac — nothing was sent.'
+      outcome = { kind: 'not-sent', message: 'Not connected to the Mac — nothing was sent.' }
       return
     }
+    if (latched) return
+    outcome = null
     try {
       const res = await screenPrsStore.submitReview(pr, draft)
       if (res.ok) {
         confirming = false
-        // A posted review is done with; a follow-up starts from no verdict.
+        // Posted and done with: a follow-up starts from no verdict.
         verdictChoice.reset(url)
+        unknownOutcome.clear(url)
       } else {
         // Main answered. Whatever went wrong, nothing was posted.
-        error = res.error
+        outcome = { kind: 'refused', message: `GitHub refused it: ${res.error}` }
       }
-    } catch {
-      // The socket died before main answered, so we do NOT know whether GitHub
-      // took it. Retrying blind could double-post; say so and let the user look.
-      error =
-        `The connection dropped before the Mac answered, so it isn’t known whether the review was ` +
-        `posted. Check ${pr.repo}#${pr.number} on GitHub before posting again.`
+    } catch (err) {
+      if (err instanceof NotSentError) {
+        // The shim can prove this frame never left the device.
+        outcome = { kind: 'not-sent', message: 'The connection went before the call was sent — nothing was posted.' }
+        return
+      }
+      // It went and never came back. Nobody knows whether GitHub took it, so
+      // this latches rather than re-arming: reviews have no idempotency key.
+      outcome = {
+        kind: 'unknown',
+        message:
+          `The connection dropped after the review was sent, so it isn’t known whether it posted. ` +
+          `Check ${pr.repo}#${pr.number} on GitHub — posting again would post twice if it did.`,
+      }
+      unknownOutcome.raise(url)
     }
   }
 
@@ -148,6 +174,17 @@
 
     {#if open}
       <div class="flex max-h-[52vh] flex-col gap-2.5 overflow-y-auto px-3 pb-3">
+        {#if staleCount > 0}
+          <p
+            class="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200"
+            data-testid="stale-notice"
+          >
+            The branch moved since {staleCount === 1 ? 'a comment was' : `${staleCount} comments were`} written.
+            {staleCount === 1 ? 'Its' : 'Their'} line number would now point at different code, so
+            {staleCount === 1 ? 'it goes' : 'they go'} in the summary instead of on a line.
+          </p>
+        {/if}
+
         {#if draft.comments.length === 0}
           <p class="text-[11px] italic text-zinc-600">
             No comments yet — tap a line in Files, or lift a finding from Conversation.
@@ -215,7 +252,7 @@
 
         <button
           type="button"
-          onclick={() => { error = null; confirming = true }}
+          onclick={() => { outcome = null; confirming = true }}
           disabled={blocked != null}
           title={blocked ?? undefined}
           data-testid="review-submit"
@@ -244,7 +281,10 @@
     {draft}
     {submitting}
     {connected}
-    {error}
+    {staleCount}
+    {outcome}
+    {latched}
+    onacknowledge={() => unknownOutcome.clear(url)}
     onconfirm={() => void post()}
     oncancel={() => (confirming = false)}
   />

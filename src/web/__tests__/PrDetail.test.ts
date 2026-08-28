@@ -2,7 +2,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import PrDetail from '../PrDetail.svelte'
 import { screenPrsStore } from '../../renderer/stores/screenprs.svelte'
-import { verdictChoice } from '../lib/prs.svelte'
+import { unknownOutcome, verdictChoice } from '../lib/prs.svelte'
+import { NotSentError } from '../api-shim'
 import type { ScreenPrCard } from '../../shared/screenprs'
 
 /**
@@ -58,6 +59,7 @@ beforeEach(() => {
   // inherit the previous one's draft.
   screenPrsStore.resetSubmitted(URL_)
   verdictChoice.reset(URL_)
+  unknownOutcome.clear(URL_)
   screenPrsStore._onQueued([CARD])
   screenPrsStore._onCard(CARD)
 })
@@ -116,7 +118,8 @@ describe('PR detail — the path to GitHub', () => {
     expect(request.pr.url).toBe(URL_)
     expect(request.draft.verdict).toBe('request_changes')
     expect(request.draft.comments).toEqual([
-      { source: 'you', file: 'src/gate.ts', line: '11', text: 'this gate is inverted' },
+      // Stamped with the head its line was read off — see the head-move tests.
+      { source: 'you', file: 'src/gate.ts', line: '11', text: 'this gate is inverted', sha: 'sha1' },
     ])
     await screen.findByTestId('review-submitted')
   })
@@ -161,11 +164,85 @@ describe('PR detail — the path to GitHub', () => {
     await fireEvent.click(screen.getByTestId('confirm-post'))
 
     const err = await screen.findByTestId('confirm-error')
-    expect(err).toHaveTextContent('isn’t known whether the review was posted')
+    expect(err).toHaveTextContent('isn’t known whether it posted')
     expect(err).toHaveTextContent('acme/widgets#7')
     expect(submitCalls()).toHaveLength(1)
     // Still open, still unsent: the user decides, nothing retries behind them.
     expect(screen.queryByTestId('review-submitted')).toBeNull()
+  })
+
+  it('latches after an unknown outcome — posting again takes an acknowledgement', async () => {
+    // Reviews have no idempotency key. A post button that re-arms reading
+    // exactly as it did on the first attempt, directly under a message saying
+    // nobody knows if the first one landed, is how one review becomes two.
+    submitResult = () => Promise.reject(new Error('Connection lost'))
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await fireEvent.click(screen.getByTestId('verdict-approve'))
+    await fireEvent.click(screen.getByTestId('review-submit'))
+    await fireEvent.click(screen.getByTestId('confirm-post'))
+    await screen.findByTestId('confirm-error')
+
+    expect(screen.getByTestId('confirm-post')).toBeDisabled()
+    await fireEvent.click(screen.getByTestId('confirm-post'))
+    expect(submitCalls()).toHaveLength(1)
+
+    // And it stays latched across leaving the confirm and coming back.
+    await fireEvent.click(screen.getByTestId('confirm-cancel'))
+    await fireEvent.click(screen.getByTestId('review-submit'))
+    expect(screen.getByTestId('confirm-post')).toBeDisabled()
+
+    await fireEvent.click(screen.getByTestId('confirm-acknowledge'))
+    expect(screen.getByTestId('confirm-post')).toBeEnabled()
+  })
+
+  it('does not latch when the call provably never left the device', async () => {
+    submitResult = () => Promise.reject(new NotSentError('never sent'))
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await fireEvent.click(screen.getByTestId('verdict-approve'))
+    await fireEvent.click(screen.getByTestId('review-submit'))
+    await fireEvent.click(screen.getByTestId('confirm-post'))
+
+    const err = await screen.findByTestId('confirm-error')
+    expect(err).toHaveTextContent('nothing was posted')
+    expect(screen.queryByTestId('confirm-acknowledge')).toBeNull()
+    expect(screen.getByTestId('confirm-post')).toBeEnabled()
+  })
+
+  it('un-anchors a comment when the branch moves under it', async () => {
+    // The reviews API carries no `commit_id`: GitHub anchors against whatever
+    // the head is at POST time. A comment written at sha1 and posted at sha2
+    // would land on whatever now occupies line 11 — no 422, no fold, no warning.
+    const { rerender } = render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+
+    screenPrsStore._onCard({ ...CARD, headSha: 'sha2' })
+    await rerender({ pr: CARD, connected: true })
+
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    expect(screen.getByTestId('stale-notice')).toBeInTheDocument()
+
+    await fireEvent.click(screen.getByTestId('verdict-comment'))
+    await fireEvent.click(screen.getByTestId('review-submit'))
+    expect(screen.getByTestId('confirm-anchored')).toHaveTextContent('0 line comments anchored')
+    expect(screen.getByTestId('confirm-folded')).toHaveTextContent('1 folded into the summary')
+
+    await fireEvent.click(screen.getByTestId('confirm-post'))
+    await waitFor(() => expect(submitCalls()).toHaveLength(1))
+    const [, request] = submitCalls()[0] as [string, { draft: { comments: { line?: string }[] } }]
+    expect(request.draft.comments[0].line).toBeUndefined()
+  })
+
+  it('closes the confirm on Escape', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await fireEvent.click(screen.getByTestId('verdict-approve'))
+    await fireEvent.click(screen.getByTestId('review-submit'))
+
+    await fireEvent.keyDown(screen.getByTestId('confirm-submit').firstElementChild!, { key: 'Escape' })
+    expect(screen.queryByTestId('confirm-submit')).toBeNull()
+    expect(submitCalls()).toHaveLength(0)
   })
 
   it('reports a refusal from GitHub as a refusal', async () => {
@@ -177,8 +254,9 @@ describe('PR detail — the path to GitHub', () => {
     await fireEvent.click(screen.getByTestId('confirm-post'))
 
     const err = await screen.findByTestId('confirm-error')
-    expect(err).toHaveTextContent('Can not approve your own pull request')
+    expect(err).toHaveTextContent('GitHub refused it: Can not approve your own pull request')
     expect(err).not.toHaveTextContent('isn’t known')
+    expect(screen.queryByTestId('confirm-acknowledge')).toBeNull()
   })
 
   it('lifts a triage finding into the draft with its own provenance', async () => {

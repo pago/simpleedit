@@ -13,10 +13,22 @@
  *     which is right at a desk and wrong under a thumb — it would make Approve
  *     the outcome of *not deciding*. Submit stays disabled until the verdict is
  *     tapped.
+ *  3. **An unknown outcome latches.** GitHub has no idempotency key for
+ *     reviews, so a submit whose result never came back must not re-arm reading
+ *     like a fresh one — the second tap is how you get two reviews.
  *
- * Both live for the page: a reconnect leaves them alone (they are client-side
- * and nothing about them is stale), and a reload drops them.
+ * All three live for the page: a reconnect leaves them alone (they are
+ * client-side and nothing about them is stale), and a reload drops them.
  */
+
+/** How a submit ended, when it did not simply succeed. */
+export type SubmitOutcome =
+  /** Main answered: GitHub refused it. Nothing was posted. */
+  | { kind: 'refused'; message: string }
+  /** The call provably never left the device. Nothing was posted. */
+  | { kind: 'not-sent'; message: string }
+  /** It was sent and never answered. It may or may not have posted. */
+  | { kind: 'unknown'; message: string }
 
 /** What a tap on a diff line hands to the comment sheet. */
 export interface CommentTarget {
@@ -73,5 +85,27 @@ export const verdictChoice = {
     const next = new Set(chosen)
     next.delete(url)
     chosen = next
+  },
+}
+
+let unknown = $state<Set<string>>(new Set())
+
+/**
+ * PRs whose last submit ended without an answer.
+ *
+ * Latched rather than merely reported: the reviews API has no idempotency key,
+ * so re-tapping Post after an unanswered submit is exactly how a reviewer ends
+ * up having posted twice. Clearing it is an explicit act — "I checked, post
+ * anyway" — or a submit that did come back.
+ */
+export const unknownOutcome = {
+  pending: (url: string): boolean => unknown.has(url),
+  raise(url: string): void {
+    unknown = new Set(unknown).add(url)
+  },
+  clear(url: string): void {
+    const next = new Set(unknown)
+    next.delete(url)
+    unknown = next
   },
 }
