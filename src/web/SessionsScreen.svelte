@@ -16,18 +16,31 @@
   import type { WindowSession } from '../shared/ipc-types'
 
   interface Props {
+    /** Whether the socket is open. The list is a read, and a read needs one. */
+    connected: boolean
     onopen: (session: WindowSession) => void
   }
 
-  let { onopen }: Props = $props()
+  let { connected, onopen }: Props = $props()
 
   let sessions = $state<WindowSession[]>([])
   let loaded = $state(false)
   let error = $state<string | null>(null)
   let now = $state(Date.now())
 
+  /**
+   * Load whenever a connection exists, not once at mount.
+   *
+   * During a reconnect backoff there is no socket, and `invoke` refuses rather
+   * than queueing — so a mount that lands in that window, or a read that failed
+   * because of it, would otherwise sit on its error for good. The terminal
+   * resyncs on `open` for the same reason.
+   */
+  $effect(() => {
+    if (connected) void load()
+  })
+
   onMount(() => {
-    void load()
     const off = window.api.on('session:list-changed', (next) => {
       sessions = next
       loaded = true
@@ -40,12 +53,19 @@
     }
   })
 
+  /** Guards against a slow earlier load landing on top of a newer one. */
+  let loadToken = 0
+
   async function load(): Promise<void> {
+    const mine = ++loadToken
     error = null
     try {
-      sessions = await window.api.invoke('session:list')
+      const next = await window.api.invoke('session:list')
+      if (mine !== loadToken) return
+      sessions = next
       loaded = true
     } catch (err) {
+      if (mine !== loadToken) return
       error = err instanceof Error ? err.message : String(err)
     }
   }
