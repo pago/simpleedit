@@ -1057,6 +1057,18 @@ export interface PushInvokeMap {
   'push:unsubscribe': { args: [endpointOrId: string]; result: PushStatus }
   /** Forget every device. The way out when a phone is lost. */
   'push:forget-all': { args: []; result: PushStatus }
+  /**
+   * Does this Mac still hold a subscription for `endpoint`? Returns its device
+   * id, or null.
+   *
+   * A browser can only see its OWN side of the registration. The Mac's side can
+   * disappear underneath it — the user taps Forget in the pane, the push
+   * service reports the endpoint gone, or a corrupt VAPID pair is replaced and
+   * takes every subscription with it. Without this the phone believes it is
+   * registered forever and offers no way to fix it. The caller already holds
+   * the endpoint it is asking about, so this exposes nothing new.
+   */
+  'push:device-id': { args: [endpoint: string]; result: string | null }
 }
 
 // ── LSP ───────────────────────────────────────────────────

@@ -420,6 +420,12 @@
       why it exists: Claude Code's own Remote Control only notifies for Claude.
     </p>
     <p class="mt-2 text-xs leading-relaxed text-zinc-500">
+      Nothing is sent while you are here — a SimpleEdit window focused, and this Mac used in the
+      last couple of minutes. The prompt is already on the screen in front of you. Walk away and
+      the next one reaches your phone. SimpleEdit writes that same “I am here” signal where Claude
+      Code reads it, so a Claude session does not buzz you twice.
+    </p>
+    <p class="mt-2 text-xs leading-relaxed text-zinc-500">
       The message is encrypted end to end. Apple relays it without being able to read it, and the
       signing key never leaves this Mac.
     </p>

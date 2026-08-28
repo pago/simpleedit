@@ -128,6 +128,16 @@ export interface EnablePushOptions {
   signal?: AbortSignal
   /** How the device lists itself in the Remote access pane. */
   label?: string
+  /**
+   * Undo the persisted registration on the Mac.
+   *
+   * Required, not optional. Cancelling after the subscribe reached main leaves
+   * a row in the Mac's store pointing at an endpoint this browser has just
+   * unsubscribed from — the Mac would push to it until the service answered
+   * 410, and the pane would list a device that no longer exists. Unsubscribing
+   * locally is only half of "nothing half-registered survives".
+   */
+  remove: (endpoint: string) => Promise<unknown>
 }
 
 export class PushCancelled extends Error {
@@ -146,7 +156,7 @@ export class PushCancelled extends Error {
 export async function enablePush(
   vapidPublicKey: string,
   invoke: (subscription: { endpoint: string; keys: { p256dh: string; auth: string }; label?: string }) => Promise<PushStatus>,
-  options: EnablePushOptions = {},
+  options: EnablePushOptions,
 ): Promise<PushStatus> {
   const { signal } = options
   const cancelled = (): boolean => signal?.aborted === true
@@ -177,14 +187,20 @@ export async function enablePush(
       keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
       label: options.label,
     })
-    // Cancelled while the invoke was in flight: main has it, so the undo is a
-    // real unsubscribe AND a real removal, not just dropping the handle.
+    // Cancelled while the invoke was in flight. Main has the row now, so the
+    // undo is BOTH halves — unsubscribing alone would leave the Mac pushing at
+    // a dead endpoint and the pane listing a phone that is not registered.
     if (cancelled()) {
-      await subscription.unsubscribe().catch(() => undefined)
+      await Promise.all([
+        subscription.unsubscribe().catch(() => undefined),
+        options.remove(json.endpoint).catch(() => undefined),
+      ])
       throw new PushCancelled()
     }
     return status
   } catch (error) {
+    // Everything else — a refused invoke, a browser that produced no keys —
+    // never reached main, so only the local half exists to undo.
     await subscription.unsubscribe().catch(() => undefined)
     throw error
   }
@@ -198,15 +214,51 @@ export async function disablePush(
   const subscription = await registration?.pushManager.getSubscription()
   if (!subscription) return null
   const { endpoint } = subscription
+  // The Mac first: unsubscribing locally destroys the endpoint, and the Mac's
+  // row is addressed BY that endpoint. Reversed, a failure here would strand a
+  // row nothing can name any more.
+  const status = await invoke(endpoint)
   await subscription.unsubscribe().catch(() => undefined)
-  return await invoke(endpoint)
+  return status
 }
 
-/** Whether this browser already holds a subscription. */
-export async function hasSubscription(): Promise<boolean> {
-  if (!('serviceWorker' in navigator)) return false
+/**
+ * Whether notifications are actually working for this device — BOTH halves.
+ *
+ * Asking the browser alone is what made the enable control disappear forever:
+ * a subscription survives in the browser after the Mac has forgotten it (the
+ * user tapped Forget, the push service disowned the endpoint, or a corrupt
+ * VAPID pair was replaced and took every subscription with it). The phone then
+ * believed it was registered, hid the only control that could fix it, and went
+ * quiet with no way back.
+ */
+export interface SubscriptionState {
+  /** This browser holds a push subscription. */
+  local: boolean
+  /** The Mac holds a matching one. False when `local` is false. */
+  remote: boolean
+  /** Both halves agree: a notification will actually arrive. */
+  active: boolean
+  /** Registered here, forgotten there — the state that needs re-registering. */
+  orphaned: boolean
+}
+
+export async function subscriptionState(
+  lookup: (endpoint: string) => Promise<string | null>,
+): Promise<SubscriptionState> {
+  if (!('serviceWorker' in navigator)) {
+    return { local: false, remote: false, active: false, orphaned: false }
+  }
   const registration = await navigator.serviceWorker.getRegistration()
-  return (await registration?.pushManager.getSubscription()) != null
+  const subscription = await registration?.pushManager.getSubscription()
+  if (!subscription) return { local: false, remote: false, active: false, orphaned: false }
+  // A lookup that fails (the socket is down) must not be read as "the Mac
+  // forgot me" — that would tell the user to re-register over a dropped
+  // connection. Unknown is treated as still registered.
+  const remote = await lookup(subscription.endpoint)
+    .then((id) => id !== null)
+    .catch(() => true)
+  return { local: true, remote, active: remote, orphaned: !remote }
 }
 
 /**

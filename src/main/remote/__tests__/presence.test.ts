@@ -6,11 +6,20 @@ import { join } from 'path'
 let focusedWindow: object | null = null
 let idleSeconds = 0
 const appHandlers = new Map<string, () => void>()
+const added: string[] = []
+const removed: string[] = []
 
 vi.mock('electron', () => ({
   app: {
     getPath: () => tmpdir(),
-    on: (event: string, handler: () => void) => { appHandlers.set(event, handler) },
+    on: (event: string, handler: () => void) => {
+      appHandlers.set(event, handler)
+      added.push(event)
+    },
+    off: (event: string, _handler: () => void) => {
+      appHandlers.delete(event)
+      removed.push(event)
+    },
   },
   BrowserWindow: { getFocusedWindow: () => focusedWindow },
   powerMonitor: { getSystemIdleTime: () => idleSeconds },
@@ -19,6 +28,7 @@ vi.mock('electron', () => ({
 import {
   IDLE_THRESHOLD_SECONDS,
   PRESENCE_ENV_VAR,
+  isPresentNow,
   isUserPresent,
   presenceFilePath,
   refreshPresence,
@@ -36,6 +46,8 @@ beforeEach(() => {
   focusedWindow = null
   idleSeconds = 0
   appHandlers.clear()
+  added.length = 0
+  removed.length = 0
 })
 
 afterEach(() => {
@@ -110,6 +122,62 @@ describe('the marker file', () => {
     expect(existsSync(marker)).toBe(true)
     stopPresenceTracking()
     expect(existsSync(marker)).toBe(false)
+  })
+})
+
+describe('repairing the file when something else moves it', () => {
+  /**
+   * The marker is shared state, and this module is not its only writer. A
+   * second SimpleEdit instance clears it at startup — it cannot tell a live
+   * instance's marker from one a crash left behind — and a user or a cleanup
+   * script can delete it. A write-only-on-change implementation would go on
+   * believing it had written a marker that no longer exists and never write it
+   * again, so Claude Code would start notifying while the user sat in front of
+   * the app.
+   */
+  it('rewrites a marker something else deleted', () => {
+    startPresenceTracking()
+    focusedWindow = {}
+    refreshPresence()
+    expect(existsSync(marker)).toBe(true)
+
+    rmSync(marker, { force: true })
+    refreshPresence()
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  it('removes a marker something else created while nobody is here', () => {
+    startPresenceTracking()
+    focusedWindow = null
+    refreshPresence()
+    writeFileSync(marker, 'not us')
+    refreshPresence()
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('reads the live state rather than a cached one', () => {
+    focusedWindow = {}
+    idleSeconds = 0
+    expect(isPresentNow()).toBe(true)
+    idleSeconds = IDLE_THRESHOLD_SECONDS + 1
+    expect(isPresentNow()).toBe(false)
+  })
+})
+
+describe('listeners', () => {
+  /**
+   * `startPresenceTracking` runs again on `activate`, so a listener per reopen
+   * cycle is a leak that announces itself as MaxListenersExceededWarning around
+   * the ninth window.
+   */
+  it('does not accumulate across stop → start cycles', () => {
+    for (let i = 0; i < 12; i++) {
+      startPresenceTracking()
+      stopPresenceTracking()
+    }
+    startPresenceTracking()
+    expect(appHandlers.get('browser-window-focus')).toBeDefined()
+    expect(added.filter((e) => e === 'browser-window-focus').length - removed.filter((e) => e === 'browser-window-focus').length).toBe(1)
   })
 })
 

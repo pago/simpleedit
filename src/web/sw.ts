@@ -52,21 +52,26 @@ self.addEventListener('push', (event) => {
     body: plan.body,
     tag: plan.tag,
     renotify: plan.renotify,
-    data: { url: plan.url, terminalId: plan.terminalId },
+    data: { url: plan.url, terminalId: plan.terminalId, windowId: plan.windowId },
   }
   event.waitUntil(self.registration.showNotification(plan.title, options))
 })
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const data = (event.notification.data ?? {}) as { url?: string; terminalId?: string }
+  const data = (event.notification.data ?? {}) as {
+    url?: string
+    terminalId?: string
+    windowId?: number | null
+  }
   const url = data.url ?? self.registration.scope
   const terminalId = data.terminalId ?? ''
+  const windowId = typeof data.windowId === 'number' ? data.windowId : null
 
   event.waitUntil(
     (async () => {
       const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-      const action = planClick(url, terminalId, [...clients])
+      const action = planClick(url, terminalId, [...clients], windowId)
       if (action.kind === 'open') {
         await self.clients.openWindow(action.url)
         return

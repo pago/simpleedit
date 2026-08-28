@@ -21,7 +21,7 @@ describe('parsePushPayload', () => {
   it('reads what main sends', () => {
     expect(
       parsePushPayload(JSON.stringify({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1` })),
-    ).toEqual({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1` })
+    ).toEqual({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null })
   })
 
   it('returns null rather than throwing on anything unusable', () => {
@@ -42,9 +42,22 @@ describe('planNotification', () => {
     expect(plan.terminalId).toBe('t7')
   })
 
-  it('never re-alerts for a notification already on screen', () => {
-    expect(planNotification(JSON.stringify({ terminalId: 't1', url: SCOPE }), SCOPE).renotify).toBe(false)
-    expect(planNotification(null, SCOPE).renotify).toBe(false)
+  /**
+   * A tag replaces the entry for its session, which is right. Replacing it
+   * SILENTLY is not: main only sends a second push after a real transition back
+   * into blocked AND past the debounce, so one arriving is a genuinely new
+   * reason to look. With `renotify` false the text would change under an unread
+   * notification with no alert, and the user would never learn.
+   */
+  it('re-alerts when a session blocks again, rather than swapping the text in silence', () => {
+    expect(planNotification(JSON.stringify({ terminalId: 't1', url: SCOPE }), SCOPE).renotify).toBe(true)
+    expect(planNotification(null, SCOPE).renotify).toBe(true)
+  })
+
+  it('carries the window a session lives on, so the app can explain a miss', () => {
+    const plan = planNotification(JSON.stringify({ terminalId: 't1', url: SCOPE, windowId: 7 }), SCOPE)
+    expect(plan.windowId).toBe(7)
+    expect(planNotification(JSON.stringify({ terminalId: 't1', url: SCOPE }), SCOPE).windowId).toBeNull()
   })
 
   it('still shows something when the body cannot be read', () => {
@@ -96,7 +109,7 @@ describe('planClick', () => {
     expect(action).toEqual({
       kind: 'focus',
       clientIndex: 0,
-      message: { type: 'open-session', terminalId: 't1', url: `${SCOPE}#session=t1` },
+      message: { type: 'open-session', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null },
     })
   })
 
@@ -126,7 +139,7 @@ describe('sessionFromUrl', () => {
 
 describe('isOpenSessionMessage', () => {
   it('accepts only the message the worker sends', () => {
-    expect(isOpenSessionMessage({ type: 'open-session', terminalId: 't1', url: SCOPE })).toBe(true)
+    expect(isOpenSessionMessage({ type: 'open-session', terminalId: 't1', url: SCOPE, windowId: 3 })).toBe(true)
     expect(isOpenSessionMessage({ type: 'open-session' })).toBe(false)
     expect(isOpenSessionMessage({ type: 'something-else', terminalId: 't1' })).toBe(false)
     expect(isOpenSessionMessage(null)).toBe(false)

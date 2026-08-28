@@ -11,9 +11,14 @@ be wrong on wake regardless.
 
 The trigger is deliberately narrow, because the feature's whole value is that a
 buzz means something: only a status the agent reported itself, only the
-transition into blocked, debounced per session, and nothing at all while remote
-access is off. It covers every provider, which is why it exists — Claude Code's
-own Remote Control notifies for Claude alone.
+transition into blocked, debounced per session, nothing while you are at the Mac,
+and nothing at all while remote access is off. It covers every provider, which is
+why it exists — Claude Code's own Remote Control notifies for Claude alone.
+
+Claude sessions now launch with the `Notification` hook wired, which is the only
+signal Claude Code emits meaning "I need you" — a tool awaiting permission, or a
+prompt left unanswered. None of it reaches the terminal title, so nothing could
+see it before; its text becomes the notification body.
 
 Messages are Web Push with VAPID, encrypted end to end, so Apple relays them
 without being able to read them. Subscriptions belong to the device that made

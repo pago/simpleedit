@@ -2,10 +2,12 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   blockerMessage,
   decodeVapidKey,
+  disablePush,
   enablePush,
   isInstalled,
   PushCancelled,
   pushCapability,
+  subscriptionState,
 } from '../lib/push-client'
 import type { PushStatus } from '../../shared/ipc-types'
 
@@ -145,10 +147,12 @@ describe('enablePush — the window nobody owns', () => {
     return { unsubscribe, subscription, registration }
   }
 
+  const noRemove = vi.fn(() => Promise.resolve(OK))
+
   it('persists the subscription and never sends the private half of anything', async () => {
     harness()
     const invoke = vi.fn(() => Promise.resolve(OK))
-    await enablePush(KEY, invoke, { label: 'iPhone' })
+    await enablePush(KEY, invoke, { label: 'iPhone', remove: noRemove })
     expect(invoke).toHaveBeenCalledWith({
       endpoint: 'https://web.push.apple.com/abc',
       keys: { p256dh: 'p', auth: 'a' },
@@ -157,36 +161,49 @@ describe('enablePush — the window nobody owns', () => {
     vi.unstubAllGlobals()
   })
 
-  it('unsubscribes when cancelled after the subscription exists', async () => {
+  /**
+   * The hardest case, and the one an earlier version got wrong: main already
+   * holds the row. Unsubscribing locally alone would leave the Mac pushing at a
+   * dead endpoint until the service answered 410, and the pane listing a device
+   * that is not registered — while the header claimed nothing half-registered
+   * survives.
+   */
+  it('undoes BOTH halves when cancelled after the subscribe reached main', async () => {
     const { unsubscribe } = harness()
     const controller = new AbortController()
+    const remove = vi.fn(() => Promise.resolve(OK))
     const invoke = vi.fn(() => {
-      // Cancelled while the call to main is in flight — the hardest case,
-      // because main now has a row too.
       controller.abort()
       return Promise.resolve(OK)
     })
-    await expect(enablePush(KEY, invoke, { signal: controller.signal })).rejects.toBeInstanceOf(PushCancelled)
+    await expect(
+      enablePush(KEY, invoke, { signal: controller.signal, remove }),
+    ).rejects.toBeInstanceOf(PushCancelled)
     expect(unsubscribe).toHaveBeenCalled()
+    expect(remove).toHaveBeenCalledWith('https://web.push.apple.com/abc')
     vi.unstubAllGlobals()
   })
 
-  it('unsubscribes when main refuses the subscription', async () => {
+  it('does not ask main to remove a row it never created', async () => {
     const { unsubscribe } = harness()
+    const remove = vi.fn(() => Promise.resolve(OK))
     await expect(
-      enablePush(KEY, () => Promise.reject(new Error('nope'))),
+      enablePush(KEY, () => Promise.reject(new Error('nope')), { remove }),
     ).rejects.toThrow('nope')
     expect(unsubscribe).toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
 
   it('leaves nothing behind when permission is refused', async () => {
     const { unsubscribe, registration } = harness({ permission: 'denied' })
     const invoke = vi.fn(() => Promise.resolve(OK))
-    await expect(enablePush(KEY, invoke)).rejects.toThrow(/not allowed/)
+    const remove = vi.fn(() => Promise.resolve(OK))
+    await expect(enablePush(KEY, invoke, { remove })).rejects.toThrow(/not allowed/)
     expect(registration.pushManager.subscribe).not.toHaveBeenCalled()
     expect(unsubscribe).not.toHaveBeenCalled()
     expect(invoke).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
 
@@ -204,8 +221,109 @@ describe('enablePush — the window nobody owns', () => {
           }),
       },
     })
-    await expect(enablePush(KEY, () => Promise.resolve(OK))).rejects.toThrow(/without keys/)
+    await expect(enablePush(KEY, () => Promise.resolve(OK), { remove: noRemove })).rejects.toThrow(
+      /without keys/,
+    )
     expect(unsubscribe).toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})
+
+/**
+ * Whether the enable control is offered at all.
+ *
+ * The browser's own answer is half the question, and taking it as the whole
+ * one is what hid the control forever: a subscription outlives the Mac's
+ * record of it whenever the user taps Forget, the push service disowns the
+ * endpoint, or a corrupt VAPID pair is replaced.
+ */
+describe('subscriptionState', () => {
+  function withSubscription(endpoint: string | null): void {
+    vi.stubGlobal('navigator', {
+      serviceWorker: {
+        getRegistration: () =>
+          Promise.resolve({
+            pushManager: { getSubscription: () => Promise.resolve(endpoint ? { endpoint } : null) },
+          }),
+      },
+    })
+  }
+
+  it('is inactive when this browser holds nothing', async () => {
+    withSubscription(null)
+    expect(await subscriptionState(() => Promise.resolve('id'))).toEqual({
+      local: false,
+      remote: false,
+      active: false,
+      orphaned: false,
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('is active when both halves agree', async () => {
+    withSubscription('https://x.test/a')
+    const state = await subscriptionState(() => Promise.resolve('abc123'))
+    expect(state.active).toBe(true)
+    expect(state.orphaned).toBe(false)
+    vi.unstubAllGlobals()
+  })
+
+  it('is ORPHANED when the Mac has forgotten this device — the state with no way back', async () => {
+    withSubscription('https://x.test/a')
+    const state = await subscriptionState(() => Promise.resolve(null))
+    expect(state).toEqual({ local: true, remote: false, active: false, orphaned: true })
+    vi.unstubAllGlobals()
+  })
+
+  /**
+   * A dropped socket is not the Mac forgetting you. Reading it that way would
+   * tell the user to re-register over a connection that cannot carry it.
+   */
+  it('treats an unreachable Mac as still registered, not as forgotten', async () => {
+    withSubscription('https://x.test/a')
+    const state = await subscriptionState(() => Promise.reject(new Error('Connection lost')))
+    expect(state.active).toBe(true)
+    expect(state.orphaned).toBe(false)
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('disablePush', () => {
+  it('tells the Mac BEFORE destroying the endpoint that names the row', async () => {
+    const order: string[] = []
+    const unsubscribe = vi.fn(() => {
+      order.push('unsubscribe')
+      return Promise.resolve(true)
+    })
+    vi.stubGlobal('navigator', {
+      serviceWorker: {
+        getRegistration: () =>
+          Promise.resolve({
+            pushManager: {
+              getSubscription: () =>
+                Promise.resolve({ endpoint: 'https://x.test/a', unsubscribe }),
+            },
+          }),
+      },
+    })
+    await disablePush((endpoint) => {
+      order.push(`invoke:${endpoint}`)
+      return Promise.resolve(OK)
+    })
+    expect(order).toEqual(['invoke:https://x.test/a', 'unsubscribe'])
+    vi.unstubAllGlobals()
+  })
+
+  it('is a no-op when there is nothing to disable', async () => {
+    vi.stubGlobal('navigator', {
+      serviceWorker: {
+        getRegistration: () =>
+          Promise.resolve({ pushManager: { getSubscription: () => Promise.resolve(null) } }),
+      },
+    })
+    const invoke = vi.fn(() => Promise.resolve(OK))
+    expect(await disablePush(invoke)).toBeNull()
+    expect(invoke).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
 })

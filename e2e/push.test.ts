@@ -171,6 +171,7 @@ test('a push reaches the worker and becomes the notification the payload asked f
       body: 'Blocked on you — feat/push',
       terminalId,
       url: `${url}#session=${terminalId}`,
+      windowId: 7,
     }),
   })
 
@@ -185,7 +186,7 @@ test('a push reaches the worker and becomes the notification the payload asked f
           title: n.title,
           body: n.body,
           tag: n.tag,
-          data: n.data as { url: string; terminalId: string },
+          data: n.data as { url: string; terminalId: string; windowId: number | null },
         }))
       }
       await new Promise((resolve) => setTimeout(resolve, 100))
@@ -202,6 +203,9 @@ test('a push reaches the worker and becomes the notification the payload asked f
   // token is minted per launch, so a worker outlives the scope it registered at.
   expect(shown[0].data.url).toBe(`${url}#session=${terminalId}`)
   expect(shown[0].data.terminalId).toBe(terminalId)
+  // A phone joins ONE window's hub, so a tap has to be able to say when the
+  // session it names lives on another.
+  expect(shown[0].data.windowId).toBe(7)
 
   await page.close()
 })

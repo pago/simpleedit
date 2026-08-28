@@ -52,12 +52,13 @@ import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepA
 import {
   addSubscription,
   configurePush,
+  deviceIdFor,
   getPushStatus,
   handleAgentStatus,
   removeAllSubscriptions,
   removeSubscription,
 } from './remote/push'
-import { startPresenceTracking, stopPresenceTracking } from './remote/presence'
+import { isPresentNow, startPresenceTracking, stopPresenceTracking } from './remote/presence'
 import { onAgentStatus } from './agent-status'
 import { listRemoteInterfaces, isAllowedBindHost, isLoopbackHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
@@ -336,6 +337,10 @@ function pushTargetUrl(): string | null {
 
 configurePush({
   targetUrl: pushTargetUrl,
+  // The same question the presence marker answers for Claude Code, asked of
+  // our own send — writing that marker and not consulting it would have made
+  // SimpleEdit quieter for Claude and noisier for everything else.
+  userIsPresent: isPresentNow,
   // The renderer owns session labels; main only holds the list it was handed.
   labelFor: (windowId, terminalId) =>
     getWindowSessions(windowId).find((session) => session.terminalId === terminalId)?.label ?? null,
@@ -668,6 +673,8 @@ function registerAllHandlers(): void {
   handleInvoke('push:unsubscribe', (_event, endpointOrId: string) => removeSubscription(endpointOrId))
 
   handleInvoke('push:forget-all', () => removeAllSubscriptions())
+
+  handleInvoke('push:device-id', (_event, endpoint: string) => deviceIdFor(endpoint))
 
   // ── Speech to text ──────────────────────────────────────
   // Reachable over the socket by design: the phone is where dictation happens,

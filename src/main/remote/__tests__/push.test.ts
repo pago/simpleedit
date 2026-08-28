@@ -94,6 +94,9 @@ beforeEach(() => {
     now: () => now,
     targetUrl: () => 'https://mac.tailnet.ts.net/tok/',
     labelFor: () => 'Fix the flaky test',
+    // Away from the desk: the state this whole feature exists for. The tests
+    // that care about presence set it explicitly.
+    userIsPresent: () => false,
     onStatusChange: undefined,
     transport: (url, headers, body) => transportReturning(statusFor)(url, headers, body),
   })
@@ -267,6 +270,52 @@ describe('the trigger', () => {
     await vi.waitFor(() => expect(sent).toHaveLength(2))
   })
 
+  /**
+   * The defect that made this feature actively annoying: presence machinery was
+   * built in the same change, exported to Claude Code so IT would stay quiet,
+   * and never consulted for our own send. An OpenCode session in ask-mode at
+   * your desk buzzed the phone in your pocket every five minutes for a prompt
+   * already on the screen in front of you.
+   */
+  it('stays silent while you are at the Mac', async () => {
+    configurePush({ userIsPresent: () => true })
+    handleAgentStatus(waiting(), 7)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(0)
+  })
+
+  it('does not burn the debounce on a block you were present for', async () => {
+    configurePush({ userIsPresent: () => true })
+    handleAgentStatus(waiting(), 7)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(0)
+
+    // You walk away. The session is still blocked, and the next transition
+    // must reach you rather than be swallowed by a debounce it never set.
+    configurePush({ userIsPresent: () => false })
+    handleAgentStatus(waiting({ status: 'running' }), 7)
+    now += 1000
+    handleAgentStatus(waiting(), 7)
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+  })
+
+  it('carries the window the session lives on, so a phone can explain a miss', async () => {
+    handleAgentStatus(waiting(), 42)
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect((JSON.parse(phone.read(sent[0].body)) as { windowId: number }).windowId).toBe(42)
+  })
+
+  /**
+   * No provider emits an imprecise `waiting` today. This pins the ordering that
+   * keeps the next one from being a silent regression: recorded first, the
+   * inferred signal would make the real one behind it look like a repeat.
+   */
+  it('does not let an imprecise waiting swallow the precise one behind it', async () => {
+    handleAgentStatus(waiting({ precise: false }), 7)
+    handleAgentStatus(waiting(), 7)
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+  })
+
   it('stays silent when nothing a phone could open is reachable', async () => {
     configurePush({ targetUrl: () => null })
     handleAgentStatus(waiting(), 7)
@@ -308,7 +357,7 @@ describe('pruning', () => {
 
   it('drops an endpoint the push service says is gone', async () => {
     statusFor = { [phone.endpoint]: 410, [laptop.endpoint]: 201 }
-    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/'))
+    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/', 7))
     expect(getPushStatus().devices.map((d) => d.label)).toEqual(['Laptop'])
     resetPushState()
     expect(getPushStatus().devices.map((d) => d.label)).toEqual(['Laptop'])
@@ -316,13 +365,13 @@ describe('pruning', () => {
 
   it('drops a 404 too', async () => {
     statusFor = { [phone.endpoint]: 404 }
-    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/'))
+    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/', 7))
     expect(getPushStatus().devices.map((d) => d.label)).toEqual(['Laptop'])
   })
 
   it('keeps a device through a transient failure, and says what happened', async () => {
     statusFor = { [phone.endpoint]: 429, [laptop.endpoint]: 502 }
-    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/'))
+    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/', 7))
     const devices = getPushStatus().devices
     expect(devices).toHaveLength(2)
     expect(devices[0].lastError).toMatch(/429/)
@@ -330,28 +379,28 @@ describe('pruning', () => {
   })
 
   it('records a successful delivery', async () => {
-    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/'))
+    await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/', 7))
     expect(getPushStatus().devices.every((d) => d.lastPushAt === now && d.lastError === null)).toBe(true)
   })
 })
 
 describe('buildPayload', () => {
   it('appends the session to an existing fragment rather than replacing it', () => {
-    expect(buildPayload(waiting(), 'A', 'https://x.test/tok/#already').url).toBe(
+    expect(buildPayload(waiting(), 'A', 'https://x.test/tok/#already', 7).url).toBe(
       'https://x.test/tok/#alreadysession=t1',
     )
-    expect(buildPayload(waiting(), 'A', 'https://x.test/tok/').url).toBe('https://x.test/tok/#session=t1')
+    expect(buildPayload(waiting(), 'A', 'https://x.test/tok/', 7).url).toBe('https://x.test/tok/#session=t1')
   })
 
   it('caps what it puts in front of a lock screen', () => {
     const long = 'x'.repeat(500)
-    const payload = buildPayload(waiting({ message: long }), long, 'https://x.test/tok/')
+    const payload = buildPayload(waiting({ message: long }), long, 'https://x.test/tok/', 7)
     expect(payload.title.length).toBeLessThanOrEqual(60)
     expect(payload.body.length).toBeLessThanOrEqual(140)
   })
 
   it('escapes a terminal id so it cannot break out of the fragment', () => {
-    expect(buildPayload(waiting({ terminalId: 'a b&c' }), 'A', 'https://x.test/tok/').url).toBe(
+    expect(buildPayload(waiting({ terminalId: 'a b&c' }), 'A', 'https://x.test/tok/', 7).url).toBe(
       'https://x.test/tok/#session=a%20b%26c',
     )
   })
@@ -386,7 +435,7 @@ describe('the file on disk', () => {
 
 describe('encryptPayload, at the size this feature actually sends', () => {
   it('round-trips a full notification body', () => {
-    const payload = JSON.stringify(buildPayload(waiting(), 'A long-ish session label', 'https://mac.ts.net/tok/'))
+    const payload = JSON.stringify(buildPayload(waiting(), 'A long-ish session label', 'https://mac.ts.net/tok/', 7))
     const body = encryptPayload(Buffer.from(payload, 'utf8'), { keys: phone.keys })
     expect(phone.read(body)).toBe(payload)
   })

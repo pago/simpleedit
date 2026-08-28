@@ -17,6 +17,8 @@ export interface PushPayload {
   body: string
   terminalId: string
   url: string
+  /** The window the session belongs to; a phone is attached to exactly one. */
+  windowId: number | null
 }
 
 export interface NotificationPlan {
@@ -24,6 +26,8 @@ export interface NotificationPlan {
   body: string
   /** Carried in the notification's `data`, so a tap need not parse its tag. */
   terminalId: string
+  /** Carried alongside, so the app can say when a session is on another window. */
+  windowId: number | null
   /**
    * One notification per session. A session that blocks, is answered and
    * blocks again should replace its own entry rather than stack a second one
@@ -33,13 +37,17 @@ export interface NotificationPlan {
   /** Where a tap goes. Absolute, and always same-origin — see `sameOriginUrl`. */
   url: string
   /**
-   * Never true.
+   * Always true, and it has to be.
    *
-   * A re-notify re-alerts for a tag already on screen, and the only thing that
-   * would achieve here is buzzing twice for one block. Stated as a field, and
-   * asserted in the tests, so it cannot drift into a plausible-looking `true`.
+   * A tag means "replace the entry for this session", which is right: one
+   * session should never stack two rows on a lock screen. But replacing
+   * SILENTLY is wrong. Main only sends a second push for a session after a real
+   * transition back into blocked AND past the debounce, so by the time one
+   * arrives it is a genuinely new reason to look — and with `renotify` false it
+   * would swap the text under an unread notification with no alert at all. The
+   * user would never learn the session had blocked again.
    */
-  renotify: false
+  renotify: true
 }
 
 /**
@@ -55,13 +63,14 @@ export function parsePushPayload(raw: string | null | undefined): PushPayload | 
   try {
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null) return null
-    const { title, body, terminalId, url } = parsed as Record<string, unknown>
+    const { title, body, terminalId, url, windowId } = parsed as Record<string, unknown>
     if (typeof terminalId !== 'string' || typeof url !== 'string') return null
     return {
       title: typeof title === 'string' && title ? title : 'A session is blocked',
       body: typeof body === 'string' ? body : '',
       terminalId,
       url,
+      windowId: typeof windowId === 'number' ? windowId : null,
     }
   } catch {
     return null
@@ -97,8 +106,9 @@ export function planNotification(raw: string | null | undefined, scope: string):
       body: 'Open SimpleEdit to see which one.',
       tag: 'simpleedit-unknown',
       terminalId: '',
+      windowId: null,
       url: sameOriginUrl(scope, scope),
-      renotify: false,
+      renotify: true,
     }
   }
   return {
@@ -106,8 +116,9 @@ export function planNotification(raw: string | null | undefined, scope: string):
     body: payload.body,
     tag: `simpleedit-${payload.terminalId}`,
     terminalId: payload.terminalId,
+    windowId: payload.windowId,
     url: sameOriginUrl(payload.url, scope),
-    renotify: false,
+    renotify: true,
   }
 }
 
@@ -123,13 +134,14 @@ export function planNotification(raw: string | null | undefined, scope: string):
  * messaged instead and moves itself.
  */
 export type ClickAction =
-  | { kind: 'focus'; clientIndex: number; message: { type: 'open-session'; terminalId: string; url: string } }
+  | { kind: 'focus'; clientIndex: number; message: OpenSessionMessage }
   | { kind: 'open'; url: string }
 
 export function planClick(
   url: string,
   terminalId: string,
   clients: { url: string; focused?: boolean }[],
+  windowId: number | null = null,
 ): ClickAction {
   if (clients.length === 0) return { kind: 'open', url }
   // Prefer the tab the user was last looking at; otherwise the first one.
@@ -137,7 +149,7 @@ export function planClick(
   return {
     kind: 'focus',
     clientIndex: focused >= 0 ? focused : 0,
-    message: { type: 'open-session', terminalId, url },
+    message: { type: 'open-session', terminalId, url, windowId },
   }
 }
 
@@ -146,6 +158,8 @@ export interface OpenSessionMessage {
   type: 'open-session'
   terminalId: string
   url: string
+  /** The window that session lives on, or null when the payload predates this. */
+  windowId: number | null
 }
 
 export function isOpenSessionMessage(value: unknown): value is OpenSessionMessage {

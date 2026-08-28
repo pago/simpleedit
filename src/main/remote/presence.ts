@@ -3,8 +3,17 @@
  *
  * Claude Code's Remote Control ships its own phone push and suppresses it
  * while you are at the local terminal. `CLAUDE_CLIENT_PRESENCE_FILE` is the
- * documented extension point for that check: Claude Code READS a file whose
- * mere existence means "the user is here", and a third party writes it.
+ * documented extension point for that check (Claude Code v2.1.181+):
+ *
+ *   - the variable holds a PATH to a marker file, which a third party writes;
+ *   - the file's CONTENT is irrelevant — only its existence is checked;
+ *   - notifications are skipped for as long as the file exists;
+ *   - it is read once per push-triggering event, not polled.
+ *
+ * That last point is why there is no freshness rule here and no timestamp
+ * anything reads: a stale marker is not "old", it is simply present, and
+ * present means silent. Which is exactly why an abnormal exit is a problem and
+ * is handled below.
  *
  * ── The asymmetry, and why it is the right lever here ─────────────────────
  * The env var EXTENDS the built-in presence check; it does not replace it.
@@ -62,6 +71,9 @@ export function presenceFilePath(): string {
 
 let timer: NodeJS.Timeout | null = null
 let currentlyPresent: boolean | null = null
+/** Registered once and removed on stop, so a reopen cycle cannot stack them. */
+let focusHandler: (() => void) | null = null
+let blurHandler: (() => void) | null = null
 
 function writeMarker(path: string): void {
   try {
@@ -79,21 +91,41 @@ function removeMarker(path: string): void {
   }
 }
 
+/** Is a person at this machine right now? Evaluated fresh, never cached. */
+export function isPresentNow(): boolean {
+  try {
+    return isUserPresent(BrowserWindow.getFocusedWindow() !== null, powerMonitor.getSystemIdleTime())
+  } catch {
+    // No window system, or no power monitor. "Not present" is the safe answer:
+    // it costs a duplicate notification, where the other way costs a missed one.
+    return false
+  }
+}
+
 /**
- * Re-evaluate and write, but only on a CHANGE.
+ * Re-evaluate, and make the file on disk match the decision.
  *
- * Rewriting the file every 15 seconds would be a needless disk write and,
- * worse, would hide a bug: with the write unconditional, "the marker is
- * present" stops meaning "we decided the user is here".
+ * Deliberately NOT write-only-on-change. The file is shared state that
+ * something outside this process can move: a second SimpleEdit instance clears
+ * it at startup (it cannot tell a live instance's marker from one a crash left
+ * behind), and a user or a cleanup script can delete it. With a change-only
+ * write, the first instance would go on believing it had written a marker that
+ * no longer exists, and would never write it again — Remote Control would
+ * start notifying while the user sat in front of the app.
+ *
+ * So the decision is cached to avoid pointless writes, and the file is checked
+ * against it so any external divergence is repaired on the next poll.
  */
-export function refreshPresence(
-  present = isUserPresent(BrowserWindow.getFocusedWindow() !== null, powerMonitor.getSystemIdleTime()),
-): boolean {
-  if (present === currentlyPresent) return present
-  currentlyPresent = present
+export function refreshPresence(present = isPresentNow()): boolean {
   const path = presenceFilePath()
-  if (present) writeMarker(path)
-  else removeMarker(path)
+  const onDisk = existsSync(path)
+  if (present === currentlyPresent && onDisk === present) return present
+  currentlyPresent = present
+  if (present) {
+    if (!onDisk) writeMarker(path)
+  } else if (onDisk) {
+    removeMarker(path)
+  }
   return present
 }
 
@@ -117,11 +149,45 @@ export function startPresenceTracking(): void {
   removeMarker(path)
   currentlyPresent = false
 
-  app.on('browser-window-focus', () => void refreshPresence())
-  app.on('browser-window-blur', () => void refreshPresence())
+  focusHandler = () => void refreshPresence()
+  blurHandler = () => void refreshPresence()
+  app.on('browser-window-focus', focusHandler)
+  app.on('browser-window-blur', blurHandler)
   timer = setInterval(() => void refreshPresence(), POLL_MS)
   // The poll exists to notice idleness, not to keep the process alive.
   timer.unref?.()
+  installExitHandlers()
+}
+
+/**
+ * `before-quit` is not the only way this process ends.
+ *
+ * A marker left behind silences Claude Code's push for anything that outlives
+ * us — bounded to processes that inherited the variable, but indefinitely for
+ * those. A terminal `^C` and a `kill` are both ordinary ways to stop a dev
+ * build, and neither runs Electron's quit handlers.
+ *
+ * SIGKILL and a hard crash cannot be caught by anyone, so the marker does
+ * survive those. The next launch clears it before anything reads it, which
+ * bounds the damage to processes that outlived the crash — stated plainly
+ * because it is a real gap, not a covered one.
+ */
+let exitHandlersInstalled = false
+
+function installExitHandlers(): void {
+  if (exitHandlersInstalled) return
+  exitHandlersInstalled = true
+  const clear = (): void => removeMarker(presenceFilePath())
+  // `exit` is synchronous-only, which is all `rmSync` needs.
+  process.once('exit', clear)
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.once(signal, () => {
+      clear()
+      // Re-raise so the default disposition still applies: swallowing it would
+      // make SimpleEdit unkillable by the very signal a user reached for.
+      process.kill(process.pid, signal)
+    })
+  }
 }
 
 /** Quit, or a test tearing down. Leaves no marker behind. */
@@ -130,6 +196,13 @@ export function stopPresenceTracking(): void {
     clearInterval(timer)
     timer = null
   }
+  // Removed, not merely forgotten: `startPresenceTracking` runs again on
+  // `activate`, and a listener per reopen cycle is a leak that announces itself
+  // as MaxListenersExceededWarning around the ninth window.
+  if (focusHandler) app.off('browser-window-focus', focusHandler)
+  if (blurHandler) app.off('browser-window-blur', blurHandler)
+  focusHandler = null
+  blurHandler = null
   currentlyPresent = null
   if (existsSync(presenceFilePath())) removeMarker(presenceFilePath())
 }

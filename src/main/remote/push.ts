@@ -98,6 +98,15 @@ interface Deps {
   targetUrl: () => string | null
   /** A session's display label, for the notification title. */
   labelFor: (windowId: number, terminalId: string) => string | null
+  /**
+   * Is a person at the Mac right now?
+   *
+   * The same question `presence.ts` answers for Claude Code, asked of our own
+   * send. Not asking it was a real defect: an OpenCode session in ask-mode at
+   * your desk buzzed the phone in your pocket every five minutes for a prompt
+   * already on the screen in front of you.
+   */
+  userIsPresent: () => boolean
   onStatusChange?: (status: PushStatus) => void
 }
 
@@ -105,6 +114,10 @@ let deps: Deps = {
   now: () => Date.now(),
   targetUrl: () => null,
   labelFor: () => null,
+  // Defaults to "nobody is here": a module that has not been wired up should
+  // notify rather than stay silent, since a duplicate costs a glance and a
+  // miss costs the whole reason the phone is in your pocket.
+  userIsPresent: () => false,
 }
 
 export function configurePush(next: Partial<Deps>): void {
@@ -294,6 +307,12 @@ export function removeSubscription(endpointOrId: string): PushStatus {
   return announce()
 }
 
+/** The stored device for `endpoint`, or null when this Mac does not hold one. */
+export function deviceIdFor(endpoint: string): string | null {
+  const id = deviceId(endpoint)
+  return load().subscriptions.some((row) => row.id === id) ? id : null
+}
+
 export function removeAllSubscriptions(): PushStatus {
   const file = load()
   if (file.subscriptions.length === 0) return getPushStatus()
@@ -342,18 +361,36 @@ export interface PushPayload {
    * The URL is only ever as fresh as the message that carried it.
    */
   url: string
+  /**
+   * The window this session belongs to.
+   *
+   * A phone socket joins ONE window's hub and `session:list` answers for that
+   * window alone, while this trigger fires for every window's sessions. So a
+   * tap can name a session the connected phone cannot see — and the client has
+   * to be able to say that rather than leave the user on a list wondering what
+   * the buzz was about.
+   */
+  windowId: number
 }
 
 function shorten(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
 
-export function buildPayload(event: AgentStatusEvent, label: string | null, url: string): PushPayload {
+export function buildPayload(
+  event: AgentStatusEvent,
+  label: string | null,
+  url: string,
+  windowId: number,
+): PushPayload {
   const where = event.worktreePath.split('/').filter(Boolean).slice(-2).join('/')
   return {
     title: shorten(label ?? 'A session is blocked', 60),
+    // The agent's own words when it gave any — "Claude needs your permission to
+    // use Bash" tells you whether to stop running; "Blocked on you" does not.
     body: shorten(event.message?.trim() || `Blocked on you — ${where}`, 140),
     terminalId: event.terminalId,
+    windowId,
     // The deep link the service worker opens. `PocketApp` reads the fragment
     // and opens straight into that session.
     url: `${url}${url.includes('#') ? '' : '#'}session=${encodeURIComponent(event.terminalId)}`,
@@ -395,8 +432,10 @@ export async function deliver(payload: PushPayload): Promise<void> {
     row.lastError = result.error
     if (!result.error) row.lastPushAt = deps.now()
   }
-  // Re-read: the store may have changed while the requests were in flight, so
-  // the prune is applied to what is there NOW, by id.
+  // Pruned BY ID against the live store, not by rebuilding from the snapshot
+  // above. `load()` hands back the same object the fan-out started from, so a
+  // subscribe that landed mid-flight is already in it — dropping only the ids
+  // the push service disowned is what keeps that new row.
   const current = load()
   current.subscriptions = current.subscriptions.filter((row) => !gone.has(row.id))
   persist()
@@ -411,7 +450,6 @@ export async function deliver(payload: PushPayload): Promise<void> {
  * updating.
  */
 export function handleAgentStatus(event: AgentStatusEvent, windowId: number): void {
-  const previous = lastStatus.get(event.terminalId)
   const now = deps.now()
 
   if (event.status === 'exited') {
@@ -421,16 +459,32 @@ export function handleAgentStatus(event: AgentStatusEvent, windowId: number): vo
     lastNotifiedAt.delete(event.terminalId)
     return
   }
-  lastStatus.set(event.terminalId, event.status)
+
+  // Only a PRECISE status defines what "previously" was.
+  //
+  // An imprecise signal must not be able to change the answer for the precise
+  // one behind it. Recorded first, an inferred `waiting` would make the real
+  // one that follows look like a repeat and swallow it — the exact inversion of
+  // this module's promise, arriving as silence. No provider emits an imprecise
+  // `waiting` today; the ordering is what stops the next one from being a
+  // silent regression.
+  const previous = lastStatus.get(event.terminalId)
+  if (event.precise) lastStatus.set(event.terminalId, event.status)
 
   if (!shouldNotify(event, previous, lastNotifiedAt.get(event.terminalId), now)) return
+  // At the desk. The agent is blocked, the prompt is on the screen in front of
+  // you, and a buzz in your pocket tells you nothing you cannot already see.
+  // Checked last, so the debounce is not consumed by a block you were present
+  // for — walk away and the next one still reaches you.
+  if (deps.userIsPresent()) return
   const url = deps.targetUrl()
   // Nothing reachable means a tap would land on a dead URL. Better no buzz.
   if (!url) return
   if (load().subscriptions.length === 0) return
 
   lastNotifiedAt.set(event.terminalId, now)
-  void deliver(buildPayload(event, deps.labelFor(windowId, event.terminalId), url)).catch((error: unknown) => {
+  const payload = buildPayload(event, deps.labelFor(windowId, event.terminalId), url, windowId)
+  void deliver(payload).catch((error: unknown) => {
     lastError = error instanceof Error ? error.message : String(error)
   })
 }
