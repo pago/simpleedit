@@ -13,6 +13,9 @@ import {
   type TriageFinding,
   type DeepFinding,
   type PrReviewDraft,
+  type PrReviewComment,
+  reanchorForHead,
+  staleAnchorCount,
 } from '../screenprs'
 
 const issue: TriageFinding = { label: 'issue', file: 'a.ts', title: 'bug' }
@@ -113,6 +116,55 @@ describe('parseLineAnchor', () => {
     expect(parseLineAnchor('')).toBeNull()
     expect(parseLineAnchor('—')).toBeNull()
     expect(parseLineAnchor('n/a')).toBeNull()
+  })
+  it('returns null for a line number GitHub cannot accept', () => {
+    // Files are 1-based. A `0` anchor is a guaranteed 422, and a 422 collapses
+    // EVERY anchor in the review into the body — one bad number costs the whole
+    // payload its line comments.
+    expect(parseLineAnchor('0')).toBeNull()
+    expect(parseLineAnchor('L0')).toBeNull()
+  })
+})
+
+describe('reanchorForHead', () => {
+  const at = (sha: string | undefined, line: string): PrReviewComment => ({
+    source: 'you', file: 'a.ts', line, text: `note ${line}`, ...(sha === undefined ? {} : { sha }),
+  })
+
+  it('drops the anchor of a comment raised against a different head', () => {
+    const draft: PrReviewDraft = { comments: [at('sha1', '11')], summary: '', verdict: 'comment' }
+    const next = reanchorForHead(draft, 'sha2')
+    expect(next.comments[0].line).toBeUndefined()
+    // The text and the file survive, so `buildReviewPayload` folds it into the
+    // body with its file rather than dropping it.
+    expect(next.comments[0].text).toBe('note 11')
+    expect(next.comments[0].file).toBe('a.ts')
+  })
+
+  it('keeps the anchor when the head has not moved', () => {
+    const draft: PrReviewDraft = { comments: [at('sha1', '11')], summary: '', verdict: 'comment' }
+    expect(reanchorForHead(draft, 'sha1')).toBe(draft)
+  })
+
+  it('leaves an unstamped comment alone — it was never tied to a head', () => {
+    const draft: PrReviewDraft = { comments: [at(undefined, '11')], summary: '', verdict: 'comment' }
+    expect(reanchorForHead(draft, 'sha2')).toBe(draft)
+  })
+
+  it('folds a stale anchor into the body instead of posting it at the new line', () => {
+    const draft: PrReviewDraft = { comments: [at('sha1', '11')], summary: 'ok', verdict: 'comment' }
+    const payload = buildReviewPayload(reanchorForHead(draft, 'sha2'))
+    expect(payload.comments).toEqual([])
+    expect(payload.body).toContain('a.ts — note 11')
+  })
+
+  it('counts what went stale, so the reviewer can be told', () => {
+    const draft: PrReviewDraft = {
+      comments: [at('sha1', '11'), at('sha2', '40'), at(undefined, '7')],
+      summary: '',
+      verdict: 'comment',
+    }
+    expect(staleAnchorCount(draft, 'sha2')).toBe(1)
   })
 })
 

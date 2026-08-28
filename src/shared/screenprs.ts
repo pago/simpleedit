@@ -152,6 +152,15 @@ export interface PrReviewComment {
   /** Raw finding line ("88", "88–94", "L88", "—" …) — anchored best-effort. */
   line?: string
   text: string
+  /**
+   * The head commit this comment's `line` was read off, when it is known.
+   *
+   * The reviews API takes no `commit_id`, so GitHub anchors against whatever
+   * the head is when the review is POSTed. If the head moved after the comment
+   * was raised, that number now points at different code — see
+   * `reanchorForHead`, which is what has to run before a draft is posted.
+   */
+  sha?: string
 }
 
 export interface PrReviewDraft {
@@ -195,7 +204,43 @@ export interface GithubReviewPayload {
 export function parseLineAnchor(line?: string): number | null {
   if (!line) return null
   const m = line.match(/\d+/)
-  return m ? Number(m[0]) : null
+  if (!m) return null
+  const n = Number(m[0])
+  // Files are 1-based, so 0 is not a line GitHub can anchor to — and a single
+  // rejected anchor 422s the review, collapsing EVERY anchor in it into the
+  // body. Folding one comment beats losing the placement of all of them.
+  return n > 0 ? n : null
+}
+
+/** True for a comment whose line was read off a head that is no longer current. */
+function isStaleAnchor(c: PrReviewComment, headSha: string): boolean {
+  return c.sha !== undefined && c.sha !== headSha
+}
+
+/**
+ * Strip the line anchor from every comment raised against a different head.
+ *
+ * A force-push between raising a comment and posting it leaves the number
+ * pointing at whatever now occupies that line — and the reviews API carries no
+ * `commit_id`, so GitHub would anchor it there without complaint: no 422, no
+ * fold, no warning, a review comment on code the reviewer never read. Dropping
+ * the anchor keeps the file and the text, so `buildReviewPayload` folds it into
+ * the body exactly as it does an unanchorable finding.
+ *
+ * Returns the draft unchanged when nothing is stale, so a caller can compare by
+ * identity.
+ */
+export function reanchorForHead(draft: PrReviewDraft, headSha: string): PrReviewDraft {
+  if (!draft.comments.some((c) => c.line !== undefined && isStaleAnchor(c, headSha))) return draft
+  return {
+    ...draft,
+    comments: draft.comments.map((c) => (isStaleAnchor(c, headSha) ? { ...c, line: undefined } : c)),
+  }
+}
+
+/** How many of a draft's comments were raised against an older head. */
+export function staleAnchorCount(draft: PrReviewDraft, headSha: string): number {
+  return draft.comments.filter((c) => isStaleAnchor(c, headSha)).length
 }
 
 function foldedBullet(c: PrReviewComment): string {
