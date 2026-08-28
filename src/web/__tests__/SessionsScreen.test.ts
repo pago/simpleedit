@@ -32,21 +32,24 @@ beforeEach(() => {
 })
 
 describe('SessionsScreen', () => {
-  it('does not read while there is no connection to read over', async () => {
+  it('does not read while there is no connection, and reads as soon as there is', async () => {
+    // Both halves in one test, and both asserted on CALLS rather than on what is
+    // rendered: "Loading…" is on screen for a moment either way, so a
+    // render-only assertion passes just as well against a one-shot load in
+    // `onMount` — which is the thing this exists to rule out.
     const calls: string[] = []
     listResult = async () => {
       calls.push('list')
       return [SESSION]
     }
-    render(SessionsScreen, { connected: false, onopen: vi.fn() })
+
+    const { rerender } = render(SessionsScreen, { connected: false, onopen: vi.fn() })
     await waitFor(() => expect(screen.getByText('Loading sessions…')).toBeInTheDocument())
     expect(calls).toHaveLength(0)
-  })
 
-  it('loads as soon as the connection comes back', async () => {
-    const { rerender } = render(SessionsScreen, { connected: false, onopen: vi.fn() })
     await rerender({ connected: true, onopen: vi.fn() })
     await waitFor(() => expect(screen.getByTestId('session-row')).toHaveTextContent('rebase the stack'))
+    expect(calls).toEqual(['list'])
   })
 
   it('retries after a read that failed with the connection down', async () => {

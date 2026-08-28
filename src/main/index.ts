@@ -88,7 +88,7 @@ import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
 import type { PrContext, PrRef } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
-import { getPrDiff, postReview } from './github/gh'
+import { GhTimeoutError, getPrDiff, postReview } from './github/gh'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -962,7 +962,10 @@ function registerAllHandlers(): void {
       const { reviewUrl, foldedComments } = await postReview(request.pr, buildReviewPayload(request.draft))
       return { ok: true, reviewUrl, foldedComments }
     } catch (err: unknown) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      const error = err instanceof Error ? err.message : String(err)
+      // A killed POST may still have been received. Saying "nothing was posted"
+      // here is what would make a retry post the review twice.
+      return err instanceof GhTimeoutError ? { ok: false, error, delivered: 'unknown' } : { ok: false, error }
     }
   })
 
