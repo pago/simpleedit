@@ -45,6 +45,7 @@
   import { onMount, tick } from 'svelte'
   import VoiceComposer from './VoiceComposer.svelte'
   import { briefNudge, labelFromBrief } from '../shared/brief'
+  import { draftAtRisk } from './lib/nav'
   import { SESSION_CREATE_UNWITNESSED } from '../shared/ipc-types'
   import type { ConnectionState } from './api-shim'
   import type { SessionCreateResult } from '../shared/ipc-types'
@@ -175,12 +176,12 @@
 
   /**
    * Whether leaving has to wait: true while a start is in flight (it cannot be
-   * cancelled from here) or while there is a brief to lose, in which case the
-   * discard confirm is now up.
+   * cancelled from here) or while there is a brief — typed, or still being
+   * recorded — to lose, in which case the discard confirm is now up.
    */
   export function holdForDraft(): boolean {
     if (starting) return true
-    if (!hasBrief) return false
+    if (!draftAtRisk(brief, composer?.dictating() ?? false)) return false
     confirmingDiscard = true
     return true
   }
@@ -351,7 +352,13 @@
         >Keep writing</button>
         <button
           type="button"
-          onclick={() => { confirmingDiscard = false; onclose() }}
+          onclick={() => {
+            confirmingDiscard = false
+            // Destroyed here, not left to the unmount: the audio must never be
+            // uploaded for a brief the user just threw away.
+            composer?.discardRecording()
+            onclose()
+          }}
           data-testid="discard-confirmed"
           class="min-h-10 flex-1 rounded-lg bg-red-600 text-sm font-semibold text-white"
         >Discard</button>

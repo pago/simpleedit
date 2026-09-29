@@ -86,8 +86,8 @@ class Nav {
     this.#sync()
   }
 
-  openFromNotification(terminalId: string): void {
-    this.#state = openFromNotification(this.#state, terminalId)
+  openFromNotification(terminalId: string, hold?: (entry: NavEntry) => boolean): void {
+    this.#state = openFromNotification(this.#state, terminalId, hold)
     this.#sync()
   }
 

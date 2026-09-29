@@ -117,4 +117,30 @@ describe('SessionScreen', () => {
     // and the reads that produced it are not re-issued per visit.
     expect(screen.getByTestId('changes-pane')).toBe(pane)
   })
+
+  it('lets Back leave with typed text, but holds for a recording in progress', async () => {
+    let left = 0
+    vi.stubGlobal('MediaRecorder', class {
+      state = 'inactive'
+      start(): void { this.state = 'recording' }
+      stop(): void { this.state = 'inactive' }
+      addEventListener(): void {}
+    })
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => {} }] }) },
+    })
+    const { component } = render(SessionScreen, { props: { session, connection, onleave: () => { left++ } } })
+    await fireEvent.input(screen.getByTestId('composer-text'), { target: { value: 'half a reply' } })
+    expect(component.holdForRecording()).toBe(false)
+
+    await waitFor(() => expect(screen.getByTestId('mic-start')).not.toBeDisabled())
+    await fireEvent.click(screen.getByTestId('mic-start'))
+    await waitFor(() => expect(screen.getByTestId('mic-stop')).toBeInTheDocument())
+    expect(component.holdForRecording()).toBe(true)
+    await fireEvent.click(await screen.findByTestId('recording-discard-confirmed'))
+    expect(left).toBe(1)
+    expect(screen.queryByTestId('mic-stop')).toBeNull()
+    vi.unstubAllGlobals()
+  })
 })

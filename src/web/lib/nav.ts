@@ -118,12 +118,18 @@ export function contains(state: NavState, id: number): boolean {
  * terminal is not attached twice and its composer keeps what was typed — minus
  * any diff it had open, because the tap is about the terminal.
  */
-export function openFromNotification(state: NavState, terminalId: string): NavState {
+export function openFromNotification(
+  state: NavState,
+  terminalId: string,
+  hold?: (entry: NavEntry) => boolean,
+): NavState {
   const onSessions = selectTab(state, 'sessions')
   const stack = stackOf(onSessions)
   const existing = stack.find((e) => e.kind === 'session' && e.terminalId === terminalId)
   if (!existing) {
-    return push(onSessions, { kind: 'session', terminalId, fromNotification: true }).state
+    const id = onSessions.nextId
+    const layer: NavLayer = { kind: 'session', terminalId, fromNotification: true }
+    return push(onSessions, layer, hold && (() => hold({ ...layer, id }))).state
   }
   const mine = (e: NavEntry): boolean =>
     (e.kind === 'session' || e.kind === 'changes-diff') && e.terminalId === terminalId
@@ -166,6 +172,17 @@ export function decidePop(state: NavState, depth: number, force = false): PopDec
     }
   }
   return { kind: 'pop', state: pop(state, stack.length - target) }
+}
+
+/**
+ * Whether leaving a composer would lose something the user made.
+ *
+ * A recording counts even with an empty field: the words are in the audio and
+ * not yet in the text, and leaving destroys the audio (it is never uploaded
+ * for a screen nobody is on). So Back asks first, exactly as for typed text.
+ */
+export function draftAtRisk(text: string, dictating: boolean): boolean {
+  return dictating || text.trim().length > 0
 }
 
 /** What goes in `history.state`. Anything else found there reads as the base. */

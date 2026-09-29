@@ -34,6 +34,7 @@
   import ChangesPane from './ChangesPane.svelte'
   import KeyBar from './KeyBar.svelte'
   import VoiceComposer from './VoiceComposer.svelte'
+  import DiscardConfirm from './DiscardConfirm.svelte'
   import { nav } from './lib/nav.svelte'
   import type { RemoteConnection } from './api-shim'
   import type { AccessoryKey } from './lib/keys'
@@ -50,9 +51,24 @@
     focusComposer?: boolean
     /** This is the screen on top of the tab being shown. */
     visible?: boolean
+    /** Leave this screen; called once a discard has been confirmed. */
+    onleave?: () => void
   }
 
-  let { session, connection, focusComposer = false, visible = true }: Props = $props()
+  let { session, connection, focusComposer = false, visible = true, onleave }: Props = $props()
+
+  let confirmingDiscard = $state(false)
+
+  /**
+   * Asked before Back leaves: a recording in progress would be destroyed by
+   * leaving, so it is asked about rather than lost. Typed text is not — the
+   * reply field is scratch, and Back from a session is how you step away.
+   */
+  export function holdForRecording(): boolean {
+    if (!composer?.dictating()) return false
+    confirmingDiscard = true
+    return true
+  }
 
   let caps = $state<AgentCapabilities | null>(null)
   let composer = $state<VoiceComposer | undefined>()
@@ -156,3 +172,17 @@
     <VoiceComposer bind:this={composer} onsend={send} placeholder="Reply to {session.label}…" />
   </div>
 </div>
+
+{#if confirmingDiscard}
+  <DiscardConfirm
+    title="Discard this recording?"
+    body="It hasn’t been transcribed yet — leaving throws it away."
+    testid="recording-discard-confirm"
+    onkeep={() => { confirmingDiscard = false }}
+    ondiscard={() => {
+      confirmingDiscard = false
+      composer?.discardRecording()
+      onleave?.()
+    }}
+  />
+{/if}
