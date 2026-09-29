@@ -13,7 +13,7 @@
  * xterm (no cleanup/setup events for its terminal id), and the PTY in main
  * must survive with its scrollback intact.
  *
- * The guard reads `window.__simpleeditTerminalLifecycle__`, instrumented in
+ * The guard reads `page.__simpleeditTerminalLifecycle__`, instrumented in
  * `Terminal.svelte`, which records one event per setup/cleanup. Any terminalId
  * with more than one `setup` event means two components attached to the same
  * id — i.e. the #88 bug is back.
@@ -39,30 +39,30 @@ interface LifecycleEvent {
   t: number
 }
 
-async function readLifecycle(window: Page): Promise<LifecycleEvent[]> {
-  return await window.evaluate(
+async function readLifecycle(page: Page): Promise<LifecycleEvent[]> {
+  return await page.evaluate(
     () =>
       (window as unknown as { __simpleeditTerminalLifecycle__?: LifecycleEvent[] })
         .__simpleeditTerminalLifecycle__ ?? [],
   )
 }
 
-async function readTerminalText(window: Page): Promise<string> {
-  return await window.evaluate(() => {
+async function readTerminalText(page: Page): Promise<string> {
+  return await page.evaluate(() => {
     const rows = document.querySelectorAll('.xterm-rows > div')
     return Array.from(rows).map((d) => d.textContent ?? '').join('\n')
   })
 }
 
 async function waitFor(
-  window: Page,
+  page: Page,
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 5000,
 ): Promise<boolean> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     if (await predicate()) return true
-    await window.waitForTimeout(80)
+    await page.waitForTimeout(80)
   }
   return false
 }
@@ -72,8 +72,8 @@ async function waitFor(
  * `setup` event. More than one means two components attached to the same PTY
  * id — the #88 bug.
  */
-async function assertNoTerminalIdCollisions(window: Page): Promise<void> {
-  const events = await readLifecycle(window)
+async function assertNoTerminalIdCollisions(page: Page): Promise<void> {
+  const events = await readLifecycle(page)
   const setupsPerTerm = new Map<string, number>()
   for (const e of events) {
     if (e.event !== 'setup') continue
@@ -88,7 +88,7 @@ test.describe('Terminal/PTY lifecycle', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
 
   let repo: ReturnType<typeof createTempRepo>
   test.beforeAll(() => {
@@ -104,9 +104,9 @@ test.describe('Terminal/PTY lifecycle', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath }),
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
-    await window.evaluate(() => {
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await page.evaluate(() => {
       ;(window as unknown as { __simpleeditTerminalLifecycle__: unknown[] }).__simpleeditTerminalLifecycle__ = []
     })
   }
@@ -121,7 +121,7 @@ test.describe('Terminal/PTY lifecycle', () => {
 
   /** Session entries in the sidebar Sessions listbox, in display order. */
   function sessionOptions() {
-    return window.getByRole('listbox', { name: 'Sessions' }).getByRole('option')
+    return page.getByRole('listbox', { name: 'Sessions' }).getByRole('option')
   }
 
   /**
@@ -129,8 +129,8 @@ test.describe('Terminal/PTY lifecycle', () => {
    * workspace is hidden-but-mounted — the state #88 is about.
    */
   async function spawnTwoTerminals(): Promise<{ termA: string; termB: string }> {
-    const termA = await spawnTerminalSession(window)
-    const termB = await spawnTerminalSession(window)
+    const termA = await spawnTerminalSession(page)
+    const termB = await spawnTerminalSession(page)
     await expect(sessionOptions()).toHaveCount(2)
     return { termA, termB }
   }
@@ -143,7 +143,7 @@ test.describe('Terminal/PTY lifecycle', () => {
    */
   async function selectSession(index: number): Promise<void> {
     await sessionOptions().nth(index).click()
-    await window.waitForTimeout(300)
+    await page.waitForTimeout(300)
   }
 
   // NOTE: two tests from the worktree-pane era were deleted in the agent-first
@@ -160,29 +160,29 @@ test.describe('Terminal/PTY lifecycle', () => {
     await selectSession(0)
     const marker = `MARKER_${Date.now()}`
 
-    await window.evaluate(
+    await page.evaluate(
       ({ id, marker }) => window.api.invoke('pty:write', id, `echo ${marker}\r`),
       { id: termA, marker },
     )
-    await expect.poll(async () => await readTerminalText(window), { timeout: 5_000 }).toContain(marker)
+    await expect.poll(async () => await readTerminalText(page), { timeout: 5_000 }).toContain(marker)
 
-    const before = await readLifecycle(window)
+    const before = await readLifecycle(page)
     const cBefore = before.filter((e) => e.id === termA && e.event === 'cleanup').length
     const sBefore = before.filter((e) => e.id === termA && e.event === 'setup').length
 
     await selectSession(1)
     await selectSession(0)
 
-    const after = await readLifecycle(window)
+    const after = await readLifecycle(page)
     const cDelta = after.filter((e) => e.id === termA && e.event === 'cleanup').length - cBefore
     const sDelta = after.filter((e) => e.id === termA && e.event === 'setup').length - sBefore
 
-    const ids: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const ids: string[] = await page.evaluate(() => window.api.invoke('pty:active-ids'))
     expect(ids).toContain(termA)
     expect(cDelta).toBe(0)
     expect(sDelta).toBe(0)
-    expect(await readTerminalText(window)).toContain(marker)
-    await assertNoTerminalIdCollisions(window)
+    expect(await readTerminalText(page)).toContain(marker)
+    await assertNoTerminalIdCollisions(page)
   })
 
   test('PTY + xterm survive rapid A→B→A→B switching', async () => {
@@ -190,13 +190,13 @@ test.describe('Terminal/PTY lifecycle', () => {
     await selectSession(0)
     const marker = `MARKER_${Date.now()}`
 
-    await window.evaluate(
+    await page.evaluate(
       ({ id, marker }) => window.api.invoke('pty:write', id, `echo ${marker}\r`),
       { id: termA, marker },
     )
-    await expect.poll(async () => await readTerminalText(window), { timeout: 5_000 }).toContain(marker)
+    await expect.poll(async () => await readTerminalText(page), { timeout: 5_000 }).toContain(marker)
 
-    const before = await readLifecycle(window)
+    const before = await readLifecycle(page)
     const cBefore = before.filter((e) => e.id === termA && e.event === 'cleanup').length
     const sBefore = before.filter((e) => e.id === termA && e.event === 'setup').length
 
@@ -204,13 +204,13 @@ test.describe('Terminal/PTY lifecycle', () => {
       await sessionOptions().nth(1).click()
       await sessionOptions().nth(0).click()
     }
-    await window.waitForTimeout(800)
+    await page.waitForTimeout(800)
 
-    const after = await readLifecycle(window)
+    const after = await readLifecycle(page)
     expect(after.filter((e) => e.id === termA && e.event === 'cleanup').length - cBefore).toBe(0)
     expect(after.filter((e) => e.id === termA && e.event === 'setup').length - sBefore).toBe(0)
-    expect(await readTerminalText(window)).toContain(marker)
-    await assertNoTerminalIdCollisions(window)
+    expect(await readTerminalText(page)).toContain(marker)
+    await assertNoTerminalIdCollisions(page)
   })
 
   test('nested tmux session survives a session switch (the original #88 report)', async () => {
@@ -218,7 +218,7 @@ test.describe('Terminal/PTY lifecycle', () => {
     await selectSession(0)
     const sessionName = `simpleedit-nested-${Date.now()}`
 
-    await window.evaluate(
+    await page.evaluate(
       ({ id, name }) =>
         window.api.invoke(
           'pty:write',
@@ -228,21 +228,21 @@ test.describe('Terminal/PTY lifecycle', () => {
       { id: termA, name: sessionName },
     )
     expect(
-      await waitFor(window, async () => /NESTED_TICK_\d+/.test(await readTerminalText(window)), 10_000),
+      await waitFor(page, async () => /NESTED_TICK_\d+/.test(await readTerminalText(page)), 10_000),
     ).toBe(true)
 
     await selectSession(1)
-    await window.waitForTimeout(1_500)
+    await page.waitForTimeout(1_500)
     await selectSession(0)
-    await window.waitForTimeout(800)
+    await page.waitForTimeout(800)
 
-    const ids: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const ids: string[] = await page.evaluate(() => window.api.invoke('pty:active-ids'))
     expect(ids).toContain(termA)
 
     // C-b d to detach, then ask the shell if tmux still has the session.
-    await window.evaluate(({ id }) => window.api.invoke('pty:write', id, '\x02d'), { id: termA })
-    await window.waitForTimeout(500)
-    await window.evaluate(
+    await page.evaluate(({ id }) => window.api.invoke('pty:write', id, '\x02d'), { id: termA })
+    await page.waitForTimeout(500)
+    await page.evaluate(
       ({ id, name }) =>
         window.api.invoke(
           'pty:write',
@@ -251,7 +251,7 @@ test.describe('Terminal/PTY lifecycle', () => {
         ),
       { id: termA, name: sessionName },
     )
-    const status = await window.evaluate(async () => {
+    const status = await page.evaluate(async () => {
       for (let i = 0; i < 80; i++) {
         const text = Array.from(document.querySelectorAll('.xterm-rows > div'))
           .map((d) => d.textContent ?? '')
@@ -263,12 +263,12 @@ test.describe('Terminal/PTY lifecycle', () => {
       return 'TIMEOUT'
     })
 
-    await window.evaluate(
+    await page.evaluate(
       ({ id, name }) =>
         window.api.invoke('pty:write', id, `tmux kill-session -t ${name} 2>/dev/null ; true\r`),
       { id: termA, name: sessionName },
     )
-    await window.waitForTimeout(300)
+    await page.waitForTimeout(300)
     expect(status).toBe('ALIVE')
   })
 
@@ -281,16 +281,16 @@ test.describe('Terminal/PTY lifecycle', () => {
     await selectSession(0)
 
     const marker = `POST_SWITCH_${Date.now()}`
-    await window.evaluate(
+    await page.evaluate(
       ({ id, marker }) => window.api.invoke('pty:write', id, `echo ${marker}\r`),
       { id: termA, marker },
     )
-    await expect.poll(async () => await readTerminalText(window), { timeout: 5_000 }).toContain(marker)
+    await expect.poll(async () => await readTerminalText(page), { timeout: 5_000 }).toContain(marker)
   })
 
   test('Claude session survives rapid session switching', async () => {
-    const claudeId = await spawnClaudeSession(window)
-    await spawnTerminalSession(window)
+    const claudeId = await spawnClaudeSession(page)
+    await spawnTerminalSession(page)
     await expect(sessionOptions()).toHaveCount(2)
 
     // Rapidly bounce between the two sessions (claude prepends → nth(0) is
@@ -299,10 +299,10 @@ test.describe('Terminal/PTY lifecycle', () => {
       await sessionOptions().nth(1).click()
       await sessionOptions().nth(0).click()
     }
-    await window.waitForTimeout(800)
+    await page.waitForTimeout(800)
 
-    const after: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const after: string[] = await page.evaluate(() => window.api.invoke('pty:active-ids'))
     expect(after, 'Claude PTY died during rapid switching').toContain(claudeId)
-    await assertNoTerminalIdCollisions(window)
+    await assertNoTerminalIdCollisions(page)
   })
 })

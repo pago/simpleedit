@@ -36,8 +36,8 @@ const repoPath = process.env.SIMPLEEDIT_TEST_REPO
 // ---------------------------------------------------------------------------
 
 /** Wait for the git log sidebar commit list to be populated. */
-async function waitForCommits(window: Page): Promise<void> {
-  const commitList = window.locator('[role="listbox"][aria-label="Commits"]:visible')
+async function waitForCommits(page: Page): Promise<void> {
+  const commitList = page.locator('[role="listbox"][aria-label="Commits"]:visible')
   await expect(commitList).toBeVisible({ timeout: 10_000 })
   await expect(commitList.locator('[role="option"]').first()).toBeVisible({
     timeout: 10_000,
@@ -45,8 +45,8 @@ async function waitForCommits(window: Page): Promise<void> {
 }
 
 /** Return the commit-row button at index `i` from the GitLog sidebar. */
-function commitRow(window: Page, i: number) {
-  return window
+function commitRow(page: Page, i: number) {
+  return page
     .locator('[role="listbox"][aria-label="Commits"]:visible [role="option"]')
     .nth(i)
 }
@@ -55,44 +55,36 @@ function commitRow(window: Page, i: number) {
  * The row WRAPPER at index `i` — contains the option plus its trailing tour
  * icon button (the icon is a sibling of the option, not a child).
  */
-function commitRowContainer(window: Page, i: number) {
-  return window
+function commitRowContainer(page: Page, i: number) {
+  return page
     .locator('[role="listbox"][aria-label="Commits"]:visible > div')
     .nth(i)
 }
 
 /** Extract the commit subject (first line) from a commit row. */
-async function subjectOfRow(window: Page, i: number): Promise<string> {
-  const row = commitRow(window, i)
+async function subjectOfRow(page: Page, i: number): Promise<string> {
+  const row = commitRow(page, i)
   return ((await row.locator('xpath=./*[1]').textContent()) ?? '').trim()
 }
 
-/** Extract the short commit hash (monospace 7-char span) from a commit row. */
-async function shortHashOfRow(window: Page, i: number): Promise<string> {
-  const row = commitRow(window, i)
-  const hashSpan = row.locator('span.font-mono').first()
-  const text = await hashSpan.textContent()
-  return (text ?? '').trim()
-}
-
 /** Locator for all pane-level tabs. Prefers [data-testid="worktree-tab"]. */
-function allTabs(window: Page) {
-  return window.locator('[data-testid="worktree-tab"]:visible')
+function allTabs(page: Page) {
+  return page.locator('[data-testid="worktree-tab"]:visible')
 }
 
 /** Locator for the currently-active pane-level tab. */
-function activeTab(window: Page) {
-  return window.locator('[data-testid="worktree-tab"][data-active="true"]:visible')
+function activeTab(page: Page) {
+  return page.locator('[data-testid="worktree-tab"][data-active="true"]:visible')
 }
 
 /** Locator for the per-worktree tab bar (at least one pane's). */
-function tabBar(window: Page) {
-  return window.locator('[data-testid="worktree-tab-bar"]:visible').first()
+function tabBar(page: Page) {
+  return page.locator('[data-testid="worktree-tab-bar"]:visible').first()
 }
 
 /** Fetch the first worktree path via IPC. */
-async function getWorktreePath(window: Page): Promise<string> {
-  return window.evaluate(() =>
+async function getWorktreePath(page: Page): Promise<string> {
+  return page.evaluate(() =>
     (
       window as unknown as {
         api: {
@@ -118,10 +110,10 @@ interface TourPayload {
 /** Simulate a Claude-authored tour arriving for a given commit (or staging). */
 async function sendClaudeTour(
   app: ElectronApplication,
-  window: Page,
+  page: Page,
   opts: { commitHash: string | null; terminalId?: string; tour?: TourPayload }
 ): Promise<string> {
-  const wt = await getWorktreePath(window)
+  const wt = await getWorktreePath(page)
   const tour: TourPayload = opts.tour ?? {
     overview: 'Agent-authored tour for unified tab E2E.',
     topics: [
@@ -169,8 +161,7 @@ test.describe('#61 unified tabs — diff tabs, peek, pin', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run #61 tab tests')
 
   let app: ElectronApplication
-  let window: Page
-  let sessionId: string
+  let page: Page
 
   let repo: ReturnType<typeof createTempRepo>
   test.beforeAll(() => {
@@ -186,13 +177,13 @@ test.describe('#61 unified tabs — diff tabs, peek, pin', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath }),
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
     // Claude session (tour events route by its id) and open the viewer.
-    sessionId = await spawnClaudeSession(window)
-    await openWorkspaceViewer(window)
-    await waitForCommits(window)
+    await spawnClaudeSession(page)
+    await openWorkspaceViewer(page)
+    await waitForCommits(page)
   })
 
   test.afterEach(async () => {
@@ -201,22 +192,22 @@ test.describe('#61 unified tabs — diff tabs, peek, pin', () => {
 
   test('opening three different commits produces three switchable diff tabs', async () => {
     // Need at least three commits to run this scenario meaningfully.
-    const rowCount = await window
+    const rowCount = await page
       .locator('[role="listbox"][aria-label="Commits"]:visible [role="option"]')
       .count()
     test.skip(rowCount < 3, 'Repo has fewer than 3 commits — cannot test multi-diff.')
 
     // Pin each commit as it's opened so peek-replacement doesn't collapse them
     // into one tab. Double-click is the canonical pin affordance per spec.
-    await commitRow(window, 0).dblclick()
-    await window.waitForTimeout(400)
-    await commitRow(window, 1).dblclick()
-    await window.waitForTimeout(400)
-    await commitRow(window, 2).dblclick()
-    await window.waitForTimeout(400)
+    await commitRow(page, 0).dblclick()
+    await page.waitForTimeout(400)
+    await commitRow(page, 1).dblclick()
+    await page.waitForTimeout(400)
+    await commitRow(page, 2).dblclick()
+    await page.waitForTimeout(400)
 
     // Three diff tabs should now exist simultaneously.
-    const diffTabs = window.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
+    const diffTabs = page.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
     await expect(diffTabs).toHaveCount(3, { timeout: 5_000 })
 
     // The third tab (most recently opened) should be active.
@@ -234,69 +225,69 @@ test.describe('#61 unified tabs — diff tabs, peek, pin', () => {
   })
 
   test('single-click commit opens a peek diff tab that is replaced by the next peek', async () => {
-    const rowCount = await window
+    const rowCount = await page
       .locator('[role="listbox"][aria-label="Commits"]:visible [role="option"]')
       .count()
     test.skip(rowCount < 2, 'Peek replacement needs at least 2 commits.')
 
     // Diff tabs are labelled with the commit SUBJECT (and carry it in their
     // title attribute) in the agent-first tab bar — not the short hash.
-    const subjectA = await subjectOfRow(window, 0)
-    const subjectB = await subjectOfRow(window, 1)
+    const subjectA = await subjectOfRow(page, 0)
+    const subjectB = await subjectOfRow(page, 1)
 
     // Single-click commit A → one peek tab.
-    await commitRow(window, 0).click()
-    await window.waitForTimeout(400)
+    await commitRow(page, 0).click()
+    await page.waitForTimeout(400)
 
-    const diffTabs = window.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
+    const diffTabs = page.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
     await expect(diffTabs).toHaveCount(1, { timeout: 5_000 })
     await expect(diffTabs.first()).toHaveAttribute('data-peek', 'true')
     await expect(diffTabs.first()).toHaveAttribute('title', subjectA)
 
     // Single-click commit B → peek is replaced, still exactly one diff tab.
-    await commitRow(window, 1).click()
-    await window.waitForTimeout(400)
+    await commitRow(page, 1).click()
+    await page.waitForTimeout(400)
     await expect(diffTabs).toHaveCount(1)
     await expect(diffTabs.first()).toHaveAttribute('data-peek', 'true')
     await expect(diffTabs.first()).toHaveAttribute('title', subjectB)
 
     // Single-click commit A again → still exactly one peek, now showing A.
-    await commitRow(window, 0).click()
-    await window.waitForTimeout(400)
+    await commitRow(page, 0).click()
+    await page.waitForTimeout(400)
     await expect(diffTabs).toHaveCount(1)
     await expect(diffTabs.first()).toHaveAttribute('data-peek', 'true')
     await expect(diffTabs.first()).toHaveAttribute('title', subjectA)
   })
 
   test('double-clicking a peek tab pins it; next peek opens a new tab alongside', async () => {
-    const rowCount = await window
+    const rowCount = await page
       .locator('[role="listbox"][aria-label="Commits"]:visible [role="option"]')
       .count()
     test.skip(rowCount < 3, 'Pin test needs at least 3 commits.')
 
     // Open commit A as peek.
-    await commitRow(window, 0).click()
-    await window.waitForTimeout(400)
+    await commitRow(page, 0).click()
+    await page.waitForTimeout(400)
 
-    const diffTabs = window.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
+    const diffTabs = page.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
     await expect(diffTabs).toHaveCount(1)
     await expect(diffTabs.first()).toHaveAttribute('data-peek', 'true')
 
     // Double-click the peek tab → pin it.
     await diffTabs.first().dblclick()
-    await window.waitForTimeout(300)
+    await page.waitForTimeout(300)
     await expect(diffTabs.first()).toHaveAttribute('data-peek', 'false')
 
     // Single-click commit C → opens a new peek alongside the pinned tab.
-    await commitRow(window, 2).click()
-    await window.waitForTimeout(400)
+    await commitRow(page, 2).click()
+    await page.waitForTimeout(400)
     await expect(diffTabs).toHaveCount(2, { timeout: 3_000 })
 
     // Exactly one of the two is now peek, the other (the original) is pinned.
-    const peekTabs = window.locator(
+    const peekTabs = page.locator(
       '[data-testid="worktree-tab"][data-kind="diff"][data-peek="true"]:visible'
     )
-    const pinnedTabs = window.locator(
+    const pinnedTabs = page.locator(
       '[data-testid="worktree-tab"][data-kind="diff"][data-peek="false"]:visible'
     )
     await expect(peekTabs).toHaveCount(1)
@@ -312,7 +303,7 @@ test.describe('#61 unified tabs — GitLog tour icon', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run #61 tab tests')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
   let sessionId: string
 
   let repo: ReturnType<typeof createTempRepo>
@@ -329,13 +320,13 @@ test.describe('#61 unified tabs — GitLog tour icon', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath }),
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
     // Claude session (tour events route by its id) and open the viewer.
-    sessionId = await spawnClaudeSession(window)
-    await openWorkspaceViewer(window)
-    await waitForCommits(window)
+    sessionId = await spawnClaudeSession(page)
+    await openWorkspaceViewer(page)
+    await waitForCommits(page)
   })
 
   test.afterEach(async () => {
@@ -343,20 +334,20 @@ test.describe('#61 unified tabs — GitLog tour icon', () => {
   })
 
   test('hovering a commit row reveals the trailing tour icon; clicking it opens a tour tab', async () => {
-    const row = commitRow(window, 0)
+    const row = commitRow(page, 0)
 
     // The tour icon is a SIBLING of the option inside the row container (the
     // GitLog row wrapper), not a descendant of the option itself.
-    const tourIcon = commitRowContainer(window, 0).locator('[data-testid="gitlog-tour-icon"]')
+    const tourIcon = commitRowContainer(page, 0).locator('[data-testid="gitlog-tour-icon"]')
 
     await row.hover()
     await expect(tourIcon).toBeVisible({ timeout: 3_000 })
 
     await tourIcon.click()
-    await window.waitForTimeout(500)
+    await page.waitForTimeout(500)
 
     // A tour tab should now be open and active.
-    const tourTabs = window.locator(
+    const tourTabs = page.locator(
       '[data-testid="worktree-tab"][data-kind="tour"]:visible'
     )
     await expect(tourTabs).toHaveCount(1, { timeout: 5_000 })
@@ -367,34 +358,34 @@ test.describe('#61 unified tabs — GitLog tour icon', () => {
     // Seed a tour for the first commit by dispatching a tour-from-Claude IPC.
     // The tour store keys tours by the FULL commit hash, so fetch it via IPC
     // (the row only displays the short form).
-    const wt = await getWorktreePath(window)
-    const log = (await window.evaluate(
+    const wt = await getWorktreePath(page)
+    const log = (await page.evaluate(
       (p) => window.api.invoke('git:log', p, 1),
       wt
     )) as Array<{ hash: string }>
     const hash0 = log[0]?.hash
     expect(hash0).toBeTruthy()
-    await sendClaudeTour(app, window, {
+    await sendClaudeTour(app, page, {
       commitHash: hash0!,
       terminalId: sessionId,
     })
 
     // Give the renderer a tick to process the tour event.
-    await window.waitForTimeout(1_000)
+    await page.waitForTimeout(1_000)
 
     // The first row's tour icon should now be in a highlighted / has-tour state
     // without requiring hover. We assert visibility + data-has-tour="true"
     // while the mouse is parked far away from the row.
-    await window.mouse.move(0, 0)
+    await page.mouse.move(0, 0)
 
-    const tourIcon = commitRowContainer(window, 0).locator('[data-testid="gitlog-tour-icon"]')
+    const tourIcon = commitRowContainer(page, 0).locator('[data-testid="gitlog-tour-icon"]')
     await expect(tourIcon).toBeVisible({ timeout: 5_000 })
     await expect(tourIcon).toHaveAttribute('data-has-tour', 'true')
 
     // A row we did not seed should either not have the icon visible at idle,
     // or should explicitly report data-has-tour="false". We use a flexible
     // assertion: we only require that its has-tour state is not "true".
-    const row1Icon = commitRowContainer(window, 1).locator(
+    const row1Icon = commitRowContainer(page, 1).locator(
       '[data-testid="gitlog-tour-icon"]'
     )
     const hasTour1 = await row1Icon
@@ -412,7 +403,7 @@ test.describe('#61 unified tabs — agent-initiated tabs', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run #61 tab tests')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
   let sessionId: string
 
   let repo: ReturnType<typeof createTempRepo>
@@ -429,13 +420,13 @@ test.describe('#61 unified tabs — agent-initiated tabs', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath }),
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
     // Claude session (tour events route by its id) and open the viewer.
-    sessionId = await spawnClaudeSession(window)
-    await openWorkspaceViewer(window)
-    await waitForCommits(window)
+    sessionId = await spawnClaudeSession(page)
+    await openWorkspaceViewer(page)
+    await waitForCommits(page)
   })
 
   test.afterEach(async () => {
@@ -444,22 +435,22 @@ test.describe('#61 unified tabs — agent-initiated tabs', () => {
 
   test('agent-initiated tab opens in background with unread marker when the pane is busy', async () => {
     // Make the pane busy: open a commit diff tab the user is actively viewing.
-    await commitRow(window, 0).dblclick()
-    await window.waitForTimeout(400)
-    const diffTabs = window.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
+    await commitRow(page, 0).dblclick()
+    await page.waitForTimeout(400)
+    const diffTabs = page.locator('[data-testid="worktree-tab"][data-kind="diff"]:visible')
     await expect(diffTabs.first()).toHaveAttribute('data-active', 'true', {
       timeout: 5_000,
     })
 
     // Agent dispatches a tour — since pane has an active tab, the tour should
     // arrive in the background with the unread marker.
-    await sendClaudeTour(app, window, {
+    await sendClaudeTour(app, page, {
       commitHash: null,
       terminalId: sessionId,
     })
-    await window.waitForTimeout(1_000)
+    await page.waitForTimeout(1_000)
 
-    const tourTabs = window.locator(
+    const tourTabs = page.locator(
       '[data-testid="worktree-tab"][data-kind="tour"]:visible'
     )
     await expect(tourTabs).toHaveCount(1, { timeout: 5_000 })
@@ -474,22 +465,22 @@ test.describe('#61 unified tabs — agent-initiated tabs', () => {
 
     // Clicking the tour tab clears the unread flag.
     await tourTabs.first().click()
-    await window.waitForTimeout(300)
+    await page.waitForTimeout(300)
     await expect(tourTabs.first()).toHaveAttribute('data-active', 'true')
     await expect(tourTabs.first()).toHaveAttribute('data-unread', 'false')
   })
 
   test('agent-initiated tab auto-focuses when the pane is idle (no active tab)', async () => {
     // Fresh launch: no tab is open, pane is idle.
-    await expect(allTabs(window)).toHaveCount(0, { timeout: 3_000 })
+    await expect(allTabs(page)).toHaveCount(0, { timeout: 3_000 })
 
-    await sendClaudeTour(app, window, {
+    await sendClaudeTour(app, page, {
       commitHash: null,
       terminalId: sessionId,
     })
-    await window.waitForTimeout(1_000)
+    await page.waitForTimeout(1_000)
 
-    const tourTabs = window.locator(
+    const tourTabs = page.locator(
       '[data-testid="worktree-tab"][data-kind="tour"]:visible'
     )
     await expect(tourTabs).toHaveCount(1, { timeout: 5_000 })
@@ -507,7 +498,7 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run #61 tab tests')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
   let sessionId: string
 
   let repo: ReturnType<typeof createTempRepo>
@@ -524,13 +515,13 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath }),
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
     // Agent-first UI: tabs/GitLog live in a per-session workspace. Spawn a
     // Claude session (tour events route by its id) and open the viewer.
-    sessionId = await spawnClaudeSession(window)
-    await openWorkspaceViewer(window)
-    await waitForCommits(window)
+    sessionId = await spawnClaudeSession(page)
+    await openWorkspaceViewer(page)
+    await waitForCommits(page)
   })
 
   test.afterEach(async () => {
@@ -539,25 +530,25 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
 
   test('each tab kind renders a distinct leading icon', async () => {
     // Diff tab: open a commit (peek is fine).
-    await commitRow(window, 0).click()
-    await window.waitForTimeout(400)
+    await commitRow(page, 0).click()
+    await page.waitForTimeout(400)
 
     // File tab: click a file (not a directory) in the tree.
-    const fileNode = window.locator('[role="treeitem"]:not([aria-expanded]):visible').first()
+    const fileNode = page.locator('[role="treeitem"]:not([aria-expanded]):visible').first()
     await expect(fileNode).toBeVisible({ timeout: 5_000 })
     await fileNode.click()
-    await window.waitForTimeout(400)
+    await page.waitForTimeout(400)
 
     // Tour tab: via agent bridge.
-    await sendClaudeTour(app, window, {
+    await sendClaudeTour(app, page, {
       commitHash: null,
       terminalId: sessionId,
     })
-    await window.waitForTimeout(500)
+    await page.waitForTimeout(500)
 
     // Every open tab should render an icon element labeled with its kind.
     for (const kind of ['file', 'diff', 'tour']) {
-      const iconsForKind = window.locator(
+      const iconsForKind = page.locator(
         `[data-testid="worktree-tab"][data-kind="${kind}"]:visible [data-testid="tab-kind-icon"]`
       )
       await expect(
@@ -571,7 +562,7 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
 
     // All three kind-icons should be distinct elements by virtue of their
     // data-kind attributes — i.e. three icons with three unique `data-kind`s.
-    const allKindIcons = window.locator('[data-testid="tab-kind-icon"]:visible')
+    const allKindIcons = page.locator('[data-testid="tab-kind-icon"]:visible')
     const count = await allKindIcons.count()
     expect(count).toBeGreaterThanOrEqual(3)
 
@@ -585,27 +576,27 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
 
   test('tour tabs are sticky: subsequent peek actions do not replace them', async () => {
     // Open a Claude tour — agent-initiated and sticky.
-    await sendClaudeTour(app, window, {
+    await sendClaudeTour(app, page, {
       commitHash: null,
       terminalId: sessionId,
     })
-    await window.waitForTimeout(800)
+    await page.waitForTimeout(800)
 
-    const tourTabs = window.locator(
+    const tourTabs = page.locator(
       '[data-testid="worktree-tab"][data-kind="tour"]:visible'
     )
     await expect(tourTabs).toHaveCount(1, { timeout: 5_000 })
 
     // Now fire off a couple of peek-style diff opens via single-click.
-    await commitRow(window, 0).click()
-    await window.waitForTimeout(400)
+    await commitRow(page, 0).click()
+    await page.waitForTimeout(400)
     if (
-      (await window
+      (await page
         .locator('[role="listbox"][aria-label="Commits"]:visible [role="option"]')
         .count()) > 1
     ) {
-      await commitRow(window, 1).click()
-      await window.waitForTimeout(400)
+      await commitRow(page, 1).click()
+      await page.waitForTimeout(400)
     }
 
     // The tour tab must still be present exactly once — peek replacement is
@@ -617,7 +608,7 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
 
     // At most one diff tab remains (the peek slot) because we never pinned
     // either of the two diffs we opened.
-    const diffTabs = window.locator(
+    const diffTabs = page.locator(
       '[data-testid="worktree-tab"][data-kind="diff"]:visible'
     )
     const diffCount = await diffTabs.count()
@@ -626,9 +617,9 @@ test.describe('#61 unified tabs — icons and peek scope', () => {
 
   test('the per-worktree tab bar is rendered for the pane', async () => {
     // Sanity: once any tab is open the tab bar must exist and be visible.
-    await commitRow(window, 0).click()
-    await window.waitForTimeout(400)
-    await expect(tabBar(window)).toBeVisible({ timeout: 5_000 })
-    await expect(activeTab(window)).toHaveCount(1)
+    await commitRow(page, 0).click()
+    await page.waitForTimeout(400)
+    await expect(tabBar(page)).toBeVisible({ timeout: 5_000 })
+    await expect(activeTab(page)).toHaveCount(1)
   })
 })

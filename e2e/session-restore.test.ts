@@ -10,7 +10,7 @@
  */
 import { test as base, expect, _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { MAIN, launchEnv, spawnClaudeSession, openWorkspaceViewer, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
+import { MAIN, launchEnv, spawnClaudeSession, openWorkspaceViewer, createTempRepo, removeTempRepo } from './fixtures'
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
 const repoPath = process.env.SIMPLEEDIT_TEST_REPO

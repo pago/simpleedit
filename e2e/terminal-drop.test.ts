@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test } from '@playwright/test'
 import { _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
 import { MAIN, launchEnv, spawnTerminalSession, clearSavedSessionFile, createTempRepo, removeTempRepo } from './fixtures'
@@ -10,7 +10,7 @@ test.describe('Terminal drag-and-drop', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run terminal-drop tests')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
 
   let repo: ReturnType<typeof createTempRepo>
   test.beforeAll(() => {
@@ -26,8 +26,8 @@ test.describe('Terminal drag-and-drop', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
   })
 
   test.afterEach(async () => {
@@ -36,14 +36,14 @@ test.describe('Terminal drag-and-drop', () => {
 
   test('writes the dropped file path into the PTY', async () => {
     // The agent-first UI has no auto-spawned terminal — create one first.
-    await spawnTerminalSession(window)
-    await window.waitForSelector('[data-testid="terminal-drop-target"]')
+    await spawnTerminalSession(page)
+    await page.waitForSelector('[data-testid="terminal-drop-target"]')
     // Let the PTY spawn settle so the shell prompt is rendered.
-    await window.waitForTimeout(1500)
+    await page.waitForTimeout(1500)
 
     // Capture all pty:data so we can assert the path is echoed by the shell.
     // contextBridge freezes window.api, so we observe instead of spy.
-    await window.evaluate(() => {
+    await page.evaluate(() => {
       ;(window as unknown as { __ptyData: string }).__ptyData = ''
       window.api.on('pty:data', (payload) => {
         ;(window as unknown as { __ptyData: string }).__ptyData += payload.data
@@ -54,7 +54,7 @@ test.describe('Terminal drag-and-drop', () => {
     // the handler falls back to app:save-dropped-blob → temp path → pty:write.
     // Chromium ignores `dataTransfer` passed to DragEvent's constructor, so we
     // attach it via defineProperty after construction.
-    await window.evaluate(() => {
+    await page.evaluate(() => {
       const pngHeader = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
       const file = new File([pngHeader], 'screenshot.png', { type: 'image/png' })
       const dt = new DataTransfer()
@@ -65,7 +65,7 @@ test.describe('Terminal drag-and-drop', () => {
       target.dispatchEvent(event)
     })
 
-    await window.waitForFunction(
+    await page.waitForFunction(
       () => /simpleedit-drops.*screenshot.*\.png/.test(
         (window as unknown as { __ptyData: string }).__ptyData
       ),

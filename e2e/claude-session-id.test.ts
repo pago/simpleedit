@@ -24,7 +24,7 @@ test.describe('Claude session_id capture', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
 
   let repo: ReturnType<typeof createTempRepo>
   test.beforeAll(() => {
@@ -44,9 +44,9 @@ test.describe('Claude session_id capture', () => {
       // on per-folder trust state, which a fresh temp repo never has).
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath, SIMPLEEDIT_FAKE_CLAUDE_OSC: '1' }),
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
-    await waitForWorktreesReady(window)
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await waitForWorktreesReady(page)
   })
 
   test.afterEach(async () => {
@@ -56,7 +56,7 @@ test.describe('Claude session_id capture', () => {
   test('claude:session-id fires immediately on spawning a fresh Claude tab', async () => {
     // Install the IPC listener BEFORE clicking the spawn button, because the
     // main process emits the event right after `pty.spawn` returns.
-    await window.evaluate(() => {
+    await page.evaluate(() => {
       ;(window as unknown as { __sessionIds: Array<{ terminalId: string; sessionId: string }> })
         .__sessionIds = []
       window.api.on('agent:session-id', (payload) => {
@@ -65,10 +65,10 @@ test.describe('Claude session_id capture', () => {
       })
     })
 
-    await window.getByRole('button', { name: 'New agent session' }).first().click()
+    await page.getByRole('button', { name: 'New agent session' }).first().click()
 
     // Should arrive synchronously (within 1s, just absorbing IPC roundtrip).
-    const captured = await window.evaluate(async () => {
+    const captured = await page.evaluate(async () => {
       const start = Date.now()
       while (Date.now() - start < 5_000) {
         const arr = (window as unknown as { __sessionIds: Array<{ terminalId: string; sessionId: string }> })
@@ -97,7 +97,7 @@ test.describe('Claude session_id capture', () => {
   // arrives. Re-enable once the PTY spawn pins PATH past the profile (or the
   // suite pre-trusts the temp dir).
   test.skip('claude:status badge events flow after a Claude tab is spawned', async () => {
-    await window.evaluate(() => {
+    await page.evaluate(() => {
       ;(window as unknown as { __statusEvents: Array<{ worktreePath: string; status: string; terminalId: string }> })
         .__statusEvents = []
       window.api.on('agent:status', (payload) => {
@@ -106,12 +106,12 @@ test.describe('Claude session_id capture', () => {
       })
     })
 
-    await window.getByRole('button', { name: 'New agent session' }).first().click()
+    await page.getByRole('button', { name: 'New agent session' }).first().click()
 
     // Claude emits OSC title sequences ("✳ Claude Code" idle, braille spinner
     // running) as soon as the TUI starts rendering — typically within 1–2s of
     // spawn on a warm box. 15s gives generous headroom for cold-start.
-    const status = await window.evaluate(async () => {
+    const status = await page.evaluate(async () => {
       const start = Date.now()
       while (Date.now() - start < 15_000) {
         const arr = (window as unknown as { __statusEvents: Array<{ worktreePath: string; status: string; terminalId: string }> })
