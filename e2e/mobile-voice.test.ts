@@ -238,3 +238,49 @@ test('speaks a reply, reviews it, sends it, and sees it in the terminal', async 
   await context.close()
   await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:set-enabled', false))
 })
+
+// Back is a swipe on a phone. Mid-sentence, it must ask rather than silently
+// throw the recording away — and a confirmed discard must destroy the audio,
+// not upload it for a screen nobody is on any more.
+test('Back mid-recording asks first, and a confirmed discard transcribes nothing', async ({ window, browser }) => {
+  const terminalId = await spawnTerminalSession(window)
+  const status = (await window.evaluate(() =>
+    (window as unknown as { api: Api }).api.invoke('remote:set-enabled', true),
+  )) as RemoteAccessStatus
+  const url = new URL(status.url!)
+  url.hostname = 'localhost'
+
+  const context = await browser.newContext({ permissions: ['microphone'] })
+  const page = await context.newPage()
+  const transcribes: string[] = []
+  page.on('websocket', (ws) =>
+    ws.on('framesent', (frame) => {
+      if (typeof frame.payload === 'string' && frame.payload.includes('stt:transcribe')) transcribes.push(frame.payload)
+    }),
+  )
+  await page.goto(url.toString())
+  await page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`).click()
+  await expect(page.getByTestId('mobile-terminal')).toBeVisible()
+
+  await page.getByTestId('mic-start').click()
+  await expect(page.getByTestId('mic-stop')).toBeVisible()
+
+  await page.goBack()
+  await expect(page.getByTestId('recording-discard-confirm')).toBeVisible()
+  // Kept: still on the session, still recording.
+  await page.getByRole('button', { name: 'Keep' }).click()
+  await expect(page.getByTestId('mic-stop')).toBeVisible()
+  // Long enough that there IS audio to leak. A recorder stopped within its
+  // first second can hand over nothing, and the assertion below would then
+  // pass with the discard wired to the keeping path.
+  await page.waitForTimeout(1500)
+
+  await page.goBack()
+  await page.getByTestId('recording-discard-confirmed').click()
+  await expect(page.getByTestId('screen-title')).toHaveText('Sessions')
+  await page.waitForTimeout(4000)
+  expect(transcribes).toEqual([])
+
+  await context.close()
+  await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:set-enabled', false))
+})

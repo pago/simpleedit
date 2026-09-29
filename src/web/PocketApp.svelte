@@ -87,6 +87,12 @@
    */
   let deepLinkProblem = $state<string | null>(null)
   let newSheet = $state<NewSessionSheet | undefined>()
+  /** By entry id — each session screen answers for its own recording. */
+  const sessionScreens: Record<number, SessionScreen | undefined> = {}
+
+  function holdSession(entry: NavEntry): boolean {
+    return sessionScreens[entry.id]?.holdForRecording() ?? false
+  }
   /**
    * A session this phone just started, held until the user acknowledges it.
    *
@@ -193,7 +199,7 @@
       remember(match)
       // A tap has to land on the session whatever was on screen, including the
       // PR board — the phone was buzzed about a blocked agent, not about a PR.
-      nav.openFromNotification(match.terminalId)
+      nav.openFromNotification(match.terminalId, holdSession)
       return
     }
     const elsewhere =
@@ -205,7 +211,10 @@
 
   function openSession(session: WindowSession): void {
     remember(session)
-    nav.push({ kind: 'session', terminalId: session.terminalId, fromNotification: false })
+    const entry: NavEntry = nav.push(
+      { kind: 'session', terminalId: session.terminalId, fromNotification: false },
+      () => holdSession(entry),
+    )
   }
 
   function openNewSession(): void {
@@ -332,6 +341,8 @@
         {#if session}
           <div class={sessionScreen?.id === entry.id ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
             <SessionScreen
+              bind:this={sessionScreens[entry.id]}
+              onleave={() => nav.close(entry.id)}
               {session}
               {connection}
               focusComposer={entry.fromNotification}

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   decidePop,
+  draftAtRisk,
   depthOf,
   initialNav,
   isOverlay,
@@ -146,6 +147,23 @@ describe('a popstate', () => {
     const state = push(initialNav(), { kind: 'new-session' }, hold).state
     expect(decidePop(state, 0, true).kind).toBe('pop')
     expect(hold).not.toHaveBeenCalled()
+  })
+})
+
+describe('the draft guard', () => {
+  it('holds for typed text, and for a recording even with an empty field', () => {
+    expect(draftAtRisk('', false)).toBe(false)
+    expect(draftAtRisk('   \n', false)).toBe(false)
+    expect(draftAtRisk('half a thought', false)).toBe(true)
+    expect(draftAtRisk('', true)).toBe(true)
+    expect(draftAtRisk('  ', true)).toBe(true)
+  })
+
+  it('gives a notification\'s session the hold it was asked to carry', () => {
+    const hold = vi.fn(() => true)
+    const state = openFromNotification(initialNav(), 'b', hold)
+    expect(decidePop(state, 0).kind).toBe('hold')
+    expect(hold).toHaveBeenCalledWith(expect.objectContaining({ id: topOf(state)!.id, terminalId: 'b' }))
   })
 })
 

@@ -88,6 +88,19 @@
     fieldEl?.focus()
   }
 
+  /**
+   * A microphone is open (or being opened), or its audio is being transcribed:
+   * words exist that are not in the field yet.
+   */
+  export function dictating(): boolean {
+    return armed || transcribing
+  }
+
+  /** Destroy the recording in progress — never upload it. For a host's confirmed discard. */
+  export function discardRecording(): void {
+    cancelRecording()
+  }
+
   let handle: RecorderHandle | null = null
   let tickTimer: ReturnType<typeof setInterval> | undefined
   /**

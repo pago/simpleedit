@@ -11,11 +11,13 @@
    * is add text to a local draft. Between a microphone and GitHub there remain
    * a verdict tap and a confirm.
    *
-   * Text in the field is not in the draft yet, so nothing but this sheet holds
-   * it. Every way out — ✕, the scrim, and the system Back gesture through
+   * Text in the field — or a recording still in progress — is not in the
+   * draft yet, so nothing but this sheet holds it. Every way out — ✕, the scrim, and the system Back gesture through
    * `holdForDraft` — asks before throwing it away.
    */
   import VoiceComposer from './VoiceComposer.svelte'
+  import DiscardConfirm from './DiscardConfirm.svelte'
+  import { draftAtRisk } from './lib/nav'
 
   interface Props {
     /** What is being commented on: `path:line`, or "Review summary". */
@@ -34,10 +36,11 @@
 
   let text = $state('')
   let confirmingDiscard = $state(false)
+  let composer = $state<VoiceComposer | undefined>()
 
-  /** True when leaving has to wait — there is text, and the confirm is now up. */
+  /** True when leaving has to wait — there is a draft, and the confirm is now up. */
   export function holdForDraft(): boolean {
-    if (!text.trim()) return false
+    if (!draftAtRisk(text, composer?.dictating() ?? false)) return false
     confirmingDiscard = true
     return true
   }
@@ -83,38 +86,20 @@
       <p class="mb-2 text-[11px] leading-relaxed text-amber-300/90" data-testid="compose-note">{note}</p>
     {/if}
 
-    <VoiceComposer bind:text onsend={async (value) => { onadd(value); onclose() }} {sendLabel} {placeholder} />
+    <VoiceComposer bind:this={composer} bind:text onsend={async (value) => { onadd(value); onclose() }} {sendLabel} {placeholder} />
   </div>
 </div>
 
 {#if confirmingDiscard}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-6">
-    <div class="absolute inset-0 bg-black/70"></div>
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Discard this comment?"
-      tabindex="-1"
-      class="relative w-full max-w-xs rounded-xl border border-zinc-800 bg-zinc-900 p-4"
-      data-testid="compose-discard-confirm"
-    >
-      <h3 class="text-sm font-semibold text-zinc-100">Discard this comment?</h3>
-      <p class="mt-1 text-[11px] leading-relaxed text-zinc-400">It hasn’t been added to the review yet.</p>
-      <div class="mt-4 flex gap-2">
-        <!-- svelte-ignore a11y_autofocus -->
-        <button
-          type="button"
-          autofocus
-          onclick={() => { confirmingDiscard = false }}
-          class="min-h-10 flex-1 rounded-lg border border-zinc-700 text-sm text-zinc-200"
-        >Keep writing</button>
-        <button
-          type="button"
-          onclick={() => { confirmingDiscard = false; onclose() }}
-          data-testid="compose-discard-confirmed"
-          class="min-h-10 flex-1 rounded-lg bg-red-600 text-sm font-semibold text-white"
-        >Discard</button>
-      </div>
-    </div>
-  </div>
+  <DiscardConfirm
+    title="Discard this comment?"
+    body="It hasn’t been added to the review yet."
+    testid="compose-discard-confirm"
+    onkeep={() => { confirmingDiscard = false }}
+    ondiscard={() => {
+      confirmingDiscard = false
+      composer?.discardRecording()
+      onclose()
+    }}
+  />
 {/if}
