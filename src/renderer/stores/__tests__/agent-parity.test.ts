@@ -12,7 +12,7 @@
  * native-model provider for that reason.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type { AgentCapabilities, AgentProviderId, WorktreeInfo } from '../../../shared/ipc-types'
+import type { AgentCapabilities, AgentProviderId, NativeModelAgentId, WorktreeInfo } from '../../../shared/ipc-types'
 import { sessionsStore } from '../sessions.svelte'
 import { setProjectRoot, refreshWorktreesFor } from '../worktrees.svelte'
 import { initAgentCapabilities, capabilitiesFor, providerLabel } from '../agent-capabilities.svelte'
@@ -149,7 +149,7 @@ describe('OSC titles', () => {
  * is why splitting `customLabel` silently changed Claude and Codex too.
  */
 describe('label stickiness parity', () => {
-  const NATIVE: AgentProviderId[] = ['codex', 'opencode']
+  const NATIVE: NativeModelAgentId[] = ['codex', 'opencode']
 
   it('lets an agent-reported title replace a model-id stand-in, for every provider', () => {
     for (const provider of NATIVE) {
