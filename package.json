@@ -11,7 +11,7 @@
     "build": "electron-vite build && pnpm build:mcp-server",
     "build:mcp-server": "node scripts/build-mcp-server.mjs",
     "preview": "electron-vite preview",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && svelte-check --tsconfig tsconfig.web.json --output human",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.e2e.json && svelte-check --tsconfig tsconfig.web.json --output human",
     "package": "electron-vite build && pnpm build:mcp-server && electron-builder --config electron-builder.yml --publish never",
     "package:mac": "electron-vite build && pnpm build:mcp-server && electron-builder --mac --config electron-builder.yml --publish never",
     "package:win": "electron-vite build && pnpm build:mcp-server && electron-builder --win --config electron-builder.yml --publish never",

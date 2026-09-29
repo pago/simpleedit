@@ -14,13 +14,13 @@ const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
  * survive an OSC title-set event from the `claude agents` TUI. The fix marks
  * Agent View tabs `customLabel: true` at construction so handleTitleChange
  * early-returns instead of overwriting the friendly label with whatever the
- * TUI puts in the xterm window title.
+ * TUI puts in the xterm page title.
  */
 test.describe('Issue #94: Agent View tab labels stay sticky under OSC title overwrite', () => {
   let testRoot: string
   let bareRepoPath: string
   let app: ElectronApplication
-  let window: Page
+  let page: Page
 
   test.beforeAll(() => {
     testRoot = mkdtempSync(join(tmpdir(), 'simpleedit-issue94-'))
@@ -52,9 +52,9 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: bareRepoPath })
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
-    await waitForWorktreesReady(window)
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await waitForWorktreesReady(page)
   })
 
   test.afterEach(async () => {
@@ -64,7 +64,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
   test('Agent View tab label is not overwritten by an OSC title-set sequence', async () => {
     // Capture all pty:data ids so we can find the Agent View tab's terminal id
     // (it's a runtime-generated string we can't predict).
-    await window.evaluate(() => {
+    await page.evaluate(() => {
       ;(window as unknown as { __ptyIds: string[] }).__ptyIds = []
       window.api.on('pty:data', (payload) => {
         const ids = (window as unknown as { __ptyIds: string[] }).__ptyIds
@@ -75,18 +75,18 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     })
 
     // Spawn an Agent View session via the new-session context menu.
-    const claudeButton = window.getByRole('button', { name: 'New agent session' }).first()
+    const claudeButton = page.getByRole('button', { name: 'New agent session' }).first()
     await expect(claudeButton).toBeVisible({ timeout: 10_000 })
     await claudeButton.click({ button: 'right' })
-    await window.getByRole('menuitem', { name: 'New Agent View session' }).click()
+    await page.getByRole('menuitem', { name: 'New Agent View session' }).click()
 
     // Session entry labeled "Agents" appears.
-    const agentsTab = window.locator('[role="option"]:has-text("Agents")').first()
+    const agentsTab = page.locator('[role="option"]:has-text("Agents")').first()
     await expect(agentsTab).toBeVisible({ timeout: 5_000 })
 
     // Wait until pty:data has been observed at least once — that tells us the
     // PTY is running and an xterm listener is wired up for our Agent View tab.
-    const terminalId = (await window.waitForFunction(
+    const terminalId = (await page.waitForFunction(
       () => {
         const ids = (window as unknown as { __ptyIds: string[] }).__ptyIds
         return ids.length > 0 ? ids[0] : null
@@ -111,7 +111,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     )
 
     // Give xterm a beat to parse the OSC and dispatch the title event.
-    await window.waitForTimeout(150)
+    await page.waitForTimeout(150)
 
     // Label is still "Agents" — not "claude agents — pretty overwrite". The
     // session option's visible text contains decorative glyphs (status dot, ✦,
@@ -120,7 +120,7 @@ test.describe('Issue #94: Agent View tab labels stay sticky under OSC title over
     await expect(agentsTab).toBeVisible()
     await expect(agentsTab).toHaveAttribute('aria-label', 'Agents')
     await expect(
-      window.locator('[role="option"]:has-text("claude agents — pretty overwrite")')
+      page.locator('[role="option"]:has-text("claude agents — pretty overwrite")')
     ).toHaveCount(0)
   })
 })

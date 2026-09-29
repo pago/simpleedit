@@ -19,7 +19,7 @@ test.describe('IDE layout', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run IDE tests')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
   let pageErrors: string[]
 
   let repo: ReturnType<typeof createTempRepo>
@@ -36,10 +36,10 @@ test.describe('IDE layout', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
-    window = await app.firstWindow()
+    page = await app.firstWindow()
     pageErrors = []
-    window.on('pageerror', (err) => { pageErrors.push(`${err.name}: ${err.message}`) })
-    await window.waitForLoadState('domcontentloaded')
+    page.on('pageerror', (err) => { pageErrors.push(`${err.name}: ${err.message}`) })
+    await page.waitForLoadState('domcontentloaded')
   })
 
   test.afterEach(async () => {
@@ -48,11 +48,11 @@ test.describe('IDE layout', () => {
 
   test('shows the repo name in the title bar', async () => {
     const repoName = repo.bareRepoPath.split('/').pop()!.replace('.git', '')
-    await expect(window.getByText(`SimpleEdit [${repoName}]`)).toBeVisible()
+    await expect(page.getByText(`SimpleEdit [${repoName}]`)).toBeVisible()
   })
 
   test('shows the sidebar', async () => {
-    await expect(window.getByRole('complementary')).toBeVisible()
+    await expect(page.getByRole('complementary')).toBeVisible()
   })
 
   // Regression guard: a render-time ReferenceError in the workspace tree
@@ -63,12 +63,12 @@ test.describe('IDE layout', () => {
   test('git log loads and the renderer does not throw on startup', async () => {
     // The sidebar is sessions-only as of f1e6062 — no worktree list in it.
     await expect(
-      window.getByRole('complementary').getByRole('listbox', { name: 'Worktrees' })
+      page.getByRole('complementary').getByRole('listbox', { name: 'Worktrees' })
     ).toHaveCount(0)
-    await spawnTerminalSession(window)
-    await openWorkspaceViewer(window)
+    await spawnTerminalSession(page)
+    await openWorkspaceViewer(page)
     await expect(
-      window.getByRole('listbox', { name: 'Commits' }).filter({ visible: true }).first()
+      page.getByRole('listbox', { name: 'Commits' }).filter({ visible: true }).first()
     ).toBeVisible({ timeout: 5000 })
     expect(pageErrors).toEqual([])
   })
@@ -78,7 +78,7 @@ test.describe('Terminal links', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run IDE tests')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
 
   let repo: ReturnType<typeof createTempRepo>
   test.beforeAll(() => {
@@ -94,8 +94,8 @@ test.describe('Terminal links', () => {
       args: [MAIN, ...SANDBOX_ARGS],
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
   })
 
   test.afterEach(async () => {
@@ -111,7 +111,7 @@ test.describe('Terminal links', () => {
       }
     })
 
-    await window.evaluate(() =>
+    await page.evaluate(() =>
       window.api.invoke('app:open-external', 'https://example.com')
     )
 
@@ -127,7 +127,7 @@ test.describe('Claude sessions', () => {
   test.skip(!repoPath, 'Set SIMPLEEDIT_TEST_REPO to run IDE tests')
 
   let app: ElectronApplication
-  let window: Page
+  let page: Page
 
   let repo: ReturnType<typeof createTempRepo>
   test.beforeAll(() => {
@@ -145,9 +145,9 @@ test.describe('Claude sessions', () => {
       // test below works without the real CLI.
       env: launchEnv({ SIMPLEEDIT_REPO: repo.bareRepoPath })
     })
-    window = await app.firstWindow()
-    await window.waitForLoadState('domcontentloaded')
-    await waitForWorktreesReady(window)
+    page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await waitForWorktreesReady(page)
   })
 
   test.afterEach(async () => {
@@ -156,13 +156,13 @@ test.describe('Claude sessions', () => {
 
   test('each ✦ Agent button click creates exactly one Claude PTY', async () => {
     // Provider-namespaced since Codex landed: 'agent-claude-…', not 'claude-…'.
-    const before: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const before: string[] = await page.evaluate(() => window.api.invoke('pty:active-ids'))
     const claudeBefore = before.filter((id) => id.startsWith('agent-claude-'))
 
-    await window.getByRole('button', { name: 'New agent session' }).first().click()
-    await window.waitForTimeout(1000)
+    await page.getByRole('button', { name: 'New agent session' }).first().click()
+    await page.waitForTimeout(1000)
 
-    const after: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const after: string[] = await page.evaluate(() => window.api.invoke('pty:active-ids'))
     const claudeAfter = after.filter((id) => id.startsWith('agent-claude-'))
 
     expect(claudeAfter.length).toBe(claudeBefore.length + 1)
@@ -172,12 +172,12 @@ test.describe('Claude sessions', () => {
     // Two terminal sessions — switching between them hides one workspace and
     // shows the other, which is exactly the hidden-container ResizeObserver
     // case #37 was about.
-    await spawnTerminalSession(window)
-    await window.waitForTimeout(500)
-    const secondTermId = await spawnTerminalSession(window)
-    await window.waitForTimeout(500)
+    await spawnTerminalSession(page)
+    await page.waitForTimeout(500)
+    const secondTermId = await spawnTerminalSession(page)
+    await page.waitForTimeout(500)
 
-    const sessionOptions = window
+    const sessionOptions = page
       .getByRole('listbox', { name: 'Sessions' })
       .getByRole('option')
     await expect(sessionOptions).toHaveCount(2)
@@ -185,20 +185,20 @@ test.describe('Claude sessions', () => {
     // Rapid session switching to trigger ResizeObserver on hidden containers
     for (let i = 0; i < 3; i++) {
       await sessionOptions.nth(0).click()
-      await window.waitForTimeout(200)
+      await page.waitForTimeout(200)
       await sessionOptions.nth(1).click()
-      await window.waitForTimeout(200)
+      await page.waitForTimeout(200)
     }
-    await window.waitForTimeout(500)
+    await page.waitForTimeout(500)
 
     // We're on the second terminal; ask its shell how wide it thinks it is.
-    await window.evaluate(
+    await page.evaluate(
       (id) => window.api.invoke('pty:write', id, 'tput cols\r'),
       secondTermId
     )
-    await window.waitForTimeout(1000)
+    await page.waitForTimeout(1000)
 
-    const cols = await window.evaluate(() => {
+    const cols = await page.evaluate(() => {
       const rows = document.querySelectorAll('.xterm-rows > div')
       for (const row of rows) {
         const text = row.textContent?.trim() ?? ''
@@ -217,30 +217,30 @@ test.describe('Claude sessions', () => {
     // a trust prompt in fresh temp repos and ignores /exit), so exercise the
     // same invariant — one PTY's natural exit must only auto-close its own
     // session — with plain terminal sessions and a shell `exit`.
-    await window.evaluate(() => {
+    await page.evaluate(() => {
       ;(window as any).__exitEvents = [] as string[]
       window.api.on('pty:exit', (payload) => {
         ;(window as any).__exitEvents.push(payload.id)
       })
     })
 
-    const id1 = await spawnTerminalSession(window)
-    const id2 = await spawnTerminalSession(window)
+    const id1 = await spawnTerminalSession(page)
+    const id2 = await spawnTerminalSession(page)
 
-    await window.evaluate((id) => window.api.invoke('pty:write', id as string, ' exit\r'), id1)
+    await page.evaluate((id) => window.api.invoke('pty:write', id as string, ' exit\r'), id1)
 
     // The exited PTY disappears and its session auto-closes; the other lives.
     await expect
       .poll(
         async () =>
-          (await window.evaluate(() => window.api.invoke('pty:active-ids'))) as string[],
+          (await page.evaluate(() => window.api.invoke('pty:active-ids'))) as string[],
         { timeout: 10_000 }
       )
       .not.toContain(id1)
-    const activeAfter: string[] = await window.evaluate(() => window.api.invoke('pty:active-ids'))
+    const activeAfter: string[] = await page.evaluate(() => window.api.invoke('pty:active-ids'))
     expect(activeAfter).toContain(id2)
 
-    const exitEvents: string[] = await window.evaluate(() => (window as any).__exitEvents)
+    const exitEvents: string[] = await page.evaluate(() => (window as any).__exitEvents)
     expect(exitEvents).toContain(id1)
     expect(exitEvents).not.toContain(id2)
   })
