@@ -7,6 +7,13 @@
    * one `RepoPicker` renders), the log is `git:log`, and a worktree opens on
    * its uncommitted changes exactly as it does at the desk.
    *
+   * A diff on screen is a `changes-diff` entry on the navigation stack, so the
+   * shell's back button and the system Back gesture are how you return to the
+   * log — there is no second back button in here. It is only pushed while this
+   * pane is `active`: a diff opened behind the terminal, or behind another
+   * screen, would be a Back that closes something nobody can see. An automatic
+   * open that lands then just leaves the log showing.
+   *
    * ── Read, don't write ───────────────────────────────────────────────────
    * Every call goes through `read`, whose type admits five channels, all of
    * which only ever read. That is the enforcement; the paragraph is just the
@@ -36,8 +43,9 @@
    * that worktree. Passive listening costs nobody anything; the reload button
    * is what makes the staleness recoverable either way.
    */
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import MobileDiff from './MobileDiff.svelte'
+  import { nav } from './lib/nav.svelte'
   import {
     defaultEntry,
     entryTitle,
@@ -63,9 +71,11 @@
   interface Props {
     session: WindowSession
     connection: RemoteConnection
+    /** This pane is what the phone is showing. */
+    active?: boolean
   }
 
-  let { session, connection }: Props = $props()
+  let { session, connection, active = true }: Props = $props()
 
   /**
    * The channels this pane may speak. All five only read; naming them in a type
@@ -177,6 +187,8 @@
       logError = fail(err)
       commits = []
       stagingFiles = []
+      // What it was going to open is not coming; the error is shown in the log.
+      if (opening) openEntry(null)
     } finally {
       if (mine === logSeq) logLoading = false
     }
@@ -219,12 +231,33 @@
     }
   }
 
+  const diffEntry = $derived(
+    nav.stack('sessions').find((e) => e.kind === 'changes-diff' && e.terminalId === session.terminalId) ??
+      null,
+  )
+
   function openEntry(target: ReviewEntry | null): void {
+    if (target === null) {
+      nav.close(diffEntry?.id ?? null)
+      return
+    }
+    if (!diffEntry) {
+      if (!active) return
+      nav.push({ kind: 'changes-diff', terminalId: session.terminalId })
+    }
     entry = target
     void loadDiff(worktreePath, target)
   }
 
-  function back(): void {
+  // Popped — by Back, or by leaving the pane. Back to the log.
+  $effect(() => {
+    if (diffEntry) return
+    untrack(() => {
+      if (entry !== null) dropEntry()
+    })
+  })
+
+  function dropEntry(): void {
     entry = null
     // The diff dies with the screen that showed it; a return trip re-reads.
     diff = null
@@ -358,15 +391,8 @@
     >
   {/if}
 
-  {#if entry}
-    <div class="flex flex-none items-center gap-2 border-b border-zinc-800 px-2 py-1.5">
-      <button
-        type="button"
-        onclick={back}
-        data-testid="changes-back"
-        class="flex min-h-8 flex-none items-center gap-1 rounded px-1.5 text-xs text-zinc-400 active:bg-zinc-800"
-        >‹ Changes</button
-      >
+  {#if entry && diffEntry}
+    <div class="flex flex-none items-center gap-2 border-b border-zinc-800 px-3 py-1.5">
       <span class="min-w-0 flex-1 truncate text-xs text-zinc-300" data-testid="entry-title"
         >{entryTitle(entry)}</span
       >

@@ -124,10 +124,11 @@ test('lists the window\'s sessions and opens one on the real PTY', async ({ wind
   const row = page.locator(`[data-testid="session-row"][data-session-id="${terminalId}"]`)
   await expect(row).toBeVisible({ timeout: 15_000 })
 
-  // Detail chrome: a back button, and the tab bar gone.
+  // Detail chrome: a back button, and the tab bar still there — another tab
+  // is one tap away from a detail screen too.
   await row.click()
   await expect(page.getByTestId('back')).toBeVisible()
-  await expect(page.getByTestId('tab-bar')).toHaveCount(0)
+  await expect(page.getByTestId('tab-bar')).toBeVisible()
   await expect(page.getByTestId('mobile-terminal')).toBeVisible()
 
   // A real terminal: the shell's own output, replayed from main's backlog.
@@ -478,8 +479,10 @@ test('reads the log and the diff of the worktree the session is in', async ({ wi
   await expect(page.getByTestId('session-diff')).toContainText('src/c.ts')
   await expect(page.getByTestId('session-diff')).toContainText('export const c = 3')
 
-  // Back to the log, and an older commit's diff.
-  await page.getByTestId('changes-back').click()
+  // Back to the log — the shell's back, named for where it goes — and an
+  // older commit's diff.
+  await expect(page.getByTestId('back')).toHaveText(/Changes/)
+  await page.getByTestId('back').click()
   const commits = page.getByTestId('entry-commit')
   await expect(commits).toHaveCount(3)
   await commits.nth(1).click()

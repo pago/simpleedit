@@ -1,9 +1,11 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/svelte'
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import PrDetail from '../PrDetail.svelte'
 import { screenPrsStore } from '../../renderer/stores/screenprs.svelte'
 import { unknownOutcome, verdictChoice } from '../lib/prs.svelte'
 import { NotSentError } from '../api-shim'
+import { nav } from '../lib/nav.svelte'
+import { tick } from 'svelte'
 import type { ScreenPrCard } from '../../shared/screenprs'
 
 /**
@@ -84,6 +86,7 @@ async function confirmPost(): Promise<void> {
 }
 
 beforeEach(() => {
+  nav.reset()
   submitResult = async () => ({ ok: true, foldedComments: false })
   diffResult = async () => DIFF
   invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
@@ -476,7 +479,58 @@ describe('PR detail — the path to GitHub', () => {
     await fireEvent.click(screen.getByTestId('review-toggle'))
 
     expect(screen.getByTestId('draft-count')).toHaveTextContent('1')
-    expect(screen.getByText('triage')).toBeInTheDocument()
+    // Scoped: the Files pane stays mounted, and its diff tags the comment too.
+    expect(within(screen.getByTestId('review-sheet')).getByText('triage')).toBeInTheDocument()
     expect(submitCalls()).toHaveLength(0)
+  })
+
+  // Back is a swipe away on a phone; a comment that has not been added yet
+  // exists nowhere but in this sheet.
+  it('asks before Back throws away a typed line comment', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('pane-files'))
+    const rows = await screen.findAllByTestId('diff-line')
+    await fireEvent.click(rows.find((el) => el.textContent?.includes('const added = 2'))!)
+    await fireEvent.input(screen.getByTestId('composer-text'), { target: { value: 'half a thought' } })
+
+    nav.back()
+    await tick()
+    expect(screen.getByTestId('compose-discard-confirm')).toBeInTheDocument()
+    expect(screen.getByTestId('composer-text')).toHaveValue('half a thought')
+
+    await fireEvent.click(screen.getByTestId('compose-discard-confirmed'))
+    expect(screen.queryByTestId('compose-sheet')).toBeNull()
+    expect(nav.stack()).toEqual([])
+  })
+
+  it('lets Back close an empty line comment without asking', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('pane-files'))
+    const rows = await screen.findAllByTestId('diff-line')
+    await fireEvent.click(rows.find((el) => el.textContent?.includes('const added = 2'))!)
+
+    nav.back()
+    await tick()
+    expect(screen.queryByTestId('compose-sheet')).toBeNull()
+    expect(screen.queryByTestId('compose-discard-confirm')).toBeNull()
+  })
+
+  it('will not let Back take the confirm away while a post is in flight', async () => {
+    submitResult = () =>
+      new Promise((resolve) => {
+        releasePendingSubmit = () => resolve({ ok: true, foldedComments: false })
+      })
+    render(PrDetail, { pr: CARD, connected: true })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await openConfirm()
+    await confirmPost()
+
+    nav.back()
+    await tick()
+    expect(screen.getByTestId('confirm-submit')).toBeInTheDocument()
+
+    releasePendingSubmit()
+    await waitFor(() => expect(screen.queryByTestId('confirm-submit')).toBeNull())
+    expect(nav.stack()).toEqual([])
   })
 })

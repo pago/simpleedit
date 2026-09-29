@@ -38,6 +38,7 @@
   import { NotSentError } from './api-shim'
   import ComposeSheet from './ComposeSheet.svelte'
   import ConfirmSubmitModal from './ConfirmSubmitModal.svelte'
+  import { nav } from './lib/nav.svelte'
 
   interface Props {
     pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>
@@ -67,8 +68,13 @@
   let latched = $derived(unknownOutcome.pending(url))
 
   let open = $state(false)
-  let confirming = $state(false)
-  let summaryOpen = $state(false)
+  // Both overlays are layers on the navigation stack, so Back dismisses them —
+  // except the confirm while a post is in flight, which nothing can cancel.
+  let confirmId = $state<number | null>(null)
+  let summaryId = $state<number | null>(null)
+  let summarySheet = $state<ComposeSheet | undefined>()
+  let confirming = $derived(nav.has(confirmId))
+  let summaryOpen = $derived(nav.has(summaryId))
   let outcome = $state<SubmitOutcome | null>(null)
 
   const VERDICTS: PrReviewVerdict[] = ['approve', 'comment', 'request_changes']
@@ -122,7 +128,7 @@
     try {
       const res = await screenPrsStore.submitReview(pr, draft)
       if (res.ok) {
-        confirming = false
+        nav.close(confirmId)
         // Posted and done with: a follow-up starts from no verdict.
         verdictChoice.reset(url)
         unknownOutcome.clear(url)
@@ -266,7 +272,9 @@
             <span class="text-[10px] uppercase tracking-wider text-zinc-600">Summary</span>
             <button
               type="button"
-              onclick={() => (summaryOpen = true)}
+              onclick={() => {
+                summaryId = nav.push({ kind: 'compose', url }, () => summarySheet?.holdForDraft() ?? false).id
+              }}
               data-testid="dictate-summary"
               class="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300"
             >🎤 Dictate</button>
@@ -297,7 +305,10 @@
 
         <button
           type="button"
-          onclick={() => { clearOutcome(); confirming = true }}
+          onclick={() => {
+            clearOutcome()
+            confirmId = nav.push({ kind: 'confirm-submit', url }, () => submitting).id
+          }}
           disabled={blocked != null}
           title={blocked ?? undefined}
           data-testid="review-submit"
@@ -311,11 +322,12 @@
 
 {#if summaryOpen}
   <ComposeSheet
+    bind:this={summarySheet}
     title="Review summary"
     sendLabel="Add to summary"
     placeholder="What’s the overall call?"
     onadd={addToSummary}
-    onclose={() => (summaryOpen = false)}
+    onclose={() => nav.close(summaryId)}
   />
 {/if}
 
@@ -331,6 +343,6 @@
     {latched}
     onacknowledge={() => unknownOutcome.clear(url)}
     onconfirm={() => void post()}
-    oncancel={() => (confirming = false)}
+    oncancel={() => nav.close(confirmId)}
   />
 {/if}

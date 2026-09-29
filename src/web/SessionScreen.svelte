@@ -3,9 +3,12 @@
    * One session: the real terminal, the keys a phone lacks, a composer — and
    * what the agent has changed.
    *
-   * A detail screen, so it gets a back button and no tab bar. It has genuinely
-   * two panes now, which is the one thing that earns a segmented control, and
-   * it is labelled for this screen: Terminal / Changes.
+   * A detail screen, so it gets the shell's back button. It has genuinely two
+   * panes, which is the one thing that earns a segmented control, and it is
+   * labelled for this screen: Terminal / Changes. The panes are not navigation
+   * — switching them adds nothing for Back to undo — but a diff opened in
+   * Changes is, so leaving Changes for Terminal closes it: Back from the
+   * terminal must never close a diff nobody can see.
    *
    * NOTHING here is unmounted by a pane switch; the inactive pane is hidden.
    * The rule is one rule because every part of this screen holds something a
@@ -16,8 +19,8 @@
    *  - The composer holds a half-typed reply, and unmounting it DISCARDS a
    *    live recording (see the lifetime note in `VoiceComposer`) — so tapping
    *    Changes and back would silently eat what someone had just dictated.
-   *  - Changes holds the repo/worktree/commit the reader picked, and four
-   *    reads paid for it. Re-issuing those on every visit is the same waste
+   *  - Changes holds the repo/worktree the reader picked and the log, and
+   *    four reads paid for them. Re-issuing those on every visit is the same waste
    *    the terminal's rule exists to avoid, over a link that is worse.
    *
    * Changes is mounted LAZILY — its first visit builds it — because a session
@@ -31,6 +34,7 @@
   import ChangesPane from './ChangesPane.svelte'
   import KeyBar from './KeyBar.svelte'
   import VoiceComposer from './VoiceComposer.svelte'
+  import { nav } from './lib/nav.svelte'
   import type { RemoteConnection } from './api-shim'
   import type { AccessoryKey } from './lib/keys'
   import type { AgentCapabilities, WindowSession } from '../shared/ipc-types'
@@ -44,9 +48,11 @@
      * a hot mic on wake would be wrong where it does not.
      */
     focusComposer?: boolean
+    /** This is the screen on top of the tab being shown. */
+    visible?: boolean
   }
 
-  let { session, connection, focusComposer = false }: Props = $props()
+  let { session, connection, focusComposer = false, visible = true }: Props = $props()
 
   let caps = $state<AgentCapabilities | null>(null)
   let composer = $state<VoiceComposer | undefined>()
@@ -56,6 +62,15 @@
     { id: 'changes', label: 'Changes' },
   ] as const
   let pane = $state<(typeof PANES)[number]['id']>('terminal')
+
+  function selectPane(next: (typeof PANES)[number]['id']): void {
+    pane = next
+    if (next === 'changes') return
+    const diff = nav
+      .stack('sessions')
+      .find((e) => e.kind === 'changes-diff' && e.terminalId === session.terminalId)
+    if (diff) nav.close(diff.id)
+  }
   /** Changes has been opened at least once, so it exists from here on. */
   let changesBuilt = $state(false)
   $effect(() => {
@@ -106,14 +121,14 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col" data-testid="session-screen">
+<div class="flex h-full min-h-0 flex-col" data-testid="session-screen" data-terminal-id={session.terminalId}>
   <div class="flex flex-none gap-1 border-b border-zinc-800 p-2" role="tablist" data-testid="session-panes">
     {#each PANES as entry (entry.id)}
       <button
         type="button"
         role="tab"
         aria-selected={pane === entry.id}
-        onclick={() => { pane = entry.id }}
+        onclick={() => selectPane(entry.id)}
         data-testid="pane-{entry.id}"
         class="min-h-8 flex-1 rounded-md text-xs font-medium
           {pane === entry.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 active:bg-zinc-900'}"
@@ -129,12 +144,12 @@
   <!-- Built on first visit, hidden thereafter — never unmounted. -->
   {#if changesBuilt}
     <div class="min-h-0 flex-1 {pane === 'changes' ? '' : 'hidden'}">
-      <ChangesPane {session} {connection} />
+      <ChangesPane {session} {connection} active={visible && pane === 'changes'} />
     </div>
   {/if}
 
   <div
-    class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]
+    class="flex-none space-y-2 border-t border-zinc-800 bg-zinc-950 p-2
       {pane === 'terminal' ? '' : 'hidden'}"
   >
     <KeyBar onkey={writeKey} />

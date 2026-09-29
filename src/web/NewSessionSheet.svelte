@@ -22,8 +22,10 @@
    * **The brief's lifetime is the sheet's.** It is never persisted and never
    * resurrected: a half-finished brief replayed into a live spawn days later
    * is worse than saying it again. So every way out of the sheet asks first —
-   * ✕, the scrim, Escape, and the browser itself, since an iOS PWA reclaiming
-   * the tab is the likeliest way to lose one that was just dictated.
+   * ✕, the scrim, Escape, the system Back gesture (`holdForDraft`, asked by the
+   * navigation stack before it pops the sheet), and the browser itself, since
+   * an iOS PWA reclaiming the tab is the likeliest way to lose one that was
+   * just dictated.
    *
    * The socket is deliberately NOT one of its boundaries. The text is local, so
    * a drop costs nothing; Start is what waits for the connection, and says so.
@@ -171,14 +173,21 @@
     }
   }
 
+  /**
+   * Whether leaving has to wait: true while a start is in flight (it cannot be
+   * cancelled from here) or while there is a brief to lose, in which case the
+   * discard confirm is now up.
+   */
+  export function holdForDraft(): boolean {
+    if (starting) return true
+    if (!hasBrief) return false
+    confirmingDiscard = true
+    return true
+  }
+
   /** Leaving discards the brief, so anything worth losing is asked about. */
   function requestClose(): void {
-    if (starting) return
-    if (hasBrief) {
-      confirmingDiscard = true
-      return
-    }
-    onclose()
+    if (!holdForDraft()) onclose()
   }
 
   /**

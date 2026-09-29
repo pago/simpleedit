@@ -299,4 +299,16 @@ describe('NewSessionSheet', () => {
     expect(screen.queryByTestId('discard-confirm')).toBeNull()
     expect(closed).toBe(1)
   })
+
+  // What the navigation stack asks before the system Back gesture pops it.
+  it('holds Back for a brief, and asks about it, but lets an empty sheet go', async () => {
+    const { component } = mount()
+    expect(component.holdForDraft()).toBe(false)
+    expect(screen.queryByTestId('discard-confirm')).toBeNull()
+
+    await type(FULL_BRIEF)
+    expect(component.holdForDraft()).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('discard-confirm')).toBeTruthy())
+    expect(closed).toBe(0)
+  })
 })
