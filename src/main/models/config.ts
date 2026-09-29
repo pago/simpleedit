@@ -41,14 +41,15 @@ function filePath(): string {
 }
 
 /**
- * Model ids dropped from CLAUDE_MODELS, mapped to their successor. A stored ref
- * to a model no longer in the catalog keeps driving `--model` while the Settings
- * picker renders blank (no matching `<option>`), so retiring an id means
- * rewriting the refs that point at it. Read-time and idempotent; it lands on
+ * Model ids a SimpleEdit release stopped offering, mapped to their successor.
+ * A stored ref to a model no longer in the catalog keeps driving `--model`
+ * while the Settings picker renders blank (no matching `<option>`), so retiring
+ * an id means rewriting the refs that point at it. Read-time and idempotent; it lands on
  * disk with the next write.
  */
 const SUCCEEDED_MODELS: Record<string, string> = {
   'claude-opus-4-8': 'claude-opus-5',
+  'claude-haiku-4-5-20251001': 'haiku',
 }
 
 function succeed(model: string): string {

@@ -24,6 +24,8 @@
 #    deterministically (the real CLI's title behaviour depends on folder trust
 #    state, which a fresh temp repo never has).
 #  - Reading "/exit" on stdin exits 0, mirroring the real CLI's slash command.
+#  - Reading an `initialize` control request answers with a one-model catalog,
+#    so the app's model discovery resolves instead of waiting out its timeout.
 #  - SIMPLEEDIT_FAKE_CLAUDE_EXIT=<code>: print a message and exit immediately
 #    with that code, simulating a spawn failure/crash (for the exited-state
 #    UI). Used instead of nuking PATH, which would also break Electron's own
@@ -40,6 +42,9 @@ while true; do
   if IFS= read -r -t 3600 line; then
     case "$line" in
       *"/exit"*) exit 0 ;;
+      *'"subtype":"initialize"'*)
+        echo '{"type":"control_response","response":{"subtype":"success","request_id":"models","response":{"models":[{"value":"sonnet","displayName":"Sonnet (fake)"}]}}}'
+        ;;
     esac
   else
     # EOF / timeout / unsupported flag — keep idling rather than exiting, so a

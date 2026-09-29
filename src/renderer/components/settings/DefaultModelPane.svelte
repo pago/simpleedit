@@ -176,7 +176,7 @@
       local models are selectable here even though they can’t run the interactive agent.
     </div>
     <p class="mt-3 max-w-[560px] text-[11.5px] text-zinc-500">
-      Screen PRs triage falls back to <span class="font-mono text-zinc-400">Haiku 4.5</span> when
+      Screen PRs triage falls back to <span class="font-mono text-zinc-400">Haiku</span> when
       unset; per-lens deep-review overrides live in the config.
     </p>
   {/if}

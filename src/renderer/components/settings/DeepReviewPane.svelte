@@ -25,7 +25,7 @@
   let codexOptions = $state<Option[]>([])
   let openCodeOptions = $state<Option[]>([])
   let deepReview = $state<DeepReviewConfig>({ lenses: {} })
-  let inheritLabel = $state('Haiku 4.5')
+  let inheritLabel = $state('Haiku')
   let loading = $state(true)
 
   const byKey = $derived(
@@ -69,7 +69,7 @@
       localOptions = installed.map((m) => ({ key: refKey({ provider: 'ollama', model: m.name }), label: m.name, ref: { provider: 'ollama', model: m.name } }))
       deepReview = config.deepReview ?? { lenses: {} }
       const sp = config.defaults.screenPrs
-      if (!sp) inheritLabel = 'Haiku 4.5'
+      if (!sp) inheritLabel = 'Haiku'
       else if (sp.provider === 'openai') {
         const name = sp.model ? (codex.find((c) => c.model === sp.model)?.displayName ?? sp.model) : 'configured default'
         inheritLabel = `Codex · ${name}${sp.reasoningEffort ? ` · ${sp.reasoningEffort}` : ''}`
