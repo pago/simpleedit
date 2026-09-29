@@ -24,6 +24,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # Electron 42 has no postinstall: the first `require('electron')` downloads
+      # the binary. Parallel vitest workers would each start that download and
+      # race on dist/, so fetch it once here.
+      - name: Install Electron binary
+        run: pnpm exec install-electron
+
       - name: Type check
         run: pnpm typecheck
 
