@@ -13,7 +13,7 @@
  * registers the actual handlers in the renderer's ActionProvider.
  */
 
-import { defineCatalog } from '@json-render/core'
+import { defineCatalog, type VisibilityCondition } from '@json-render/core'
 import { schema } from '@json-render/svelte/schema'
 import { z } from 'zod'
 
@@ -457,7 +457,7 @@ export type Spec = {
       type: string
       props: Record<string, unknown>
       children?: string[]
-      visible?: unknown
+      visible?: VisibilityCondition
     }
   >
 }

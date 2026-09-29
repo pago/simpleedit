@@ -154,6 +154,28 @@ describe('validateSpec — schema layer', () => {
     expect(validateSpec({ root: 'r' }).ok).toBe(false)
     expect(validateSpec({ elements: {} }).ok).toBe(false)
   })
+
+  it('accepts a visibility condition json-render can evaluate', () => {
+    const result = validateSpec({
+      root: 'r',
+      elements: {
+        r: { type: 'ProseBlock', props: { content: 'hi' }, visible: { $or: [{ $state: '/open' }, false] } },
+      },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects a visibility condition json-render cannot evaluate, naming the element', () => {
+    const result = validateSpec({
+      root: 'r',
+      elements: { r: { type: 'ProseBlock', props: { content: 'hi' }, visible: 'when open' } },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      const issue = result.issues.find((i) => i.path.startsWith('elements.r.visible'))
+      expect(issue?.message).toContain('$state')
+    }
+  })
 })
 
 const SAMPLE_DIFF = [

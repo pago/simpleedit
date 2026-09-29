@@ -252,6 +252,9 @@ server.registerTool(
       'Spec format — flat tree:',
       '  spec = { root: "elementId", elements: { elementId: { type, props, children?, visible? } } }',
       'children is an array of element ids that point into the same elements map. Use this for Section/Row contents.',
+      'visible hides an element unless its condition holds. A condition is true/false, { $state: "/pointer" } (truthy),',
+      '  optionally with comparisons (eq, neq, gt, gte, lt, lte) and not: true to negate, an array of those (all must hold),',
+      '  { $and: [...] } or { $or: [...] }. Anything else is rejected with an issue at elements.<id>.visible.',
       '',
       'Example — checkpoint:',
       '  {',
@@ -347,7 +350,10 @@ server.registerTool(
               type: z.string(),
               props: z.record(z.string(), z.unknown()).optional(),
               children: z.array(z.string()).optional(),
-              visible: z.unknown().optional(),
+              visible: z
+                .unknown()
+                .optional()
+                .describe('Visibility condition, validated main-side: true/false, { $state, eq? … }, an array of those, { $and }, or { $or }.'),
             }),
           ),
         })
