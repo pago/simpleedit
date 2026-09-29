@@ -152,6 +152,20 @@ export interface PrReviewComment {
   /** Raw finding line ("88", "88–94", "L88", "—" …) — anchored best-effort. */
   line?: string
   text: string
+  /**
+   * The head commit this comment's `line` was read off, when it is known.
+   *
+   * The reviews API takes no `commit_id`, so GitHub anchors against whatever
+   * the head is when the review is POSTed. If the head moved after the comment
+   * was raised, that number now points at different code — see
+   * `reanchorForHead`, which is what has to run before a draft is posted.
+   *
+   * `undefined` means UNKNOWN, and unknown is not "a different head": a comment
+   * with no stamp is never treated as stale. Never store `''` here — that is a
+   * head this comment demonstrably does not belong to, which is the opposite of
+   * what an absent head means.
+   */
+  sha?: string
 }
 
 export interface PrReviewDraft {
@@ -195,7 +209,74 @@ export interface GithubReviewPayload {
 export function parseLineAnchor(line?: string): number | null {
   if (!line) return null
   const m = line.match(/\d+/)
-  return m ? Number(m[0]) : null
+  if (!m) return null
+  const n = Number(m[0])
+  // Files are 1-based, so 0 is not a line GitHub can anchor to — and a single
+  // rejected anchor 422s the review, collapsing EVERY anchor in it into the
+  // body. Folding one comment beats losing the placement of all of them.
+  return n > 0 ? n : null
+}
+
+/**
+ * Whether a comment's line anchor may be posted, and if not, why not.
+ *
+ * Three states, not two. Two rounds of this code asked "is it stale?", which
+ * has no answer when the stamp or the current head is missing — and both times
+ * the missing answer was resolved as "go ahead". On a write other people see,
+ * ONLY a positive match may anchor: a line number that cannot be checked is a
+ * line number that might land on code the reviewer never read, and GitHub
+ * accepts it silently because the reviews API carries no commit id.
+ */
+export type AnchorState =
+  /** No line was raised — a file-level note. Nothing to anchor either way. */
+  | 'none'
+  /** Read off the head that is on screen now. The only state that anchors. */
+  | 'current'
+  /** Read off a different head: the code under that line has changed. */
+  | 'moved'
+  /** Unstamped, or the current head is unknown. Cannot be checked. */
+  | 'unverified'
+
+export function anchorState(c: PrReviewComment, headSha: string): AnchorState {
+  if (c.line === undefined) return 'none'
+  if (!c.sha || !headSha) return 'unverified'
+  return c.sha === headSha ? 'current' : 'moved'
+}
+
+/** The states whose anchor must not reach GitHub. */
+function foldsAway(state: AnchorState): boolean {
+  return state === 'moved' || state === 'unverified'
+}
+
+/**
+ * Keep a line anchor only where it is verified against `headSha`.
+ *
+ * Everything else loses its line and keeps its file and text, so
+ * `buildReviewPayload` folds it into the review body — the same treatment an
+ * unanchorable finding already gets. Nothing is dropped; placement is what is
+ * given up, and only where placement could not be shown to be right.
+ *
+ * Returns the draft unchanged when every anchor is verified, so a caller can
+ * compare by identity.
+ */
+export function anchorsForHead(draft: PrReviewDraft, headSha: string): PrReviewDraft {
+  if (!draft.comments.some((c) => foldsAway(anchorState(c, headSha)))) return draft
+  return {
+    ...draft,
+    comments: draft.comments.map((c) =>
+      foldsAway(anchorState(c, headSha)) ? { ...c, line: undefined } : c
+    ),
+  }
+}
+
+/**
+ * How many comments are in each anchor state — so the UI can say WHICH reason
+ * cost a comment its line, rather than reporting one number for two causes.
+ */
+export function anchorCounts(draft: PrReviewDraft, headSha: string): Record<AnchorState, number> {
+  const counts: Record<AnchorState, number> = { none: 0, current: 0, moved: 0, unverified: 0 }
+  for (const c of draft.comments) counts[anchorState(c, headSha)]++
+  return counts
 }
 
 function foldedBullet(c: PrReviewComment): string {

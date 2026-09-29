@@ -2,7 +2,7 @@ import * as crypto from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { Tour, TourTopic, TourStatus, ModelRef } from '../shared/ipc-types'
 import { getModelConfig } from './models/config'
 import type { Runner } from './agent-tasks/runner'
@@ -16,19 +16,19 @@ export function tourKey(worktreePath: string, commitHash: string | null): string
 
 const activeTours = new Map<string, { abort: () => void }>()
 
-function send(wc: WebContents, channel: string, data: unknown): void {
+function send(wc: RemoteClient, channel: string, data: unknown): void {
   if (!wc.isDestroyed()) wc.send(channel, data)
 }
 
-function sendStatus(wc: WebContents, key: string, status: TourStatus, error?: string): void {
+function sendStatus(wc: RemoteClient, key: string, status: TourStatus, error?: string): void {
   send(wc, 'tour:status', { key, status, error })
 }
 
-function sendOverview(wc: WebContents, key: string, overview: string): void {
+function sendOverview(wc: RemoteClient, key: string, overview: string): void {
   send(wc, 'tour:overview', { key, overview })
 }
 
-function sendTopic(wc: WebContents, key: string, topic: TourTopic): void {
+function sendTopic(wc: RemoteClient, key: string, topic: TourTopic): void {
   send(wc, 'tour:topic', { key, topic })
 }
 
@@ -89,7 +89,7 @@ export function selectRunner(worktreePath: string): { runner: Runner; model?: Mo
 export async function startTour(
   worktreePath: string,
   commitHash: string | null,
-  webContents: WebContents,
+  webContents: RemoteClient,
   overrideOverview?: string
 ): Promise<void> {
   const key = tourKey(worktreePath, commitHash)

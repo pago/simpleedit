@@ -1,11 +1,12 @@
 import * as pty from 'node-pty'
-import { type WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import { existsSync } from 'fs'
-import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtySpawnOptions } from '../shared/ipc-types'
+import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtyClientId, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
 import { getProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
 import { applyAgentSignal } from './mcp-bridge'
+import { sendAgentStatus } from './agent-status'
 import './agents/codex'
 import './agents/opencode'
 
@@ -18,6 +19,61 @@ const terminals = new Map<string, IPty>()
  * plain terminals and Agent-View tabs, which wire nothing to clean up.
  */
 const agentCleanups = new Map<string, () => void>()
+/**
+ * Which client currently sizes each PTY. A PTY has one size but can have many
+ * clients attached (two desktop windows on the same session, later a phone),
+ * and the one that isn't being looked at must not resize the one that is —
+ * so a resize is applied only for the owner and dropped, never queued, for
+ * anyone else. Ownership moves on `claimTerminal`, which the renderer calls on
+ * genuine user attention; last claim wins.
+ *
+ * The spawner owns it to begin with, so the very first fit of a lone window
+ * lands without waiting for a claim — which matters because `hasUserAttention`
+ * is false under a headless CI display, where nothing would ever claim.
+ * Claiming also CARRIES the new geometry: a client whose resizes were being
+ * dropped has a container that may have reflowed since, and ownership without
+ * a size would leave the PTY at dimensions nothing on screen matches.
+ */
+const ptyOwner = new Map<string, PtyClientId>()
+/**
+ * Every client that has ever spawned or claimed a terminal, so an ownership
+ * change can reach all of them.
+ *
+ * Sending only to the claimer's own client is exactly backwards: the client
+ * that needs telling is the one that just LOST the size, and if it is another
+ * window it is another hub entirely. A hub is one identity with many
+ * transports, so a claim from a phone reaches its desktop window through the
+ * hub — but a claim from a SECOND WINDOW would never reach the first.
+ */
+const ptyClients = new Map<string, Set<RemoteClient>>()
+
+function rememberClient(id: string, client: RemoteClient): void {
+  let set = ptyClients.get(id)
+  if (!set) {
+    set = new Set()
+    ptyClients.set(id, set)
+  }
+  // Shed the dead first: a long-lived terminal outlives windows, and holding a
+  // closed window's hub here would keep it (and its transports) alive for the
+  // rest of the terminal's life.
+  for (const existing of [...set]) {
+    if (existing.isDestroyed()) set.delete(existing)
+  }
+  set.add(client)
+}
+
+/**
+ * Tell every client holding `id` who sizes it now, dropping any that have gone.
+ * `null` means nobody does — the owner's transport went away.
+ */
+function announceOwner(id: string, owner: PtyClientId | null): void {
+  const clients = ptyClients.get(id)
+  if (!clients) return
+  for (const client of [...clients]) {
+    if (client.isDestroyed()) clients.delete(client)
+    else client.send('pty:owner-changed', { id, owner })
+  }
+}
 /**
  * Ids whose `buildLaunch` is in flight. A provider's build can await (OpenCode
  * reserves a TCP port), which opens a window the synchronous spawn path never
@@ -82,7 +138,7 @@ export function getTerminalBacklog(id: string): PtyBacklog {
  * text lands in the backlog/terminal and the session shows the exited state.
  * Returns true when the cwd is usable.
  */
-function guardCwd(id: string, worktreePath: string, webContents: WebContents): boolean {
+function guardCwd(id: string, worktreePath: string, webContents: RemoteClient): boolean {
   if (existsSync(worktreePath)) return true
   const msg =
     `SimpleEdit: cannot start session — the directory does not exist:\r\n` +
@@ -107,7 +163,7 @@ function guardCwd(id: string, worktreePath: string, webContents: WebContents): b
  * input (an agent passing a malformed model id to `spawn_session`), not an
  * internal error — it must never escape as an unhandled rejection.
  */
-export function reportSpawnFailure(id: string, error: unknown, webContents: WebContents): void {
+export function reportSpawnFailure(id: string, error: unknown, webContents: RemoteClient): void {
   const detail = error instanceof Error ? error.message : String(error)
   const msg = `SimpleEdit: cannot start session — ${detail}\r\n`
   const offset = recordBacklog(id, msg)
@@ -194,7 +250,8 @@ function spawnAgentTerminal(
   worktreePath: string,
   plan: Pick<LaunchPlan, 'executable' | 'args' | 'env' | 'sessionId' | 'cleanup'>,
   opts: { emitSessionId?: boolean; clearStatusOnExit?: boolean },
-  webContents: WebContents,
+  webContents: RemoteClient,
+  owner: PtyClientId,
 ): void {
   const shell = agentShell()
   // -i -l: interactive login shell so both ~/.zprofile and ~/.zshrc are sourced,
@@ -203,6 +260,8 @@ function spawnAgentTerminal(
   const term = pty.spawn(shell, agentShellArgs(command), getPtyOptions(worktreePath))
 
   terminals.set(id, term)
+  ptyOwner.set(id, owner)
+  rememberClient(id, webContents)
   const cleanup = 'cleanup' in plan ? plan.cleanup : undefined
   if (cleanup) agentCleanups.set(id, cleanup)
 
@@ -225,16 +284,23 @@ function spawnAgentTerminal(
   term.onExit(({ exitCode }: { exitCode: number }) => {
     runAgentCleanup(id)
     terminals.delete(id)
+    ptyOwner.delete(id)
+    ptyClients.delete(id)
+    if (opts.clearStatusOnExit) {
+      // Clear the worktree's Claude status so the worktree picker (#87) and
+      // sidebar badges don't show stale 'running' for an exited tab. The
+      // status is per-worktreePath, so this only fires when the LAST Claude
+      // tab for this worktree exits — earlier exits leave the status as
+      // whichever still-alive tab last reported. Acceptable: the indicator
+      // tracks "is *any* Claude active here", not "is this specific tab".
+      //
+      // Reported outside the liveness guard: `sendAgentStatus` skips a dead
+      // client on its own, and an exit is the event that lets everything
+      // keyed by this terminal id let go of it. Skipping it for a closed
+      // window would leak one entry per session, forever.
+      sendAgentStatus(webContents, { worktreePath, status: 'exited', terminalId: id, precise: false })
+    }
     if (!webContents.isDestroyed()) {
-      if (opts.clearStatusOnExit) {
-        // Clear the worktree's Claude status so the worktree picker (#87) and
-        // sidebar badges don't show stale 'running' for an exited tab. The
-        // status is per-worktreePath, so this only fires when the LAST Claude
-        // tab for this worktree exits — earlier exits leave the status as
-        // whichever still-alive tab last reported. Acceptable: the indicator
-        // tracks "is *any* Claude active here", not "is this specific tab".
-        webContents.send('agent:status', { worktreePath, status: 'exited', terminalId: id, precise: false })
-      }
       webContents.send('pty:exit', { id, exitCode })
     }
   })
@@ -242,7 +308,8 @@ function spawnAgentTerminal(
 
 export function spawnTerminal(
   options: PtySpawnOptions,
-  webContents: WebContents
+  webContents: RemoteClient,
+  owner: PtyClientId,
 ): void {
   const { id, worktreePath } = options
 
@@ -255,6 +322,8 @@ export function spawnTerminal(
   const term = pty.spawn(shell, ['-l'], getPtyOptions(worktreePath))
 
   terminals.set(id, term)
+  ptyOwner.set(id, owner)
+  rememberClient(id, webContents)
 
   term.onData((data: string) => {
     emitPtyData(id, data)
@@ -266,6 +335,8 @@ export function spawnTerminal(
 
   term.onExit(({ exitCode }: { exitCode: number }) => {
     terminals.delete(id)
+    ptyOwner.delete(id)
+    ptyClients.delete(id)
     if (!webContents.isDestroyed()) {
       webContents.send('pty:exit', { id, exitCode })
     }
@@ -274,7 +345,8 @@ export function spawnTerminal(
 
 export async function spawnAgentTerminalForProvider(
   options: AgentSpawnOptions,
-  webContents: WebContents
+  webContents: RemoteClient,
+  owner: PtyClientId,
 ): Promise<void> {
   const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt, target } = options
 
@@ -331,7 +403,7 @@ export async function spawnAgentTerminalForProvider(
     return
   }
 
-  webContents.send('agent:status', { worktreePath, status: 'initializing', terminalId: id, precise: false })
+  sendAgentStatus(webContents, { worktreePath, status: 'initializing', terminalId: id, precise: false })
 
   // A provider that reports out-of-band opens its control channel here. Its
   // signals go through the very handler an HTTP hook would hit, so status, the
@@ -340,8 +412,7 @@ export async function spawnAgentTerminalForProvider(
   if (provider.attach) {
     const detach = provider.attach(plan, ctx, {
       status: (status, message) => {
-        if (webContents.isDestroyed()) return
-        webContents.send('agent:status', {
+        sendAgentStatus(webContents, {
           worktreePath,
           status,
           terminalId: id,
@@ -378,7 +449,7 @@ export async function spawnAgentTerminalForProvider(
     }
   }
 
-  spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: !!plan.sessionId, clearStatusOnExit: true }, webContents)
+  spawnAgentTerminal(id, worktreePath, plan, { emitSessionId: !!plan.sessionId, clearStatusOnExit: true }, webContents, owner)
 }
 
 /**
@@ -390,7 +461,8 @@ export async function spawnAgentTerminalForProvider(
  */
 export function spawnAgentsTerminal(
   options: PtySpawnOptions,
-  webContents: WebContents
+  webContents: RemoteClient,
+  owner: PtyClientId,
 ): void {
   const { id, worktreePath } = options
 
@@ -405,6 +477,7 @@ export function spawnAgentsTerminal(
     buildAgentsLaunch(),
     { emitSessionId: false, clearStatusOnExit: false },
     webContents,
+    owner,
   )
 }
 
@@ -415,10 +488,82 @@ export function writeToTerminal(id: string, data: string): void {
   }
 }
 
-export function resizeTerminal(id: string, cols: number, rows: number): void {
+/**
+ * Make `clientId` the client that sizes this PTY, and size it, atomically.
+ *
+ * Called when the user's attention lands on a terminal — never on reconnect or
+ * background layout churn, which would let an unwatched client take the size
+ * back. The geometry travels WITH the claim rather than following it: while
+ * this client was not the owner its resizes were dropped, so its container may
+ * have reflowed in the meantime, and a claim that only moved ownership would
+ * leave the PTY at a size nothing on screen matches until some unrelated later
+ * resize happened to correct it.
+ *
+ * An id with no live PTY is ignored. `pty:exit` deletes the owner entry while
+ * the component stays mounted, so every later focus would otherwise re-insert
+ * an entry for a dead terminal that nothing ever reclaims — and a client could
+ * name a terminal it was never attached to.
+ *
+ * The change is announced to EVERY client holding this terminal, not just the
+ * claimer's — the one that needs telling is the one that just lost the size,
+ * and if that is another window it is another hub. Without it the loser keeps
+ * fitting its xterm to a width the PTY no longer uses, with main silently
+ * dropping every resize it sends and neither side able to say why.
+ */
+export function claimTerminal(
+  id: string,
+  clientId: PtyClientId,
+  client: RemoteClient,
+  cols: number,
+  rows: number,
+): void {
+  const term = terminals.get(id)
+  if (!term) return
+  const moved = ptyOwner.get(id) !== clientId
+  rememberClient(id, client)
+  ptyOwner.set(id, clientId)
+  if (cols > 0 && rows > 0) term.resize(cols, rows)
+  if (moved) announceOwner(id, clientId)
+}
+
+/** The client currently allowed to resize `id`, if any. */
+export function getTerminalOwner(id: string): PtyClientId | undefined {
+  return ptyOwner.get(id)
+}
+
+export function resizeTerminal(id: string, cols: number, rows: number, clientId: PtyClientId): void {
+  const owner = ptyOwner.get(id)
+  // An UNOWNED terminal takes anyone's size. Ownership is dropped when the
+  // owning transport vanishes (a phone whose tunnel died), and treating that
+  // as "owned by nobody, so nobody may resize" would freeze the geometry for
+  // every remaining client until one of them happened to claim. Resizing does
+  // not take ownership: that stays a deliberate act, so two clients cannot
+  // trade the size back and forth by reflowing.
+  if (owner !== undefined && owner !== clientId) return
   const term = terminals.get(id)
   if (term && cols > 0 && rows > 0) {
     term.resize(cols, rows)
+  }
+}
+
+/**
+ * Drop every claim held by a client that is gone, and say so.
+ *
+ * A transport can disappear without any terminal knowing: a phone locks its
+ * screen, the tunnel drops, the socket closes. Its claim would otherwise
+ * outlive it forever — main keeps dropping the desktop window's resizes on
+ * behalf of a client that no longer exists, and that window keeps showing
+ * "Sized by another device" with no device on the other end.
+ *
+ * `pty:claim` fires on attention, which is a focus or visibility CHANGE, so an
+ * already-focused window sitting on the terminal never re-claims and never
+ * recovers on its own. Releasing here is what closes that.
+ */
+export function releaseTerminalsOwnedBy(clientId: PtyClientId): void {
+  for (const [id, owner] of [...ptyOwner]) {
+    if (owner !== clientId) continue
+    ptyOwner.delete(id)
+    announceOwner(id, null)
   }
 }
 
@@ -437,6 +582,8 @@ export function killTerminal(id: string): void {
   // closes. runAgentCleanup is a no-op if nothing was wired (plain terminals).
   runAgentCleanup(id)
   backlogs.delete(id)
+  ptyOwner.delete(id)
+  ptyClients.delete(id)
 }
 
 export function getActiveTerminalIds(): string[] {
@@ -450,4 +597,6 @@ export function killAllTerminals(): void {
     terminals.delete(id)
   }
   backlogs.clear()
+  ptyOwner.clear()
+  ptyClients.clear()
 }

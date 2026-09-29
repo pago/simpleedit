@@ -23,7 +23,14 @@ const MISS_TTL_MS = 30_000
 
 export type AgentExecutable = 'claude' | 'codex' | 'opencode'
 
-export function resolveExecutable(name: AgentExecutable): Promise<string | null> {
+/**
+ * Everything this app looks for on PATH. A closed union, not a string: `name`
+ * is interpolated into a shell command below, and the shell is what makes an
+ * open one dangerous.
+ */
+export type KnownExecutable = AgentExecutable | 'whisper-cli' | 'whisper-cpp' | 'tailscale'
+
+export function resolveExecutable(name: KnownExecutable): Promise<string | null> {
   const hit = cachedPaths.get(name)
   if (hit) return Promise.resolve(hit)
   const pending = resolvePromises.get(name)
@@ -63,7 +70,7 @@ export function resetExecutableCache(): void {
   resolvePromises.clear()
 }
 
-export async function isExecutableAvailable(name: AgentExecutable): Promise<boolean> {
+export async function isExecutableAvailable(name: KnownExecutable): Promise<boolean> {
   return (await resolveExecutable(name)) !== null
 }
 

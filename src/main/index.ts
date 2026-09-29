@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron'
+import { app, BrowserWindow, dialog, shell, Menu } from 'electron'
 import { join, basename, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -11,6 +11,8 @@ import {
   spawnAgentsTerminal,
   writeToTerminal,
   resizeTerminal,
+  claimTerminal,
+  releaseTerminalsOwnedBy,
   killTerminal,
   killAllTerminals,
   getActiveTerminalIds,
@@ -39,6 +41,27 @@ import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from '.
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
+import { ClientHub, type RemoteClient } from './client-hub'
+import { handleInvoke, handleSend } from './ipc-registry'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub, currentRemoteToken } from './remote/server'
+import { capDiffForRemote } from './remote/payload-cap'
+import { getTailscaleStatus } from './remote/tailscale'
+import { applyServe, getServeStatus, reclaimAbandonedServe, stopServeSync } from './remote/serve'
+import { getRemoteConfig, setRemoteConfig } from './remote/config'
+import { pairingTarget } from '../shared/remote-pairing'
+import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepAbandonedAudio } from './remote/stt'
+import {
+  addSubscription,
+  configurePush,
+  deviceIdFor,
+  getPushStatus,
+  handleAgentStatus,
+  removeAllSubscriptions,
+  removeSubscription,
+} from './remote/push'
+import { isPresentNow, startPresenceTracking, stopPresenceTracking } from './remote/presence'
+import { onAgentStatus } from './agent-status'
+import { listRemoteInterfaces, isAllowedBindHost, isLoopbackHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
 import { saveSession, loadSession, clearSession } from './session-store'
 import {
@@ -55,18 +78,34 @@ import {
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
+import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
+import { createSessionOnce, resolveSessionCreate } from './session-create'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
-import type { PrContext } from '../shared/screenprs'
+import type { PrContext, PrRef } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
-import { postReview } from './github/gh'
+import { GhTimeoutError, getPrDiff, postReview } from './github/gh'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
+
+/**
+ * Never let a stray rejection kill the app.
+ *
+ * Node's default is to exit, and exiting here means `before-quit` does not
+ * run — so `killAllTerminals` does not run, and every agent PTY is orphaned
+ * with its work in progress. That was always a bad trade; it became an
+ * unacceptable one when the remote transport made every IPC handler reachable
+ * by a caller we do not control. Logged loudly so it is still a bug to fix,
+ * not a failure mode to live with.
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[SimpleEdit] Unhandled promise rejection in main:', reason)
+})
 
 // ── Per-window repo tracking ──────────────────────────────
 // The PRIMARY repo per window (title bar, session save/load keying, and the
@@ -123,6 +162,51 @@ function getWindowForContents(webContentsId: number): BrowserWindow | null {
   ) ?? null
 }
 
+// ── Client identity ───────────────────────────────────────
+// One hub per window, keyed by that window's own `webContents.id` — the same
+// key the repo maps, watchers and MCP bridge use. Handlers hand modules the
+// hub rather than the raw sender, so an additional transport can later join
+// this identity without every event-pushing module learning about fan-out.
+const clientHubs = new Map<number, ClientHub>()
+
+/**
+ * The calling transport's own `PtyClientId`. Distinct from the hub id: a
+ * window and the phone attached to it share one hub, and size ownership is
+ * precisely what they must be able to take from each other. Remote sockets
+ * carry a `w`-prefixed key, so the two spaces cannot collide.
+ */
+function clientKeyOf(sender: RemoteClient): PtyClientId {
+  return sender.clientKey ?? String(sender.id)
+}
+
+/**
+ * The hub for `sender`'s window, creating it if this is the first call.
+ *
+ * Refuses to resurrect one. A remote socket can outlive the window it joined,
+ * and its next call arrives naming a destroyed window id — minting a fresh hub
+ * for it would revive everything keyed by that id behind the teardown that
+ * already ran: an MCP bridge nothing will stop, watchers installed after the
+ * unwatch, a repo map entry for a window that is gone.
+ */
+/**
+ * A diff bounded for whoever asked, which is only ever a socket client. A real
+ * `WebContents` has no `clientKey`; every other transport does.
+ */
+function capForClient(sender: RemoteClient, diff: string): string {
+  return sender.clientKey === undefined ? diff : capDiffForRemote(diff)
+}
+
+function hubFor(sender: RemoteClient): ClientHub {
+  const existing = clientHubs.get(sender.id)
+  if (existing) return existing
+  if (sender.isDestroyed()) {
+    throw new Error(`Window ${sender.id} is gone`)
+  }
+  const hub = new ClientHub(sender.id, sender)
+  clientHubs.set(sender.id, hub)
+  return hub
+}
+
 // Let the MCP bridge resolve a window's worktree list (for hook cwd→worktree
 // matching and open_worktree/show_diff validation) without exposing the
 // per-window repo map. Registered once at module load.
@@ -150,6 +234,180 @@ setRepoDiscoverer(async (webContentsId, cwd) => {
   const worktrees = await listWorktrees(repoPath).catch(() => [])
   return { repoPath, worktrees }
 })
+
+// ── Remote access ─────────────────────────────────────────
+// One server for the whole app, off unless the user turns it on. A connecting
+// browser JOINS a window's hub rather than minting an identity of its own —
+// see remote/server.ts for why, and for the security rules that surface obeys.
+
+/** Where the built web bundle lives, beside the renderer's own output. */
+function remoteWebRoot(): string {
+  return join(__dirname, '../web')
+}
+
+/**
+ * The window a new socket attaches to: the focused one if it has a repo, else
+ * the first window that does, else the first window at all.
+ *
+ * Deliberately not "a window of its own". Everything main knows about a
+ * session — its repo, its worktrees, its MCP bridge, its watchers — is keyed
+ * by a window id, so the phone has to borrow one.
+ */
+function remoteAttachTarget(): ClientHub | null {
+  const withRepo = BrowserWindow.getAllWindows().filter(
+    (w) => !w.isDestroyed() && windowRepoMap.has(w.webContents.id),
+  )
+  const focused = BrowserWindow.getFocusedWindow()
+  const chosen =
+    (focused && withRepo.includes(focused) ? focused : undefined) ??
+    withRepo[0] ??
+    BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+  if (!chosen) return null
+  return hubFor(chosen.webContents)
+}
+
+/**
+ * Status goes to EVERY window, not the sender's hub: the pane that shows it
+ * lives in the settings window, while the events that change it (a phone
+ * connecting) arrive on a different one entirely.
+ */
+function broadcastRemoteStatus(status: RemoteAccessStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('remote:status-changed', status)
+  }
+}
+
+function broadcastPushStatus(status: PushStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('push:status-changed', status)
+  }
+}
+
+function broadcastServeStatus(status: TailscaleServeStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('remote:serve-changed', status)
+  }
+}
+
+/**
+ * Point `tailscale serve` at the server that is running NOW, or remove the
+ * mapping entirely. Called on every path that starts, stops or re-binds the
+ * server, and by the opt-in toggle.
+ *
+ * Two properties are decided here rather than in the pane:
+ *
+ *  - **The mapping never outlives its server.** The port is ephemeral, so a
+ *    mapping that survives a restart points at a dead port or, worse, at a
+ *    recycled one belonging to something else.
+ *  - **Serve only ever proxies a LOOPBACK bind.** Not a style preference:
+ *    tailscaled terminates TLS and forwards over plain HTTP, and `originOf`
+ *    only honours the forwarded `https` scheme from a loopback peer. Pointed
+ *    at the Tailscale address instead, every subresource would be refused as
+ *    cross-origin and the phone would get a blank page. Binding loopback is
+ *    also strictly safer: with Serve on, nothing answers in the clear on the
+ *    tailnet at all.
+ *
+ * Everything up to `applyServe` is synchronous, so the latest intent always
+ * wins over one still in flight.
+ */
+function syncServe(): Promise<TailscaleServeStatus> {
+  const config = getRemoteConfig()
+  const status = getRemoteStatus()
+  const token = currentRemoteToken()
+  const want =
+    config.serveEnabled && status.running && status.port !== null && token !== null && isLoopbackHost(status.host)
+      ? { port: status.port, token }
+      : null
+  return applyServe(want).then((next) => {
+    broadcastServeStatus(next)
+    return next
+  })
+}
+
+// ── Push notifications ────────────────────────────────────
+/**
+ * Where a notification tap should land, or null when nothing would work.
+ *
+ * The same decision the pairing QR makes, reused rather than restated: never a
+ * loopback URL (it resolves, on the phone, to the phone), HTTPS-over-Serve
+ * first, and nothing at all when the server is down. A notification whose tap
+ * opens a dead page is worse than no notification, so this returning null is
+ * what makes `handleAgentStatus` stay quiet.
+ */
+function pushTargetUrl(): string | null {
+  const status = getRemoteStatus()
+  const serve = getServeStatus()
+  return pairingTarget({
+    running: status.running,
+    directUrl: status.url,
+    boundToTailscale: listRemoteInterfaces().some((i) => i.isTailscale && i.address === status.host),
+    serveUrl: serve.url,
+  }).url
+}
+
+configurePush({
+  targetUrl: pushTargetUrl,
+  // The same question the presence marker answers for Claude Code, asked of
+  // our own send — writing that marker and not consulting it would have made
+  // SimpleEdit quieter for Claude and noisier for everything else.
+  userIsPresent: isPresentNow,
+  // The renderer owns session labels; main only holds the list it was handed.
+  labelFor: (windowId, terminalId) =>
+    getWindowSessions(windowId).find((session) => session.terminalId === terminalId)?.label ?? null,
+  onStatusChange: broadcastPushStatus,
+})
+
+// The trigger. Registered at module load, beside the rest of the remote
+// wiring, so it is on before any window exists — a session can block while
+// the settings pane has never been opened.
+onAgentStatus((event, client) => handleAgentStatus(event, client.id))
+
+/**
+ * Serialised. Two `remote:set-*` calls landing together would otherwise each
+ * stop and each start, and the second could join the first's in-flight start
+ * and silently inherit its host.
+ */
+let remoteApply: Promise<RemoteAccessStatus> = Promise.resolve(getRemoteStatus())
+
+function applyRemoteConfig(): Promise<RemoteAccessStatus> {
+  remoteApply = remoteApply.then(applyRemoteConfigNow, applyRemoteConfigNow)
+  return remoteApply
+}
+
+async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
+  const config = getRemoteConfig()
+  stopRemoteServer()
+  if (!config.enabled) {
+    await syncServe()
+    return getRemoteStatus()
+  }
+  // The stored preference is kept verbatim, so this is where a host that is no
+  // longer bindable — a Tailscale address with Tailscale down — is caught. It
+  // fails closed and SAYS so, rather than quietly binding somewhere else.
+  if (!isAllowedBindHost(config.host)) {
+    await syncServe()
+    return remoteBindRefused(config.host)
+  }
+  const status = await startRemoteServer({
+    host: config.host,
+    port: config.port,
+    webRoot: remoteWebRoot(),
+    attachTarget: remoteAttachTarget,
+    onStatusChange: broadcastRemoteStatus,
+    onClientGone: releaseTerminalsOwnedBy,
+  })
+  // After the port is known, and awaited: the mapping is part of "remote
+  // access is up", not something that drifts into place afterwards.
+  await syncServe()
+  return status
+}
+
+function remoteBindRefused(host: string): RemoteAccessStatus {
+  return {
+    ...getRemoteStatus(),
+    error: `${host} is not available right now. If it is your Tailscale address, Tailscale may be down; pick an address below to change it.`,
+  }
+}
 
 // ── Window creation ───────────────────────────────────────
 /**
@@ -182,22 +440,29 @@ function createWindow(repoPath?: string): BrowserWindow {
   })
 
   const webContentsId = win.webContents.id
+  const hub = new ClientHub(webContentsId, win.webContents)
+  clientHubs.set(webContentsId, hub)
 
   if (repoPath) {
     windowRepoMap.set(webContentsId, repoPath)
     registerWindowRepo(webContentsId, repoPath)
     addRecentRepo(repoPath)
-    startBridge(webContentsId, win.webContents).catch((err) => {
+    startBridge(webContentsId, hub).catch((err) => {
       console.error('[SimpleEdit] Failed to start MCP bridge:', err)
     })
   }
 
   win.on('closed', () => {
+    // First: a socket that joined this window must not survive it. Left open,
+    // its next invoke would name a destroyed window id and rebuild everything
+    // the teardown below is about to take apart.
+    closeSocketsForHub(webContentsId)
     stopBridge(webContentsId)
     unwatchAllWorktreeListsForWindow(webContentsId)
     unwatchAllEditorFilesForWindow(webContentsId)
     windowRepoMap.delete(webContentsId)
     windowReposMap.delete(webContentsId)
+    clientHubs.delete(webContentsId)
   })
 
   win.on('ready-to-show', () => {
@@ -284,11 +549,11 @@ function createSettingsWindow(): BrowserWindow {
 
 function registerAllHandlers(): void {
   // ── App ─────────────────────────────────────────────────
-  ipcMain.handle('app:get-repo', (event) => {
+  handleInvoke('app:get-repo', (event) => {
     return getRepoForSender(event.sender.id)
   })
 
-  ipcMain.handle('app:set-repo', (event, repoPath: string) => {
+  handleInvoke('app:set-repo', (event, repoPath: string) => {
     windowRepoMap.set(event.sender.id, repoPath)
     registerWindowRepo(event.sender.id, repoPath)
     addRecentRepo(repoPath)
@@ -296,12 +561,12 @@ function registerAllHandlers(): void {
     if (win) {
       win.setTitle(`SimpleEdit — ${basename(repoPath).replace('.git', '')}`)
     }
-    startBridge(event.sender.id, event.sender).catch((err) => {
+    startBridge(event.sender.id, hubFor(event.sender)).catch((err) => {
       console.error('[SimpleEdit] Failed to start MCP bridge:', err)
     })
   })
 
-  ipcMain.handle('app:pick-repo', async (event) => {
+  handleInvoke('app:pick-repo', async (event) => {
     const win = getWindowForContents(event.sender.id)
     const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
       title: 'Select bare git repository',
@@ -311,7 +576,7 @@ function registerAllHandlers(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('app:pick-directory', async (event) => {
+  handleInvoke('app:pick-directory', async (event) => {
     const win = getWindowForContents(event.sender.id)
     const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
       title: 'Select destination directory',
@@ -321,98 +586,204 @@ function registerAllHandlers(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('app:clone-repo', async (_event, repoUrl: string, parentDir: string) => {
+  handleInvoke('app:clone-repo', async (_event, repoUrl: string, parentDir: string) => {
     return cloneBareRepo(repoUrl, parentDir)
   })
 
-  ipcMain.handle('app:recent-repos', () => {
+  handleInvoke('app:recent-repos', () => {
     return getRecentRepos()
   })
 
-  ipcMain.handle('app:open-window', (_event, repoPath?: string) => {
+  handleInvoke('app:open-window', (_event, repoPath?: string) => {
     createWindow(repoPath)
   })
 
-  ipcMain.handle('app:open-external', (_event, url: string) => {
-    shell.openExternal(url)
+  handleInvoke('app:open-external', async (_event, url: string) => {
+    // Awaited and swallowed, not floated. `openExternal` rejects for a URL the
+    // OS will not handle, and a dropped rejection takes the main process down.
+    // Swallowed rather than rethrown because the channel's result is `void` and
+    // its callers float the invoke — rethrowing would only move the unhandled
+    // rejection into the renderer.
+    try {
+      await shell.openExternal(url)
+    } catch (err) {
+      console.error('[SimpleEdit] app:open-external failed:', err)
+    }
   })
 
-  ipcMain.handle('app:save-dropped-blob', (_event, filename: string, bytes: Uint8Array) => {
+  handleInvoke('app:save-dropped-blob', (_event, filename: string, bytes: Uint8Array) => {
     return saveDroppedBlob(filename, bytes)
   })
 
-  // ── PTY ─────────────────────────────────────────────────
-  ipcMain.handle('pty:spawn', (event, options: PtySpawnOptions) => {
-    spawnTerminal(options, event.sender)
+  handleInvoke('app:client-key', (event) => {
+    return clientKeyOf(event.sender)
   })
 
-  ipcMain.handle('pty:write', (_event, id: string, data: string) => {
+  // ── Remote access ───────────────────────────────────────
+  handleInvoke('remote:status', () => getRemoteStatus())
+  handleInvoke('remote:config', () => getRemoteConfig())
+  handleInvoke('remote:interfaces', () => listRemoteInterfaces())
+  handleInvoke('tailscale:status', () => getTailscaleStatus())
+  handleInvoke('tailscale:serve-status', () => getServeStatus())
+
+  handleInvoke('remote:set-serve-enabled', async (event, enabled: boolean) => {
+    // Not reachable over the socket. Every other `remote:*` setter decides what
+    // THIS Mac does; this one decides what the tailnet can reach, and a token
+    // holder must not be able to widen the surface from loopback-only to every
+    // device on the tailnet in a single call. `clientKey` is stamped by main
+    // from the call's origin, so a socket cannot claim to be a window.
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('Tailscale Serve is not available to remote clients')
+    }
+    const config = getRemoteConfig()
+    // Refused up front so the pane can say why, rather than leaving the user
+    // with a toggle that is on and a mapping that never appears. `syncServe`
+    // enforces the same rule at the point of use.
+    if (enabled && !isLoopbackHost(config.host)) {
+      throw new Error(
+        'Tailscale Serve proxies to this Mac over loopback, so remote access has to be bound to 127.0.0.1. Pick "This Mac only" above — with Serve on, that is also the safer choice: nothing answers in the clear on the tailnet.',
+      )
+    }
+    setRemoteConfig({ ...config, serveEnabled: enabled })
+    return await syncServe()
+  })
+
+  handleInvoke('remote:set-enabled', async (_event, enabled: boolean) => {
+    setRemoteConfig({ ...getRemoteConfig(), enabled })
+    const status = await applyRemoteConfig()
+    broadcastRemoteStatus(status)
+    return status
+  })
+
+  handleInvoke('remote:set-host', async (_event, host: string) => {
+    // Validated HERE, not in the pane. This channel is reachable over the
+    // remote socket, so a token holder could otherwise name `0.0.0.0` and turn
+    // a loopback server into one answering on every interface — persisted, so
+    // it would survive a restart.
+    if (!isAllowedBindHost(host)) {
+      throw new Error(`Refusing to bind ${host}: not a loopback or Tailscale address`)
+    }
+    setRemoteConfig({ ...getRemoteConfig(), host })
+    const status = await applyRemoteConfig()
+    broadcastRemoteStatus(status)
+    return status
+  })
+
+  // ── Push notifications ──────────────────────────────────
+  // Reachable over the socket by design: the phone is where a subscription is
+  // made. `push:status` carries the VAPID PUBLIC key (a browser needs it to
+  // subscribe) and device rows without endpoints — never the private key, and
+  // never a capability that could be replayed.
+  handleInvoke('push:status', () => getPushStatus())
+
+  handleInvoke('push:subscribe', (_event, subscription: PushSubscriptionInput) =>
+    addSubscription(subscription),
+  )
+
+  handleInvoke('push:unsubscribe', (_event, endpointOrId: string) => removeSubscription(endpointOrId))
+
+  handleInvoke('push:forget-all', () => removeAllSubscriptions())
+
+  handleInvoke('push:device-id', (_event, endpoint: string) => deviceIdFor(endpoint))
+
+  // ── Speech to text ──────────────────────────────────────
+  // Reachable over the socket by design: the phone is where dictation happens,
+  // and a transcription is a pure function of the bytes it is handed.
+  handleInvoke('stt:status', () => getSttStatus())
+
+  handleInvoke('stt:set-model-path', (_event, path: string) => setSttModelPath(path))
+
+  handleInvoke('stt:transcribe', (_event, audioBase64: string) => transcribe(audioBase64))
+
+  handleInvoke('stt:pick-model', async (event) => {
+    const win = getWindowForContents(event.sender.id)
+    const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
+      title: 'Select a whisper.cpp model',
+      filters: [{ name: 'GGML model', extensions: ['bin'] }],
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return await setSttModelPath(result.filePaths[0])
+  })
+
+  // ── PTY ─────────────────────────────────────────────────
+  handleInvoke('pty:spawn', (event, options: PtySpawnOptions) => {
+    spawnTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
+  })
+
+  handleInvoke('pty:write', (_event, id: string, data: string) => {
     writeToTerminal(id, data)
   })
 
-  ipcMain.handle('pty:resize', (_event, id: string, cols: number, rows: number) => {
-    resizeTerminal(id, cols, rows)
+  // The client id is stamped from the IPC event, never taken from the args —
+  // a renderer must not be able to resize as (or claim on behalf of) another.
+  handleInvoke('pty:resize', (event, id: string, cols: number, rows: number) => {
+    resizeTerminal(id, cols, rows, clientKeyOf(event.sender))
   })
 
-  ipcMain.handle('pty:kill', (_event, id: string) => {
+  handleInvoke('pty:claim', (event, id: string, cols: number, rows: number) => {
+    claimTerminal(id, clientKeyOf(event.sender), hubFor(event.sender), cols, rows)
+  })
+
+  handleInvoke('pty:kill', (_event, id: string) => {
     killTerminal(id)
   })
 
-  ipcMain.handle('pty:active-ids', () => {
+  handleInvoke('pty:active-ids', () => {
     return getActiveTerminalIds()
   })
 
-  ipcMain.handle('pty:backlog', (_event, id: string) => {
+  handleInvoke('pty:backlog', (_event, id: string) => {
     return getTerminalBacklog(id)
   })
 
   // ── File system ─────────────────────────────────────────
-  ipcMain.handle('fs:list', (_event, dirPath: string) => {
+  handleInvoke('fs:list', (_event, dirPath: string) => {
     return listDirectory(dirPath)
   })
 
-  ipcMain.handle('fs:list-all', (_event, worktreePath: string) => {
+  handleInvoke('fs:list-all', (_event, worktreePath: string) => {
     return listAllFiles(worktreePath)
   })
 
-  ipcMain.handle('fs:read', (_event, filePath: string) => {
+  handleInvoke('fs:read', (_event, filePath: string) => {
     return readFile(filePath)
   })
 
-  ipcMain.handle('fs:write', (_event, filePath: string, content: string) => {
+  handleInvoke('fs:write', (_event, filePath: string, content: string) => {
     writeFile(filePath, content)
   })
 
-  ipcMain.handle('fs:create-file', (_event, filePath: string) => {
+  handleInvoke('fs:create-file', (_event, filePath: string) => {
     createFile(filePath)
   })
 
-  ipcMain.handle('fs:create-dir', (_event, dirPath: string) => {
+  handleInvoke('fs:create-dir', (_event, dirPath: string) => {
     createDirectory(dirPath)
   })
 
-  ipcMain.handle('fs:rename', (_event, oldPath: string, newPath: string) => {
+  handleInvoke('fs:rename', (_event, oldPath: string, newPath: string) => {
     renamePath(oldPath, newPath)
   })
 
-  ipcMain.handle('fs:delete', async (_event, filePath: string) => {
+  handleInvoke('fs:delete', async (_event, filePath: string) => {
     await deletePath(filePath)
   })
 
   // ── Editor ──────────────────────────────────────────────
-  ipcMain.handle('editor:open', (_event, filePath: string) => {
+  handleInvoke('editor:open', (_event, filePath: string) => {
     return readFile(filePath)
   })
 
-  ipcMain.handle('editor:save', (_event, filePath: string, content: string) => {
+  handleInvoke('editor:save', (_event, filePath: string, content: string) => {
     return writeFile(filePath, content)
   })
 
-  ipcMain.handle('editor:watch', (event, filePath: string) => {
-    watchEditorFile(event.sender.id, filePath, event.sender)
+  handleInvoke('editor:watch', (event, filePath: string) => {
+    watchEditorFile(hubFor(event.sender), filePath)
   })
 
-  ipcMain.handle('editor:unwatch', (event, filePath: string) => {
+  handleInvoke('editor:unwatch', (event, filePath: string) => {
     unwatchEditorFile(event.sender.id, filePath)
   })
 
@@ -421,7 +792,7 @@ function registerAllHandlers(): void {
   // session pointed at another bare repo) it targets that repo; when omitted
   // it falls back to the window's primary repo — preserving single-repo
   // behavior byte-for-byte.
-  ipcMain.handle('worktree:list', async (event, repoPath?: string) => {
+  handleInvoke('worktree:list', async (event, repoPath?: string) => {
     try {
       const repo = resolveWorktreeRepo(event.sender.id, repoPath)
       return await listWorktrees(repo)
@@ -431,38 +802,39 @@ function registerAllHandlers(): void {
     }
   })
 
-  ipcMain.handle('worktree:create', async (event, name: string, baseBranch?: string, repoPath?: string) => {
+  handleInvoke('worktree:create', async (event, name: string, baseBranch?: string, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return createWorktree(repo, name, baseBranch)
   })
 
-  ipcMain.handle('worktree:checkout', async (event, branch: string, repoPath?: string) => {
+  handleInvoke('worktree:checkout', async (event, branch: string, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return checkoutWorktree(repo, branch)
   })
 
-  ipcMain.handle('worktree:branches', async (event, repoPath?: string) => {
+  handleInvoke('worktree:branches', async (event, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return listAvailableBranches(repo)
   })
 
-  ipcMain.handle('worktree:remove', async (event, worktreePath: string, repoPath?: string) => {
+  handleInvoke('worktree:remove', async (event, worktreePath: string, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
     return removeWorktree(repo, worktreePath)
   })
 
-  ipcMain.handle('worktree:watch', (event, repoPath?: string) => {
+  handleInvoke('worktree:watch', (event, repoPath?: string) => {
     const repo = resolveWorktreeRepo(event.sender.id, repoPath)
-    watchWorktreeList(event.sender.id, repo, event.sender)
+    watchWorktreeList(hubFor(event.sender), repo)
   })
 
-  ipcMain.handle('worktree:unwatch', (event, repoPath?: string) => {
+  handleInvoke('worktree:unwatch', (event, repoPath?: string) => {
     unwatchWorktreeList(event.sender.id, repoPath)
   })
 
   // ── Interactive agents ──────────────────────────────────
-  ipcMain.handle('agent:spawn', async (event, options: AgentSpawnOptions) => {
+  handleInvoke('agent:spawn', async (event, options: AgentSpawnOptions) => {
     const bridge = getBridgeInfo(event.sender.id)
+    const client = hubFor(event.sender)
     // Awaited and caught. `buildLaunch` validates ids that reach a login-shell
     // command string, so it rejects on input an agent supplied — a bad
     // `spawn_session` model id is ordinary bad input, not an internal error.
@@ -475,158 +847,170 @@ function registerAllHandlers(): void {
           ...options,
           ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
         },
-        event.sender
+        client,
+        clientKeyOf(event.sender)
       )
     } catch (error) {
-      reportSpawnFailure(options.id, error, event.sender)
+      reportSpawnFailure(options.id, error, client)
       return
     }
     // After the spawn, not before: attachment maps a terminal that must exist.
-    attachToTerminal(options.id, options.worktreePath, event.sender, options.target.provider)
+    attachToTerminal(options.id, options.worktreePath, client, options.target.provider)
   })
 
-  ipcMain.handle('agent:spawn-agents', (event, options: PtySpawnOptions) => {
-    spawnAgentsTerminal(options, event.sender)
+  handleInvoke('agent:spawn-agents', (event, options: PtySpawnOptions) => {
+    spawnAgentsTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
   })
 
-  ipcMain.handle('agent:attach', (event, terminalId: string, worktreePath: string) => {
-    attachToTerminal(terminalId, worktreePath, event.sender)
+  handleInvoke('agent:attach', (event, terminalId: string, worktreePath: string) => {
+    attachToTerminal(terminalId, worktreePath, hubFor(event.sender))
   })
 
-  ipcMain.handle('agent:detach', (_event, terminalId: string) => {
+  handleInvoke('agent:detach', (_event, terminalId: string) => {
     detachFromTerminal(terminalId)
   })
 
-  ipcMain.handle('agent:capabilities', (_event, provider: AgentProviderId) => getProvider(provider).capabilities)
-  ipcMain.handle('agent:available', (_event, provider: AgentProviderId) => isExecutableAvailable(provider))
-  ipcMain.handle('agent:providers', () => registeredProviderIds())
+  handleInvoke('agent:capabilities', (_event, provider: AgentProviderId) => getProvider(provider).capabilities)
+  handleInvoke('agent:available', (_event, provider: AgentProviderId) => isExecutableAvailable(provider))
+  handleInvoke('agent:providers', () => registeredProviderIds())
 
   // ── Git ─────────────────────────────────────────────────
-  ipcMain.handle('git:log', (_event, worktreePath: string, count?: number) => {
+  handleInvoke('git:log', (_event, worktreePath: string, count?: number) => {
     return getCommitLog(worktreePath, count)
   })
 
-  ipcMain.handle('git:diff', (_event, worktreePath: string, commitHash: string) => {
-    return getCommitDiff(worktreePath, commitHash)
+  // Diffs are the one read with no upper bound, and an oversized reply on a
+  // socket does not arrive slowly — it disconnects the client and takes its
+  // live terminal stream with it. Bounded for a socket only: the window's own
+  // renderer reaches this over IPC and renders diffs in Monaco.
+  handleInvoke('git:diff', async (event, worktreePath: string, commitHash: string) => {
+    return capForClient(event.sender, await getCommitDiff(worktreePath, commitHash))
   })
 
-  ipcMain.handle('git:commit-files', (_event, worktreePath: string, commitHash: string) => {
+  handleInvoke('git:commit-files', (_event, worktreePath: string, commitHash: string) => {
     return getCommitFiles(worktreePath, commitHash)
   })
 
-  ipcMain.handle('git:file-at-commit', (_event, worktreePath: string, commitHash: string, filePath: string) => {
+  handleInvoke('git:file-at-commit', (_event, worktreePath: string, commitHash: string, filePath: string) => {
     return getFileAtCommit(worktreePath, commitHash, filePath)
   })
 
-  ipcMain.handle('git:staging-files', (_event, worktreePath: string) => {
+  handleInvoke('git:staging-files', (_event, worktreePath: string) => {
     return getStagingFiles(worktreePath)
   })
 
-  ipcMain.handle('git:staging-diff', (_event, worktreePath: string) => {
-    return getStagingDiff(worktreePath)
+  handleInvoke('git:staging-diff', async (event, worktreePath: string) => {
+    return capForClient(event.sender, await getStagingDiff(worktreePath))
   })
 
-  ipcMain.handle('git:file-at-head', (_event, worktreePath: string, filePath: string) => {
+  handleInvoke('git:file-at-head', (_event, worktreePath: string, filePath: string) => {
     return getFileAtHead(worktreePath, filePath)
   })
 
-  ipcMain.handle('git:watch', (event, worktreePath: string) => {
-    return watchGitRefs(worktreePath, event.sender)
+  handleInvoke('git:watch', (event, worktreePath: string) => {
+    return watchGitRefs(worktreePath, hubFor(event.sender))
   })
 
-  ipcMain.handle('git:unwatch', (_event, worktreePath: string) => {
+  handleInvoke('git:unwatch', (_event, worktreePath: string) => {
     unwatchGitRefs(worktreePath)
   })
 
-  ipcMain.handle('git:branch-diff', (_event, worktreePath: string) => {
+  handleInvoke('git:branch-diff', (_event, worktreePath: string) => {
     return getBranchDiff(worktreePath)
   })
 
-  ipcMain.handle('git:branch-files', (_event, worktreePath: string) => {
+  handleInvoke('git:branch-files', (_event, worktreePath: string) => {
     return getBranchFiles(worktreePath)
   })
 
-  ipcMain.handle('git:file-at-branch-base', (_event, worktreePath: string, filePath: string) => {
+  handleInvoke('git:file-at-branch-base', (_event, worktreePath: string, filePath: string) => {
     return getFileAtBranchBase(worktreePath, filePath)
   })
 
   // ── Review ──────────────────────────────────────────────
-  ipcMain.handle('review:start', (event, worktreePath: string, commitHash: string | null) => {
-    return startReview(worktreePath, commitHash, event.sender)
+  handleInvoke('review:start', (event, worktreePath: string, commitHash: string | null) => {
+    return startReview(worktreePath, commitHash, hubFor(event.sender))
   })
 
-  ipcMain.handle('review:cancel', (_event, worktreePath: string, commitHash: string | null) => {
+  handleInvoke('review:cancel', (_event, worktreePath: string, commitHash: string | null) => {
     cancelReview(worktreePath, commitHash)
   })
 
   // ── Screen PRs ─────────────────────────────────────────
-  ipcMain.handle('screenprs:start', (event, filters: ScreenPrsFilters) => {
-    return startScreening(filters, event.sender)
+  handleInvoke('screenprs:start', (event, filters: ScreenPrsFilters) => {
+    return startScreening(filters, hubFor(event.sender))
   })
 
-  ipcMain.handle('screenprs:cancel', (event) => {
-    cancelScreening(event.sender)
+  handleInvoke('screenprs:cancel', (event) => {
+    cancelScreening(hubFor(event.sender))
   })
 
-  ipcMain.handle('screenprs:deep-start', (event, context: PrContext) => {
-    return startDeepReview(context, event.sender)
+  handleInvoke('screenprs:pr-diff', (_event, pr: Pick<PrRef, 'url'>) => {
+    return getPrDiff(pr)
   })
 
-  ipcMain.handle('screenprs:deep-cancel', (_event, url: string) => {
+  handleInvoke('screenprs:deep-start', (event, context: PrContext) => {
+    return startDeepReview(context, hubFor(event.sender))
+  })
+
+  handleInvoke('screenprs:deep-cancel', (_event, url: string) => {
     cancelDeepReview(url)
   })
 
-  ipcMain.handle('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
+  handleInvoke('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
     try {
       const { reviewUrl, foldedComments } = await postReview(request.pr, buildReviewPayload(request.draft))
       return { ok: true, reviewUrl, foldedComments }
     } catch (err: unknown) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      const error = err instanceof Error ? err.message : String(err)
+      // A killed POST may still have been received. Saying "nothing was posted"
+      // here is what would make a retry post the review twice.
+      return err instanceof GhTimeoutError ? { ok: false, error, delivered: 'unknown' } : { ok: false, error }
     }
   })
 
   // ── Tour ───────────────────────────────────────────────
-  ipcMain.handle('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
-    return startTour(worktreePath, commitHash, event.sender, overrideOverview)
+  handleInvoke('tour:start', (event, worktreePath: string, commitHash: string | null, overrideOverview?: string) => {
+    return startTour(worktreePath, commitHash, hubFor(event.sender), overrideOverview)
   })
 
-  ipcMain.handle('tour:cancel', (_event, worktreePath: string, commitHash: string | null) => {
+  handleInvoke('tour:cancel', (_event, worktreePath: string, commitHash: string | null) => {
     cancelTour(worktreePath, commitHash)
   })
 
-  ipcMain.handle('tour:load', (_event, worktreePath: string, commitHash: string | null) => {
+  handleInvoke('tour:load', (_event, worktreePath: string, commitHash: string | null) => {
     return loadTour(worktreePath, commitHash)
   })
 
-  ipcMain.handle('tour:save-overview', (_event, worktreePath: string, commitHash: string | null, overview: string) => {
+  handleInvoke('tour:save-overview', (_event, worktreePath: string, commitHash: string | null, overview: string) => {
     saveOverview(worktreePath, commitHash, overview)
   })
 
   // ── Models (local Ollama + cloud Claude) ────────────────
-  ipcMain.handle('models:available', () => {
+  handleInvoke('models:available', () => {
     return isOllamaAvailable()
   })
 
-  ipcMain.handle('models:claude', () => listClaudeModels())
+  handleInvoke('models:claude', () => listClaudeModels())
 
-  ipcMain.handle('models:codex', () => listCodexModels())
+  handleInvoke('models:codex', () => listCodexModels())
 
-  ipcMain.handle('models:opencode', () => getOpenCodeModels())
+  handleInvoke('models:opencode', () => getOpenCodeModels())
 
-  ipcMain.handle('models:hardware', () => {
+  handleInvoke('models:hardware', () => {
     return detectHardware()
   })
 
-  ipcMain.handle('models:installed', () => {
+  handleInvoke('models:installed', () => {
     return listInstalledModels()
   })
 
-  ipcMain.handle('models:recommended', () => {
+  handleInvoke('models:recommended', () => {
     return listRecommendedModels()
   })
 
-  ipcMain.handle('models:pull', async (event, name: string) => {
-    const wc = event.sender
+  handleInvoke('models:pull', async (event, name: string) => {
+    const wc = hubFor(event.sender)
     await pullModel(name, (p) => {
       if (!wc.isDestroyed()) {
         wc.send('models:pull-progress', {
@@ -639,18 +1023,18 @@ function registerAllHandlers(): void {
     })
   })
 
-  ipcMain.handle('models:config-get', () => {
+  handleInvoke('models:config-get', () => {
     return getModelConfig()
   })
 
-  ipcMain.handle('models:config-set', (_event, partial: Partial<ModelConfig>) => {
+  handleInvoke('models:config-set', (_event, partial: Partial<ModelConfig>) => {
     return setModelConfig(partial)
   })
 
   // ── LSP ─────────────────────────────────────────────────
-  ipcMain.handle('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
+  handleInvoke('lsp:start', (event, { language, rootUri }: { language: string; rootUri: string }) => {
     try {
-      return startServer(language, rootUri, event.sender)
+      return startServer(language, rootUri, hubFor(event.sender))
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       console.warn('[LSP] Server unavailable:', reason)
@@ -658,16 +1042,16 @@ function registerAllHandlers(): void {
     }
   })
 
-  ipcMain.handle('lsp:stop', (_event, { serverId }: { serverId: string }) => {
+  handleInvoke('lsp:stop', (_event, { serverId }: { serverId: string }) => {
     stopServer(serverId)
   })
 
-  ipcMain.on('lsp:send', (_event, { serverId, message }: { serverId: string; message: JsonRpcMessage }) => {
+  handleSend('lsp:send', (_event, { serverId, message }: { serverId: string; message: JsonRpcMessage }) => {
     sendToServer(serverId, message)
   })
 
   // ── Session save/restore ────────────────────────────────
-  ipcMain.handle('session:save', (_event, payload: SerializedSession) => {
+  handleInvoke('session:save', (_event, payload: SerializedSession) => {
     try {
       saveSession(payload)
     } catch (err) {
@@ -675,20 +1059,66 @@ function registerAllHandlers(): void {
     }
   })
 
-  ipcMain.handle('session:load', (_event, repoPath: string) => {
+  handleInvoke('session:load', (_event, repoPath: string) => {
     return loadSession(repoPath)
   })
 
-  ipcMain.handle('session:clear', (_event, repoPath: string) => {
+  handleInvoke('session:clear', (_event, repoPath: string) => {
     clearSession(repoPath)
   })
 
+  // ── The window's live session list ──────────────────────
+  // Pushed by the renderer that owns it, read by anything else attached to the
+  // same window. The fan-out goes through the hub, so the renderer that just
+  // pushed hears its own list back — harmless, and cheaper than teaching the
+  // hub to exclude one transport.
+  handleInvoke('session:sync', (event, sessions: WindowSessionInput[]) => {
+    // Only the window's OWN renderer may write this list. A socket joins an
+    // existing hub, so its `sender.id` IS the window's id — without this check
+    // a remote client could replace the desktop's session list with anything,
+    // and the renderer's `$effect` pushes only when its own state changes, so
+    // nothing would ever put it back. A real `WebContents` has no `clientKey`;
+    // every transport that is not one does.
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('session:sync is not available to remote clients')
+    }
+    if (!syncWindowSessions(event.sender.id, sessions)) return
+    hubFor(event.sender).send('session:list-changed', getWindowSessions(event.sender.id))
+  })
+
+  handleInvoke('session:list', (event) => {
+    return getWindowSessions(event.sender.id)
+  })
+
+  /**
+   * Start a session from a brief — the phone's `+`.
+   *
+   * Addressed to the window's OWN renderer, not to `hubFor(event.sender)`:
+   * only the renderer holds the session store, the project root and the model
+   * defaults, and fanning the brief back out to every attached transport
+   * would hand one client's prompt to another for no purpose.
+   */
+  handleInvoke('session:create', (event, request: SessionCreateRequest) => {
+    const window = getWindowForContents(event.sender.id)
+    if (!window) throw new Error('That SimpleEdit window is gone.')
+    return createSessionOnce(request, window.webContents)
+  })
+
+  // Only the renderer that was asked may answer. Same rule as `session:sync`:
+  // a real `WebContents` has no `clientKey`, every other transport does.
+  handleInvoke('session:created', (event, correlationId: string, outcome: SessionCreateOutcome) => {
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('session:created is not available to remote clients')
+    }
+    resolveSessionCreate(correlationId, outcome)
+  })
+
   // ── Agent-to-agent messaging ────────────────────────────
-  ipcMain.handle('agent-bus:sync', (_event, peers: AgentPeer[]) => {
+  handleInvoke('agent-bus:sync', (_event, peers: AgentPeer[]) => {
     syncPeers(peers)
   })
 
-  ipcMain.handle('agent-bus:spawned', (_event, correlationId: string, peer: AgentPeer) => {
+  handleInvoke('agent-bus:spawned', (_event, correlationId: string, peer: AgentPeer) => {
     resolveSpawn(correlationId, peer)
   })
 }
@@ -698,6 +1128,9 @@ function registerAllHandlers(): void {
 app.whenReady().then(() => {
   inheritShellPath()
   electronApp.setAppUserModelId('com.simpleedit')
+  // A crash mid-transcription skips the cleanup in `transcribe`, leaving
+  // somebody's voice in tmpdir. Swept before anything can add more.
+  try { sweepAbandonedAudio() } catch { /* nothing better to do at launch */ }
 
   if (isUnobtrusiveTest && process.platform === 'darwin') {
     // Accessory apps never activate on launch and have no Dock presence —
@@ -709,10 +1142,42 @@ app.whenReady().then(() => {
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
+    // `hubFor` mints a hub for ANY sender, and the settings window is the sole
+    // caller of some channels — so an open→use→close cycle left a hub holding
+    // a destroyed WebContents behind. Repo windows clear their own in `closed`
+    // along with the rest of their teardown; this is the catch-all, so a window
+    // added later cannot reintroduce the leak by forgetting.
+    const id = window.webContents.id
+    window.webContents.once('destroyed', () => {
+      closeSocketsForHub(id)
+      clientHubs.delete(id)
+      forgetWindowSessions(id)
+    })
   })
 
   registerAllHandlers()
   initAutoUpdater()
+
+  // Tell Claude Code when you are actually at this machine, so its own Remote
+  // Control push stays quiet while ours would duplicate it. Started before any
+  // window, because the env var it sets has to be in place before the first
+  // PTY inherits it.
+  startPresenceTracking()
+
+  // Remote access survives a restart if it was on. `attachTarget` is resolved
+  // per socket, not now, so starting before any window exists is fine.
+  //
+  // A serve mapping does NOT survive: the previous run's port is gone, so any
+  // mapping recorded against it is removed BEFORE a new server can claim a
+  // port — sequenced, or the reclaim would tear down the one just created.
+  void reclaimAbandonedServe()
+    .catch((err: unknown) => {
+      console.error('[SimpleEdit] Failed to reclaim an abandoned serve mapping:', err)
+    })
+    .then(() => applyRemoteConfig())
+    .catch((err: unknown) => {
+      console.error('[SimpleEdit] Failed to start remote access:', err)
+    })
 
   // Serve worktree-local assets (e.g. images in Markdown previews). Reads are
   // bounded to the directory containing each open window's bare repo, where its
@@ -774,6 +1239,18 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
     }
+    // Closing the last window stopped it (see `window-all-closed`). Reopening
+    // one is what makes the app usable again, so it is also what makes remote
+    // access meaningful again.
+    if (getRemoteConfig().enabled && !getRemoteStatus().running) {
+      void applyRemoteConfig().catch((err: unknown) => {
+        console.error('[SimpleEdit] Failed to restart remote access:', err)
+      })
+    }
+    // Stopped with the last window, for the same reason: with nothing on
+    // screen there is nobody to be present at, and a marker saying otherwise
+    // would silence Claude Code's own push indefinitely.
+    startPresenceTracking()
   })
 })
 
@@ -789,11 +1266,29 @@ app.on('before-quit', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { stopRemoteServer() } catch { /* ignore */ }
+  // Synchronous, and after the server it points at is gone: a serve mapping
+  // that outlives its port is the failure mode this whole module guards.
+  try { stopServeSync() } catch { /* ignore */ }
+  try { cancelTranscriptions() } catch { /* ignore */ }
+  // A marker left on disk would tell Claude Code you are at a machine running
+  // an app that has quit — silencing its push for the whole next session.
+  try { stopPresenceTracking() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
 })
 
+// Remote access stops with the last window, and this handler is why: it also
+// kills every terminal and every bridge. With no window there is no session to
+// reach, no repo to resolve, and `remoteAttachTarget` has nothing to hand a
+// socket — so leaving the server up meant an open port, a live bearer token
+// and a power assertion holding the Mac awake, serving nothing, with the
+// agents already dead. That is worse than stopping, not better.
+//
+// It is not silent either: the config still says enabled, and `activate` —
+// reopening a window, the only way back to a usable app on macOS — starts it
+// again.
 app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
@@ -806,6 +1301,14 @@ app.on('window-all-closed', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { stopRemoteServer() } catch { /* ignore */ }
+  // Synchronous, and after the server it points at is gone: a serve mapping
+  // that outlives its port is the failure mode this whole module guards.
+  try { stopServeSync() } catch { /* ignore */ }
+  try { cancelTranscriptions() } catch { /* ignore */ }
+  // A marker left on disk would tell Claude Code you are at a machine running
+  // an app that has quit — silencing its push for the whole next session.
+  try { stopPresenceTracking() } catch { /* ignore */ }
   try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }

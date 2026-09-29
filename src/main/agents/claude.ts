@@ -73,11 +73,20 @@ function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: 
   // Stop carries the agent-messaging channel (see agent-bus.ts): its response
   // body can deliver queued peer mail, and its `last_assistant_message` is how
   // the turn's answer gets routed back to whoever asked.
+  //
+  // `Notification` is the only signal Claude Code emits that means "I need
+  // you" — a tool awaiting permission, or the prompt sitting idle for want of
+  // an answer. None of that reaches the terminal title, so `claude-stream`
+  // cannot see it: `statusFromTitle` reads ✳ as idle and a braille spinner as
+  // running, and has no third answer. Without this hook a Claude session never
+  // reports `waiting` by any route, which made the push notification silent for
+  // the one provider its own copy named. See `blocked-signal.test.ts`.
   const settings = {
     hooks: {
       UserPromptSubmit: [{ hooks: [endpoint] }],
       PostToolUse: [{ hooks: [endpoint] }],
       Stop: [{ hooks: [endpoint] }],
+      Notification: [{ hooks: [endpoint] }],
     },
   }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2))

@@ -13,6 +13,10 @@ import {
   type TriageFinding,
   type DeepFinding,
   type PrReviewDraft,
+  type PrReviewComment,
+  anchorState,
+  anchorsForHead,
+  anchorCounts,
 } from '../screenprs'
 
 const issue: TriageFinding = { label: 'issue', file: 'a.ts', title: 'bug' }
@@ -113,6 +117,77 @@ describe('parseLineAnchor', () => {
     expect(parseLineAnchor('')).toBeNull()
     expect(parseLineAnchor('—')).toBeNull()
     expect(parseLineAnchor('n/a')).toBeNull()
+  })
+  it('returns null for a line number GitHub cannot accept', () => {
+    // Files are 1-based. A `0` anchor is a guaranteed 422, and a 422 collapses
+    // EVERY anchor in the review into the body — one bad number costs the whole
+    // payload its line comments.
+    expect(parseLineAnchor('0')).toBeNull()
+    expect(parseLineAnchor('L0')).toBeNull()
+  })
+})
+
+describe('anchorState', () => {
+  const at = (sha: string | undefined, line?: string): PrReviewComment => ({
+    source: 'you', file: 'a.ts', text: 'note', ...(line === undefined ? {} : { line }), ...(sha === undefined ? {} : { sha }),
+  })
+
+  it('is `current` only when the stamp matches the head on screen', () => {
+    expect(anchorState(at('sha1', '11'), 'sha1')).toBe('current')
+  })
+
+  it('is `moved` when the stamp names a different head', () => {
+    expect(anchorState(at('sha1', '11'), 'sha2')).toBe('moved')
+  })
+
+  it('is `unverified` when either side is missing — not `current`', () => {
+    // The whole point of the third state. Both of these used to resolve to
+    // "fine, anchor it", which is how a comment reached a line nobody read.
+    expect(anchorState(at(undefined, '11'), 'sha1')).toBe('unverified')
+    expect(anchorState(at('sha1', '11'), '')).toBe('unverified')
+    expect(anchorState(at('', '11'), 'sha1')).toBe('unverified')
+  })
+
+  it('is `none` for a comment that never had a line', () => {
+    expect(anchorState(at('sha1'), 'sha1')).toBe('none')
+    expect(anchorState(at(undefined), '')).toBe('none')
+  })
+})
+
+describe('anchorsForHead', () => {
+  const at = (sha: string | undefined, line: string, text = `note ${line}`): PrReviewComment => ({
+    source: 'you', file: 'a.ts', line, text, ...(sha === undefined ? {} : { sha }),
+  })
+  const draftOf = (...comments: PrReviewComment[]): PrReviewDraft => ({ comments, summary: '', verdict: 'comment' })
+
+  it('keeps a verified anchor', () => {
+    const draft = draftOf(at('sha1', '11'))
+    expect(anchorsForHead(draft, 'sha1')).toBe(draft)
+    expect(buildReviewPayload(anchorsForHead(draft, 'sha1')).comments).toHaveLength(1)
+  })
+
+  it('folds a moved anchor into the body, keeping the file and the text', () => {
+    const payload = buildReviewPayload(anchorsForHead(draftOf(at('sha1', '11')), 'sha2'))
+    expect(payload.comments).toEqual([])
+    expect(payload.body).toContain('a.ts — note 11')
+  })
+
+  it('folds an anchor it cannot check, for either reason', () => {
+    expect(buildReviewPayload(anchorsForHead(draftOf(at(undefined, '11')), 'sha1')).comments).toEqual([])
+    expect(buildReviewPayload(anchorsForHead(draftOf(at('sha1', '11')), '')).comments).toEqual([])
+  })
+
+  it('gives siblings read off one commit the same fate', () => {
+    // One folding while the other posts is what a two-valued predicate produced.
+    const payload = buildReviewPayload(anchorsForHead(draftOf(at('sha1', '11'), at('sha1', '40')), 'sha2'))
+    expect(payload.comments).toEqual([])
+    expect(payload.body).toContain('note 11')
+    expect(payload.body).toContain('note 40')
+  })
+
+  it('separates the two reasons an anchor was dropped', () => {
+    const counts = anchorCounts(draftOf(at('sha1', '11'), at(undefined, '40'), at('sha2', '7')), 'sha2')
+    expect(counts).toEqual({ none: 0, current: 1, moved: 1, unverified: 1 })
   })
 })
 

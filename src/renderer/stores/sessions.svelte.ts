@@ -8,8 +8,8 @@
  * `pty:*` and `agent:*` IPC routes address the same identifier.
  */
 import { untrack } from 'svelte'
-import { capabilitiesFor, providerLabel } from './agent-capabilities.svelte'
-import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelRef, NativeModelAgentId, ReasoningEffort } from '../../shared/ipc-types'
+import { capabilitiesFor, providerForModelBrand, providerLabel } from './agent-capabilities.svelte'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, SessionRepoTrail, WindowSessionInput } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -142,7 +142,19 @@ export interface AgentCreateOptions {
   forkSession?: boolean
   model?: ModelRef
   initialPrompt?: string
+  /**
+   * A name a human or a model CHOSE. Sticky: nothing automatic overwrites it.
+   */
   label?: string
+  /**
+   * A name DERIVED from something the user wrote — a brief's first clause —
+   * shown for want of anything better until the agent names the conversation.
+   *
+   * Deliberately separate from `label`, because a machine-derived stand-in
+   * must not suppress a name a human or model later chooses. Ranks below
+   * `label` and above the model id.
+   */
+  provisionalLabel?: string
   target?: { groupId?: string; index: number }
 }
 
@@ -299,13 +311,16 @@ export const sessionsStore = {
     // Whether a provider's titles may rename a session stays a provider
     // property, decided when the title actually arrives — deciding it here
     // would race the async capability fetch.
+    // A CHOSEN name only. A provisional one ranks above the model id and
+    // below nothing else — it is still a stand-in, so the agent's own title
+    // replaces it exactly as it replaces the model id.
     const chosen = !!opts.label
     const newSession: Session = {
       id,
       kind: 'agent',
       provider: target.provider,
       target,
-      label: opts.label ?? modelId ?? defaultLabel('agent', name),
+      label: opts.label ?? opts.provisionalLabel ?? modelId ?? defaultLabel('agent', name),
       ...(chosen ? { customLabel: true as const } : {}),
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
@@ -341,22 +356,29 @@ export const sessionsStore = {
     // as undefined: `setModelConfig` treats a present-but-undefined key as an
     // explicit clear, which is how starting a default session resets the
     // remembered model. Dropping the key instead would silently keep it.
+    //
+    // A model-less launch still records WHICH AGENT ran — the brand alone is a
+    // valid ModelRef for every native provider, and it is what the next
+    // new-session gesture reads. Requiring an id here meant the ✦ menu's own
+    // "configured default" entry for an agent cleared the memory instead of
+    // writing it, sending ⌘T, ✦ and the phone back to Claude.
     const lastUsed: ModelRef | undefined =
       target.provider === 'claude'
         ? target.model
-        : caps?.nativeModelBrand && target.model
+        : caps?.nativeModelBrand
           ? {
               provider: caps.nativeModelBrand,
-              model: target.model,
+              ...(target.model ? { model: target.model } : {}),
               ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}),
             }
           : undefined
     void window.api.invoke('models:config-set', { lastUsed })
     // For cloud Claude, upgrade the raw model id to its human display name once
     // the catalog resolves — best-effort, leaves the id if not found.
-    // Skip when the caller gave an explicit label: the upgrade only prettifies
-    // the default (model-id) label, it must not clobber a chosen name.
-    if (model?.provider === 'anthropic' && !opts.label) {
+    // Skip when the caller supplied any label: the upgrade only prettifies the
+    // default (model-id) label. It must not clobber a chosen name — nor a
+    // provisional one, which is likewise more use than a model id.
+    if (model?.provider === 'anthropic' && !opts.label && !opts.provisionalLabel) {
       const anthropicModel = model.model
       void window.api
         .invoke('models:claude')
@@ -393,7 +415,7 @@ export const sessionsStore = {
     provider: NativeModelAgentId,
     launchDir: string,
     worktreePath: string,
-    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string; provisionalLabel?: string } = {},
   ): string {
     const target: InteractiveTarget = {
       provider,
@@ -403,13 +425,14 @@ export const sessionsStore = {
     return this.createAgent(target, launchDir, worktreePath, {
       ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
       ...(opts.label ? { label: opts.label } : {}),
+      ...(opts.provisionalLabel ? { provisionalLabel: opts.provisionalLabel } : {}),
     })
   },
 
   createCodex(
     launchDir: string,
     worktreePath: string,
-    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string; provisionalLabel?: string } = {},
   ): string {
     return this.createNativeAgent('codex', launchDir, worktreePath, opts)
   },
@@ -417,7 +440,7 @@ export const sessionsStore = {
   createOpenCode(
     launchDir: string,
     worktreePath: string,
-    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string } = {},
+    opts: { model?: string; reasoningEffort?: ReasoningEffort; initialPrompt?: string; label?: string; provisionalLabel?: string } = {},
   ): string {
     return this.createNativeAgent('opencode', launchDir, worktreePath, opts)
   },
@@ -909,6 +932,104 @@ export function touchedWorktreesForRepo(
 }
 
 /**
+ * Start the session a bare "new session" gesture asks for — the ✦ Agent
+ * button, ⌘T at the desk, `+` on the phone.
+ *
+ * ONE definition, because the alternatives disagree in front of the user: the
+ * same `lastUsed` starting OpenCode from the sidebar and Claude from ⌘T, in
+ * the same window, with no picker on the phone to correct it.
+ *
+ * The rule is the last model a session was launched against, resolved back to
+ * the agent that OWNS it through the descriptors. Testing one brand by name —
+ * `provider === 'openai'` — is the mistake `providerForModelBrand` exists to
+ * prevent: it quietly sends every other native model to Claude. `anthropic`
+ * and `ollama` are Claude's own brands, and a Claude default deliberately
+ * pins no model id, so the harness's own default applies.
+ */
+export function createSessionFromDefaults(
+  config: ModelConfig | null,
+  launchDir: string,
+  worktreePath: string,
+  opts: { initialPrompt?: string; provisionalLabel?: string } = {},
+): string {
+  const lastUsed = config?.lastUsed
+  const owner =
+    lastUsed && lastUsed.provider !== 'anthropic' && lastUsed.provider !== 'ollama'
+      ? providerForModelBrand(lastUsed.provider)
+      : undefined
+  if (!owner || !isNativeModelAgent(owner)) {
+    return sessionsStore.createClaude(launchDir, worktreePath, opts)
+  }
+  return sessionsStore.createNativeAgent(owner, launchDir, worktreePath, {
+    ...opts,
+    ...(lastUsed?.model ? { model: lastUsed.model } : {}),
+    ...(lastUsed && 'reasoningEffort' in lastUsed && lastUsed.reasoningEffort
+      ? { reasoningEffort: lastUsed.reasoningEffort }
+      : {}),
+  })
+}
+
+/**
+ * Whether an agent names its models by bare native id, and so can be started
+ * from a remembered one.
+ *
+ * Read from the descriptor rather than matched against a union of ids:
+ * `NativeModelAgentId` is a compile-time list, and a provider registered after
+ * it was written would be resolved by `providerForModelBrand` and then
+ * rejected here for no reason the user could see. Claude is excluded by the
+ * same rule rather than by name — it is the `model-ref` provider.
+ */
+function isNativeModelAgent(provider: AgentProviderId): provider is NativeModelAgentId {
+  return capabilitiesFor(provider)?.modelSelector === 'model-id'
+}
+
+/**
+ * Handle a `session:create-request`: a client with no session of its own — the
+ * phone — asked for one, seeded with a spoken brief.
+ *
+ * Every answer path reports back. Main is holding a call open on the other
+ * end, and it deliberately cannot tell a refusal from a renderer that never
+ * answered: silence there is remembered as "a session may exist", which would
+ * leave the user unable to retry an intent that in fact started nothing.
+ */
+async function createSessionFromBrief(
+  data: import('../../shared/ipc-types').SessionEventMap['session:create-request'],
+): Promise<void> {
+  let answered = false
+  const answer = (outcome: import('../../shared/ipc-types').SessionCreateOutcome): void => {
+    if (answered) return
+    answered = true
+    void window.api.invoke('session:created', data.correlationId, outcome)
+  }
+
+  try {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (!root || !wt) {
+      answer({ ok: false, reason: 'That SimpleEdit window has no repo open yet.' })
+      return
+    }
+
+    // A config that cannot be read is not a reason to refuse: the fallback is
+    // the same plain Claude session an absent `lastUsed` would have produced.
+    const config = await window.api.invoke('models:config-get').catch(() => null)
+    const id = createSessionFromDefaults(config, root, wt.path, {
+      initialPrompt: data.brief,
+      // Provisional: the brief's first clause is a stand-in the agent replaces
+      // as soon as it names the conversation, exactly as at the desk.
+      ...(data.label ? { provisionalLabel: data.label } : {}),
+    })
+    answer({ ok: true, terminalId: id, label: sessionsStore.get(id)?.label ?? id })
+  } catch (err) {
+    // Anything unforeseen still has to come back as an ANSWER. Main cannot see
+    // a throw here — it only sees silence, which it remembers as "a session
+    // may exist" and will not let the user retry. The bridge throwing
+    // synchronously on an unclonable payload is the realistic one.
+    answer({ ok: false, reason: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/**
  * Handle a `spawn_session` MCP call: create a fresh primary Claude session
  * seeded with the agent-authored brief. Launches at the project root (shared
  * Claude memory, like every Claude session); the workspace points at the named
@@ -998,6 +1119,44 @@ function peerSnapshot(): AgentPeer[] {
 }
 
 /**
+ * The window's session list as anything ELSE attached to this window sees it —
+ * a second desktop window, or a phone on the same hub.
+ *
+ * Broader than `peerSnapshot`: a plain terminal and an Agent View can't receive
+ * mail, but they are sessions you can look at, so they belong on a list whose
+ * job is "pick something to attend to". `pendingResume` entries are left out —
+ * they have no PTY behind them, so a client that picked one would attach to
+ * nothing.
+ */
+/**
+ * The repo trail in the shape a client that is not this renderer can use.
+ *
+ * Built from the very functions the desktop repo and worktree pickers read, so
+ * a second client's pickers cannot list a different set of places than the
+ * sidebar does.
+ */
+function trailFor(session: Session): SessionRepoTrail[] {
+  return touchedReposForSession(session).map((repoPath) => ({
+    repoPath,
+    worktrees: touchedWorktreesForRepo(session, repoPath),
+  }))
+}
+
+function windowSessionSnapshot(): WindowSessionInput[] {
+  return _sessions
+    .filter((s) => !s.pendingResume)
+    .map((s) => ({
+      terminalId: s.id,
+      label: s.label,
+      kind: s.kind,
+      provider: s.provider,
+      worktreePath: s.worktreePath,
+      status: s.exited ? ('exited' as const) : getAgentStatusForTerminal(s.id),
+      trail: trailFor(s),
+    }))
+}
+
+/**
  * Global listeners that keep the registry in sync with main. Call once at
  * app startup; returns an unsubscribe.
  */
@@ -1073,12 +1232,22 @@ export function initSessionListeners(): () => void {
     void spawnSessionFromAgent(data)
   })
 
+  // A client with no session of its own (the phone) asked to start one.
+  const offCreate = window.api.on('session:create-request', (data) => {
+    void createSessionFromBrief(data)
+  })
+
   // Keep the messaging bus's peer list current. Labels, provider and status live
   // here, so main can't derive them — this pushes a fresh snapshot whenever any
   // of them changes. $effect.root because this runs outside a component.
   const stopPeerSync = $effect.root(() => {
     $effect(() => {
       void window.api.invoke('agent-bus:sync', peerSnapshot())
+    })
+    // The same push, for the wider list a second client renders. Main drops it
+    // when nothing changed, so sharing the effect's firing rate costs nothing.
+    $effect(() => {
+      void window.api.invoke('session:sync', windowSessionSnapshot())
     })
   })
 
@@ -1089,6 +1258,7 @@ export function initSessionListeners(): () => void {
     offCwd()
     offRepoTouch()
     offSpawn()
+    offCreate()
     stopPeerSync()
   }
 }

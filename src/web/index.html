@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- The page URL carries the access token; never hand it to another site. -->
+    <meta name="referrer" content="no-referrer" />
+    <!--
+      Relative, and deliberately so: `start_url` and `scope` resolve against
+      this manifest's own URL, which is `/<token>/`. That is what puts the
+      access token inside the installed app — the only way an installed PWA
+      can reach a server that gates every request on it.
+    -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#09090b" />
+    <title>SimpleEdit — Remote</title>
+  </head>
+  <body class="h-full bg-zinc-950 text-zinc-100">
+    <div id="app" class="h-full"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

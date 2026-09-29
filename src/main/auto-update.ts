@@ -1,4 +1,5 @@
-import { app, autoUpdater as squirrel, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, autoUpdater as squirrel, BrowserWindow, shell } from 'electron'
+import { handleInvoke } from './ipc-registry'
 import { autoUpdater } from 'electron-updater'
 import {
   isHomebrewManaged,
@@ -93,17 +94,17 @@ export function initAutoUpdater(): void {
   }
 
   // IPC handlers
-  ipcMain.handle('update:check', () => {
+  handleInvoke('update:check', () => {
     autoUpdater.checkForUpdates().catch((err: Error) => {
       console.error('[AutoUpdate] Check failed:', err.message)
     })
   })
 
-  ipcMain.handle('update:open-log', async () => {
+  handleInvoke('update:open-log', async () => {
     await shell.openPath(upgradeLogPath())
   })
 
-  ipcMain.handle('update:install', (): UpdateInstallResult => {
+  handleInvoke('update:install', (): UpdateInstallResult => {
     // Hand a Homebrew copy to a detached helper and get out of its way: brew
     // cannot replace a bundle whose own process tree is running the upgrade.
     if (homebrewManaged) {

@@ -7,7 +7,7 @@
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { ModelRef, ScreenPrsFilters, ScreenPrsRunStatus } from '../shared/ipc-types'
 import type { PrContext, ScreenPrCard, TriageResult } from '../shared/screenprs'
 import { bucketOf } from '../shared/screenprs'
@@ -20,13 +20,40 @@ import { triageTask, TRIAGE_PROMPT_VERSION } from './tasks/triage-task'
 import { currentHandle, searchReviewRequestedPrs, getPrMeta, getPrDiff, type PrMeta } from './github/gh'
 import { analysisFingerprint, getCached, putTriage } from './screenprs-cache'
 
-/** In-flight run per window, so a re-screen / window close can cancel cleanly. */
+/**
+ * In-flight run per client identity, so a re-screen / window close can cancel
+ * cleanly. The key is read off the `RemoteClient` that will receive the cards,
+ * never passed alongside it — a `ClientHub` is one identity with several
+ * transports, so a web client re-screening cancels and replaces the run whose
+ * output it is already receiving instead of starting a second, competing one.
+ */
 const activeRuns = new Map<number, AbortController>()
 
-function send(wc: WebContents, channel: string, data: unknown): void {
+function send(wc: RemoteClient, channel: string, data: unknown): void {
   if (!wc.isDestroyed()) wc.send(channel, data)
 }
-function sendStatus(wc: WebContents, status: ScreenPrsRunStatus, extra: { error?: string; total?: number } = {}): void {
+
+/**
+ * The same card/context, with the diff emptied — what a remote client gets.
+ *
+ * `PrContext.diff` is the FULL unified diff and screening defaults to every org
+ * where you're a reviewer, so a board is dozens of complete diffs pushed down a
+ * WebSocket to a phone that will open one of them. The field is emptied rather
+ * than dropped so the payload still is a `PrContext` (a missing-but-typed
+ * `string` is the kind of lie that surfaces three call sites away); the client
+ * fetches the real diff with `screenprs:pr-diff` when it opens a PR.
+ */
+function withoutDiff<T extends PrContext>(value: T): T {
+  return { ...value, diff: '' }
+}
+
+/** Push `local` to the window's renderer and the diff-less `remote` to sockets. */
+function sendSplit(wc: RemoteClient, channel: string, local: unknown, remote: unknown): void {
+  if (wc.isDestroyed()) return
+  if (wc.sendSplit) wc.sendSplit(channel, local, remote)
+  else wc.send(channel, local)
+}
+function sendStatus(wc: RemoteClient, status: ScreenPrsRunStatus, extra: { error?: string; total?: number } = {}): void {
   send(wc, 'screenprs:status', { status, ...extra })
 }
 
@@ -66,7 +93,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out
 }
 
-export async function startScreening(filters: ScreenPrsFilters, webContents: WebContents): Promise<void> {
+export async function startScreening(filters: ScreenPrsFilters, webContents: RemoteClient): Promise<void> {
   cancelScreening(webContents)
   const controller = new AbortController()
   activeRuns.set(webContents.id, controller)
@@ -95,7 +122,7 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
 
     const emitCard = (ctx: PrContext, result: TriageResult): void => {
       const card: ScreenPrCard = { ...ctx, ...result, bucket: bucketOf({ ...ctx, ...result }) }
-      send(webContents, 'screenprs:card', { card })
+      sendSplit(webContents, 'screenprs:card', { card }, { card: withoutDiff(card) })
     }
 
     // Cache hit (same head SHA) → reuse the diff + triage, no model call. Miss (or
@@ -113,7 +140,9 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
     const contexts = (
       await mapLimit(toTriage, 5, async (m) => {
         const ctx = { ...m, diff: await getPrDiff(m) }
-        if (!controller.signal.aborted) send(webContents, 'screenprs:screening', { context: ctx })
+        if (!controller.signal.aborted) {
+          sendSplit(webContents, 'screenprs:screening', { context: ctx }, { context: withoutDiff(ctx) })
+        }
         return ctx
       })
     ).filter((c): c is PrContext => c !== null)
@@ -165,7 +194,7 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Web
   }
 }
 
-export function cancelScreening(webContents: WebContents): void {
+export function cancelScreening(webContents: RemoteClient): void {
   activeRuns.get(webContents.id)?.abort()
   activeRuns.delete(webContents.id)
 }

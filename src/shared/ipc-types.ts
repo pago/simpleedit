@@ -50,10 +50,43 @@ export interface BranchInfo {
   isRemote: boolean // true = exists only on origin, not as a local branch
 }
 
+/**
+ * Identifies ONE TRANSPORT behind an IPC call — a window's renderer, or a
+ * single remote (phone) socket. Never sent by a client: main stamps it from
+ * the IPC event or the socket, so no client can name another one and take its
+ * PTY.
+ *
+ * Deliberately finer-grained than `ClientHub.id`. A hub is one identity with
+ * several transports, and size ownership is exactly the thing those transports
+ * must be able to take from each other — keying it by the hub id would make a
+ * desktop window and the phone attached to it indistinguishable, which is the
+ * case the whole mechanism exists for. Desktop transports use the decimal
+ * `WebContents.id`; remote sockets use a `w`-prefixed key, so the two spaces
+ * cannot collide.
+ */
+export type PtyClientId = string
+
 export interface PtyInvokeMap {
   'pty:spawn': { args: [options: PtySpawnOptions]; result: void }
   'pty:write': { args: [id: string, data: string]; result: void }
+  /** Applied only if the calling client owns this PTY's size (see `pty:claim`);
+   * a non-owner's resize is dropped, not queued. The owning `PtyClientId` comes
+   * from the IPC event, not from these args. */
   'pty:resize': { args: [id: string, cols: number, rows: number]; result: void }
+  /**
+   * Take ownership of this PTY's size AND set it, in one call. Sent when the
+   * user's attention lands on a terminal — a session being selected, the
+   * window focused, the tab made visible — so the client being looked at is
+   * the one that sizes the PTY. Last claim wins.
+   *
+   * The dimensions are not optional, and not a separate `pty:resize` after the
+   * claim. While a client is not the owner its resizes are dropped, so its
+   * container can reflow — a viewer opening, a diff tab appearing — with the
+   * PTY never hearing about it. Taking ownership back without also handing
+   * over the current geometry would leave the PTY at a size nothing on screen
+   * matches, until some later resize happened to fix it by luck.
+   */
+  'pty:claim': { args: [id: string, cols: number, rows: number]; result: void }
   'pty:kill': { args: [id: string]; result: void }
   'pty:active-ids': { args: []; result: string[] }
   /** Replay buffer for output emitted before the renderer's xterm attached
@@ -67,6 +100,22 @@ export interface PtyEventMap {
    * renderer dedup live chunks against the pty:backlog replay. */
   'pty:data': { id: string; data: string; offset: number }
   'pty:exit': { id: string; exitCode: number }
+  /**
+   * Size ownership of `id` moved to `owner`. Sent to every client holding that
+   * terminal — including the one that just LOST it, which may be a different
+   * window and so a different hub.
+   *
+   * It does NOT stop that client sending resizes: main is authoritative and
+   * drops a non-owner's, and gating the send on this would go stale exactly
+   * when a container reflows out of focus. What it does is let a view say it
+   * is sized by another device instead of silently rendering at a width the
+   * terminal no longer uses.
+   */
+  /**
+   * Who sizes this PTY now. `null` means nobody: the owning client's transport
+   * went away, and the next resize from any client is applied.
+   */
+  'pty:owner-changed': { id: string; owner: PtyClientId | null }
 }
 
 // ── File system ───────────────────────────────────────────
@@ -279,8 +328,25 @@ export interface AgentCapabilities {
   modelCatalog: boolean
 }
 
+/**
+ * One agent's lifecycle state, as main reports it.
+ *
+ * `precise` separates a state the agent ITSELF told us about (a hook, a
+ * control-channel event, an OSC title it writes deliberately) from one we
+ * inferred. Anything that acts on a status rather than merely displaying it —
+ * a push notification, above all — must require it: a mis-parsed title
+ * buzzing a phone is worse than no notification at all.
+ */
+export interface AgentStatusEvent {
+  worktreePath: string
+  status: AgentStatus
+  terminalId: string
+  precise: boolean
+  message?: string
+}
+
 export interface AgentEventMap {
-  'agent:status': { worktreePath: string; status: AgentStatus; terminalId: string; precise: boolean; message?: string }
+  'agent:status': AgentStatusEvent
   'agent:session-id': { terminalId: string; sessionId: string }
   /** The agent's own name for the conversation (see `reportsSessionTitle`). */
   'agent:session-title': { terminalId: string; title: string }
@@ -391,6 +457,9 @@ export type ScreenPrsRunStatus = 'running' | 'done' | 'error'
 export interface ScreenPrsInvokeMap {
   'screenprs:start': { args: [filters: ScreenPrsFilters]; result: void }
   'screenprs:cancel': { args: []; result: void }
+  /** One PR's unified diff, on demand — board cards reach a remote client with
+   *  `diff` emptied, because a board is dozens of them. */
+  'screenprs:pr-diff': { args: [pr: Pick<PrRef, 'url'>]; result: string }
   /** Run a deep review on one PR (full context is passed — triage doesn't retain it). */
   'screenprs:deep-start': { args: [context: PrContext]; result: void }
   'screenprs:deep-cancel': { args: [url: string]; result: void }
@@ -406,7 +475,16 @@ export interface SubmitReviewRequest {
 
 export type SubmitReviewResult =
   | { ok: true; reviewUrl?: string; foldedComments: boolean }
-  | { ok: false; error: string }
+  | {
+      ok: false
+      error: string
+      /**
+       * Set when the call was killed in flight, so GitHub may or may not have
+       * received it. Absent means GitHub answered and nothing was posted —
+       * which is safe to retry, and this is not.
+       */
+      delivered?: 'unknown'
+    }
 
 export interface ScreenPrsEventMap {
   /** The queue is known (right after search): seed placeholders before gathering. */
@@ -421,8 +499,9 @@ export interface ScreenPrsEventMap {
   'screenprs:status': { status: ScreenPrsRunStatus; error?: string; total?: number }
   /** Per-lens progress for a PR's deep review (keyed by the PR url). */
   'screenprs:deep-lens': { url: string; lens: DeepLensId; status: DeepLensStatus }
-  /** The synthesized, curated deep-review findings for a PR. */
-  'screenprs:deep-result': { url: string; findings: DeepFinding[] }
+  /** The synthesized, curated deep-review findings for a PR, plus the head they
+   *  were computed against — a finding's line number means nothing without it. */
+  'screenprs:deep-result': { url: string; findings: DeepFinding[]; headSha: string }
   'screenprs:deep-status': { url: string; status: DeepReviewStatus; error?: string }
 }
 
@@ -534,10 +613,155 @@ export interface SerializedSession {
   groups?: SerializedGroup[]
 }
 
+/**
+ * A session as a client that is NOT the window's own renderer sees it.
+ *
+ * The renderer owns the session list — labels, provider, worktree and status
+ * all live in its stores — so main cannot derive this. The renderer pushes it
+ * (`session:sync`) and main keeps it per window, which is what lets a second
+ * transport on that window's hub read the same list without reimplementing
+ * any of it.
+ */
+/**
+ * One repo a session has worked in, and the worktrees it touched there.
+ *
+ * Grouped by repo in MAIN's copy of the list because the grouping cannot be
+ * redone anywhere else: mapping a worktree path back to its bare repo needs
+ * the per-repo worktree lists, which only the renderer that loaded them holds.
+ * A second client handed bare paths would have to guess, and a phone guessing
+ * which repo a path belongs to is how the picker starts lying.
+ */
+export interface SessionRepoTrail {
+  /** Bare repo path — the key the `worktree:*` channels take. */
+  repoPath: string
+  /** Worktrees touched in this repo, most-recently-first. Never empty. */
+  worktrees: string[]
+}
+
+export interface WindowSessionInput {
+  /** The PTY terminal id. Doubles as the session id renderer-side. */
+  terminalId: string
+  label: string
+  kind: 'agent' | 'agents' | 'terminal'
+  /** Absent on a plain terminal — there is no agent in front of the shell. */
+  provider?: AgentProviderId
+  worktreePath: string
+  status: AgentStatus | 'unknown'
+  /**
+   * Where this session has been, most-recently-first.
+   *
+   * Seeded with the session's own worktree, so it is empty only before the
+   * renderer has ever synced. The desktop repo picker reads the same trail.
+   */
+  trail: SessionRepoTrail[]
+}
+
+export interface WindowSession extends WindowSessionInput {
+  /**
+   * Epoch ms of the last change to `status`, stamped by MAIN.
+   *
+   * A client cannot compute this: it stamps only what it has witnessed, so a
+   * session that blocked twenty minutes before the phone connected would read
+   * as freshly blocked — the one number this surface exists to show.
+   */
+  statusSince: number
+}
+
+/**
+ * Start a session from a brief, from a client that has no session of its own.
+ *
+ * One field, because a session needs no more: agents launch at the project
+ * root and create their own worktrees, so there is no branch to name and no
+ * directory to pick. Provider and model come from the same default a new
+ * session gets at the desk.
+ */
+export interface SessionCreateRequest {
+  /**
+   * Identifies the user's INTENT, not this call.
+   *
+   * Minted once when the user commits to starting a session and reused by
+   * every attempt to deliver that intent, so a double tap, a socket that drops
+   * before the answer arrives, or a replayed frame all resolve to the one
+   * session. Main is where that is enforced — a client-side guard cannot see
+   * the attempt that a different client, or a previous page load, already made.
+   */
+  requestId: string
+  /** What the agent should do. Becomes its seed prompt. */
+  brief: string
+}
+
+/**
+ * What main says when it delivered a create request and never heard back.
+ *
+ * Shared, and compared exactly, because a client has to ACT on this ONE
+ * outcome differently from every other failure: it is the only one where a
+ * session may exist that nobody has seen. Every other rejection means the
+ * intent is still safe to re-ask. Recognising it by prose would make the
+ * difference between one agent and two depend on a wording tweak.
+ */
+/**
+ * Stands where a diff was cut short for a client that cannot receive all of it.
+ *
+ * Part of the diff text rather than a flag beside it, so a reader sees that
+ * something is missing even if nothing special handles it — and shared so the
+ * surface that CAN say more recognises it exactly.
+ */
+export const DIFF_TRUNCATED_MARKER =
+  '*** This diff is too large to send to a phone. Open it at the desk to see the rest. ***'
+
+export const SESSION_CREATE_UNWITNESSED =
+  'SimpleEdit did not confirm the new session in time. Check the list before starting it again.'
+
+/** The session a `session:create` produced — enough to open it. */
+export interface SessionCreateResult {
+  terminalId: string
+  label: string
+}
+
 export interface SessionInvokeMap {
   'session:save': { args: [payload: SerializedSession]; result: void }
   'session:load': { args: [repoPath: string]; result: SerializedSession | null }
   'session:clear': { args: [repoPath: string]; result: void }
+  /** Renderer → main: the whole list, whenever any part of it changes. */
+  'session:sync': { args: [sessions: WindowSessionInput[]]; result: void }
+  /** Any client → main: the current list for the window it is attached to. */
+  'session:list': { args: []; result: WindowSession[] }
+  /** Any client → main: start a session from a brief. Rejects with the reason. */
+  'session:create': { args: [request: SessionCreateRequest]; result: SessionCreateResult }
+  /**
+   * Renderer → main: what became of a `session:create-request`.
+   *
+   * The renderer mints the terminal id and owns the defaults, so this is the
+   * only way the outcome can reach the waiting call — including a refusal,
+   * which must be distinguishable from a renderer that never answered.
+   */
+  'session:created': {
+    args: [correlationId: string, outcome: SessionCreateOutcome]
+    result: void
+  }
+}
+
+/** The renderer's answer to one `session:create-request`. */
+export type SessionCreateOutcome =
+  | ({ ok: true } & SessionCreateResult)
+  | { ok: false; reason: string }
+
+export interface SessionEventMap {
+  /** Fanned out to every transport on the window whose list changed. */
+  'session:list-changed': WindowSession[]
+  /**
+   * Main → the window's own renderer: create a session seeded with this brief.
+   *
+   * Sent to the renderer rather than the hub because only the renderer holds
+   * the session list, the project root and the model defaults. It answers on
+   * `session:created` with the matching `correlationId`.
+   */
+  'session:create-request': {
+    correlationId: string
+    brief: string
+    /** Derived from the brief by main, so one definition serves both ends. */
+    label?: string
+  }
 }
 
 // ── Models (local Ollama + cloud Claude) ──────────────────
@@ -707,6 +931,262 @@ export interface AppInvokeMap {
   'app:open-window': { args: [repoPath?: string]; result: void }
   'app:open-external': { args: [url: string]; result: void }
   'app:save-dropped-blob': { args: [filename: string, bytes: Uint8Array]; result: string }
+  /**
+   * This transport's own `PtyClientId`, so a client can tell whether a
+   * `pty:owner-changed` names it. Stamped by main from the call's origin — the
+   * value is not something a client may choose.
+   */
+  'app:client-key': { args: []; result: PtyClientId }
+}
+
+// ── Remote access ─────────────────────────────────────────
+/**
+ * Persisted remote-access preferences. `enabled` is never flipped implicitly:
+ * the server exposes `pty:spawn`, `fs:write` and every git operation to
+ * whoever holds its token, so it starts only when a person asks for it.
+ */
+export interface RemoteAccessConfig {
+  enabled: boolean
+  /** Interface to bind. Always explicit — never an implicit `0.0.0.0`. */
+  host: string
+  /** 0 for an ephemeral port. */
+  port: number
+  /**
+   * Absolute path to a whisper.cpp GGML model file. Empty until a person picks
+   * one — nothing is bundled and nothing is downloaded.
+   */
+  sttModelPath: string
+  /**
+   * Drive `tailscale serve` while remote access is on.
+   *
+   * Explicit opt-in, separate from `enabled`, and never implied by it: Serve
+   * publishes this app to every device on the tailnet under a stable HTTPS
+   * name. Turning remote access on is a decision about this Mac; turning Serve
+   * on is a decision about the tailnet.
+   */
+  serveEnabled: boolean
+  /**
+   * The loopback port a serve mapping was last created for, or 0.
+   *
+   * Not a preference — a claim ticket. The mapping lives inside tailscaled and
+   * outlives a crash, so the port is written down before the mapping exists
+   * and cleared once it is gone. At launch a non-zero value means some earlier
+   * run left a mapping behind, and it is removed only if tailscaled still
+   * points at exactly that target.
+   */
+  servePort: number
+}
+
+// ── Speech to text ────────────────────────────────────────
+/**
+ * Whether dictation can run, and what to do about it when it cannot.
+ *
+ * Voice is an accelerant on this surface, never a requirement: the composer
+ * takes typed input whatever this says. So `hint` is advice, not an error.
+ */
+export interface SttStatus {
+  /** A whisper.cpp CLI was found on PATH. */
+  installed: boolean
+  /** Which command was found, so the pane can name it. */
+  binary: string | null
+  /** The configured model file. Empty when never set. */
+  modelPath: string
+  /** That file exists and is readable. */
+  modelReady: boolean
+  /** Both of the above — dictation will actually work. */
+  ready: boolean
+  /** What is missing and how to fix it. Null when ready. */
+  hint: string | null
+}
+
+export interface SttInvokeMap {
+  'stt:status': { args: []; result: SttStatus }
+  /** Persists the model path and re-reports. An unusable path is rejected. */
+  'stt:set-model-path': { args: [path: string]; result: SttStatus }
+  /**
+   * Base64 of a 16 kHz mono 16-bit PCM WAV. Base64 because this channel is
+   * reached over a JSON WebSocket as well as over Electron IPC, and a
+   * `Uint8Array` does not survive the former.
+   */
+  'stt:transcribe': { args: [audioBase64: string]; result: string }
+  /**
+   * Native file picker for the model. Desktop only in practice — it opens a
+   * dialog on the Mac, which is no use to a phone, so the pane that calls it
+   * is the settings pane and the mobile surface never does.
+   */
+  'stt:pick-model': { args: []; result: SttStatus | null }
+}
+
+export interface RemoteAccessStatus {
+  running: boolean
+  host: string | null
+  port: number | null
+  /** The full URL to open, token included, or null when not running. */
+  url: string | null
+  /** Currently attached web clients. */
+  clients: number
+  /**
+   * Whether a power assertion is held. Surfaced so it is never a mystery why
+   * the Mac stayed awake — and, more importantly, so a failure to take one is
+   * visible rather than showing up later as agents that stopped overnight.
+   */
+  powerSaveBlocked: boolean
+  /** Why the last start attempt failed (a taken port, typically). */
+  error: string | null
+}
+
+export interface RemoteInvokeMap {
+  'remote:status': { args: []; result: RemoteAccessStatus }
+  'remote:config': { args: []; result: RemoteAccessConfig }
+  /** Starts or stops the server, and persists the choice. */
+  'remote:set-enabled': { args: [enabled: boolean]; result: RemoteAccessStatus }
+  /** Rebinds a running server; persisted either way. */
+  'remote:set-host': { args: [host: string]; result: RemoteAccessStatus }
+  /** Candidate bind addresses, so the pane can offer them instead of a text field. */
+  'remote:interfaces': { args: []; result: RemoteInterface[] }
+  /**
+   * Opt in to, or out of, `tailscale serve`. Persisted, and applied against
+   * the running server's current port.
+   */
+  'remote:set-serve-enabled': { args: [enabled: boolean]; result: TailscaleServeStatus }
+  /** Probe the Tailscale CLI. Spawns a subprocess, so it is called on demand. */
+  'tailscale:status': { args: []; result: TailscaleStatus }
+  'tailscale:serve-status': { args: []; result: TailscaleServeStatus }
+}
+
+/**
+ * What the Tailscale CLI says about this node.
+ *
+ * `interfaces.ts` can only recognise the interface. Everything a phone needs —
+ * the MagicDNS name, whether HTTPS certificates exist, whether Serve can run —
+ * comes from the CLI, so its absence is a first-class state rather than a
+ * failure to report.
+ */
+export interface TailscaleStatus {
+  /** The command we would run, or null when no candidate exists at all. */
+  cli: string | null
+  /**
+   * That command actually answered with a status we could parse.
+   *
+   * Not the same as `cli !== null`, and the difference is load-bearing: the
+   * `$PATH` fallback hands back a bare name on Windows without verifying it,
+   * and the Mac App Store bundle contains a binary that may not speak CLI at
+   * all. This is the field anything that has to DRIVE Tailscale gates on.
+   */
+  cliUsable: boolean
+  /** `Running`, `Stopped`, `NeedsLogin`, … Null when the CLI did not answer. */
+  backendState: string | null
+  /** `Self.DNSName`, trailing dot removed — the host part of the HTTPS URL. */
+  dnsName: string | null
+  /** A certificate exists for `dnsName`, so an HTTPS URL will actually load. */
+  httpsReady: boolean
+  /** What is missing and what to do about it. Null when nothing is. */
+  hint: string | null
+}
+
+/**
+ * The serve mapping this app owns.
+ *
+ * Its lifetime is the remote server's: created when the server starts,
+ * re-pointed when the ephemeral port changes, removed when it stops.
+ */
+export interface TailscaleServeStatus {
+  /** A mapping exists and is published. */
+  active: boolean
+  /** The loopback port we are responsible for, whether or not it published. */
+  port: number | null
+  /** The HTTPS URL Serve publishes, token included. Null unless active. */
+  url: string | null
+  /** A serve or an unserve is in flight. */
+  busy: boolean
+  /**
+   * Where to switch Serve on for the tailnet.
+   *
+   * `tailscale serve` refuses with `Serve is not enabled on your tailnet. To
+   * enable, visit: <url>`, and that URL names the node, so it cannot be
+   * derived. It is also the thing a terminal truncates. Parsed out so the pane
+   * can render it as a link rather than a dead end.
+   */
+  enableUrl: string | null
+  error: string | null
+}
+
+export interface RemoteInterface {
+  name: string
+  address: string
+  /** A Tailscale address (100.64.0.0/10) — the intended one for a phone. */
+  isTailscale: boolean
+  isLoopback: boolean
+}
+
+export interface RemoteEventMap {
+  'remote:status-changed': RemoteAccessStatus
+  'remote:serve-changed': TailscaleServeStatus
+  'push:status-changed': PushStatus
+}
+
+// ── Push notifications ────────────────────────────────────
+/**
+ * One registered device, as the UI is allowed to see it.
+ *
+ * Deliberately NOT the endpoint. A push endpoint is a bearer capability to
+ * send notifications to that device, and `push:status` is reachable over the
+ * remote socket like every other channel — so the pane gets an id it can
+ * address and a service host it can name, and nothing that could be replayed.
+ */
+export interface PushDevice {
+  /** Stable digest of the endpoint. What `push:unsubscribe` takes. */
+  id: string
+  /** What the device called itself when it registered. */
+  label: string
+  /** The push service's host — `web.push.apple.com`, `fcm.googleapis.com`, … */
+  service: string
+  createdAt: number
+  /** Epoch ms of the last successful delivery, or null. */
+  lastPushAt: number | null
+  /** Why the last delivery failed, or null. Never a reason to prune on its own. */
+  lastError: string | null
+}
+
+export interface PushStatus {
+  /**
+   * The VAPID public key, which a browser needs in order to subscribe.
+   * Its private half never leaves the main process — not to a renderer, not
+   * to the web bundle, not into a log.
+   */
+  vapidPublicKey: string
+  devices: PushDevice[]
+  error: string | null
+}
+
+/** Exactly what `PushSubscription.toJSON()` yields, plus a name for the row. */
+export interface PushSubscriptionInput {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+  /** How the device should be listed. Trimmed and length-capped by main. */
+  label?: string
+}
+
+export interface PushInvokeMap {
+  'push:status': { args: []; result: PushStatus }
+  /** Register or refresh this device. Idempotent per endpoint. */
+  'push:subscribe': { args: [subscription: PushSubscriptionInput]; result: PushStatus }
+  /** Forget one device, by endpoint (what a browser knows) or by id (what the pane shows). */
+  'push:unsubscribe': { args: [endpointOrId: string]; result: PushStatus }
+  /** Forget every device. The way out when a phone is lost. */
+  'push:forget-all': { args: []; result: PushStatus }
+  /**
+   * Does this Mac still hold a subscription for `endpoint`? Returns its device
+   * id, or null.
+   *
+   * A browser can only see its OWN side of the registration. The Mac's side can
+   * disappear underneath it — the user taps Forget in the pane, the push
+   * service reports the endpoint gone, or a corrupt VAPID pair is replaced and
+   * takes every subscription with it. Without this the phone believes it is
+   * registered forever and offers no way to fix it. The caller already holds
+   * the endpoint it is asking about, so this exposes nothing new.
+   */
+  'push:device-id': { args: [endpoint: string]; result: string | null }
 }
 
 // ── LSP ───────────────────────────────────────────────────
@@ -920,6 +1400,9 @@ export type InvokeMap = WorktreeInvokeMap &
   SessionInvokeMap &
   UpdateInvokeMap &
   ModelsInvokeMap &
+  RemoteInvokeMap &
+  PushInvokeMap &
+  SttInvokeMap &
   AgentBusInvokeMap
 
 export type SendMap = LspSendMap
@@ -936,4 +1419,6 @@ export type EventMap = WorktreeEventMap &
   AgentBusEventMap &
   UpdateEventMap &
   EditorEventMap &
+  RemoteEventMap &
+  SessionEventMap &
   ModelsEventMap

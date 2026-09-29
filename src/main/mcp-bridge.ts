@@ -1,7 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
 import { randomBytes, randomUUID } from 'crypto'
 import { dirname } from 'path'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
@@ -21,12 +21,13 @@ import {
   waitForReply,
   type Message,
 } from './agent-bus'
+import { sendAgentStatus } from './agent-status'
 
 interface BridgeInstance {
   server: Server
   port: number
   token: string
-  webContents: WebContents
+  webContents: RemoteClient
 }
 
 const bridges = new Map<number, BridgeInstance>()
@@ -109,7 +110,7 @@ const SPAWN_HANDLE_WAIT_MS = 1500
  * Mirror every message to the renderer so the exchange is visible to the user.
  * Two agents talking with no UI trace is the failure mode to avoid.
  */
-function notifyMessage(webContents: WebContents, message: Message): void {
+function notifyMessage(webContents: RemoteClient, message: Message): void {
   if (webContents.isDestroyed()) return
   webContents.send('agent-message:sent', {
     messageId: message.id,
@@ -138,7 +139,7 @@ function jsonResponse(res: ServerResponse, status: number, body: Record<string, 
 
 // -- Tool call handling ----------------------------------------
 
-async function handleToolCall(payload: ToolCallPayload, webContents: WebContents): Promise<{ status: number; body: Record<string, unknown> }> {
+async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClient): Promise<{ status: number; body: Record<string, unknown> }> {
   const { tool, args, terminalId } = payload
 
   if (tool === 'complete_task') {
@@ -551,7 +552,7 @@ async function locateWorktree(
  * paid once per new repo per window. A pathological path (network FS, huge
  * repo) would stall the CLI's hook here.
  */
-async function handleHook(body: string, webContents: WebContents): Promise<Record<string, unknown>> {
+async function handleHook(body: string, webContents: RemoteClient): Promise<Record<string, unknown>> {
   let parsed: unknown
   try {
     parsed = JSON.parse(body)
@@ -579,7 +580,7 @@ async function handleHook(body: string, webContents: WebContents): Promise<Recor
  */
 export async function applyAgentSignal(
   signal: HookSignal,
-  webContents: WebContents,
+  webContents: RemoteClient,
   opts: { ownsIdentityAndStatus?: boolean; deliver?: (text: string) => Promise<boolean> } = {},
 ): Promise<Record<string, unknown>> {
   // Codex's reporter stamps the terminal id straight into the body; Claude's
@@ -596,6 +597,28 @@ export async function applyAgentSignal(
   // session id it may not have learned yet. The caller says who owns these.
   if (signal.terminalId && !opts.ownsIdentityAndStatus) {
     registerCodexIdentityAndStatus(signal, terminalId, cwd.worktreePath ?? signal.cwd, webContents)
+  }
+
+  // `Notification` is handled OUTSIDE that guard, for every provider, and
+  // deliberately not by folding it into the Codex event map.
+  //
+  // The guard above exists because deriving status from an event name races a
+  // provider that reports its own: a Stop-derived `idle` can land after a
+  // PostToolUse-derived `running`, and Claude's OSC-title parser is exactly
+  // such a reporter. `Notification` has no such competition — nothing else in
+  // this codebase produces `waiting` for Claude, because nothing else can see
+  // it: it never reaches the terminal title. So there is no race to reintroduce,
+  // and this is the one signal that must not be provider-specific, since a
+  // notification the user relies on has to mean the same thing whichever agent
+  // sent it.
+  if (signal.eventName === 'Notification') {
+    sendAgentStatus(webContents, {
+      worktreePath: cwd.worktreePath ?? signal.cwd,
+      status: 'waiting',
+      terminalId,
+      precise: true,
+      ...(signal.message ? { message: signal.message } : {}),
+    })
   }
 
   if (!webContents.isDestroyed()) {
@@ -637,7 +660,7 @@ export async function applyAgentSignal(
 async function handleTurnEnd(
   signal: { eventName: string | null; lastAssistantMessage: string | null; stopHookActive: boolean },
   terminalId: string,
-  webContents: WebContents,
+  webContents: RemoteClient,
   deliver?: (text: string) => Promise<boolean>,
 ): Promise<Record<string, unknown>> {
   if (signal.eventName !== 'Stop' && signal.eventName !== 'SubagentStop') return {}
@@ -683,7 +706,7 @@ function registerCodexIdentityAndStatus(
   signal: import('./cwd-tracker').HookSignal,
   terminalId: string,
   worktreePath: string,
-  webContents: WebContents,
+  webContents: RemoteClient,
 ): void {
   if (webContents.isDestroyed()) return
   webContents.send('agent:session-id', { terminalId, sessionId: signal.sessionId })
@@ -697,7 +720,7 @@ function registerCodexIdentityAndStatus(
   }
   const status = signal.eventName ? statusByEvent[signal.eventName] : undefined
   if (status) {
-    webContents.send('agent:status', {
+    sendAgentStatus(webContents, {
       worktreePath,
       status,
       terminalId,
@@ -706,7 +729,7 @@ function registerCodexIdentityAndStatus(
   }
 }
 
-function createBridgeServer(token: string, webContents: WebContents): Server {
+function createBridgeServer(token: string, webContents: RemoteClient): Server {
   return createServer(async (req, res) => {
     // Validate token from URL path: /<token>/tool-call
     const expectedPath = `/${token}/tool-call`
@@ -755,7 +778,7 @@ function createBridgeServer(token: string, webContents: WebContents): Server {
   })
 }
 
-export function startBridge(webContentsId: number, webContents: WebContents): Promise<number> {
+export function startBridge(webContentsId: number, webContents: RemoteClient): Promise<number> {
   const existing = bridges.get(webContentsId)
   if (existing) {
     return Promise.resolve(existing.port)
@@ -764,16 +787,30 @@ export function startBridge(webContentsId: number, webContents: WebContents): Pr
   const token = randomBytes(16).toString('hex')
   const server = createBridgeServer(token, webContents)
 
+  // Registered BEFORE `listen` resolves. A window closing during the listen
+  // would otherwise find nothing in `bridges` to stop, and the server would
+  // outlive it with nothing left holding a reference. `port: 0` marks it as
+  // not yet listening, which `getBridgeInfo` reports as unavailable.
+  bridges.set(webContentsId, { server, port: 0, token, webContents })
+
   return new Promise((resolve, reject) => {
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') {
         server.close()
+        bridges.delete(webContentsId)
         reject(new Error('Failed to get server address'))
         return
       }
 
       const port = addr.port
+      // A `stopBridge` during the listen already removed the entry; do not
+      // resurrect it, or the window's teardown is undone behind its back.
+      if (!bridges.has(webContentsId)) {
+        server.close()
+        resolve(port)
+        return
+      }
       bridges.set(webContentsId, { server, port, token, webContents })
       console.log(`[MCP Bridge] Started for webContents ${webContentsId} on 127.0.0.1:${port}`)
       resolve(port)
@@ -803,6 +840,8 @@ export function stopAllBridges(): void {
 
 export function getBridgeInfo(webContentsId: number): { port: number; token: string } | null {
   const bridge = bridges.get(webContentsId)
-  if (!bridge) return null
+  // `port: 0` is a bridge registered but not yet listening — it has no address
+  // to hand an agent yet.
+  if (!bridge || bridge.port === 0) return null
   return { port: bridge.port, token: bridge.token }
 }

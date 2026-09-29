@@ -144,6 +144,10 @@ export const codexProvider = {
     // falls back to coarse PTY signals.
     reportingSetup: 'user-granted',
     modelSelector: 'model-id',
+    // Codex's bare model ids are OpenAI's. Without this, `createAgent` has no
+    // brand to lift them into a ModelRef with, so a Codex launch remembers no
+    // model at all and every path that reads `lastUsed` resolves elsewhere.
+    nativeModelBrand: 'openai',
     reasoningEffort: true,
     modelCatalog: true,
     reportsSessionTitle: false,

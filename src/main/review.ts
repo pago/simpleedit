@@ -1,4 +1,4 @@
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { ReviewFinding, ReviewStatus, ModelRef } from '../shared/ipc-types'
 import { getModelConfig } from './models/config'
 import type { Runner } from './agent-tasks/runner'
@@ -12,15 +12,15 @@ export function reviewKey(worktreePath: string, commitHash: string | null): stri
 
 const activeReviews = new Map<string, { abort: () => void }>()
 
-function send(wc: WebContents, channel: string, data: unknown): void {
+function send(wc: RemoteClient, channel: string, data: unknown): void {
   if (!wc.isDestroyed()) wc.send(channel, data)
 }
 
-function sendStatus(wc: WebContents, key: string, status: ReviewStatus, error?: string): void {
+function sendStatus(wc: RemoteClient, key: string, status: ReviewStatus, error?: string): void {
   send(wc, 'review:status', { key, status, error })
 }
 
-function sendFinding(wc: WebContents, key: string, finding: ReviewFinding): void {
+function sendFinding(wc: RemoteClient, key: string, finding: ReviewFinding): void {
   send(wc, 'review:finding', { key, finding })
 }
 
@@ -39,7 +39,7 @@ export function selectRunner(worktreePath: string): { runner: Runner; model?: Mo
 export async function startReview(
   worktreePath: string,
   commitHash: string | null,
-  webContents: WebContents
+  webContents: RemoteClient
 ): Promise<void> {
   const key = reviewKey(worktreePath, commitHash)
 

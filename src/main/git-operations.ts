@@ -1,6 +1,6 @@
 import simpleGit from 'simple-git'
 import { watch, type FSWatcher } from 'chokidar'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { GitCommitInfo, DiffFileEntry } from '../shared/ipc-types'
 
 // ── Git watching ──────────────────────────────────────────────
@@ -11,7 +11,7 @@ interface GitWatchState {
   refsWatcher: FSWatcher
   pollTimer: ReturnType<typeof setInterval>
   lastStatusSnapshot: string
-  webContents: WebContents
+  webContents: RemoteClient
   worktreePath: string
 }
 
@@ -28,7 +28,7 @@ const gitWatchers = new Map<string, GitWatchState>()
  */
 export async function watchGitRefs(
   worktreePath: string,
-  webContents: WebContents
+  webContents: RemoteClient
 ): Promise<void> {
   // Don't double-watch
   if (gitWatchers.has(worktreePath)) return

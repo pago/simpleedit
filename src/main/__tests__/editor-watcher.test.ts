@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
+import { ClientHub, type RemoteClient } from '../client-hub'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -11,11 +12,19 @@ afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true })
 })
 
-function makeWebContents(id: number): { id: number; isDestroyed: () => boolean; send: ReturnType<typeof vi.fn> } {
+interface FakeClient extends RemoteClient {
+  send: ReturnType<typeof makeSend>
+}
+
+const makeSend = () => vi.fn<(channel: string, data: unknown) => void>()
+
+// Typed, not cast: `RemoteClient` is the contract these watchers are written
+// against, and an `as never` at every call site would hide it.
+function makeWebContents(id: number): FakeClient {
   return {
     id,
     isDestroyed: () => false,
-    send: vi.fn(),
+    send: makeSend(),
   }
 }
 
@@ -46,7 +55,7 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     writeFileSync(filePath, 'original')
     const wc = makeWebContents(1)
 
-    watchEditorFile(wc.id, filePath, wc as never)
+    watchEditorFile(wc, filePath)
     // Give chokidar a moment to set up the native FS watch before writing.
     await new Promise((r) => setTimeout(r, 300))
 
@@ -63,7 +72,7 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     writeFileSync(filePath, 'v1')
     const wc = makeWebContents(2)
 
-    watchEditorFile(wc.id, filePath, wc as never)
+    watchEditorFile(wc, filePath)
     unwatchEditorFile(wc.id, filePath)
 
     writeFileSync(filePath, 'v2')
@@ -78,8 +87,8 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     const wc1 = makeWebContents(10)
     const wc2 = makeWebContents(11)
 
-    watchEditorFile(wc1.id, filePath, wc1 as never)
-    watchEditorFile(wc2.id, filePath, wc2 as never)
+    watchEditorFile(wc1, filePath)
+    watchEditorFile(wc2, filePath)
     // Give chokidar time to set up before making changes.
     await new Promise((r) => setTimeout(r, 300))
     unwatchEditorFile(wc1.id, filePath)
@@ -93,6 +102,29 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     unwatchEditorFile(wc2.id, filePath)
   })
 
+  it('serves a transport that joins the hub after the watch was set up', async () => {
+    const filePath = join(tmpRoot, `hub-${Math.random().toString(36).slice(2)}.ts`)
+    writeFileSync(filePath, 'v1')
+    const desktop = makeWebContents(30)
+    const hub = new ClientHub(30, desktop)
+
+    watchEditorFile(hub, filePath)
+    await new Promise((r) => setTimeout(r, 300))
+
+    // A web client attaching later joins the SAME identity, so it must be
+    // served by the existing subscription rather than needing its own.
+    const web = makeWebContents(30)
+    hub.register(web)
+
+    writeFileSync(filePath, 'v2')
+    await waitFor(() => web.send.mock.calls.length > 0)
+
+    expect(desktop.send).toHaveBeenCalledWith('editor:file-changed', { filePath })
+    expect(web.send).toHaveBeenCalledWith('editor:file-changed', { filePath })
+
+    unwatchEditorFile(hub.id, filePath)
+  })
+
   it('unwatchAllEditorFilesForWindow tears down all files for that window', async () => {
     const file1 = join(tmpRoot, `multi1-${Math.random().toString(36).slice(2)}.ts`)
     const file2 = join(tmpRoot, `multi2-${Math.random().toString(36).slice(2)}.ts`)
@@ -100,8 +132,8 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     writeFileSync(file2, 'a')
     const wc = makeWebContents(20)
 
-    watchEditorFile(wc.id, file1, wc as never)
-    watchEditorFile(wc.id, file2, wc as never)
+    watchEditorFile(wc, file1)
+    watchEditorFile(wc, file2)
     unwatchAllEditorFilesForWindow(wc.id)
 
     writeFileSync(file1, 'b')

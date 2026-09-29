@@ -6,6 +6,9 @@
   import '@xterm/xterm/css/xterm.css'
   import { sessionsStore } from '../../stores/sessions.svelte'
   import { capabilitiesFor } from '../../stores/agent-capabilities.svelte'
+  import { clientKey } from '../../lib/clientKey'
+  import { hasUserAttention as isAttended } from '../../lib/attention'
+  import { attachPty, type PtyAttachment } from '../../lib/pty-attach'
 
   interface Props {
     terminalId: string
@@ -29,13 +32,69 @@
 
   let term: Terminal | undefined
   let fitAddon: FitAddon | undefined
-  let cleanupDataListener: (() => void) | undefined
-  let cleanupExitListener: (() => void) | undefined
+  let attachment: PtyAttachment | undefined
   let resizeObserver: ResizeObserver | undefined
 
   // Scroll position preservation across tab switches
   let savedViewportY: number | undefined
   let wasAtBottom = true
+
+  // A PTY has one size but can have several clients attached (a second desktop
+  // window on the same session, later a phone), and main honours a resize only
+  // from the client that claimed it. Claim on genuine user attention only: a
+  // client that re-claimed on reconnect or on background layout churn would
+  // take the size away from whoever is actually looking at the terminal.
+  //
+  // Sending a resize is NOT gated on owning it. Main already drops a
+  // non-owner's, so a renderer-side gate only duplicated that decision from
+  // stale local state — and got it wrong whenever the container reflowed while
+  // this client happened not to be the owner.
+  /** Main's last word on who sizes this PTY. null until it has said anything. */
+  let sizeOwner = $state<string | null>(null)
+  /** This transport's key, for reading `pty:owner-changed`. '' until it lands. */
+  let myClientKey = $state('')
+  void clientKey().then((k) => { myClientKey = k })
+
+  /** Main has named an owner, and it is not us. */
+  const sizedElsewhere = $derived(
+    sizeOwner !== null && myClientKey !== '' && sizeOwner !== myClientKey,
+  )
+
+  /** Is the user looking at THIS terminal, in this window, right now? */
+  function hasUserAttention(): boolean {
+    return isAttended(active)
+  }
+
+  /**
+   * Take the size, handing over the geometry this client is actually rendering.
+   * Callers must fit first — a claim carrying stale dimensions is the bug this
+   * argument list exists to prevent.
+   */
+  function claimPty(id: string): void {
+    if (!term) return
+    sizeOwner = myClientKey || null
+    void window.api.invoke('pty:claim', id, term.cols, term.rows)
+  }
+
+  /**
+   * Re-assert this view's geometry on the PTY.
+   *
+   * Called when main says the PTY is UNOWNED — the client that was sizing it
+   * went away. Ownership moving without geometry following is how a terminal
+   * ends up drawing into a viewport of the wrong height: the ResizeObserver
+   * fires only on a container change and `pty:claim` only on an attention
+   * change, so a window already sitting on this terminal has no event left and
+   * would render 40-column output in a 200-column view indefinitely.
+   */
+  function resyncGeometry(id: string): void {
+    if (!term || !fitAddon || !containerEl) return
+    if (containerEl.offsetWidth === 0 || containerEl.offsetHeight === 0) return
+    fitPreservingScroll()
+    // Attention takes the size outright; anything else just reports it, which
+    // an unowned PTY accepts.
+    if (hasUserAttention()) claimPty(id)
+    else window.api.invoke('pty:resize', id, term.cols, term.rows)
+  }
 
   function isScrolledToBottom(): boolean {
     if (!term) return true
@@ -141,56 +200,39 @@
       }
     }
 
-    // The PTY spawns before this component mounts, so output emitted in that
-    // window (all of it, for a process that crashes at spawn) never reaches
-    // this listener. Replay main's backlog first; `written` tracks the
-    // absolute byte offset already rendered so live chunks that overlap the
-    // replay are deduped. Live chunks arriving before the replay resolves are
-    // queued to keep byte order.
-    let written = 0
-    let replayDone = false
-    const queued: Array<{ data: string; offset: number }> = []
-
-    function writeDeduped(chunk: { data: string; offset: number }): void {
-      const chunkEnd = chunk.offset + chunk.data.length
-      if (chunkEnd <= written) return
-      writeChunk(chunk.data.slice(Math.max(0, written - chunk.offset)))
-      written = chunkEnd
-    }
-
-    cleanupDataListener = window.api.on('pty:data', (payload) => {
-      if (payload.id !== id || !term) return
-      if (!replayDone) {
-        queued.push({ data: payload.data, offset: payload.offset })
-        return
-      }
-      writeDeduped(payload)
-    })
-
-    void window.api
-      .invoke('pty:backlog', id)
-      .then((b) => {
-        if (term && b.end > written) {
-          writeDeduped({ data: b.data, offset: b.start })
-        }
-      })
-      .catch(() => { /* degrade to live-only output */ })
-      .finally(() => {
-        replayDone = true
-        for (const chunk of queued) writeDeduped(chunk)
-        queued.length = 0
-      })
-
-    cleanupExitListener = window.api.on('pty:exit', (payload) => {
-      if (payload.id === id && term) {
-        term.write(`\r\n[Process exited with code ${payload.exitCode}]`)
-      }
+    // Backlog replay, live output, exit and ownership all live in the shared
+    // attachment — the phone renders the same stream through the same code,
+    // which is the point: a second implementation of this would eventually
+    // disagree with the PTY about what the user is looking at.
+    attachment = attachPty(id, {
+      write: writeChunk,
+      onExit: (exitCode) => {
+        // Main drops the owner entry on exit, so this client's belief about it
+        // has to go too — a dead terminal must not keep claiming to be sized by
+        // somebody. Distinct from an ownership RELEASE, which resyncs geometry;
+        // there is nothing left here to size.
+        sizeOwner = null
+        if (term) term.write(`\r\n[Process exited with code ${exitCode}]`)
+      },
+      // Not a gate on anything — it is what lets this view say it is being
+      // sized by another device instead of silently rendering at a width the
+      // PTY abandoned.
+      onOwnerChange: (owner) => {
+        sizeOwner = owner
+        // Nobody owns it: the previous owner's transport is gone and the PTY is
+        // still at ITS geometry. Say what this view is actually rendering.
+        if (owner === null) resyncGeometry(id)
+      },
     })
 
     // Auto-resize on container size change.
     // Guard against zero dimensions: ResizeObserver fires when a tab is hidden
     // (display:none), which would cause fitAddon to calculate 0 columns and
     // corrupt the PTY's line wrapping.
+    // Always told to main. Main applies it only for the owner, so an unwatched
+    // window reflowing still cannot resize what someone else is reading — and
+    // the client that IS the owner is never silenced by a stale local belief
+    // that it is not.
     resizeObserver = new ResizeObserver(() => {
       if (fitAddon && el.offsetWidth > 0 && el.offsetHeight > 0) {
         fitPreservingScroll()
@@ -204,12 +246,11 @@
 
   function cleanup(): void {
     recordLifecycle('cleanup', terminalId)
+    sizeOwner = null
     resizeObserver?.disconnect()
     resizeObserver = undefined
-    cleanupDataListener?.()
-    cleanupDataListener = undefined
-    cleanupExitListener?.()
-    cleanupExitListener = undefined
+    attachment?.dispose()
+    attachment = undefined
     term?.dispose()
     term = undefined
     fitAddon = undefined
@@ -223,6 +264,29 @@
     }
     return () => {
       cleanup()
+    }
+  })
+
+  // Two ways attention arrives at an already-mounted, already-selected
+  // terminal: the window is focused, or the document becomes visible. Both are
+  // deliberate user acts, so both claim. Losing attention does nothing — main
+  // owns that decision, and a client that quietly stopped sending resizes on
+  // blur is exactly how a reflow-while-unfocused went unheard. `active` and
+  // `document` are read inside the handler, so this effect re-registers only
+  // on id change.
+  $effect(() => {
+    const id = terminalId
+
+    function onAttentionChange(): void {
+      if (hasUserAttention()) claimPty(id)
+    }
+
+    window.addEventListener('focus', onAttentionChange)
+    document.addEventListener('visibilitychange', onAttentionChange)
+
+    return () => {
+      window.removeEventListener('focus', onAttentionChange)
+      document.removeEventListener('visibilitychange', onAttentionChange)
     }
   })
 
@@ -289,10 +353,15 @@
       // Use rAF so the container has dimensions (no longer display:none).
       requestAnimationFrame(() => {
         if (!term || !fitAddon) return
+        // Fit BEFORE claiming: the claim carries the geometry, and this is the
+        // moment the container's real size becomes knowable again.
         fitAddon.fit()
-        if (term) {
-          window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
-        }
+        // Selecting a session is attention, so take the size — but only if
+        // this window is the focused one. A background window re-showing a
+        // tab (a restored layout, a reconnect) must not claim; it still
+        // reports its size, and main drops it if someone else owns the PTY.
+        if (hasUserAttention()) claimPty(terminalId)
+        else window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
         // Restore scroll after fit. If the user was at the bottom when the
         // tab was hidden, follow new content; otherwise stay at the saved line.
         if (wasAtBottom) {
@@ -308,7 +377,8 @@
         }
       })
     } else {
-      // Becoming hidden: save scroll state
+      // Becoming hidden: save scroll state. Ownership is main's to move, and
+      // the next client to receive the user's attention claims it.
       wasAtBottom = isScrolledToBottom()
       savedViewportY = term.buffer.active.viewportY
     }
@@ -324,6 +394,16 @@
   data-testid="terminal-drop-target"
 >
   <div bind:this={containerEl} class="h-full w-full"></div>
+  <!-- Main sizes the PTY for whoever claimed it last. When that is not this
+       client, this view is fitted to its own container and the terminal is
+       not — so say so, rather than letting it read as a rendering bug. -->
+  {#if active && sizedElsewhere}
+    <div
+      class="pointer-events-none absolute right-2 top-2 z-10 rounded bg-zinc-800/90 px-2 py-1 text-[11px] text-zinc-400 shadow"
+    >
+      Sized by another device
+    </div>
+  {/if}
   {#if isDropTarget}
     <div
       class="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-md border-2 border-dashed border-sky-400/70 bg-sky-500/10 text-sm font-medium text-sky-200 backdrop-blur-sm"

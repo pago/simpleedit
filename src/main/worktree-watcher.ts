@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from 'chokidar'
 import { dirname } from 'path'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 
 /**
  * Watches the project root for worktree add/remove/move performed *outside*
@@ -34,12 +34,17 @@ function watcherKey(webContentsId: number, bareRepoPath: string): string {
   return `${webContentsId}::${bareRepoPath}`
 }
 
-export function watchWorktreeList(
-  webContentsId: number,
-  bareRepoPath: string,
-  webContents: WebContents
-): void {
-  const key = watcherKey(webContentsId, bareRepoPath)
+/**
+ * Watch `bareRepoPath`'s project root on behalf of `client`.
+ *
+ * Keyed by `client.id` — read off the client rather than passed beside it, so
+ * the watcher key can never name a different identity than the one the emitted
+ * events reach. A `ClientHub` fans one `send` out to every attached transport,
+ * so a web client joining an already-watched (window, repo) pair is served by
+ * the existing watcher without needing a second one.
+ */
+export function watchWorktreeList(client: RemoteClient, bareRepoPath: string): void {
+  const key = watcherKey(client.id, bareRepoPath)
   // Don't double-watch a (window, repo) pair that's already being watched.
   if (watchers.has(key)) return
 
@@ -59,8 +64,8 @@ export function watchWorktreeList(
     if (state.debounceTimer) clearTimeout(state.debounceTimer)
     state.debounceTimer = setTimeout(() => {
       state.debounceTimer = null
-      if (!webContents.isDestroyed()) {
-        webContents.send('worktree:list-changed', { repoPath: bareRepoPath })
+      if (!client.isDestroyed()) {
+        client.send('worktree:list-changed', { repoPath: bareRepoPath })
       }
     }, DEBOUNCE_MS)
   }

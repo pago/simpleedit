@@ -3,7 +3,7 @@ import { execSync, type ExecSyncOptions } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node'
-import type { WebContents } from 'electron'
+import type { RemoteClient } from './client-hub'
 import type { JsonRpcMessage } from '../shared/ipc-types'
 
 // ── Binary resolution ──────────────────────────────────────
@@ -117,7 +117,7 @@ interface LspServer {
   process: ChildProcess
   reader: StreamMessageReader
   writer: StreamMessageWriter
-  subscribers: Set<WebContents>
+  subscribers: Set<RemoteClient>
 }
 
 const servers = new Map<string, LspServer>()
@@ -139,7 +139,7 @@ export interface StartServerResult {
 export function startServer(
   language: string,
   rootUri: string,
-  sender: WebContents
+  sender: RemoteClient
 ): StartServerResult {
   const serverId = makeServerId(language, rootUri)
 

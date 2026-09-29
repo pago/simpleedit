@@ -35,6 +35,13 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
   let cur: DiffFile | null = null
   let oldNo = 0
   let newNo = 0
+  /**
+   * Past the first `@@` of the current file, every line carries a `+`/`-`/space
+   * marker — so `+++ x` is an ADDED line reading `++ x`, not a file header, and
+   * `--- x` is a removed one reading `-- x`. Only before the first hunk are
+   * those two the header pair.
+   */
+  let inHunk = false
 
   const push = (): void => {
     if (cur) files.push(cur)
@@ -46,6 +53,7 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
       const m = line.match(/^diff --git a\/(.+) b\/(.+)$/)
       const oldP = m ? m[1] : ''
       const newP = m ? m[2] : ''
+      inHunk = false
       cur = {
         path: newP || oldP,
         oldPath: oldP && newP && oldP !== newP ? oldP : undefined,
@@ -67,13 +75,14 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
     if (line.startsWith('index ') || line.startsWith('similarity ') || line.startsWith('dissimilarity ') ||
         line.startsWith('old mode') || line.startsWith('new mode') || line.startsWith('\\ ')) continue
     if (line.startsWith('Binary files ')) { cur.binary = true; continue }
-    if (line.startsWith('--- ')) continue
-    if (line.startsWith('+++ ')) {
+    if (!inHunk && line.startsWith('--- ')) continue
+    if (!inHunk && line.startsWith('+++ ')) {
       const p = stripPrefix(line.slice(4))
       if (p !== '/dev/null') cur.path = p
       continue
     }
     if (line.startsWith('@@')) {
+      inHunk = true
       const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/)
       oldNo = m ? Number(m[1]) : 0
       newNo = m ? Number(m[2]) : 0

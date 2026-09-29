@@ -276,6 +276,7 @@ export function applyEvent(
       cwd: ctx.cwd,
       filePath: null,
       lastAssistantMessage: null,
+      message: null,
       stopHookActive: false,
       ...extra,
     })

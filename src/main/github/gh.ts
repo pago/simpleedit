@@ -22,16 +22,43 @@ import { foldCommentsIntoBody } from '../../shared/screenprs'
 /** Run `gh` and resolve its stdout. `allowFail` keeps stdout on a nonzero exit
  *  (e.g. `gh pr checks` returns 8 when a check is failing but still prints JSON).
  *  `input`, when set, is written to the child's stdin (for `gh api --input -`). */
-export function runGh(args: string[], opts: { allowFail?: boolean; input?: string } = {}): Promise<string> {
+/**
+ * A `gh` call that ran out of time and was killed.
+ *
+ * Distinguished because it is the one failure whose EFFECT is unknown: a POST
+ * that was killed mid-flight may still have been received. A caller on a write
+ * path must not report it as "nothing happened".
+ */
+export class GhTimeoutError extends Error {}
+
+/** Long enough for a big diff on a slow link; short enough to not be forever. */
+export const GH_TIMEOUT_MS = 120_000
+
+export function runGh(
+  args: string[],
+  opts: { allowFail?: boolean; input?: string; timeoutMs?: number } = {}
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn('gh', args, { env: process.env as Record<string, string> })
     let out = ''
     let err = ''
+    let timedOut = false
+    // Unbounded, this hangs whatever awaited it for the life of the process —
+    // and on the review screen that is a dialog with a write in flight.
+    const timer = setTimeout(() => {
+      timedOut = true
+      proc.kill('SIGKILL')
+    }, opts.timeoutMs ?? GH_TIMEOUT_MS)
     proc.stdout.on('data', (c: Buffer) => (out += c.toString()))
     proc.stderr.on('data', (c: Buffer) => (err += c.toString()))
-    proc.on('error', reject)
+    proc.on('error', (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
     proc.on('close', (code) => {
-      if (code === 0 || opts.allowFail) resolve(out)
+      clearTimeout(timer)
+      if (timedOut) reject(new GhTimeoutError(`gh ${args[0]} did not finish within ${opts.timeoutMs ?? GH_TIMEOUT_MS}ms`))
+      else if (code === 0 || opts.allowFail) resolve(out)
       else reject(new Error(`gh ${args[0]} exited ${code}: ${err.slice(0, 300)}`))
     })
     if (opts.input != null) {
@@ -178,8 +205,31 @@ export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
   return assembleMeta(ref, viewJson, checksJson, handle)
 }
 
+/**
+ * True for a pull-request URL — `http(s)://<host>/<owner>/<repo>/pull/<n>`.
+ *
+ * `spawn` takes no shell, so there is nothing to inject; the hazard is that an
+ * argument beginning with `-` is a FLAG, and `screenprs:pr-diff` takes its url
+ * from whatever asked, including a socket. The host is deliberately not
+ * constrained — enterprise instances are real — but the path is, so that the
+ * check means what its name says rather than merely "some absolute URL".
+ */
+const PR_PATH = /^\/[^/]+\/[^/]+\/pull\/\d+$/
+
+export function isPrUrl(value: string): boolean {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return false
+  return PR_PATH.test(url.pathname.replace(/\/$/, ''))
+}
+
 /** The expensive-to-refetch half: the unified diff. Skipped on a cache hit. */
-export function getPrDiff(ref: PrRef): Promise<string> {
+export function getPrDiff(ref: Pick<PrRef, 'url'>): Promise<string> {
+  if (!isPrUrl(ref.url)) return Promise.reject(new Error(`Not a pull-request URL: ${ref.url}`))
   return runGh(['pr', 'diff', ref.url])
 }
 
