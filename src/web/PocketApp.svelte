@@ -48,7 +48,7 @@
   /** The PR whose detail is open. The `PrRef` is enough to render the header
    *  even if a re-screen empties the board underneath it. */
   let openPr = $state<PrRef | null>(null)
-  let state = $state<ConnectionState>('connecting')
+  let connState = $state<ConnectionState>('connecting')
   /**
    * The session a notification asked for, held until the list arrives.
    *
@@ -100,7 +100,7 @@
     history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
   }
 
-  $effect(() => connection.onStateChange((next) => { state = next }))
+  $effect(() => connection.onStateChange((next) => { connState = next }))
 
   /**
    * A tap in an already-open tab. The service worker messages rather than
@@ -200,7 +200,7 @@
     openPr = null
   }
   const dot = $derived(
-    state === 'open' ? 'bg-emerald-400' : state === 'connecting' ? 'bg-amber-400' : 'bg-red-500',
+    connState === 'open' ? 'bg-emerald-400' : connState === 'connecting' ? 'bg-amber-400' : 'bg-red-500',
   )
 </script>
 
@@ -230,9 +230,9 @@
     {/if}
     <span
       class="h-2 w-2 flex-none rounded-full {dot}"
-      title="Connection: {state}"
+      title="Connection: {connState}"
       data-testid="connection-dot"
-      data-state={state}
+      data-state={connState}
     ></span>
   </header>
 
@@ -282,12 +282,12 @@
           </div>
         {/if}
         <SessionsScreen
-          connected={state === 'open'}
+          connected={connState === 'open'}
           onopen={(session) => { openSession = session; arrivedFromNotification = false }}
         />
       {/if}
     {:else if openPr}
-      <PrDetail pr={openPr} connected={state === 'open'} />
+      <PrDetail pr={openPr} connected={connState === 'open'} />
     {:else}
       <PrBoard onopen={(pr) => { openPr = pr }} />
     {/if}
@@ -295,7 +295,7 @@
 
   {#if composingNew}
     <NewSessionSheet
-      connection={state}
+      connection={connState}
       oncreated={(created) => { composingNew = false; startedNote = created; deepLinkProblem = null }}
       onclose={() => { composingNew = false }}
     />
