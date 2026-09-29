@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import ChangesPane from '../ChangesPane.svelte'
+import { nav } from '../lib/nav.svelte'
 import type { ConnectionState, RemoteConnection } from '../api-shim'
 import type { GitCommitInfo, WindowSession } from '../../shared/ipc-types'
 
@@ -83,8 +84,14 @@ function session(overrides: Partial<WindowSession> = {}): WindowSession {
   }
 }
 
-function mount(overrides: Partial<WindowSession> = {}) {
-  return render(ChangesPane, { props: { session: session(overrides), connection } })
+function mount(overrides: Partial<WindowSession> = {}, active = true) {
+  return render(ChangesPane, { props: { session: session(overrides), connection, active } })
+}
+
+/** The shell's back button, which is the only way out of a diff. */
+async function back(): Promise<void> {
+  nav.back()
+  await flush()
 }
 
 /**
@@ -103,6 +110,7 @@ function commit(hash: string, message: string): GitCommitInfo {
 }
 
 beforeEach(() => {
+  nav.reset()
   listeners = new Map()
   calls = []
   stateWatchers = []
@@ -172,8 +180,9 @@ describe('ChangesPane', () => {
 
   it('shows the log when the entry is closed, and opens the commit that is tapped', async () => {
     mount()
-    await waitFor(() => expect(screen.getByTestId('changes-back')).toBeTruthy())
-    await fireEvent.click(screen.getByTestId('changes-back'))
+    await waitFor(() => expect(screen.getByTestId('entry-title')).toBeTruthy())
+    expect(nav.top()).toMatchObject({ kind: 'changes-diff', terminalId: 'agent-claude-1' })
+    await back()
 
     const rows = screen.getAllByTestId('entry-commit')
     expect(rows.map((r) => r.getAttribute('data-hash'))).toEqual(['aaa1111', 'bbb2222'])
@@ -184,11 +193,19 @@ describe('ChangesPane', () => {
     expect(calls.some((c) => c.channel === 'git:diff' && c.args[1] === 'bbb2222')).toBe(true)
   })
 
+  // A diff opened behind the terminal would make Back close something unseen.
+  it('leaves the log showing when it opens while not on screen', async () => {
+    mount({}, false)
+    await waitFor(() => expect(screen.getAllByTestId('entry-commit')).toHaveLength(2))
+    expect(screen.queryByTestId('entry-title')).toBeNull()
+    expect(nav.stack()).toEqual([])
+  })
+
   // The whole surface: five channels, none of which can change anything.
   it('never reaches a channel that could write', async () => {
     mount()
     await waitFor(() => expect(screen.getByTestId('session-diff')).toBeTruthy())
-    await fireEvent.click(screen.getByTestId('changes-back'))
+    await back()
     await fireEvent.click(screen.getAllByTestId('entry-commit')[0])
     await fireEvent.change(screen.getByTestId('worktree-select'), {
       target: { value: '/code/simpleedit/spare' },
@@ -305,7 +322,7 @@ describe('ChangesPane', () => {
     mount()
     await waitFor(() => expect(held.get(`git:diff|${WORKTREE}|aaa1111`)).toBeTruthy())
 
-    await fireEvent.click(screen.getByTestId('changes-back'))
+    await back()
     await fireEvent.click(screen.getAllByTestId('entry-commit')[1])
     await waitFor(() => expect(screen.getByTestId('entry-title').textContent).toBe('Older commit'))
 
@@ -340,7 +357,7 @@ describe('ChangesPane', () => {
     held.get(`git:log|${WORKTREE}`)!.resolve(commits)
     await flush()
     expect(screen.getByTestId('entry-title').textContent).toBe('Spare commit')
-    await fireEvent.click(screen.getByTestId('changes-back'))
+    await back()
     expect(screen.getAllByTestId('entry-commit').map((r) => r.getAttribute('data-hash'))).toEqual(['ccc3333'])
   })
 

@@ -5,7 +5,9 @@
    * A detail screen, so: back button (the shell's) and a segmented control,
    * which this screen earns because it genuinely has two panes —
    * **Conversation** (what the PR says and what triage and deep review make of
-   * it) and **Files** (the diff, where line comments come from).
+   * it) and **Files** (the diff, where line comments come from). Both panes
+   * stay mounted, each with its own scroll, so flipping between them to check
+   * a finding against the code does not lose your place in either.
    *
    * The diff is fetched here rather than pushed with the board: a card reaches
    * a socket client with `diff` emptied, because screening spans every org
@@ -25,6 +27,7 @@
   import PrDiff from './PrDiff.svelte'
   import ComposeSheet from './ComposeSheet.svelte'
   import PrReviewSheet from './PrReviewSheet.svelte'
+  import { nav } from './lib/nav.svelte'
 
   interface Props {
     pr: PrRef
@@ -110,7 +113,16 @@
   })
 
   // ── line comments ──
+  // The sheet is a layer on the navigation stack, so Back dismisses it — after
+  // asking, when there is text in it.
   let target = $state<CommentTarget | null>(null)
+  let composeId = $state<number | null>(null)
+  let composeSheet = $state<ComposeSheet | undefined>()
+
+  function openCompose(next: CommentTarget): void {
+    target = next
+    composeId = nav.push({ kind: 'compose', url }, () => composeSheet?.holdForDraft() ?? false).id
+  }
 
   /**
    * A comment is stamped with the head ITS OWN line was computed against, which
@@ -199,134 +211,137 @@
     </div>
   </div>
 
-  <div class="min-h-0 flex-1 overflow-y-auto">
-    {#if pane === 'conversation'}
-      <div class="flex flex-col gap-3 p-3" data-testid="pane-conversation">
-        <section>
-          <h2 class="text-sm leading-snug text-zinc-100">{pr.title}</h2>
-          <p class="mt-1 flex flex-wrap gap-x-2.5 gap-y-1 text-[11px] text-zinc-500">
-            <span class="font-mono text-zinc-400">{pr.repo}#{pr.number}</span>
-            <span>{pr.author}</span>
-            {#if context}
-              <span class="tabular-nums"
-                ><b class="text-emerald-500">+{context.additions}</b>
-                <b class="text-red-500">−{context.deletions}</b> · {context.changedFiles} files</span
-              >
-              <span class={CI_CLASS[context.ci]}>
-                {context.ci === 'failing' && context.ciFailing.length
-                  ? `CI: ${context.ciFailing.join(', ')}`
-                  : `CI ${context.ci}`}
-              </span>
-              <span>base {context.baseRefName}</span>
-            {/if}
-          </p>
-          {#if context?.reviewers.length}
-            <p class="mt-1 text-[11px] text-zinc-500">
-              {#each context.reviewers as r (r.login)}<span class="mr-2">{r.login} · {r.state}</span>{/each}
-            </p>
+  <!-- Hidden, never unmounted: see the note at the top of this file. -->
+  <div class="min-h-0 flex-1 overflow-y-auto {pane === 'conversation' ? '' : 'hidden'}">
+    <div class="flex flex-col gap-3 p-3" data-testid="pane-conversation">
+      <section>
+        <h2 class="text-sm leading-snug text-zinc-100">{pr.title}</h2>
+        <p class="mt-1 flex flex-wrap gap-x-2.5 gap-y-1 text-[11px] text-zinc-500">
+          <span class="font-mono text-zinc-400">{pr.repo}#{pr.number}</span>
+          <span>{pr.author}</span>
+          {#if context}
+            <span class="tabular-nums"
+              ><b class="text-emerald-500">+{context.additions}</b>
+              <b class="text-red-500">−{context.deletions}</b> · {context.changedFiles} files</span
+            >
+            <span class={CI_CLASS[context.ci]}>
+              {context.ci === 'failing' && context.ciFailing.length
+                ? `CI: ${context.ciFailing.join(', ')}`
+                : `CI ${context.ci}`}
+            </span>
+            <span>base {context.baseRefName}</span>
           {/if}
-        </section>
-
-        <button
-          type="button"
-          onclick={runDeep}
-          disabled={!context || !diff || deep?.status === 'running'}
-          data-testid="run-deep"
-          class="min-h-10 rounded-lg border border-zinc-700 bg-zinc-800 px-3 text-[12px] font-medium text-zinc-200
-                 disabled:opacity-50"
-        >
-          {deep?.status === 'running'
-            ? '⚡ Deep review running…'
-            : deep?.status === 'done'
-              ? '⚡ Run deep review again'
-              : '⚡ Deep review'}
-        </button>
-        {#if deep?.status === 'running'}
-          <p class="-mt-1.5 text-[11px] leading-relaxed text-zinc-500">
-            Takes a few minutes. You can leave this screen — the findings land here when they’re ready.
+        </p>
+        {#if context?.reviewers.length}
+          <p class="mt-1 text-[11px] text-zinc-500">
+            {#each context.reviewers as r (r.login)}<span class="mr-2">{r.login} · {r.state}</span>{/each}
           </p>
         {/if}
+      </section>
 
-        {#if context?.body?.trim()}
-          <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
-            <h3 class="mb-1.5 text-[10px] uppercase tracking-wider text-zinc-600">Description</h3>
-            <p class="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-zinc-300">{context.body}</p>
-          </section>
+      <button
+        type="button"
+        onclick={runDeep}
+        disabled={!context || !diff || deep?.status === 'running'}
+        data-testid="run-deep"
+        class="min-h-10 rounded-lg border border-zinc-700 bg-zinc-800 px-3 text-[12px] font-medium text-zinc-200
+               disabled:opacity-50"
+      >
+        {deep?.status === 'running'
+          ? '⚡ Deep review running…'
+          : deep?.status === 'done'
+            ? '⚡ Run deep review again'
+            : '⚡ Deep review'}
+      </button>
+      {#if deep?.status === 'running'}
+        <p class="-mt-1.5 text-[11px] leading-relaxed text-zinc-500">
+          Takes a few minutes. You can leave this screen — the findings land here when they’re ready.
+        </p>
+      {/if}
+
+      {#if context?.body?.trim()}
+        <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+          <h3 class="mb-1.5 text-[10px] uppercase tracking-wider text-zinc-600">Description</h3>
+          <p class="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-zinc-300">{context.body}</p>
+        </section>
+      {/if}
+
+      <section class="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900" data-testid="triage-findings">
+        <h3 class="border-b border-zinc-800 px-3 py-2 text-[10px] uppercase tracking-wider text-orange-300/80">
+          Triage
+        </h3>
+        {#if !card}
+          <p class="px-3 py-3 text-[11px] italic text-zinc-500">Still screening…</p>
+        {:else if card.findings.length === 0}
+          <p class="px-3 py-3 text-[11px] text-zinc-500">No concrete concerns surfaced in triage.</p>
+        {:else}
+          {#each card.findings as f (f.file + f.title)}
+            <div class="flex items-start gap-2 border-b border-zinc-800/60 px-3 py-2.5 last:border-b-0">
+              <span class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase {LABEL_CLASS[f.label]}"
+                >{f.label}</span
+              >
+              <span class="min-w-0 flex-1">
+                <span class="block text-[12px] text-zinc-100">{f.title}</span>
+                <span class="block truncate font-mono text-[10px] text-zinc-500">{f.file}{f.line ? `:${f.line}` : ''}</span>
+              </span>
+              <button
+                type="button"
+                onclick={() => addTriage(f)}
+                data-testid="add-triage"
+                class="min-h-8 flex-none rounded border border-zinc-700 bg-zinc-800 px-2 text-[11px] text-zinc-300"
+              >＋</button>
+            </div>
+          {/each}
         {/if}
+      </section>
 
-        <section class="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900" data-testid="triage-findings">
-          <h3 class="border-b border-zinc-800 px-3 py-2 text-[10px] uppercase tracking-wider text-orange-300/80">
-            Triage
-          </h3>
-          {#if !card}
-            <p class="px-3 py-3 text-[11px] italic text-zinc-500">Still screening…</p>
-          {:else if card.findings.length === 0}
-            <p class="px-3 py-3 text-[11px] text-zinc-500">No concrete concerns surfaced in triage.</p>
+      {#if deep && deep.status !== 'idle'}
+        <section class="overflow-hidden rounded-lg border border-blue-500/25 bg-zinc-900" data-testid="deep-findings">
+          <div class="flex flex-wrap items-center gap-1.5 border-b border-zinc-800 px-3 py-2">
+            <h3 class="mr-1 text-[10px] uppercase tracking-wider text-blue-300">Deep review</h3>
+            {#each activeLenses as l (l)}
+              {@const st = deep.lenses[l]}
+              <span
+                class="rounded px-1.5 py-0.5 text-[9.5px]
+                  {st === 'done' ? 'bg-emerald-500/12 text-emerald-300' : st === 'error' ? 'bg-red-500/12 text-red-300' : 'bg-zinc-800 text-zinc-400'}"
+              >{st === 'done' ? '✓' : st === 'error' ? '✕' : '…'} {DEEP_LENS_LABEL[l]}</span>
+            {/each}
+          </div>
+          {#if deep.status === 'error'}
+            <p class="px-3 py-3 text-[11px] text-red-400">Deep review failed: {deep.error}</p>
+          {:else if deep.status === 'running'}
+            <p class="px-3 py-3 text-[11px] text-zinc-500">Running…</p>
+          {:else if deep.findings.length === 0}
+            <p class="px-3 py-3 text-[11px] text-zinc-500">Deep review found nothing worth flagging.</p>
           {:else}
-            {#each card.findings as f (f.file + f.title)}
+            {#each deep.findings as f (f.lens + f.file + f.title)}
               <div class="flex items-start gap-2 border-b border-zinc-800/60 px-3 py-2.5 last:border-b-0">
-                <span class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase {LABEL_CLASS[f.label]}"
-                  >{f.label}</span
+                <span class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase {SEVERITY_CLASS[f.severity]}"
+                  >{f.severity}</span
                 >
                 <span class="min-w-0 flex-1">
-                  <span class="block text-[12px] text-zinc-100">{f.title}</span>
-                  <span class="block truncate font-mono text-[10px] text-zinc-500">{f.file}{f.line ? `:${f.line}` : ''}</span>
+                  <span class="block text-[12px] font-medium text-zinc-100">{f.title}</span>
+                  <span class="block truncate font-mono text-[10px] text-zinc-500"
+                    >{f.file}{f.line ? `:${f.line}` : ''} · {DEEP_LENS_LABEL[f.lens]}</span
+                  >
+                  <span class="mt-1 block text-[11px] leading-relaxed text-zinc-400">{f.detail}</span>
                 </span>
                 <button
                   type="button"
-                  onclick={() => addTriage(f)}
-                  data-testid="add-triage"
+                  onclick={() => addDeep(f)}
+                  data-testid="add-deep"
                   class="min-h-8 flex-none rounded border border-zinc-700 bg-zinc-800 px-2 text-[11px] text-zinc-300"
                 >＋</button>
               </div>
             {/each}
           {/if}
         </section>
+      {/if}
+    </div>
+  </div>
 
-        {#if deep && deep.status !== 'idle'}
-          <section class="overflow-hidden rounded-lg border border-blue-500/25 bg-zinc-900" data-testid="deep-findings">
-            <div class="flex flex-wrap items-center gap-1.5 border-b border-zinc-800 px-3 py-2">
-              <h3 class="mr-1 text-[10px] uppercase tracking-wider text-blue-300">Deep review</h3>
-              {#each activeLenses as l (l)}
-                {@const st = deep.lenses[l]}
-                <span
-                  class="rounded px-1.5 py-0.5 text-[9.5px]
-                    {st === 'done' ? 'bg-emerald-500/12 text-emerald-300' : st === 'error' ? 'bg-red-500/12 text-red-300' : 'bg-zinc-800 text-zinc-400'}"
-                >{st === 'done' ? '✓' : st === 'error' ? '✕' : '…'} {DEEP_LENS_LABEL[l]}</span>
-              {/each}
-            </div>
-            {#if deep.status === 'error'}
-              <p class="px-3 py-3 text-[11px] text-red-400">Deep review failed: {deep.error}</p>
-            {:else if deep.status === 'running'}
-              <p class="px-3 py-3 text-[11px] text-zinc-500">Running…</p>
-            {:else if deep.findings.length === 0}
-              <p class="px-3 py-3 text-[11px] text-zinc-500">Deep review found nothing worth flagging.</p>
-            {:else}
-              {#each deep.findings as f (f.lens + f.file + f.title)}
-                <div class="flex items-start gap-2 border-b border-zinc-800/60 px-3 py-2.5 last:border-b-0">
-                  <span class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase {SEVERITY_CLASS[f.severity]}"
-                    >{f.severity}</span
-                  >
-                  <span class="min-w-0 flex-1">
-                    <span class="block text-[12px] font-medium text-zinc-100">{f.title}</span>
-                    <span class="block truncate font-mono text-[10px] text-zinc-500"
-                      >{f.file}{f.line ? `:${f.line}` : ''} · {DEEP_LENS_LABEL[f.lens]}</span
-                    >
-                    <span class="mt-1 block text-[11px] leading-relaxed text-zinc-400">{f.detail}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onclick={() => addDeep(f)}
-                    data-testid="add-deep"
-                    class="min-h-8 flex-none rounded border border-zinc-700 bg-zinc-800 px-2 text-[11px] text-zinc-300"
-                  >＋</button>
-                </div>
-              {/each}
-            {/if}
-          </section>
-        {/if}
-      </div>
-    {:else if diffError}
+  <div class="min-h-0 flex-1 overflow-y-auto {pane === 'files' ? '' : 'hidden'}" data-testid="pane-files-body">
+    {#if diffError}
       <p class="p-4 text-[12px] leading-relaxed text-red-300" data-testid="diff-error">
         Couldn’t fetch the diff: {diffError}
       </p>
@@ -341,15 +356,16 @@
     {:else if loadingDiff}
       <p class="p-4 text-[12px] text-zinc-500" data-testid="diff-loading">Fetching the diff…</p>
     {:else}
-      <PrDiff {diff} comments={draft.comments} oncomment={(t) => (target = t)} />
+      <PrDiff {diff} comments={draft.comments} oncomment={openCompose} />
     {/if}
   </div>
 
   <PrReviewSheet {pr} {draft} {anchors} {connected} />
 </div>
 
-{#if target}
+{#if target && nav.has(composeId)}
   <ComposeSheet
+    bind:this={composeSheet}
     title="{target.file}{target.line ? `:${target.line}` : ''}"
     snippet={target.snippet}
     note={target.line
@@ -358,6 +374,6 @@
     sendLabel="Add"
     placeholder="What about this line?"
     onadd={addLineComment}
-    onclose={() => (target = null)}
+    onclose={() => nav.close(composeId)}
   />
 {/if}
