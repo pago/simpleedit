@@ -21,7 +21,7 @@
     agentModels = await loadAgentModels()
     discussModelId =
       discussModelId ??
-      agentModels.find((m) => m.id === 'anthropic:claude-sonnet-5')?.id ??
+      agentModels.find((m) => m.id === 'anthropic:sonnet')?.id ??
       agentModels.find((m) => m.tier === 'cloud')?.id ??
       agentModels[0]?.id ??
       null

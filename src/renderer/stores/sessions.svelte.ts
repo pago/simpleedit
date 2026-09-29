@@ -353,7 +353,7 @@ export const sessionsStore = {
           : undefined
     void window.api.invoke('models:config-set', { lastUsed })
     // For cloud Claude, upgrade the raw model id to its human display name once
-    // the (static) catalog resolves — best-effort, leaves the id if not found.
+    // the catalog resolves — best-effort, leaves the id if not found.
     // Skip when the caller gave an explicit label: the upgrade only prettifies
     // the default (model-id) label, it must not clobber a chosen name.
     if (model?.provider === 'anthropic' && !opts.label) {

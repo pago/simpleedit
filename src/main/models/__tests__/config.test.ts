@@ -86,6 +86,7 @@ describe('retired model migration', () => {
       defaults: {
         review: { provider: 'anthropic', model: 'claude-opus-4-8' },
         tour: { provider: 'ollama', model: 'claude-opus-4-8' },
+        screenPrs: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
       },
       submenuAllowlist: ['claude-opus-4-8', 'claude-sonnet-5'],
       lastUsed: { provider: 'anthropic', model: 'claude-opus-4-8' },
@@ -98,6 +99,7 @@ describe('retired model migration', () => {
     const cfg = getModelConfig()
 
     expect(cfg.defaults.review).toEqual({ provider: 'anthropic', model: 'claude-opus-5' })
+    expect(cfg.defaults.screenPrs).toEqual({ provider: 'anthropic', model: 'haiku' })
     expect(cfg.submenuAllowlist).toEqual(['claude-opus-5', 'claude-sonnet-5'])
     expect(cfg.lastUsed).toEqual({ provider: 'anthropic', model: 'claude-opus-5' })
     expect(cfg.deepReview?.lenses.soundness?.model).toEqual({ provider: 'anthropic', model: 'claude-opus-5' })

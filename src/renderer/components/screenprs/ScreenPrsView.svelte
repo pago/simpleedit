@@ -43,12 +43,12 @@
         window.api.invoke('models:claude'),
       ])
       const m = cfg.defaults.screenPrs
-      if (!m) triageModel = 'Haiku 4.5 · default'
+      if (!m) triageModel = 'Haiku · default'
       else if (m.provider === 'ollama') triageModel = `${m.model} · local`
       // An `openai` ref may carry no model at all — that means "Codex's own default".
       else triageModel = claude.find((c) => c.model === m.model)?.displayName ?? m.model ?? 'Codex · default'
     } catch {
-      triageModel = 'Haiku 4.5 · default'
+      triageModel = 'Haiku · default'
     }
   }
   onMount(refreshTriageModel)

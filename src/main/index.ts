@@ -49,7 +49,8 @@ import {
   getModelConfig,
   setModelConfig,
   detectHardware,
-  CLAUDE_MODELS
+  listClaudeModels,
+  cancelClaudeDiscovery
 } from './models'
 import { inheritShellPath } from './shell-path'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
@@ -606,9 +607,7 @@ function registerAllHandlers(): void {
     return isOllamaAvailable()
   })
 
-  ipcMain.handle('models:claude', () => {
-    return CLAUDE_MODELS
-  })
+  ipcMain.handle('models:claude', () => listClaudeModels())
 
   ipcMain.handle('models:codex', () => listCodexModels())
 
@@ -790,6 +789,7 @@ app.on('before-quit', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
 })
@@ -806,6 +806,7 @@ app.on('window-all-closed', () => {
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
+  try { cancelClaudeDiscovery() } catch { /* ignore */ }
   try { cancelCodexDiscovery() } catch { /* ignore */ }
   try { cancelOpenCodeDiscovery() } catch { /* ignore */ }
   if (process.platform !== 'darwin') {
