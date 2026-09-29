@@ -15,6 +15,7 @@
 import { resolve, normalize, sep } from 'path'
 import simpleGit, { type SimpleGit } from 'simple-git'
 import { z } from 'zod'
+import { VisibilityConditionSchema } from '@json-render/core'
 import {
   catalog,
   ActionRefSchema,
@@ -46,10 +47,15 @@ const SpecShape = z.object({
       type: z.string().min(1),
       props: z.record(z.string(), z.unknown()).default({}),
       children: z.array(z.string()).optional(),
-      visible: z.unknown().optional(),
+      visible: VisibilityConditionSchema.optional(),
     }),
   ),
 })
+
+// Zod reports a failed union as a bare "Invalid input", which gives an agent
+// nothing to correct against.
+const VISIBLE_HINT =
+  'not a visibility condition: use true/false, { $state: "/pointer" } with optional eq/neq/gt/gte/lt/lte and not: true, an array of those (all must hold), { $and: [...] } or { $or: [...] }'
 
 /**
  * Validate a candidate spec. On success, return a parsed `Spec`. On failure,
@@ -64,7 +70,7 @@ export function validateSpec(input: unknown): ValidationResult {
       ok: false,
       issues: shape.error.issues.map((i) => ({
         path: i.path.join('.'),
-        message: i.message,
+        message: i.path[0] === 'elements' && i.path[2] === 'visible' ? VISIBLE_HINT : i.message,
       })),
     }
   }
@@ -129,7 +135,7 @@ export function validateSpec(input: unknown): ValidationResult {
     return { ok: false, issues: [...earlyIssues, ...propIssues] }
   }
 
-  return { ok: true, spec: spec as Spec }
+  return { ok: true, spec }
 }
 
 /**
