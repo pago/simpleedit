@@ -19,6 +19,7 @@ import type {
   PrReviewVerdict,
 } from '../../shared/screenprs'
 import { BUCKET_ORDER, compareInBucket, emptyReviewDraft, reviewSubmitError } from '../../shared/screenprs'
+import type { OverviewFacts, OverviewStatus } from '../../shared/pr-overview'
 
 export interface DeepState {
   status: DeepReviewStatus
@@ -32,6 +33,16 @@ export interface DeepState {
    * lifted from one cannot take its stamp from whatever the live head happens
    * to be at the moment of the tap.
    */
+  headSha?: string
+  error?: string
+}
+
+/** A PR's overview: the raw markdown (parsed on render) and the facts it came with. */
+export interface OverviewState {
+  status: OverviewStatus
+  text?: string
+  facts?: OverviewFacts
+  /** The head the overview's citations were read off. */
   headSha?: string
   error?: string
 }
@@ -66,6 +77,7 @@ let _selected = $state<string | null>(null)
 let _filters = $state<ScreenPrsFilters>({}) // no org scope by default — all orgs where you're a reviewer
 let _triaging = $state<Set<string>>(new Set()) // urls the model is actively judging
 let _deep = $state<Map<string, DeepState>>(new Map())
+let _overview = $state<Map<string, OverviewState>>(new Map())
 
 // ── review composer ──
 /** Confirmation that a review was posted to GitHub (keyed by PR url). GitHub
@@ -91,6 +103,12 @@ function setDeep(url: string, patch: Partial<DeepState>): void {
   const cur = next.get(url) ?? { status: 'idle' as DeepReviewStatus, lenses: {}, findings: [] }
   next.set(url, { ...cur, ...patch })
   _deep = next
+}
+
+function setOverview(url: string, patch: Partial<OverviewState>): void {
+  const next = new Map(_overview)
+  next.set(url, { ...(next.get(url) ?? { status: 'idle' as OverviewStatus }), ...patch })
+  _overview = next
 }
 
 function setEntry(key: string, patch: Partial<Entry>): void {
@@ -173,6 +191,27 @@ export const screenPrsStore = {
   },
   async cancelDeep(url: string): Promise<void> {
     await window.api.invoke('screenprs:deep-cancel', url)
+  },
+
+  // ── PR overview ──
+  overviewFor(url: string): OverviewState | undefined {
+    return _overview.get(url)
+  },
+  async startOverview(context: PrContext): Promise<void> {
+    setOverview(context.url, { status: 'running', text: undefined, facts: undefined, headSha: context.headSha, error: undefined })
+    // Snapshot: `context` is a $state proxy from the store — IPC can't clone it.
+    await window.api.invoke('screenprs:overview-start', $state.snapshot(context))
+  },
+  /** Main sends nothing for a cancelled run, so the local state settles here. */
+  async cancelOverview(url: string): Promise<void> {
+    setOverview(url, { status: 'idle' })
+    await window.api.invoke('screenprs:overview-cancel', url)
+  },
+  _onOverviewResult(url: string, headSha: string, text: string, facts: OverviewFacts): void {
+    setOverview(url, { text, facts, headSha })
+  },
+  _onOverviewStatus(url: string, status: OverviewStatus, error?: string): void {
+    setOverview(url, { status, error })
   },
 
   // ── review composer (the GitHub write path) ──
@@ -293,6 +332,12 @@ export function initScreenPrsListeners(): () => void {
   const unsubDeepLens = window.api.on('screenprs:deep-lens', (d) => screenPrsStore._onDeepLens(d.url, d.lens, d.status))
   const unsubDeepResult = window.api.on('screenprs:deep-result', (d) => screenPrsStore._onDeepResult(d.url, d.findings, d.headSha))
   const unsubDeepStatus = window.api.on('screenprs:deep-status', (d) => screenPrsStore._onDeepStatus(d.url, d.status, d.error))
+  const unsubOverviewResult = window.api.on('screenprs:overview-result', (d) =>
+    screenPrsStore._onOverviewResult(d.url, d.headSha, d.text, d.facts)
+  )
+  const unsubOverviewStatus = window.api.on('screenprs:overview-status', (d) =>
+    screenPrsStore._onOverviewStatus(d.url, d.status, d.error)
+  )
   return () => {
     unsubQueued()
     unsubScreening()
@@ -302,5 +347,7 @@ export function initScreenPrsListeners(): () => void {
     unsubDeepLens()
     unsubDeepResult()
     unsubDeepStatus()
+    unsubOverviewResult()
+    unsubOverviewStatus()
   }
 }

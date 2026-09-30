@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseOverview, extractRefs } from '../pr-overview'
+import { parseOverview, extractRefs, resolveRefPath } from '../pr-overview'
 
 /** A well-formed answer in the shape the overview contract asks for. */
 const WELL_FORMED = `## What changed
@@ -240,5 +240,23 @@ describe('extractRefs', () => {
 
   it('reads double-backtick spans', () => {
     expect(extractRefs('``src/a.ts:3``')).toEqual([{ path: 'src/a.ts', line: '3' }])
+  })
+})
+
+describe('resolveRefPath', () => {
+  const paths = ['packages/ui/src/Table/table-body.tsx', 'packages/ui/src/Table/types.ts', 'packages/next/src/types.ts']
+
+  it('takes an exact path as is', () => {
+    expect(resolveRefPath(paths, 'packages/ui/src/Table/types.ts')).toBe('packages/ui/src/Table/types.ts')
+  })
+
+  it('finds the one diff path a shortened citation ends with', () => {
+    expect(resolveRefPath(paths, 'Table/table-body.tsx')).toBe('packages/ui/src/Table/table-body.tsx')
+  })
+
+  it('refuses to guess between several, or on a partial segment', () => {
+    expect(resolveRefPath(paths, 'types.ts')).toBeUndefined()
+    expect(resolveRefPath(paths, 'able-body.tsx')).toBeUndefined()
+    expect(resolveRefPath(paths, 'src/missing.ts')).toBeUndefined()
   })
 })

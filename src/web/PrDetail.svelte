@@ -25,6 +25,10 @@
   } from '../shared/screenprs'
   import { cachedDiff, fetchDiff, type CommentTarget } from './lib/prs.svelte'
   import PrDiff from './PrDiff.svelte'
+  import OverviewCard from '../renderer/components/screenprs/OverviewCard.svelte'
+  import { resolveRefPath, type OverviewLookIntoItem, type OverviewRef } from '../shared/pr-overview'
+  import { parseUnifiedDiff } from '../renderer/lib/parseDiff'
+  import { tick } from 'svelte'
   import ComposeSheet from './ComposeSheet.svelte'
   import PrReviewSheet from './PrReviewSheet.svelte'
   import { nav } from './lib/nav.svelte'
@@ -44,6 +48,7 @@
   let card = $derived(entry?.card)
   let context = $derived(entry?.context)
   let deep = $derived(screenPrsStore.deepFor(url))
+  let overview = $derived(screenPrsStore.overviewFor(url))
   let warning = $derived(context ? baseWarning(context) : null)
 
   const PANES = [
@@ -174,6 +179,31 @@
     void screenPrsStore.startDeep({ ...context, diff })
   }
 
+  /** Same re-attach as `runDeep`: the board's context arrived without its diff. */
+  function runOverview(): void {
+    if (!context || !diff) return
+    void screenPrsStore.startOverview({ ...context, diff })
+  }
+
+  let prDiff = $state<PrDiff | undefined>()
+  /** A citation lives in the Files pane: switch there first, then scroll once it is showing. */
+  async function showRef(ref: OverviewRef): Promise<void> {
+    pane = 'files'
+    await tick()
+    await prDiff?.reveal(ref.path, ref.line)
+  }
+  function addOverview(item: OverviewLookIntoItem): void {
+    const ref = item.refs[0]
+    const paths = parseUnifiedDiff(diff).map((f) => f.path)
+    screenPrsStore.addComment(url, {
+      source: 'overview',
+      file: ref ? (resolveRefPath(paths, ref.path) ?? ref.path) : '',
+      line: ref?.line,
+      text: `question: ${item.markdown}`,
+      sha: overview?.headSha,
+    })
+  }
+
   const LABEL_CLASS: Record<TriageFinding['label'], string> = {
     issue: 'bg-red-500/15 text-red-300',
     suggestion: 'bg-blue-500/15 text-blue-300',
@@ -246,24 +276,40 @@
         </p>
       {/if}
 
-      <button
-        type="button"
-        onclick={runDeep}
-        disabled={!context || !diff || deep?.status === 'running'}
-        data-testid="run-deep"
-        class="min-h-10 rounded-lg border border-zinc-700 bg-zinc-800 px-3 text-[12px] font-medium text-zinc-200
-               disabled:opacity-50"
-      >
-        {deep?.status === 'running'
-          ? '⚡ Deep review running…'
-          : deep?.status === 'done'
-            ? '⚡ Run deep review again'
-            : '⚡ Deep review'}
-      </button>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          onclick={runOverview}
+          disabled={!context || !diff || overview?.status === 'running'}
+          data-testid="run-overview"
+          class="min-h-10 flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 text-[12px] font-medium text-zinc-200
+                 disabled:opacity-50"
+        >
+          {overview?.status === 'running' ? '☰ Writing…' : overview?.status === 'done' ? '☰ Overview again' : '☰ Overview'}
+        </button>
+        <button
+          type="button"
+          onclick={runDeep}
+          disabled={!context || !diff || deep?.status === 'running'}
+          data-testid="run-deep"
+          class="min-h-10 flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 text-[12px] font-medium text-zinc-200
+                 disabled:opacity-50"
+        >
+          {deep?.status === 'running'
+            ? '⚡ Deep review running…'
+            : deep?.status === 'done'
+              ? '⚡ Run deep review again'
+              : '⚡ Deep review'}
+        </button>
+      </div>
       {#if deep?.status === 'running'}
         <p class="-mt-1.5 text-[11px] leading-relaxed text-zinc-500">
           Takes a few minutes. You can leave this screen — the findings land here when they’re ready.
         </p>
+      {/if}
+
+      {#if context && overview && overview.status !== 'idle'}
+        <OverviewCard {context} {overview} initiallyOpen={['what']} onref={showRef} onreview={addOverview} />
       {/if}
 
       {#if context?.body?.trim()}
@@ -363,7 +409,7 @@
     {:else if loadingDiff}
       <p class="p-4 text-[12px] text-zinc-500" data-testid="diff-loading">Fetching the diff…</p>
     {:else}
-      <PrDiff {diff} comments={draft.comments} oncomment={openCompose} />
+      <PrDiff bind:this={prDiff} {diff} comments={draft.comments} oncomment={openCompose} />
     {/if}
   </div>
 

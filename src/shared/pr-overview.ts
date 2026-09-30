@@ -245,3 +245,15 @@ function parseRef(token: string): OverviewRef | null {
   if (start === undefined) return { path }
   return { path, line: end !== undefined && end !== start ? `${start}-${end}` : start }
 }
+
+/**
+ * The diff path a citation means. Exact first; otherwise the one diff path that
+ * ends with the cited path, because a model sometimes shortens
+ * `packages/ui/src/Table/body.tsx` to `Table/body.tsx`. Ambiguous or absent
+ * matches resolve to nothing rather than to a guess.
+ */
+export function resolveRefPath(paths: readonly string[], cited: string): string | undefined {
+  if (paths.includes(cited)) return cited
+  const matches = paths.filter((p) => p.endsWith(`/${cited}`))
+  return matches.length === 1 ? matches[0] : undefined
+}
