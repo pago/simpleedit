@@ -5,7 +5,7 @@
  * — the substrate path screen-PRs is built on; see plans/bounded-tasks.md).
  */
 import type { ModelRef } from '../../shared/ipc-types'
-import type { Runner } from './runner'
+import type { Runner, RunOutput } from './runner'
 
 /**
  * A bounded task: assemble context, build a prompt, validate each streamed
@@ -17,6 +17,8 @@ export interface Task<Input, Ctx, Item> {
   buildContext(input: Input): Promise<Ctx>
   buildPrompt(ctx: Ctx): { system: string; user: string }
   parse(obj: unknown): Item | null
+  /** How the runner reads the answer; see `RunRequest.output`. Default `json`. */
+  output?: RunOutput
 }
 
 export interface RunTaskOptions<Ctx> {
@@ -39,7 +41,7 @@ export async function* runTask<Input, Ctx, Item>(
   const ctx = opts.context ?? (await task.buildContext(input))
   const { system, user } = task.buildPrompt(ctx)
   yield* opts.runner.run<Item>(
-    { system, user, parse: (obj) => task.parse(obj), model: opts.model },
+    { system, user, parse: (obj) => task.parse(obj), model: opts.model, output: task.output },
     { signal: opts.signal }
   )
 }
