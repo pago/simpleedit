@@ -40,6 +40,8 @@ export interface OverviewFacts {
   changesetBase?: string
 }
 
+export type OverviewStatus = 'idle' | 'running' | 'done' | 'error'
+
 export interface ParsedOverview {
   sections: OverviewSections
   raw: string

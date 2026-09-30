@@ -37,6 +37,7 @@ import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor } from './screenprs'
 import { startDeepReview, cancelDeepReview, cancelAllDeepReviews } from './deep-review'
+import { startOverview, cancelOverview, cancelAllOverviews } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
@@ -958,6 +959,14 @@ function registerAllHandlers(): void {
     cancelDeepReview(url)
   })
 
+  handleInvoke('screenprs:overview-start', (event, context: PrContext) => {
+    return startOverview(context, hubFor(event.sender))
+  })
+
+  handleInvoke('screenprs:overview-cancel', (_event, url: string) => {
+    cancelOverview(url)
+  })
+
   handleInvoke('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
     try {
       const { reviewUrl, foldedComments } = await postReview(request.pr, buildReviewPayload(request.draft))
@@ -1280,6 +1289,7 @@ app.on('before-quit', () => {
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
   try { cancelAllDeepReviews() } catch { /* ignore */ }
+  try { cancelAllOverviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { stopRemoteServer() } catch { /* ignore */ }
@@ -1315,6 +1325,7 @@ app.on('window-all-closed', () => {
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
   try { cancelAllDeepReviews() } catch { /* ignore */ }
+  try { cancelAllOverviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }
   try { stopAllBridges() } catch { /* ignore */ }
   try { stopRemoteServer() } catch { /* ignore */ }

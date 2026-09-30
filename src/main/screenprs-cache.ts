@@ -13,7 +13,15 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import { createHash } from 'crypto'
-import type { TriageResult, DeepFinding, BaseAnalysis } from '../shared/screenprs'
+import type { TriageResult, TriageFinding, DeepFinding, BaseAnalysis } from '../shared/screenprs'
+import type { OverviewFacts } from '../shared/pr-overview'
+
+/** A PR overview: the model's raw markdown (parsed on render) and the facts gathered with it. */
+export interface CachedOverview {
+  text: string
+  facts: OverviewFacts
+  at: string
+}
 
 export interface CacheEntry {
   headSha: string
@@ -25,6 +33,13 @@ export interface CacheEntry {
   /** Curated deep-review findings, present once a deep review ran at this SHA. */
   deep?: DeepFinding[]
   deepFingerprint?: string
+  /**
+   * The PR overview at this SHA and base. It is only ever written onto an
+   * entry at the same head, and `putTriage` keeps it only while the base key
+   * holds, so it follows the entry's head and base rules without keys of its own.
+   */
+  overview?: CachedOverview
+  overviewFingerprint?: string
   /** ISO timestamp of the last write — used for age-based pruning. */
   at: string
 }
@@ -97,10 +112,15 @@ export function putTriage(
   const cache = load()
   // A new SHA or base supersedes the old entry entirely (its deep result is stale too).
   const prior = cache[url]
+  const sameDiff = prior?.headSha === headSha && prior.baseKey === base.key
   cache[url] = {
     headSha, baseKey: base.key, base: base.analysis, diff, triage, triageFingerprint, at: new Date().toISOString(),
-    ...(prior?.headSha === headSha && prior.baseKey === base.key && prior.triageFingerprint === triageFingerprint && prior.deep && prior.deepFingerprint
+    ...(sameDiff && prior.triageFingerprint === triageFingerprint && prior.deep && prior.deepFingerprint
       ? { deep: prior.deep, deepFingerprint: prior.deepFingerprint }
+      : {}),
+    // The overview doesn't read the triage prompt, so only the diff has to match.
+    ...(sameDiff && prior.overview && prior.overviewFingerprint
+      ? { overview: prior.overview, overviewFingerprint: prior.overviewFingerprint }
       : {}),
   }
   save()
@@ -118,6 +138,29 @@ export function putDeep(url: string, headSha: string, deep: DeepFinding[], deepF
   if (e && e.headSha === headSha) {
     e.deep = deep
     e.deepFingerprint = deepFingerprint
+    e.at = new Date().toISOString()
+    save()
+  }
+}
+
+/** The findings already made at this head, whatever fingerprint produced them. */
+export function getCachedFindings(url: string, headSha: string): { triage: TriageFinding[]; deep: DeepFinding[] } {
+  const e = load()[url]
+  if (e?.headSha !== headSha) return { triage: [], deep: [] }
+  return { triage: e.triage.findings, deep: e.deep ?? [] }
+}
+
+export function getCachedOverview(url: string, headSha: string, overviewFingerprint: string): CachedOverview | undefined {
+  const e = load()[url]
+  return e?.headSha === headSha && e.overviewFingerprint === overviewFingerprint ? e.overview : undefined
+}
+
+/** Attach an overview — only if the cached entry is at the same SHA, like `putDeep`. */
+export function putOverview(url: string, headSha: string, overview: CachedOverview, overviewFingerprint: string): void {
+  const e = load()[url]
+  if (e && e.headSha === headSha) {
+    e.overview = overview
+    e.overviewFingerprint = overviewFingerprint
     e.at = new Date().toISOString()
     save()
   }

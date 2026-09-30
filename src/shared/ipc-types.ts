@@ -6,6 +6,7 @@
 
 import type { Spec } from './gen-ui-catalog'
 import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus, PrReviewDraft } from './screenprs'
+import type { OverviewFacts, OverviewStatus } from './pr-overview'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -463,6 +464,9 @@ export interface ScreenPrsInvokeMap {
   /** Run a deep review on one PR (full context is passed — triage doesn't retain it). */
   'screenprs:deep-start': { args: [context: PrContext]; result: void }
   'screenprs:deep-cancel': { args: [url: string]; result: void }
+  /** Write the PR overview for one PR (full context, diff included, as for deep review). */
+  'screenprs:overview-start': { args: [context: PrContext]; result: void }
+  'screenprs:overview-cancel': { args: [url: string]; result: void }
   /** Post a review to GitHub — the composer's write path (guarded by a confirm). */
   'screenprs:submit-review': { args: [request: SubmitReviewRequest]; result: SubmitReviewResult }
 }
@@ -503,6 +507,9 @@ export interface ScreenPrsEventMap {
    *  were computed against — a finding's line number means nothing without it. */
   'screenprs:deep-result': { url: string; findings: DeepFinding[]; headSha: string }
   'screenprs:deep-status': { url: string; status: DeepReviewStatus; error?: string }
+  /** The overview's raw markdown (parsed on render) and the facts code gathered with it. */
+  'screenprs:overview-result': { url: string; headSha: string; text: string; facts: OverviewFacts }
+  'screenprs:overview-status': { url: string; status: OverviewStatus; error?: string }
 }
 
 export interface TourEventMap {
@@ -852,7 +859,7 @@ export interface HardwareInfo {
 }
 
 /** Bounded features (plus interactive spawn) each get a per-feature default. */
-export type ModelFeatureKey = 'review' | 'tour' | 'screenPrs' | 'interactive'
+export type ModelFeatureKey = 'review' | 'tour' | 'screenPrs' | 'prOverview' | 'interactive'
 
 /** Per-lens deep-review setting: whether it runs, and (optionally) on which model.
  *  An unset `model` inherits the `screenPrs` default (so deep review is as local
@@ -916,12 +923,13 @@ export interface ModelsEventMap {
 
 // ── Prompt overrides ──────────────────────────────────────
 /** Every prompt whose instructions a person may override from Settings. */
-export type PromptId = 'triage' | `deep-review/${DeepLensId}` | 'deep-review/synthesis'
-export type PromptGroup = 'screening' | 'deep-review'
+export type PromptId = 'triage' | `deep-review/${DeepLensId}` | 'deep-review/synthesis' | 'overview'
+export type PromptGroup = 'screening' | 'deep-review' | 'overview'
 /** Settings shows the groups in this order, under these headings. */
 export const PROMPT_GROUP_LABEL: Record<PromptGroup, string> = {
   screening: 'Screening',
   'deep-review': 'Deep review',
+  overview: 'PR overview',
 }
 /**
  * `outdated`: the override was customized from an older default than the one

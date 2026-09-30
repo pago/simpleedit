@@ -9,6 +9,7 @@ afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }))
 
 const { currentTriageFingerprint } = await import('../screenprs')
 const { deepReviewFingerprint } = await import('../deep-review')
+const { overviewFingerprint } = await import('../pr-overview')
 
 describe('cache fingerprints hash the effective instructions', () => {
   it('triage: a different instruction text is a different fingerprint', () => {
@@ -25,5 +26,14 @@ describe('cache fingerprints hash the effective instructions', () => {
     expect(deepReviewFingerprint(lenses, undefined, 'synth')).toBe(base)
     expect(deepReviewFingerprint([lenses[0], { ...lenses[1], instructions: 'y2' }], undefined, 'synth')).not.toBe(base)
     expect(deepReviewFingerprint(lenses, undefined, 'synth2')).not.toBe(base)
+  })
+
+  it('overview: an override, a different model or runner each change the fingerprint', () => {
+    const sonnet = { provider: 'anthropic' as const, model: 'sonnet' }
+    const base = overviewFingerprint(sonnet, 'x')
+    expect(overviewFingerprint(sonnet, 'x')).toBe(base)
+    expect(overviewFingerprint(sonnet, 'x, edited')).not.toBe(base)
+    expect(overviewFingerprint({ provider: 'anthropic', model: 'opus' }, 'x')).not.toBe(base)
+    expect(overviewFingerprint({ provider: 'openai' }, 'x')).not.toBe(base)
   })
 })

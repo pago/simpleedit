@@ -101,6 +101,7 @@
     { feature: 'review', label: 'Review', desc: 'Diff review — the “what should I look at” pass.' },
     { feature: 'tour', label: 'Tour', desc: 'Codebase tour & summaries.' },
     { feature: 'screenPrs', label: 'Screen PRs (triage)', desc: 'PR triage + deep-review lenses. Defaults to Haiku when unset.' },
+    { feature: 'prOverview', label: 'PR overview', desc: 'The reviewer’s briefing on one PR. Defaults to Sonnet when unset.' },
   ]
 </script>
 
