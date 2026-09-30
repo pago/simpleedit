@@ -918,6 +918,11 @@ export interface ModelsEventMap {
 /** Every prompt whose instructions a person may override from Settings. */
 export type PromptId = 'triage' | `deep-review/${DeepLensId}` | 'deep-review/synthesis'
 export type PromptGroup = 'screening' | 'deep-review'
+/** Settings shows the groups in this order, under these headings. */
+export const PROMPT_GROUP_LABEL: Record<PromptGroup, string> = {
+  screening: 'Screening',
+  'deep-review': 'Deep review',
+}
 /**
  * `outdated`: the override was customized from an older default than the one
  * shipped now. Informational — the override still applies. `error`: the file
@@ -946,6 +951,8 @@ export interface PromptsInvokeMap {
   /** Seed the override from the current default (no-op if it exists); returns its path. */
   'prompts:customize': { args: [id: PromptId]; result: string }
   'prompts:save': { args: [id: PromptId, text: string]; result: void }
+  /** Rewrite `based-on` to the shipped default version, keeping the body. Clears `outdated`. */
+  'prompts:mark-current': { args: [id: PromptId]; result: void }
   /** Delete the override, so runs use the default again. */
   'prompts:reset': { args: [id: PromptId]; result: void }
   'prompts:reveal': { args: [id: PromptId]; result: void }

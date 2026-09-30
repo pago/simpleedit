@@ -151,6 +151,19 @@ export function savePrompt(id: PromptId, text: string): void {
   write(id, serialize(withBase, text))
 }
 
+/** Record that the override now builds on the shipped default, clearing `outdated`. Keeps the body. */
+export function markPromptCurrent(id: PromptId): void {
+  const def = promptDefinition(id)
+  const read = readOverride(def)
+  if (read.kind === 'missing') return
+  if (read.kind === 'error') throw new Error(read.error)
+  const current = `${def.id}@${def.defaultVersion}`
+  const frontmatter = read.parsed.frontmatter.some(([key]) => key === BASED_ON)
+    ? read.parsed.frontmatter.map(([key, value]): [string, string] => [key, key === BASED_ON ? current : value])
+    : [...read.parsed.frontmatter, [BASED_ON, current] as [string, string]]
+  write(id, serialize(frontmatter, read.parsed.body))
+}
+
 export function resetPrompt(id: PromptId): void {
   rmSync(promptPath(id), { force: true })
 }

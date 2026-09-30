@@ -76,7 +76,7 @@ import {
   cancelClaudeDiscovery
 } from './models'
 import { inheritShellPath } from './shell-path'
-import { listPrompts, readPrompt, customizePrompt, savePrompt, resetPrompt, revealTarget } from './prompts/overrides'
+import { listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent, resetPrompt, revealTarget } from './prompts/overrides'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
@@ -1039,6 +1039,7 @@ function registerAllHandlers(): void {
   handleInvoke('prompts:read', (_event, id: PromptId) => readPrompt(id))
   handleInvoke('prompts:customize', (_event, id: PromptId) => customizePrompt(id))
   handleInvoke('prompts:save', (_event, id: PromptId, text: string) => savePrompt(id, text))
+  handleInvoke('prompts:mark-current', (_event, id: PromptId) => markPromptCurrent(id))
   handleInvoke('prompts:reset', (_event, id: PromptId) => resetPrompt(id))
   handleInvoke('prompts:reveal', async (_event, id: PromptId) => {
     const target = revealTarget(id)

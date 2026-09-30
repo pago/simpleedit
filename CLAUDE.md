@@ -183,7 +183,9 @@ guard exactly that.
   `defaultVersion` means "default instructions changed" and drives `outdated`.
 - Resolve once per run and pass the text into the task factory, so the
   fingerprint and every model call see the same text.
-- Adding a prompt = a `PromptId` + one `PROMPTS` entry in `registry.ts`. Ids
+- Adding a prompt = a `PromptId` member + one `PROMPTS` entry in `registry.ts`
+  (plus a `PromptGroup` and its `PROMPT_GROUP_LABEL` heading if it needs a new
+  Settings group — the pane derives its sections from that map). Ids
   arrive over IPC (the phone too) and become paths, so `promptDefinition`
   rejects anything unregistered.
 
