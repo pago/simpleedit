@@ -1,15 +1,9 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { app } from 'electron'
+import { configDir } from './config-dir'
 import type { RecentRepo } from '../shared/ipc-types'
 
 const MAX_RECENT = 10
-
-function configDir(): string {
-  const dir = join(app.getPath('userData'), 'config')
-  mkdirSync(dir, { recursive: true })
-  return dir
-}
 
 function filePath(): string {
   return join(configDir(), 'recent-repos.json')

@@ -1,7 +1,7 @@
 import * as crypto from 'crypto'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { app } from 'electron'
+import { configDir } from './config-dir'
 import type { RemoteClient } from './client-hub'
 import type { Tour, TourTopic, TourStatus, ModelRef } from '../shared/ipc-types'
 import { getModelConfig } from './models/config'
@@ -35,9 +35,7 @@ function sendTopic(wc: RemoteClient, key: string, topic: TourTopic): void {
 // ── Persistence ──────────────────────────────────────────
 
 function tourCacheDir(): string {
-  const dir = join(app.getPath('userData'), 'config', 'tours')
-  mkdirSync(dir, { recursive: true })
-  return dir
+  return configDir('tours')
 }
 
 function tourCacheFile(worktreePath: string, commitHash: string | null): string {

@@ -1,13 +1,11 @@
-import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs'
+import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
-import { app } from 'electron'
+import { configDir } from './config-dir'
 import type { SerializedSession } from '../shared/ipc-types'
 
 function sessionsDir(): string {
-  const dir = join(app.getPath('userData'), 'config', 'sessions')
-  mkdirSync(dir, { recursive: true })
-  return dir
+  return configDir('sessions')
 }
 
 function fileFor(repoPath: string): string {

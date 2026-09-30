@@ -39,10 +39,10 @@
  * browser needs it to subscribe, and returns device ROWS rather than
  * endpoints, because an endpoint is a capability to push to that device.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs'
+import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { createHash } from 'crypto'
 import { join } from 'path'
-import { app } from 'electron'
+import { configDir } from '../config-dir'
 import type { AgentStatusEvent, PushDevice, PushStatus, PushSubscriptionInput } from '../../shared/ipc-types'
 import {
   generateVapidKeys,
@@ -128,9 +128,7 @@ function filePath(): string {
   // Same escape hatch the remote config uses: E2E must never write a real
   // VAPID key or a real subscription into the dev build's userData.
   if (process.env.SIMPLEEDIT_E2E_PUSH_CONFIG) return process.env.SIMPLEEDIT_E2E_PUSH_CONFIG
-  const dir = join(app.getPath('userData'), 'config')
-  mkdirSync(dir, { recursive: true })
-  return join(dir, 'push.json')
+  return join(configDir(), 'push.json')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
