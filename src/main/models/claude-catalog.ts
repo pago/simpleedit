@@ -39,6 +39,14 @@ export const CLAUDE_FALLBACK_MODELS: ClaudeModel[] = [
  */
 export const DEFAULT_TRIAGE_MODEL: ModelRef = { provider: 'anthropic', model: 'haiku' }
 
+/**
+ * Fallback PR Overview model: Sonnet. The overview is run on demand, one PR at
+ * a time, and has to read a diff plus discussion and key files well enough to
+ * say where the risk is. That is worth more than Haiku, and it is independent
+ * of the triage and deep-review models.
+ */
+export const DEFAULT_OVERVIEW_MODEL: ModelRef = { provider: 'anthropic', model: 'sonnet' }
+
 let cached: ClaudeModel[] | null = null
 
 /**

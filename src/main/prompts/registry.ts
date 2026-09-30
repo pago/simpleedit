@@ -11,6 +11,7 @@ import type { PromptGroup, PromptId } from '../../shared/ipc-types'
 import { DEEP_LENS_LABEL, DEEP_LENS_ORDER } from '../../shared/screenprs'
 import { TRIAGE_INSTRUCTIONS } from '../tasks/triage-task'
 import { LENS_INSTRUCTIONS, SYNTHESIS_INSTRUCTIONS } from '../tasks/deep-review-lenses'
+import { OVERVIEW_INSTRUCTIONS } from '../tasks/overview-task'
 
 export interface PromptDefinition {
   id: PromptId
@@ -44,6 +45,14 @@ export const PROMPTS: readonly PromptDefinition[] = [
     description: 'How the lens findings are merged, ranked and pruned into the final review.',
     group: 'deep-review',
     defaultInstructions: SYNTHESIS_INSTRUCTIONS,
+    defaultVersion: 1,
+  },
+  {
+    id: 'overview',
+    title: 'PR overview',
+    description: "The reviewer's briefing: what changed, why, impact, and what to look into.",
+    group: 'overview',
+    defaultInstructions: OVERVIEW_INSTRUCTIONS,
     defaultVersion: 1,
   },
 ]

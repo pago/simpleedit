@@ -94,6 +94,42 @@ describe('screenprs-cache', () => {
     expect(cache.getCachedDiff('u1', 'sha2')).toBeUndefined()
   })
 
+  describe('overview', () => {
+    const OV = { text: '## What changed\nA', facts: { draft: false, changeset: 'no' as const }, at: '2026-09-30T00:00:00Z' }
+    const OV_FP = 'overview-v1'
+
+    it('attaches only at the same SHA and serves only its own fingerprint', () => {
+      cache.putTriage('u1', 'sha1', 'd', triage, FP, BASE)
+      cache.putOverview('u1', 'sha-old', OV, OV_FP)
+      expect(cache.getCachedOverview('u1', 'sha1', OV_FP)).toBeUndefined()
+      cache.putOverview('u1', 'sha1', OV, OV_FP)
+      expect(cache.getCachedOverview('u1', 'sha1', OV_FP)).toEqual(OV)
+      expect(cache.getCachedOverview('u1', 'sha1', 'edited-override')).toBeUndefined()
+      expect(cache.getCachedOverview('u1', 'sha2', OV_FP)).toBeUndefined()
+    })
+
+    it('survives a re-screen of the same diff, even under a new triage prompt', () => {
+      cache.putTriage('u1', 'sha1', 'd', triage, FP, BASE)
+      cache.putOverview('u1', 'sha1', OV, OV_FP)
+      cache.putTriage('u1', 'sha1', 'd', triage, 'triage-v2', BASE)
+      expect(cache.getCachedOverview('u1', 'sha1', OV_FP)).toEqual(OV)
+    })
+
+    it('is dropped when the base moves under an unchanged head', () => {
+      cache.putTriage('u1', 'sha1', 'd', triage, FP, { key: 'stacked:base1' })
+      cache.putOverview('u1', 'sha1', OV, OV_FP)
+      cache.putTriage('u1', 'sha1', 'd2', triage, FP, { key: 'stacked:base2' })
+      expect(cache.getCachedOverview('u1', 'sha1', OV_FP)).toBeUndefined()
+    })
+
+    it('hands the overview the findings already made at this head', () => {
+      cache.putTriage('u1', 'sha1', 'd', triage, FP, BASE)
+      cache.putDeep('u1', 'sha1', deep, DEEP_FP)
+      expect(cache.getCachedFindings('u1', 'sha1')).toEqual({ triage: triage.findings, deep })
+      expect(cache.getCachedFindings('u1', 'sha2')).toEqual({ triage: [], deep: [] })
+    })
+  })
+
   it('prunes entries older than 30 days', () => {
     const now = Date.parse('2026-07-08T00:00:00Z')
     const fresh = { headSha: 's', diff: '', triage, at: '2026-07-07T00:00:00Z' }
