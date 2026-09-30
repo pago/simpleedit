@@ -28,6 +28,18 @@ export interface OverviewSections {
   lookInto?: OverviewLookIntoItem[]
 }
 
+/**
+ * Facts about the PR the overview header shows, gathered by code alongside the
+ * model's text (author, reviews and CI are already on the PR context).
+ */
+export interface OverviewFacts {
+  draft: boolean
+  /** `base`: none here, but the PR is stacked and the lower layer may carry it. */
+  changeset: 'yes' | 'no' | 'base'
+  /** The lower layer, as `#N` or its branch, when `changeset` is `base`. */
+  changesetBase?: string
+}
+
 export interface ParsedOverview {
   sections: OverviewSections
   raw: string
