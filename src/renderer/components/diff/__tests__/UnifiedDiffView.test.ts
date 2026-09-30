@@ -1,8 +1,9 @@
 import { render, screen } from '@testing-library/svelte'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { tick } from 'svelte'
 import UnifiedDiffView from '../UnifiedDiffView.svelte'
 import { parseUnifiedDiff } from '../../../lib/parseDiff'
+import { REVEAL_FLASH_MS } from '../../../lib/diffReveal'
 
 const DIFF = [
   'diff --git a/src/a.ts b/src/a.ts',
@@ -49,5 +50,71 @@ describe('UnifiedDiffView', () => {
     render(UnifiedDiffView, { files: binary })
     await tick()
     expect(screen.getByText('Binary file not shown')).toBeInTheDocument()
+  })
+})
+
+describe('UnifiedDiffView reveal', () => {
+  const TWO_FILES = [
+    DIFF,
+    'diff --git a/src/b.ts b/src/b.ts',
+    '--- a/src/b.ts',
+    '+++ b/src/b.ts',
+    '@@ -20,2 +20,2 @@',
+    ' export const b = 1',
+    '+export const bAdded = 2',
+  ].join('\n')
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  function renderView() {
+    const scrolled: Element[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    const { component, container } = render(UnifiedDiffView, { files: parseUnifiedDiff(TWO_FILES) })
+    return { component, container, scrolled }
+  }
+
+  it('scrolls to and highlights the row for a path:line', async () => {
+    const { component, container, scrolled } = renderView()
+    expect(await component.reveal('src/b.ts', '21')).toBe(true)
+
+    const marked = container.querySelectorAll('[data-revealed]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toHaveTextContent('export const bAdded = 2')
+    expect(scrolled).toEqual([marked[0]])
+  })
+
+  it('lands on the file header when there is no line', async () => {
+    const { component, container, scrolled } = renderView()
+    await component.reveal('src/b.ts')
+    const marked = container.querySelector('[data-revealed]')
+    expect(marked).toHaveTextContent('src/b.ts')
+    expect(marked).not.toHaveTextContent('bAdded')
+    expect(scrolled).toEqual([marked])
+  })
+
+  it('clears the highlight after the flash, and moves it on a second reveal', async () => {
+    vi.useFakeTimers()
+    const { component, container } = renderView()
+    await component.reveal('src/a.ts', 2)
+    expect(container.querySelector('[data-revealed]')).toHaveTextContent('export const added = 2')
+
+    await component.reveal('src/b.ts', 20)
+    expect(container.querySelectorAll('[data-revealed]')).toHaveLength(1)
+    expect(container.querySelector('[data-revealed]')).toHaveTextContent('export const b = 1')
+
+    vi.advanceTimersByTime(REVEAL_FLASH_MS)
+    await tick()
+    expect(container.querySelector('[data-revealed]')).toBeNull()
+  })
+
+  it('reports a file the diff does not contain, without scrolling', async () => {
+    const { component, scrolled } = renderView()
+    expect(await component.reveal('src/missing.ts', '1')).toBe(false)
+    expect(scrolled).toEqual([])
   })
 })

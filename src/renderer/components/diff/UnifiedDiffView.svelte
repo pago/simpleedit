@@ -8,8 +8,9 @@
    * why it takes parsed files and knows nothing about PRs or panel actions.
    */
   import * as monaco from 'monaco-editor'
-  import type { Snippet } from 'svelte'
+  import { tick, type Snippet } from 'svelte'
   import { languageForPath, type DiffFile } from '../../lib/parseDiff'
+  import { findRevealTarget, REVEAL_FLASH_MS, scrollBehavior, type RevealTarget } from '../../lib/diffReveal'
 
   interface Props {
     files: DiffFile[]
@@ -25,6 +26,33 @@
   }
 
   let { files, language, fileHeaderExtra, emptyLabel = 'No diff.' }: Props = $props()
+
+  let root = $state<HTMLDivElement>()
+  let revealed = $state<RevealTarget | null>(null)
+  let revealTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * Scroll `path` into view and briefly highlight it: the row nearest `line`
+   * (a new-file number, or a `12-18` range) when given, else the file header.
+   * Resolves false when the diff has no such file. Call it with the view
+   * visible — a hidden container has nothing to scroll.
+   */
+  export async function reveal(path: string, line?: string | number): Promise<boolean> {
+    const target = findRevealTarget(files, path, line)
+    if (!target) return false
+    clearTimeout(revealTimer)
+    revealed = target
+    await tick()
+    root?.querySelector('[data-revealed]')?.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
+    revealTimer = setTimeout(() => (revealed = null), REVEAL_FLASH_MS)
+    return true
+  }
+
+  $effect(() => () => clearTimeout(revealTimer))
+
+  const isRevealed = (f: DiffFile, row: number | null): boolean =>
+    revealed?.path === f.path && revealed.row === row
+  const REVEAL_CLASS = 'bg-orange-500/15 ring-1 ring-inset ring-orange-500/70'
 
   // ── syntax highlighting (Monaco colorize; falls back to plain on any miss) ──
   // Map<file path, HTML per row index>. Recomputed when the diff changes.
@@ -80,11 +108,14 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-col gap-3">
+<div class="flex min-w-0 flex-col gap-3" bind:this={root}>
   {#each files as f (f.path)}
     {@const badge = STATUS_BADGE[f.status]}
     <div class="min-w-0 overflow-hidden rounded-lg border border-zinc-800">
-      <div class="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-1.5 font-mono text-[11px]">
+      <div
+        class="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5 font-mono text-[11px] {isRevealed(f, null) ? REVEAL_CLASS : 'bg-zinc-900'}"
+        data-revealed={isRevealed(f, null) || undefined}
+      >
         {#if f.oldPath}<span class="text-zinc-500">{f.oldPath} →</span>{/if}
         <span class="truncate text-zinc-200">{f.path}</span>
         {#if badge.t}<span class="rounded bg-zinc-800 px-1.5 text-[9px] uppercase tracking-wide {badge.c}">{badge.t}</span>{/if}
@@ -99,7 +130,10 @@
             {#if row.kind === 'hunk'}
               <div class="bg-zinc-900/60 px-3 py-0.5 text-[10.5px] text-zinc-500">⋯ {row.text}</div>
             {:else}
-              <div class="flex {ROW_BG[row.kind]}">
+              <div
+                class="flex {isRevealed(f, i) ? REVEAL_CLASS : ROW_BG[row.kind]}"
+                data-revealed={isRevealed(f, i) || undefined}
+              >
                 <span class="w-10 flex-none select-none border-r border-zinc-800/60 pr-2 text-right text-zinc-500 tabular-nums">{row.oldNo ?? ''}</span>
                 <span class="w-10 flex-none select-none border-r border-zinc-800/60 pr-2 text-right text-zinc-500 tabular-nums">{row.newNo ?? ''}</span>
                 <span class="w-4 flex-none select-none text-center {row.kind === 'add' ? 'text-emerald-400' : row.kind === 'del' ? 'text-red-400' : 'text-zinc-600'}">{row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ''}</span>

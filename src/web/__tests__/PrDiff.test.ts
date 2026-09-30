@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/svelte'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import PrDiff from '../PrDiff.svelte'
 import type { CommentTarget } from '../lib/prs.svelte'
 
@@ -70,5 +70,64 @@ describe('PrDiff tap targets', () => {
       oncomment: vi.fn(),
     })
     expect(screen.getByTestId('inline-comment')).toHaveTextContent('why the rename?')
+  })
+})
+
+/**
+ * The overview's Look-into citations jump here. On the phone a file may be
+ * collapsed (big PRs open as a table of contents) or truncated at the row
+ * budget, so the jump has to open what it lands in.
+ */
+describe('PrDiff reveal', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function fileDiff(path: string, rows: string[]): string {
+    return [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -1,${rows.length} +1,${rows.length} @@`, ...rows.map((r) => ` ${r}`)].join('\n')
+  }
+
+  function renderReveal(diff: string) {
+    const scrolled: Element[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    const { component, container } = render(PrDiff, { diff, comments: [], oncomment: vi.fn() })
+    return { component, container, scrolled }
+  }
+
+  it('scrolls to and highlights the cited line', async () => {
+    const { component, container, scrolled } = renderReveal(DIFF)
+    expect(await component.reveal('src/gate.ts', '11-12')).toBe(true)
+    const marked = container.querySelectorAll('[data-revealed]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toHaveAttribute('data-line', '11')
+    expect(scrolled).toEqual([marked[0]])
+  })
+
+  it('opens a collapsed file to reach the line', async () => {
+    // Six files: past the auto-expand limit, so every file starts collapsed.
+    const diff = ['one', 'two', 'three', 'four', 'five', 'six'].map((n) => fileDiff(`src/${n}.ts`, [`const ${n} = 1`])).join('\n')
+    const { component, container } = renderReveal(diff)
+    expect(screen.queryAllByTestId('diff-line')).toHaveLength(0)
+
+    await component.reveal('src/four.ts', 1)
+    expect(container.querySelector('[data-revealed]')).toHaveTextContent('const four = 1')
+    expect(screen.getAllByTestId('diff-line')).toHaveLength(1)
+  })
+
+  it('shows the rest of a long file when the line is past the row budget', async () => {
+    const rows = Array.from({ length: 600 }, (_, i) => `const line${i + 1} = ${i + 1}`)
+    const { component, container } = renderReveal(fileDiff('src/long.ts', rows))
+    expect(screen.getByTestId('show-all-rows')).toBeInTheDocument()
+
+    await component.reveal('src/long.ts', '550')
+    expect(container.querySelector('[data-revealed]')).toHaveAttribute('data-line', '550')
+    expect(screen.queryByTestId('show-all-rows')).not.toBeInTheDocument()
+  })
+
+  it('lands on the file header without a line, and reports an unknown file', async () => {
+    const { component, container } = renderReveal(DIFF)
+    await component.reveal('src/gate.ts')
+    expect(container.querySelector('[data-revealed]')).toHaveAttribute('data-testid', 'diff-file-header')
+    expect(await component.reveal('src/other.ts', '1')).toBe(false)
   })
 })
