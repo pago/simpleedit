@@ -218,6 +218,35 @@ since the figures are refetched each run); GitHub's move to `base.github`.
   A default-branch PR keys on the branch name only, because main advancing never
   changes its diff and keying on main's SHA would evict every entry on each merge.
 
+### Screen PRs: the PR overview
+The **Overview** button writes a reviewer's briefing of one PR (the `/pr-overview`
+skill, in-app): What changed, Why, Impact, and a Look-into list of questions with
+`path:line` citations. `pr-overview.ts` gathers the context, runs the task once and
+caches the answer on the PR's screening entry.
+- **Fixed-section markdown, not JSON or gen-UI.** The task runs in the runner's
+  `output: 'text'` mode (the final assistant message, verbatim). The contract in
+  `tasks/overview-task.ts` fixes the four headings and the citation form, and bans
+  a preamble or header line; an override of prompt `overview` changes only the
+  writing. The cache stores the **raw text** and `parseOverview`
+  (`shared/pr-overview.ts`) splits it on every render, so a parser fix applies to
+  cached overviews. Anything that doesn't parse renders whole, flagged
+  "unstructured", so no output is lost.
+- **Code renders the facts, never the model:** author, draft/ready, reviews, CI and
+  changeset in `OverviewCard`'s header, the stale-base banner, and the actions.
+  The input marks the current user's own comments "(you)" so the prose can say
+  "you noted".
+- **One ~150 KB input, filled in priority order** (`renderOverviewInput`): meta +
+  review diff, commits, linked issues, discussion, changeset, CI, existing
+  findings, key files at the head SHA and on the default branch (always
+  `?ref=`-pinned), nearest CLAUDE.md. The caps add up to more than the budget, so
+  the tail is what a big PR loses. The findings sit ahead of the files because
+  they are small and are what stops Look into repeating triage. Each source also
+  has its own cap, so a big diff can't starve the discussion. Whatever is cut or failed to fetch is listed in a `<not-seen>`
+  block, so the model says "not seen" instead of guessing.
+- Citations jump via `reveal(path, line?)` on `UnifiedDiffView` and the phone's
+  `PrDiff`. Models shorten paths, so a citation resolves to the one diff path that
+  ends with it (`resolveRefPath`).
+
 ### Layout
 The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
 that session's `SessionWorkspace` (all others stay mounted but hidden). A
@@ -263,9 +292,11 @@ src/
     editor-watcher.ts  ← Per-editor file change watching
     git-operations.ts  ← commit log, diff, file-at-commit, staging
     github/gh.ts       ← gh CLI wrapper (screen-PRs)
+    github/pr-overview-context.ts ← PR overview context + input budget
     github/stack-base.ts ← Stacked-PR base analysis + the review diff
     screenprs.ts, screenprs-cache.ts ← Screen-PRs data + cache
     review.ts, deep-review.ts, tour.ts ← Review/tour features
+    pr-overview.ts     ← PR overview run + cache (screen-PRs)
     tasks/, agent-tasks/ ← Bounded agent-task orchestration (gate, runner)
     models/            ← Model catalog (Claude cloud + Ollama) + recommendations
     prompts/           ← Overridable prompt-instruction registry + userData overrides
@@ -307,7 +338,7 @@ src/
       filetree/
         FileTree.svelte, FileNode.svelte, FileTreeContextMenu.svelte
       composed/               ← Gen-UI composed panels (agent-authored) + registry
-      screenprs/              ← ScreenPrsView, PrDetail, ReviewComposer, …
+      screenprs/              ← ScreenPrsView, PrDetail, ReviewComposer, OverviewCard, …
       settings/               ← SettingsWindow, ModelsPane, DefaultModelPane, …
       command-palette/        ← CommandPalette + input/results
     stores/
@@ -325,6 +356,7 @@ src/
     ipc-types.ts       ← All IPC channel type definitions
     git-types.ts       ← Re-exports from ipc-types
     gen-ui-catalog.ts, screenprs.ts ← Shared gen-UI + screen-PRs types
+    pr-overview.ts     ← parseOverview (fixed-section parser) + overview types
 ```
 
 ## E2E repro workflow

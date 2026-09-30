@@ -16,6 +16,11 @@ review, #154 cache + resilience + Discuss + sidebar split button):
 - **Stale / stacked base detection** (`github/stack-base.ts`) — a stacked PR whose lower layer was
   rebased gets a warning banner and, where its own commits can be isolated, a diff of only those
   (the "review diff"), which triage, deep review and the phone read instead of `gh pr diff`.
+- **PR Overview** (`pr-overview.ts`, `github/pr-overview-context.ts`, `tasks/overview-task.ts`) —
+  an on-demand reviewer's briefing (the `/pr-overview` skill, in-app) on desktop and phone. Unlike
+  triage and deep review it is **not diff-only**: it also reads commits, linked issues, the
+  discussion, the changeset, key files at head and on the default branch, and the nearest
+  CLAUDE.md. Fixed-section markdown via the runner's text mode; Sonnet by default (`prOverview`).
 - **Progress** — `queued`/`screening`/`triaging` events → "Triaging now / scheduled / gathering"
   phases; per-PR `timeoutMs` in `runFanout` so a wedged model can't freeze the batch.
 - **Discuss with Agent** — spawns a primed Claude session (`initialPrompt` threaded through
