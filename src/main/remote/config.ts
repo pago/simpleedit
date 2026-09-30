@@ -6,9 +6,9 @@
  * exposes `pty:spawn`, `fs:write`, `worktree:remove` and every git operation
  * to whoever holds the token, so it starts only when a person asks for it.
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { app } from 'electron'
+import { configDir } from '../config-dir'
 import type { RemoteAccessConfig } from '../../shared/ipc-types'
 import { REMOTE_DEFAULT_HOST } from './interfaces'
 
@@ -20,9 +20,7 @@ function filePath(): string {
   // E2E turns remote access on, and userData is shared with the engineer's own
   // dev build — a test must never leave a server enabled in it.
   if (process.env.SIMPLEEDIT_E2E_REMOTE_CONFIG) return process.env.SIMPLEEDIT_E2E_REMOTE_CONFIG
-  const dir = join(app.getPath('userData'), 'config')
-  mkdirSync(dir, { recursive: true })
-  return join(dir, 'remote.json')
+  return join(configDir(), 'remote.json')
 }
 
 function isConfig(value: unknown): value is Partial<RemoteAccessConfig> {

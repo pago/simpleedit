@@ -2,9 +2,9 @@
  * Persisted model preferences. Mirrors recent-repos.ts: a single JSON blob
  * under userData/config, try/catch reads returning defaults.
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { app } from 'electron'
+import { configDir } from '../config-dir'
 import type { ModelConfig, ModelRef } from '../../shared/ipc-types'
 
 /**
@@ -27,12 +27,6 @@ function defaultDeepReview(): NonNullable<ModelConfig['deepReview']> {
 
 function defaults(): ModelConfig {
   return { defaults: {}, submenuAllowlist: [], deepReview: defaultDeepReview() }
-}
-
-function configDir(): string {
-  const dir = join(app.getPath('userData'), 'config')
-  mkdirSync(dir, { recursive: true })
-  return dir
 }
 
 function filePath(): string {
