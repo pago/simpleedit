@@ -22,7 +22,8 @@ const OUTPUT_SPEC = `Output ONLY NDJSON — one JSON object per line, no prose, 
 {"severity":"blocking|concern|note","file":"path","line":"12 or 12-18","title":"one line, max 80 chars","detail":"the specific evidence AND a concrete fix"}
 Governing rule: PRECISION OVER RECALL. Only findings that are real, consequential, and introduced by THIS diff. If the diff is clean for your lens, output nothing. Never pad. "severity": blocking = must-fix (bug/risk), concern = should address, note = minor.`
 
-const LENS_PROMPT: Record<DeepLensId, string> = {
+/** Each lens's overridable instructions; `OUTPUT_SPEC` and the PR input stay SimpleEdit's. */
+export const LENS_INSTRUCTIONS: Record<DeepLensId, string> = {
   soundness: `You are reviewing ONE lens of a pull request: SOUNDNESS & CORRECTNESS. Look only for bugs, logic errors, off-by-one, unhandled null/undefined, missed edge cases, race conditions, data-integrity hazards, and error handling (swallowed errors, unsafe fallbacks, missing failure paths). Ignore style, naming, tests, and architecture — other lenses cover those.`,
   intent: `You are reviewing ONE lens of a pull request: INTENT vs. IMPLEMENTATION. Judge whether the code does what the PR's title and description claim. Flag mismatches, missing pieces the description promises, behavior that contradicts the stated goal, and unrelated scope creep. Do not hunt for generic bugs — that's another lens.`,
   tests: `You are reviewing ONE lens of a pull request: TEST COVERAGE. Judge whether the diff adds or updates tests for the behavior it changes. Flag new/changed logic left untested, and obviously missing edge cases. Do not review the non-test code for bugs — that's another lens.`,
@@ -30,8 +31,8 @@ const LENS_PROMPT: Record<DeepLensId, string> = {
   architecture: `You are reviewing ONE lens of a pull request: ARCHITECTURE & DESIGN. Flag only concrete, nameable problems: a responsibility in the wrong layer, a leaky abstraction, coupling that will be costly. Only when you can name the problem and a better home for the code. Do not nitpick.`,
 }
 
-function buildLensPrompt(lens: DeepLensId, ctx: PrContext): string {
-  return `${LENS_PROMPT[lens]}
+function buildLensPrompt(instructions: string, ctx: PrContext): string {
+  return `${instructions}
 
 ${OUTPUT_SPEC}
 
@@ -63,14 +64,14 @@ function parseFinding(lens: DeepLensId | null, obj: unknown): DeepFinding | null
 }
 
 /** A single-lens review task; context is pre-gathered (identity buildContext). */
-export function makeLensTask(lens: DeepLensId): Task<PrContext, PrContext, DeepFinding> {
+export function makeLensTask(lens: DeepLensId, instructions = LENS_INSTRUCTIONS[lens]): Task<PrContext, PrContext, DeepFinding> {
   return {
     name: `deep-lens:${lens}`,
     async buildContext(ctx) {
       return ctx
     },
     buildPrompt(ctx) {
-      return { system: '', user: buildLensPrompt(lens, ctx) }
+      return { system: '', user: buildLensPrompt(instructions, ctx) }
     },
     parse: (obj) => parseFinding(lens, obj),
   }
@@ -81,14 +82,16 @@ export interface SynthesisInput {
   raw: DeepFinding[]
 }
 
-function buildSynthesisPrompt(input: SynthesisInput): string {
+export const SYNTHESIS_INSTRUCTIONS = `You are the review lead consolidating findings from several review lenses on one pull request. Below are the RAW findings and the diff. Produce the final review:
+- DROP any finding the diff does not actually support (be skeptical — kill weak or speculative ones).
+- MERGE duplicates/overlaps across lenses into a single finding (keep the clearest wording and the HIGHEST severity).
+- KEEP only what is worth the author's attention. Fewer, well-evidenced findings beat many shaky ones.`
+
+function buildSynthesisPrompt(instructions: string, input: SynthesisInput): string {
   const raw = input.raw
     .map((f) => `- [${f.lens}/${f.severity}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}: ${f.detail}`)
     .join('\n')
-  return `You are the review lead consolidating findings from several review lenses on one pull request. Below are the RAW findings and the diff. Produce the final review:
-- DROP any finding the diff does not actually support (be skeptical — kill weak or speculative ones).
-- MERGE duplicates/overlaps across lenses into a single finding (keep the clearest wording and the HIGHEST severity).
-- KEEP only what is worth the author's attention. Fewer, well-evidenced findings beat many shaky ones.
+  return `${instructions}
 
 ${OUTPUT_SPEC}
 Additionally, each object MUST include "lens" (one of: soundness, intent, tests, types, architecture) — carry over the originating lens of the finding you keep.
@@ -103,15 +106,17 @@ ${truncate(input.ctx.diff, MAX_DIFF_BYTES)}
 }
 
 /** The synthesis reduce: curate/dedup/rank all lens findings into the final set. */
-export const synthesisTask: Task<SynthesisInput, SynthesisInput, DeepFinding> = {
-  name: 'deep-synthesis',
-  async buildContext(input) {
-    return input
-  },
-  buildPrompt(input) {
-    return { system: '', user: buildSynthesisPrompt(input) }
-  },
-  parse: (obj) => parseFinding(null, obj),
+export function makeSynthesisTask(instructions = SYNTHESIS_INSTRUCTIONS): Task<SynthesisInput, SynthesisInput, DeepFinding> {
+  return {
+    name: 'deep-synthesis',
+    async buildContext(input) {
+      return input
+    },
+    buildPrompt(input) {
+      return { system: '', user: buildSynthesisPrompt(instructions, input) }
+    },
+    parse: (obj) => parseFinding(null, obj),
+  }
 }
 
 export { parseFinding as _parseFinding }
