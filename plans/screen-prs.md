@@ -11,8 +11,11 @@ review, #154 cache + resilience + Discuss + sidebar split button):
   syntax-highlighted diff (`lib/parseDiff.ts` + Monaco `colorize`), selectable in-progress cards.
 - **Deep review** — lens fan-out + synthesis reduce (`deep-review.ts`, `tasks/deep-review-lenses.ts`),
   per-lens model config + Settings pane, backend concurrency gate (`agent-tasks/gate.ts`).
-- **Persistent cache** (`screenprs-cache.ts`) — SHA-keyed; re-screen only re-runs changed PRs;
-  ⌥-click Re-screen forces. Deep results cached per SHA.
+- **Persistent cache** (`screenprs-cache.ts`) — keyed by head SHA + base key; re-screen only
+  re-runs changed PRs; ⌥-click Re-screen forces. Deep results cached per SHA.
+- **Stale / stacked base detection** (`github/stack-base.ts`) — a stacked PR whose lower layer was
+  rebased gets a warning banner and, where its own commits can be isolated, a diff of only those
+  (the "review diff"), which triage, deep review and the phone read instead of `gh pr diff`.
 - **Progress** — `queued`/`screening`/`triaging` events → "Triaging now / scheduled / gathering"
   phases; per-PR `timeoutMs` in `runFanout` so a wedged model can't freeze the batch.
 - **Discuss with Agent** — spawns a primed Claude session (`initialPrompt` threaded through
@@ -101,7 +104,8 @@ hover **quick-approve ✓** for the trivial one-click case.
 - **Triage findings** (from the diff-only pass) shown first. Once a deep review is *requested*,
   the triage block **collapses** to `▸ N findings · superseded by deep review` (re-expandable),
   because deep review confirms/invalidates most of them. Deep findings are labeled authoritative.
-- **Diff**: read-only `gh pr diff` by default; switches to the worktree DiffReview once checked out.
+- **Diff**: read-only review diff (`gh pr diff`, or only the PR's own commits when a rebased lower
+  stack layer pollutes it); switches to the worktree DiffReview once checked out.
 - **Actions**: `⚡ Deep review`, and `✦ Discuss` as a **split button** (see §3.3).
 - **Decide**: the **review composer** (docked footer) — the human path to GitHub.
 
