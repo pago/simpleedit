@@ -22,6 +22,9 @@ export default defineConfig({
           setupFiles: ['src/renderer/test-setup.ts'],
           browser: {
             enabled: true,
+            // Vitest only defaults to headless on CI; locally a visible Chromium
+            // window would pop up over whatever you're working on.
+            headless: true,
             provider: playwright(),
             instances: [{ browser: 'chromium' }]
           },
