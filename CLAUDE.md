@@ -171,6 +171,29 @@ GitLog (in the session workspace) → click commit → `openDiffTab`
 rendering `DiffReview`. DiffReview uses Monaco's `createDiffEditor` for inline
 diffs. "Uncommitted changes" entry compares working tree against HEAD.
 
+### Screen PRs: the review diff
+Screen PRs never shows or triages `gh pr diff` blindly. When a lower stack layer
+is rebased, an upper PR still carries the lower layer's old commits, and GitHub's
+diff (from the old merge-base) contains the whole stack. `github/stack-base.ts`
+builds the **review diff** instead: for a PR whose base isn't the default
+branch, it compares the PR's commits with the base's commits on top of the
+default branch; matches are the lower layer's. If the PR's own commits are a
+contiguous suffix, the diff is GitHub's compare from the last foreign commit to
+the head; otherwise GitHub's diff is kept (stitching per-commit diffs repeats
+file sections) and only the banner warns. Triage, deep review, both diff views
+and the phone's `screenprs:pr-diff` all read this one diff. An isolated diff also
+replaces the PR's +/−/files figures (`withReviewDiff`, applied on cache hits too,
+since the figures are refetched each run); GitHub's move to `base.github`.
+
+- **Match by subject + author date, never SHA.** The rebase that causes the
+  problem rewrites every SHA; it keeps the subject and the author date. The date
+  is what stops a recurring subject in both layers ("chore: update visual
+  snapshots") from being mistaken for the lower copy.
+- **The cache keys on the base too** (`baseKey`). A stacked PR's entry needs a
+  matching `baseRefOid`: a rebased base changes the diff with the head untouched.
+  A default-branch PR keys on the branch name only, because main advancing never
+  changes its diff and keying on main's SHA would evict every entry on each merge.
+
 ### Layout
 The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
 that session's `SessionWorkspace` (all others stay mounted but hidden). A
@@ -216,6 +239,7 @@ src/
     editor-watcher.ts  ← Per-editor file change watching
     git-operations.ts  ← commit log, diff, file-at-commit, staging
     github/gh.ts       ← gh CLI wrapper (screen-PRs)
+    github/stack-base.ts ← Stacked-PR base analysis + the review diff
     screenprs.ts, screenprs-cache.ts ← Screen-PRs data + cache
     review.ts, deep-review.ts, tour.ts ← Review/tour features
     tasks/, agent-tasks/ ← Bounded agent-task orchestration (gate, runner)

@@ -534,3 +534,44 @@ describe('PR detail — the path to GitHub', () => {
     expect(nav.stack()).toEqual([])
   })
 })
+
+describe('PR detail — base warning', () => {
+  it('warns when GitHub’s diff includes a lower stack layer it could not isolate', async () => {
+    const polluted: ScreenPrCard = {
+      ...CARD,
+      baseRefName: 'lower',
+      base: { kind: 'polluted', foreign: 3, behindBy: 0, own: [{ sha: 'sha1', subject: 'mine' }], isolated: false },
+    }
+    screenPrsStore._onQueued([polluted])
+    screenPrsStore._onCard(polluted)
+    render(PrDetail, { pr: polluted, connected: true })
+
+    expect(await screen.findByTestId('base-warning')).toHaveTextContent(
+      "Misleading diff on GitHub: includes 3 commits from lower (base rebased). Couldn't isolate this PR's commits; the diff below includes the lower layer."
+    )
+  })
+
+  it('contrasts GitHub’s file count with the isolated diff’s', async () => {
+    const isolated: ScreenPrCard = {
+      ...CARD,
+      baseRefName: 'lower',
+      changedFiles: 4,
+      base: {
+        kind: 'polluted', basePr: 6, foreign: 3, behindBy: 2, own: [{ sha: 'sha1', subject: 'mine' }], isolated: true,
+        github: { additions: 80, deletions: 9, changedFiles: 12 },
+      },
+    }
+    screenPrsStore._onQueued([isolated])
+    screenPrsStore._onCard(isolated)
+    render(PrDetail, { pr: isolated, connected: true })
+
+    expect(await screen.findByTestId('base-warning')).toHaveTextContent(
+      "Misleading diff on GitHub: includes 3 commits from #6 (base rebased, behind by 2). GitHub shows 12 files; this PR's own 1 commit touch 4. Showing only those."
+    )
+  })
+
+  it('says nothing for a PR on the default branch', () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    expect(screen.queryByTestId('base-warning')).toBeNull()
+  })
+})

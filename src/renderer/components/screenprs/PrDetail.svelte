@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity } from '../../../shared/screenprs'
-  import { DEEP_LENS_ORDER, DEEP_LENS_LABEL } from '../../../shared/screenprs'
+  import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, baseWarning } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { parseUnifiedDiff, type DiffFile } from '../../lib/parseDiff'
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
@@ -34,6 +34,10 @@
       `PR: ${context.url}`,
       `${context.repo}#${context.number} — ${context.title}  (base ${context.baseRefName}, +${context.additions}/−${context.deletions}, ${context.changedFiles} files)`,
     ]
+    if (context.base?.kind === 'polluted') {
+      lines.push('', `Careful: \`gh pr diff\` includes ${context.base.foreign} commit(s) from the lower stack layer. Review only this PR's own commits:`)
+      for (const c of context.base.own) lines.push(`- ${c.sha.slice(0, 8)} ${c.subject}`)
+    }
     const triage = card?.findings ?? []
     if (triage.length) {
       lines.push('', 'Triage (diff-only) flagged:')
@@ -71,6 +75,7 @@
   let triageInProgress = $derived(!card)
 
   let files = $derived<DiffFile[]>(parseUnifiedDiff(context.diff))
+  let warning = $derived(baseWarning(context))
 
   const LABEL_CLASS: Record<TriageFinding['label'], string> = {
     issue: 'bg-red-500/15 text-red-300',
@@ -142,6 +147,11 @@
   </div>
 
   <div class="flex-1 overflow-y-auto">
+    {#if warning}
+      <div class="mx-4 mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200" data-testid="base-warning">
+        {warning}
+      </div>
+    {/if}
     {#if triageInProgress}
       <div class="mx-4 mt-4 flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-[11px] text-zinc-400">
         <span class="h-3 w-3 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>

@@ -15,7 +15,7 @@
    * of the one PR you open.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, anchorCounts, anchorsForHead } from '../shared/screenprs'
+  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, anchorCounts, anchorsForHead, baseWarning } from '../shared/screenprs'
   import type {
     DeepFinding,
     DeepSeverity,
@@ -44,6 +44,7 @@
   let card = $derived(entry?.card)
   let context = $derived(entry?.context)
   let deep = $derived(screenPrsStore.deepFor(url))
+  let warning = $derived(context ? baseWarning(context) : null)
 
   const PANES = [
     { id: 'conversation', label: 'Conversation' },
@@ -238,6 +239,12 @@
           </p>
         {/if}
       </section>
+
+      {#if warning}
+        <p class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] leading-relaxed text-amber-200" data-testid="base-warning">
+          {warning}
+        </p>
+      {/if}
 
       <button
         type="button"
