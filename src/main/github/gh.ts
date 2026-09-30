@@ -150,6 +150,7 @@ interface RawPrView {
   deletions: number
   changedFiles: number
   baseRefName: string
+  baseRefOid?: string
   headRefName?: string
   headRefOid: string
   body: string
@@ -157,8 +158,9 @@ interface RawPrView {
 }
 
 /** A PR's context minus the diff — the cheap part, always refetched so CI/reviews
- *  stay current even on a cache hit. */
-export type PrMeta = Omit<PrContext, 'diff'>
+ *  stay current even on a cache hit. `baseRefOid` is typed here, not on `PrContext`:
+ *  only main reads it, to key the cache. */
+export type PrMeta = Omit<PrContext, 'diff'> & { baseRefOid: string }
 
 const REVIEW_STATE: Record<string, PrReviewerState> = {
   APPROVED: 'approved',
@@ -185,6 +187,7 @@ export function assembleMeta(ref: PrRef, viewJson: string, checksJson: string, h
     deletions: view.deletions,
     changedFiles: view.changedFiles,
     baseRefName: view.baseRefName,
+    baseRefOid: view.baseRefOid ?? '',
     headRefName: view.headRefName ?? '',
     body: view.body ?? '',
     reviewers,
@@ -193,7 +196,7 @@ export function assembleMeta(ref: PrRef, viewJson: string, checksJson: string, h
   }
 }
 
-const VIEW_FIELDS = 'additions,deletions,changedFiles,baseRefName,headRefName,headRefOid,body,latestReviews'
+const VIEW_FIELDS = 'additions,deletions,changedFiles,baseRefName,baseRefOid,headRefName,headRefOid,body,latestReviews'
 
 /** The cheap half: metadata + CI + head SHA (no diff). Always refetched so a
  *  cached PR still gets current CI/reviews and an accurate bucket. */

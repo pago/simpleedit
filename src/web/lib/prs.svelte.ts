@@ -58,7 +58,7 @@ export function fetchDiff(url: string, headSha: string): Promise<string> {
   const running = inFlight.get(k)
   if (running) return running
   const request = window.api
-    .invoke('screenprs:pr-diff', { url })
+    .invoke('screenprs:pr-diff', { url, headSha })
     .then((diff) => {
       diffs.set(k, diff)
       return diff

@@ -459,7 +459,7 @@ export interface ScreenPrsInvokeMap {
   'screenprs:cancel': { args: []; result: void }
   /** One PR's unified diff, on demand — board cards reach a remote client with
    *  `diff` emptied, because a board is dozens of them. */
-  'screenprs:pr-diff': { args: [pr: Pick<PrRef, 'url'>]; result: string }
+  'screenprs:pr-diff': { args: [pr: Pick<PrRef, 'url'> & { headSha?: string }]; result: string }
   /** Run a deep review on one PR (full context is passed — triage doesn't retain it). */
   'screenprs:deep-start': { args: [context: PrContext]; result: void }
   'screenprs:deep-cancel': { args: [url: string]; result: void }

@@ -17,6 +17,8 @@ import {
   anchorState,
   anchorsForHead,
   anchorCounts,
+  baseWarning,
+  type BaseAnalysis,
 } from '../screenprs'
 
 const issue: TriageFinding = { label: 'issue', file: 'a.ts', title: 'bug' }
@@ -289,5 +291,35 @@ describe('groupStacks', () => {
     // all three in one stack; neither dependent is dropped to standalone
     expect(groups[0].cards.map((c) => c.number)).toEqual([1, 2, 3])
     expect(groups[0].cards[0].number).toBe(1) // root first
+  })
+})
+
+describe('baseWarning', () => {
+  const polluted: BaseAnalysis = { kind: 'polluted', basePr: 2531, foreign: 1, behindBy: 199, own: [{ sha: 'a', subject: 'x' }, { sha: 'b', subject: 'y' }], isolated: true }
+
+  it('contrasts GitHub’s file count with the own commits’ once the diff is narrowed', () => {
+    const base = { ...polluted, github: { additions: 900, deletions: 40, changedFiles: 69 } }
+    expect(baseWarning({ base, baseRefName: 'compact-density', changedFiles: 52 })).toBe(
+      "Misleading diff on GitHub: includes 1 commit from #2531 (base rebased, behind by 199). GitHub shows 69 files; this PR's own 2 commits touch 52. Showing only those."
+    )
+  })
+
+  it('names what is shown when GitHub’s figures are unknown', () => {
+    expect(baseWarning({ base: polluted, baseRefName: 'compact-density', changedFiles: 52 })).toBe(
+      "Misleading diff on GitHub: includes 1 commit from #2531 (base rebased, behind by 199). Showing only this PR's 2 commits."
+    )
+  })
+
+  it('falls back to the branch name and says when it could not isolate', () => {
+    const base = { ...polluted, basePr: undefined, behindBy: 0, foreign: 2, isolated: false }
+    expect(baseWarning({ base, baseRefName: 'lower', changedFiles: 69 })).toBe(
+      "Misleading diff on GitHub: includes 2 commits from lower (base rebased). Couldn't isolate this PR's commits; the diff below includes the lower layer."
+    )
+  })
+
+  it('stays quiet unless the diff is polluted', () => {
+    expect(baseWarning({ base: undefined, baseRefName: 'main', changedFiles: 1 })).toBeNull()
+    expect(baseWarning({ base: { kind: 'default' }, baseRefName: 'main', changedFiles: 1 })).toBeNull()
+    expect(baseWarning({ base: { kind: 'clean' }, baseRefName: 'lower', changedFiles: 1 })).toBeNull()
   })
 })

@@ -17,8 +17,9 @@ import type { Runner } from './agent-tasks/runner'
 import { createTaskExecution, targetFromModelRef } from './agent-tasks/registry'
 import { runFanout } from './agent-tasks/orchestrator'
 import { triageTask, TRIAGE_PROMPT_VERSION } from './tasks/triage-task'
-import { currentHandle, searchReviewRequestedPrs, getPrMeta, getPrDiff, type PrMeta } from './github/gh'
-import { analysisFingerprint, getCached, putTriage } from './screenprs-cache'
+import { currentHandle, searchReviewRequestedPrs, getPrMeta, type PrMeta } from './github/gh'
+import { baseKey, createBaseResolver, getReviewDiff, getReviewDiffByUrl, withReviewDiff } from './github/stack-base'
+import { analysisFingerprint, getCached, getCachedDiff, putTriage } from './screenprs-cache'
 
 /**
  * In-flight run per client identity, so a re-screen / window close can cancel
@@ -71,7 +72,7 @@ function selectTriageRunner(cwd = tmpdir()): { runner: Runner; model?: ModelRef;
 
 function currentTriageFingerprint(): string {
   const model = getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
-  return analysisFingerprint({ target: targetFromModelRef(model), promptVersion: TRIAGE_PROMPT_VERSION, schemaVersion: 1 })
+  return analysisFingerprint({ target: targetFromModelRef(model), promptVersion: TRIAGE_PROMPT_VERSION, schemaVersion: 2 })
 }
 
 /** Run async `fn` over `items`, at most `limit` at once; failures resolve to null. */
@@ -125,13 +126,18 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
       sendSplit(webContents, 'screenprs:card', { card }, { card: withoutDiff(card) })
     }
 
-    // Cache hit (same head SHA) → reuse the diff + triage, no model call. Miss (or
-    // ⌥-force) → gather the diff and queue it for the model.
+    // Cache hit (same head SHA and base) → reuse the diff + triage, no model
+    // call. Miss (or ⌥-force) → gather the diff and queue it for the model.
     const triageFingerprint = currentTriageFingerprint()
+    const resolver = createBaseResolver()
+    const baseKeys = new Map<string, string>()
+    await mapLimit(metas, 5, async (m) => baseKeys.set(m.url, await baseKey(m, resolver)))
+    if (controller.signal.aborted) return
     const toTriage: PrMeta[] = []
     for (const meta of metas) {
-      const cached = filters.force ? undefined : getCached(meta.url, meta.headSha, triageFingerprint)
-      if (cached) emitCard({ ...meta, diff: cached.diff }, cached.triage)
+      const key = baseKeys.get(meta.url) ?? ''
+      const cached = filters.force ? undefined : getCached(meta.url, meta.headSha, triageFingerprint, key)
+      if (cached) emitCard(withReviewDiff(meta, cached), cached.triage)
       else toTriage.push(meta)
     }
 
@@ -139,7 +145,7 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
     // section as its diff lands (as "scheduled" — waiting for the model).
     const contexts = (
       await mapLimit(toTriage, 5, async (m) => {
-        const ctx = { ...m, diff: await getPrDiff(m) }
+        const ctx: PrContext = withReviewDiff(m, await getReviewDiff(m, resolver, metas))
         if (!controller.signal.aborted) {
           sendSplit(webContents, 'screenprs:screening', { context: ctx }, { context: withoutDiff(ctx) })
         }
@@ -175,7 +181,10 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
           const result: TriageResult = results[ev.index] ?? { impact: 'low', findings: [] }
           const ctx = ev.input
           if (ev.kind === 'done' && results[ev.index]) {
-            putTriage(ctx.url, ctx.headSha, ctx.diff, result, triageFingerprint)
+            putTriage(ctx.url, ctx.headSha, ctx.diff, result, triageFingerprint, {
+              key: baseKeys.get(ctx.url) ?? '',
+              analysis: ctx.base,
+            })
           }
           emitCard(ctx, result)
         }
@@ -192,6 +201,16 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
   } finally {
     if (activeRuns.get(webContents.id) === controller) activeRuns.delete(webContents.id)
   }
+}
+
+/**
+ * The review diff for the phone, which opens one PR at a time and fetches its
+ * diff on demand. The cached diff at this head is what the board it is looking
+ * at was screened from; without a hit, it is recomputed.
+ */
+export async function reviewDiffFor(pr: { url: string; headSha?: string }): Promise<string> {
+  const cached = pr.headSha ? getCachedDiff(pr.url, pr.headSha) : undefined
+  return cached ?? getReviewDiffByUrl(pr.url)
 }
 
 export function cancelScreening(webContents: RemoteClient): void {
