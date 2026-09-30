@@ -914,6 +914,43 @@ export interface ModelsEventMap {
   'models:pull-progress': ModelPullProgress
 }
 
+// ── Prompt overrides ──────────────────────────────────────
+/** Every prompt whose instructions a person may override from Settings. */
+export type PromptId = 'triage' | `deep-review/${DeepLensId}` | 'deep-review/synthesis'
+export type PromptGroup = 'screening' | 'deep-review'
+/**
+ * `outdated`: the override was customized from an older default than the one
+ * shipped now. Informational — the override still applies. `error`: the file
+ * exists but is empty or unreadable, so runs fall back to the default.
+ */
+export type PromptStatus = 'default' | 'custom' | 'outdated' | 'error'
+
+export interface PromptInfo {
+  id: PromptId
+  title: string
+  description: string
+  group: PromptGroup
+  status: PromptStatus
+  error?: string
+  /** Where the override lives (or would live, before Customize). */
+  path: string
+  defaultVersion: number
+  /** The default version the override was customized from, when recorded. */
+  basedOn?: number
+}
+
+export interface PromptsInvokeMap {
+  'prompts:list': { args: []; result: PromptInfo[] }
+  /** Both texts without frontmatter. `text` is the default when no override exists. */
+  'prompts:read': { args: [id: PromptId]; result: { text: string; defaultText: string } }
+  /** Seed the override from the current default (no-op if it exists); returns its path. */
+  'prompts:customize': { args: [id: PromptId]; result: string }
+  'prompts:save': { args: [id: PromptId, text: string]; result: void }
+  /** Delete the override, so runs use the default again. */
+  'prompts:reset': { args: [id: PromptId]; result: void }
+  'prompts:reveal': { args: [id: PromptId]; result: void }
+}
+
 // ── App-level ─────────────────────────────────────────────
 export interface RecentRepo {
   path: string
@@ -1400,6 +1437,7 @@ export type InvokeMap = WorktreeInvokeMap &
   SessionInvokeMap &
   UpdateInvokeMap &
   ModelsInvokeMap &
+  PromptsInvokeMap &
   RemoteInvokeMap &
   PushInvokeMap &
   SttInvokeMap &

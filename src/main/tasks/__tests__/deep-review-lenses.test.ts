@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { makeLensTask, synthesisTask, _parseFinding } from '../deep-review-lenses'
+import { makeLensTask, makeSynthesisTask, _parseFinding } from '../deep-review-lenses'
 import type { PrContext, DeepFinding } from '../../../shared/screenprs'
 
 const ctx: PrContext = {
@@ -41,13 +41,23 @@ describe('makeLensTask', () => {
     expect(makeLensTask('soundness').buildPrompt(ctx).user).toContain('SOUNDNESS')
     expect(makeLensTask('architecture').buildPrompt(ctx).user).toContain('ARCHITECTURE')
   })
+  it('an override replaces only the instructions — the NDJSON contract and the diff stay', () => {
+    const { user } = makeLensTask('tests', 'Only check for missing snapshot tests.').buildPrompt(ctx)
+    expect(user).toContain('Only check for missing snapshot tests.')
+    expect(user).not.toContain('TEST COVERAGE')
+    expect(user).toContain('Output ONLY NDJSON')
+    expect(user).toContain('"severity":"blocking|concern|note"')
+    expect(user).toContain('adds retry to the client')
+    expect(user).toContain('+ retry()')
+  })
   it('tags parsed findings with its own lens', () => {
     const task = makeLensTask('intent')
     expect(task.parse({ severity: 'note', file: 'a', title: 't', detail: 'd' })?.lens).toBe('intent')
   })
 })
 
-describe('synthesisTask', () => {
+describe('makeSynthesisTask', () => {
+  const synthesisTask = makeSynthesisTask()
   it('embeds the raw findings and the diff', () => {
     const raw: DeepFinding[] = [
       { lens: 'soundness', severity: 'blocking', file: 'a.ts', line: '5', title: 'npe', detail: 'guard' },
@@ -55,6 +65,18 @@ describe('synthesisTask', () => {
     const { user } = synthesisTask.buildPrompt({ ctx, raw })
     expect(user).toContain('review lead')
     expect(user).toContain('npe')
+    expect(user).toContain('[soundness/blocking]')
+    expect(user).toContain('+ retry()')
+  })
+  it('an override keeps the lens field requirement, the raw findings and the diff', () => {
+    const raw: DeepFinding[] = [
+      { lens: 'soundness', severity: 'blocking', file: 'a.ts', line: '5', title: 'npe', detail: 'guard' },
+    ]
+    const { user } = makeSynthesisTask('Keep at most three findings.').buildPrompt({ ctx, raw })
+    expect(user).toContain('Keep at most three findings.')
+    expect(user).not.toContain('review lead')
+    expect(user).toContain('Output ONLY NDJSON')
+    expect(user).toContain('MUST include "lens"')
     expect(user).toContain('[soundness/blocking]')
     expect(user).toContain('+ retry()')
   })

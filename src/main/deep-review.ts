@@ -19,7 +19,8 @@ import type { Runner } from './agent-tasks/runner'
 import { createTaskExecution, targetFromModelRef } from './agent-tasks/registry'
 import { runTask } from './agent-tasks/orchestrator'
 import { withBackendGate } from './agent-tasks/gate'
-import { makeLensTask, synthesisTask, DEEP_REVIEW_PROMPT_VERSION } from './tasks/deep-review-lenses'
+import { makeLensTask, makeSynthesisTask, DEEP_REVIEW_PROMPT_VERSION } from './tasks/deep-review-lenses'
+import { resolveInstructions, instructionsHash } from './prompts/overrides'
 import { analysisFingerprint, getCachedDeep, putDeep } from './screenprs-cache'
 
 const activeDeep = new Map<string, AbortController>()
@@ -38,15 +39,34 @@ async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
   return out
 }
 
-/** Lenses enabled in config, in display order, with their resolved model. */
-function enabledLenses(): Array<{ lens: DeepLensId; model?: ModelRef }> {
+/** Lenses enabled in config, in display order, with their resolved model and instructions. */
+function enabledLenses(): Array<{ lens: DeepLensId; model?: ModelRef; instructions: string }> {
   const config = getModelConfig()
   const inherit = config.defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
   const lensCfg = config.deepReview?.lenses ?? {}
   return DEEP_LENS_ORDER.filter((lens) => lensCfg[lens]?.enabled).map((lens) => ({
     lens,
     model: lensCfg[lens]?.model ?? inherit,
+    instructions: resolveInstructions(`deep-review/${lens}`).text,
   }))
+}
+
+export function deepReviewFingerprint(
+  lenses: Array<{ lens: DeepLensId; model?: ModelRef; instructions: string }>,
+  synthModel: ModelRef | undefined,
+  synthInstructions: string
+): string {
+  return analysisFingerprint({
+    lenses: lenses.map(({ lens, model, instructions }) => ({
+      lens,
+      target: targetFromModelRef(model),
+      instructions: instructionsHash(instructions),
+    })),
+    synthesis: targetFromModelRef(synthModel),
+    synthesisInstructions: instructionsHash(synthInstructions),
+    promptVersion: DEEP_REVIEW_PROMPT_VERSION,
+    schemaVersion: 1,
+  })
 }
 
 export async function startDeepReview(ctx: PrContext, webContents: RemoteClient): Promise<void> {
@@ -64,12 +84,8 @@ export async function startDeepReview(ctx: PrContext, webContents: RemoteClient)
   // findings still hold. Serve them instantly, no model calls.
   const lenses = enabledLenses()
   const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
-  const deepFingerprint = analysisFingerprint({
-    lenses: lenses.map(({ lens, model }) => ({ lens, target: targetFromModelRef(model) })),
-    synthesis: targetFromModelRef(synthModel),
-    promptVersion: DEEP_REVIEW_PROMPT_VERSION,
-    schemaVersion: 1,
-  })
+  const synthInstructions = resolveInstructions('deep-review/synthesis').text
+  const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions)
   const cached = getCachedDeep(ctx.url, ctx.headSha, deepFingerprint)
   if (cached) {
     send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: cached, headSha: ctx.headSha })
@@ -85,9 +101,9 @@ export async function startDeepReview(ctx: PrContext, webContents: RemoteClient)
     try {
       // Fan out the lenses; the gate serializes local work and parallelizes cloud.
       const perLens = await Promise.all(
-        lenses.map(({ lens, model }) =>
+        lenses.map(({ lens, model, instructions }) =>
           withBackendGate(model, () =>
-            collect(runTask(makeLensTask(lens), ctx, { runner: runnerFor(model, analysisDir), model, signal: controller.signal }))
+            collect(runTask(makeLensTask(lens, instructions), ctx, { runner: runnerFor(model, analysisDir), model, signal: controller.signal }))
           )
             .then((findings) => {
               sendLens(lens, 'done')
@@ -110,7 +126,7 @@ export async function startDeepReview(ctx: PrContext, webContents: RemoteClient)
       if (raw.length > 0) {
         try {
           curated = await withBackendGate(synthModel, () =>
-            collect(runTask(synthesisTask, { ctx, raw }, { runner: runnerFor(synthModel, analysisDir), model: synthModel, signal: controller.signal }))
+            collect(runTask(makeSynthesisTask(synthInstructions), { ctx, raw }, { runner: runnerFor(synthModel, analysisDir), model: synthModel, signal: controller.signal }))
           )
         } catch {
           curated = []

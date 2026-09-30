@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseTriage, triageTask } from '../triage-task'
+import { parseTriage, makeTriageTask, TRIAGE_INSTRUCTIONS } from '../triage-task'
 import type { PrContext } from '../../../shared/screenprs'
 
 describe('parseTriage', () => {
@@ -32,7 +32,9 @@ describe('parseTriage', () => {
   })
 })
 
-describe('triageTask', () => {
+describe('makeTriageTask', () => {
+  const triageTask = makeTriageTask()
+
   const ctx: PrContext = {
     owner: 'acme', repo: 'ui', number: 1, url: 'u', title: 'Add widget', author: 'a', updatedAt: 'd',
     headSha: 'sha1', additions: 5, deletions: 1, changedFiles: 1,
@@ -51,5 +53,16 @@ describe('triageTask', () => {
     expect(user).toContain('implements the widget')
     expect(user).toContain('+code')
     expect(user).toContain('EXACTLY ONE JSON object')
+    expect(user).toContain(TRIAGE_INSTRUCTIONS)
+  })
+
+  it('an override replaces only the instructions — the JSON contract and the diff stay', () => {
+    const { user } = makeTriageTask('Only flag changes to billing code.').buildPrompt(ctx)
+    expect(user).toContain('Only flag changes to billing code.')
+    expect(user).not.toContain('You are triaging a pull request')
+    expect(user).toContain('EXACTLY ONE JSON object')
+    expect(user).toContain('{"impact":"low|medium|high","findings":[')
+    expect(user).toContain('Add widget')
+    expect(user).toContain('<diff>\ndiff --git a/x b/x\n+code\n</diff>')
   })
 })

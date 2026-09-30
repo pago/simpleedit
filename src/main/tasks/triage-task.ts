@@ -11,7 +11,7 @@ import type { Task } from '../agent-tasks/orchestrator'
 
 const MAX_DIFF_BYTES = 60_000
 const MAX_BODY_BYTES = 2_000
-export const TRIAGE_PROMPT_VERSION = 1
+export const TRIAGE_PROMPT_VERSION = 2
 
 // Triage flags only the high-signal, actionable labels — no praise/nit padding.
 const VALID_LABELS = new Set<ConventionalCommentLabel>(['issue', 'suggestion', 'question'])
@@ -21,15 +21,20 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '\n…[truncated]' : s
 }
 
-function buildTriagePrompt(ctx: PrContext): string {
-  return `You are triaging a pull request to decide whether it needs a human reviewer's attention. You are NOT doing a full review — just a fast, diff-only judgment.
-
-Output EXACTLY ONE JSON object and nothing else (no prose, no code fences):
-{"impact":"low|medium|high","findings":[{"label":"issue|suggestion|question","file":"path","line":"12 or 12-18","title":"one line, max 80 chars"}]}
+/** The overridable part of the prompt: what to judge and how. */
+export const TRIAGE_INSTRUCTIONS = `You are triaging a pull request to decide whether it needs a human reviewer's attention. You are NOT doing a full review — just a fast, diff-only judgment.
 
 - "impact" = blast radius / risk of this change: high = architectural, security-sensitive, or wide-reaching; low = trivial/localized.
 - "findings" = only concrete, high-signal concerns visible in the diff (a likely bug, a risky change, a real question). Empty array if the diff looks clean — do NOT invent findings, and do NOT include praise or nitpicks.
-- Judge only what THIS diff changes. Something a type-checker/linter would catch is not a finding.
+- Judge only what THIS diff changes. Something a type-checker/linter would catch is not a finding.`
+
+const OUTPUT_SPEC = `Output EXACTLY ONE JSON object and nothing else (no prose, no code fences):
+{"impact":"low|medium|high","findings":[{"label":"issue|suggestion|question","file":"path","line":"12 or 12-18","title":"one line, max 80 chars"}]}`
+
+function buildTriagePrompt(instructions: string, ctx: PrContext): string {
+  return `${instructions}
+
+${OUTPUT_SPEC}
 
 PR: ${ctx.repo}#${ctx.number} — ${ctx.title}
 ${ctx.body ? `\nDescription:\n${truncate(ctx.body, MAX_BODY_BYTES)}\n` : ''}
@@ -60,14 +65,20 @@ export function parseTriage(obj: unknown): TriageResult | null {
   return { impact: o['impact'] as TriageImpact, findings }
 }
 
-/** Context is pre-gathered (the input *is* the context); `buildContext` is identity. */
-export const triageTask: Task<PrContext, PrContext, TriageResult> = {
-  name: 'screenprs-triage',
-  async buildContext(ctx) {
-    return ctx
-  },
-  buildPrompt(ctx) {
-    return { system: '', user: buildTriagePrompt(ctx) }
-  },
-  parse: parseTriage,
+/**
+ * Context is pre-gathered (the input *is* the context); `buildContext` is identity.
+ * `instructions` is the effective (possibly user-overridden) instruction text —
+ * the output contract and the PR/diff input are always SimpleEdit's.
+ */
+export function makeTriageTask(instructions = TRIAGE_INSTRUCTIONS): Task<PrContext, PrContext, TriageResult> {
+  return {
+    name: 'screenprs-triage',
+    async buildContext(ctx) {
+      return ctx
+    },
+    buildPrompt(ctx) {
+      return { system: '', user: buildTriagePrompt(instructions, ctx) }
+    },
+    parse: parseTriage,
+  }
 }

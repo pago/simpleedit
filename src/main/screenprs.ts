@@ -16,7 +16,8 @@ import { DEFAULT_TRIAGE_MODEL } from './models/claude-catalog'
 import type { Runner } from './agent-tasks/runner'
 import { createTaskExecution, targetFromModelRef } from './agent-tasks/registry'
 import { runFanout } from './agent-tasks/orchestrator'
-import { triageTask, TRIAGE_PROMPT_VERSION } from './tasks/triage-task'
+import { makeTriageTask, TRIAGE_PROMPT_VERSION } from './tasks/triage-task'
+import { resolveInstructions, instructionsHash } from './prompts/overrides'
 import { currentHandle, searchReviewRequestedPrs, getPrMeta, type PrMeta } from './github/gh'
 import { baseKey, createBaseResolver, getReviewDiff, getReviewDiffByUrl, withReviewDiff } from './github/stack-base'
 import { analysisFingerprint, getCached, getCachedDiff, putTriage } from './screenprs-cache'
@@ -70,9 +71,14 @@ function selectTriageRunner(cwd = tmpdir()): { runner: Runner; model?: ModelRef;
   return createTaskExecution(targetFromModelRef(def), { cwd, selfContained: true })
 }
 
-function currentTriageFingerprint(): string {
+export function currentTriageFingerprint(instructions: string): string {
   const model = getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
-  return analysisFingerprint({ target: targetFromModelRef(model), promptVersion: TRIAGE_PROMPT_VERSION, schemaVersion: 2 })
+  return analysisFingerprint({
+    target: targetFromModelRef(model),
+    promptVersion: TRIAGE_PROMPT_VERSION,
+    schemaVersion: 2,
+    instructions: instructionsHash(instructions),
+  })
 }
 
 /** Run async `fn` over `items`, at most `limit` at once; failures resolve to null. */
@@ -128,7 +134,9 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
 
     // Cache hit (same head SHA and base) → reuse the diff + triage, no model
     // call. Miss (or ⌥-force) → gather the diff and queue it for the model.
-    const triageFingerprint = currentTriageFingerprint()
+    // Resolved once so the fingerprint and every model call see the same text.
+    const instructions = resolveInstructions('triage').text
+    const triageFingerprint = currentTriageFingerprint(instructions)
     const resolver = createBaseResolver()
     const baseKeys = new Map<string, string>()
     await mapLimit(metas, 5, async (m) => baseKeys.set(m.url, await baseKey(m, resolver)))
@@ -163,7 +171,7 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
     // enough for a slow local model on a large diff.
     const TRIAGE_TIMEOUT_MS = 120_000
     try {
-      for await (const ev of runFanout(triageTask, contexts, {
+      for await (const ev of runFanout(makeTriageTask(instructions), contexts, {
         runner,
         model,
         concurrency,

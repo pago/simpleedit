@@ -76,9 +76,10 @@ import {
   cancelClaudeDiscovery
 } from './models'
 import { inheritShellPath } from './shell-path'
+import { listPrompts, readPrompt, customizePrompt, savePrompt, resetPrompt, revealTarget } from './prompts/overrides'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { createSessionOnce, resolveSessionCreate } from './session-create'
@@ -1029,6 +1030,20 @@ function registerAllHandlers(): void {
 
   handleInvoke('models:config-set', (_event, partial: Partial<ModelConfig>) => {
     return setModelConfig(partial)
+  })
+
+  // ── Prompt overrides ────────────────────────────────────
+  // Reachable from the phone too (every channel is); prompts only steer
+  // tool-less model runs, and ids are validated against the registry.
+  handleInvoke('prompts:list', () => listPrompts())
+  handleInvoke('prompts:read', (_event, id: PromptId) => readPrompt(id))
+  handleInvoke('prompts:customize', (_event, id: PromptId) => customizePrompt(id))
+  handleInvoke('prompts:save', (_event, id: PromptId, text: string) => savePrompt(id, text))
+  handleInvoke('prompts:reset', (_event, id: PromptId) => resetPrompt(id))
+  handleInvoke('prompts:reveal', async (_event, id: PromptId) => {
+    const target = revealTarget(id)
+    if (target.exists) shell.showItemInFolder(target.path)
+    else await shell.openPath(target.path)
   })
 
   // ── LSP ─────────────────────────────────────────────────
