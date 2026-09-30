@@ -41,6 +41,9 @@ beforeEach(() => {
       case 'prompts:customize':
         list = list.map((p) => (p.id === id ? { ...p, status: 'custom', basedOn: 1 } : p))
         return Promise.resolve(`${DIR}/${id}.md`)
+      case 'prompts:mark-current':
+        list = list.map((p) => (p.id === id ? { ...p, status: 'custom', basedOn: p.defaultVersion } : p))
+        return Promise.resolve()
       case 'prompts:reset':
         list = list.map((p) => (p.id === id ? { ...p, status: 'default', basedOn: undefined } : p))
         return Promise.resolve()
@@ -116,6 +119,24 @@ describe('PromptsPane', () => {
     await fireEvent.click(within(row('deep-review/soundness')).getByRole('button', { name: 'Reset' }))
     expect(invoke).toHaveBeenCalledWith('prompts:reset', 'deep-review/soundness')
     await waitFor(() => expect(screen.getByTestId('prompt-status-deep-review/soundness').textContent?.trim()).toBe('Default'))
+  })
+
+  it('offers Mark as up to date only on outdated prompts, and clears the flag', async () => {
+    render(PromptsPane)
+    await screen.findByText('Triage')
+    expect(within(row('deep-review/soundness')).queryByRole('button', { name: /up to date/ })).toBeNull()
+    await fireEvent.click(within(row('deep-review/tests')).getByRole('button', { name: 'Mark Test coverage as up to date' }))
+    expect(invoke).toHaveBeenCalledWith('prompts:mark-current', 'deep-review/tests')
+    await waitFor(() => expect(screen.getByTestId('prompt-status-deep-review/tests').textContent?.trim()).toBe('Custom'))
+    expect(within(row('deep-review/tests')).queryByRole('button', { name: /up to date/ })).toBeNull()
+  })
+
+  it('offers Mark as up to date in the editor of an outdated prompt', async () => {
+    render(PromptsPane)
+    await fireEvent.click(await screen.findByRole('button', { name: 'Edit Test coverage' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Mark Test coverage as up to date' }))
+    expect(invoke).toHaveBeenCalledWith('prompts:mark-current', 'deep-review/tests')
+    await waitFor(() => expect(screen.queryByText(/now ships v2/)).toBeNull())
   })
 
   it('Reveal in Finder asks main to show the file', async () => {

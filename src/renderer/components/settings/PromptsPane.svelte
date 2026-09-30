@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import PromptEditor from './PromptEditor.svelte'
   import MonacoDiffEditor from '../editor/MonacoDiffEditor.svelte'
-  import type { PromptGroup, PromptId, PromptInfo, PromptStatus } from '../../../shared/ipc-types'
+  import { PROMPT_GROUP_LABEL, type PromptGroup, type PromptId, type PromptInfo, type PromptStatus } from '../../../shared/ipc-types'
 
   interface Editing {
     id: PromptId
@@ -13,10 +13,7 @@
     mode: 'edit' | 'compare'
   }
 
-  const GROUPS: { id: PromptGroup; label: string }[] = [
-    { id: 'screening', label: 'Screening' },
-    { id: 'deep-review', label: 'Deep review' },
-  ]
+  const GROUPS = (Object.entries(PROMPT_GROUP_LABEL) as [PromptGroup, string][]).map(([id, label]) => ({ id, label }))
 
   const MODES: { mode: Editing['mode']; label: string }[] = [
     { mode: 'edit', label: 'Edit' },
@@ -109,6 +106,13 @@
     })
   }
 
+  function markCurrent(id: PromptId): Promise<void> {
+    return attempt(async () => {
+      await window.api.invoke('prompts:mark-current', id)
+      await load()
+    })
+  }
+
   function reveal(id: PromptId): Promise<void> {
     return attempt(() => window.api.invoke('prompts:reveal', id))
   }
@@ -129,6 +133,14 @@
   >
     {STATUS_LABEL[p.status]}
   </span>
+{/snippet}
+
+{#snippet markCurrentControl(p: PromptInfo)}
+  {#if p.status === 'outdated'}
+    <button type="button" class={buttonClass} onclick={() => markCurrent(p.id)} aria-label="Mark {p.title} as up to date" title="Keep your text and stop flagging it as outdated">
+      Mark as up to date
+    </button>
+  {/if}
 {/snippet}
 
 {#snippet resetControl(p: PromptInfo)}
@@ -194,6 +206,7 @@
           {/each}
         </div>
         <div class="flex-1"></div>
+        {@render markCurrentControl(current)}
         <button type="button" class={buttonClass} onclick={() => reveal(current.id)}>Reveal in Finder</button>
         {@render resetControl(current)}
       </div>
@@ -248,6 +261,7 @@
                 {:else}
                   <button type="button" class={buttonClass} onclick={() => open(p.id, 'edit')} aria-label="Edit {p.title}">Edit</button>
                   <button type="button" class={buttonClass} onclick={() => open(p.id, 'compare')} aria-label="Compare {p.title} with default">Compare</button>
+                  {@render markCurrentControl(p)}
                   <button type="button" class={buttonClass} onclick={() => reveal(p.id)} aria-label="Reveal {p.title} in Finder">Reveal</button>
                   {@render resetControl(p)}
                 {/if}

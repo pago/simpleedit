@@ -7,7 +7,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'se-prompts-test-'))
 vi.mock('electron', () => ({ app: { getPath: () => tmpRoot } }))
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }))
 
-const { resolveInstructions, parseOverride, promptStatus, listPrompts, readPrompt, customizePrompt, savePrompt, resetPrompt, promptPath } =
+const { resolveInstructions, parseOverride, promptStatus, listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent, resetPrompt, promptPath } =
   await import('../overrides')
 const { promptDefinition, PROMPTS } = await import('../registry')
 const { TRIAGE_INSTRUCTIONS } = await import('../../tasks/triage-task')
@@ -114,6 +114,23 @@ describe('customize / save / reset', () => {
   it('save seeds based-on when the file has none', () => {
     savePrompt('deep-review/tests', 'Only snapshot tests.')
     expect(resolveInstructions('deep-review/tests')).toMatchObject({ text: 'Only snapshot tests.', basedOn: 1 })
+  })
+
+  it('mark-current rewrites based-on to the shipped version, keeping the body and other keys', () => {
+    writeOverride('triage', '---\nbased-on: triage@0\nowner: me\n---\nMine.')
+    expect(listPrompts().find((p) => p.id === 'triage')?.status).toBe('outdated')
+    markPromptCurrent('triage')
+    const v = promptDefinition('triage').defaultVersion
+    expect(readFileSync(promptPath('triage'), 'utf-8')).toBe(`---\nbased-on: triage@${v}\nowner: me\n---\n\nMine.\n`)
+    expect(listPrompts().find((p) => p.id === 'triage')?.status).toBe('custom')
+  })
+
+  it('mark-current adds based-on when missing, and is a no-op without an override', () => {
+    writeOverride('deep-review/tests', 'Only snapshots.')
+    markPromptCurrent('deep-review/tests')
+    expect(resolveInstructions('deep-review/tests')).toMatchObject({ text: 'Only snapshots.', basedOn: 1 })
+    markPromptCurrent('triage')
+    expect(existsSync(promptPath('triage'))).toBe(false)
   })
 
   it('read returns the default when nothing is customized', () => {
