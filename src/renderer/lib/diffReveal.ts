@@ -6,9 +6,11 @@
  * hunks around the change. So the target is the exact row when the hunks
  * include it, else the row with the closest new-file number — the reader lands
  * on the change nearest the line the model meant. A file with no new-side rows
- * (binary, deleted), or a citation with no line, lands on the file header.
+ * (binary, deleted), or a citation with no line, lands on the file header. A
+ * shortened path finds its file when only one diff path ends with it.
  */
 import { parseLineAnchor } from '../../shared/screenprs'
+import { resolveRefPath } from '../../shared/pr-overview'
 import type { DiffFile } from './parseDiff'
 
 export interface RevealTarget {
@@ -21,7 +23,8 @@ export interface RevealTarget {
 export const REVEAL_FLASH_MS = 1400
 
 export function findRevealTarget(files: DiffFile[], path: string, line?: string | number): RevealTarget | null {
-  const file = files.find((f) => f.path === path) ?? files.find((f) => f.oldPath === path)
+  const resolved = resolveRefPath(files.map((f) => f.path), path)
+  const file = files.find((f) => f.path === resolved) ?? files.find((f) => f.oldPath === path)
   if (!file) return null
   const wanted = typeof line === 'number' ? (line > 0 ? line : null) : parseLineAnchor(line)
   if (wanted === null || file.binary) return { path: file.path, row: null }

@@ -191,7 +191,7 @@ export function compareDeepFindings(a: DeepFinding, b: DeepFinding): number {
 export type PrReviewVerdict = 'approve' | 'comment' | 'request_changes'
 
 /** Where a composer comment came from — drives its provenance chip in the UI. */
-export type PrReviewCommentSource = 'triage' | 'deep' | 'agent' | 'you'
+export type PrReviewCommentSource = 'triage' | 'deep' | 'overview' | 'agent' | 'you'
 
 export interface PrReviewComment {
   source: PrReviewCommentSource

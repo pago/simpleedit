@@ -535,6 +535,58 @@ describe('PR detail — the path to GitHub', () => {
   })
 })
 
+describe('PR detail — overview', () => {
+  const TEXT = '## What changed\nTightens it.\n## Why\nB\n## Impact\nC\n## Look into\n1. Is the gate inverted? `src/gate.ts:11`'
+
+  beforeEach(() => {
+    screenPrsStore._onOverviewStatus(URL_, 'idle')
+  })
+
+  function showOverview(): void {
+    screenPrsStore._onOverviewResult(URL_, 'sha1', TEXT, { draft: false, changeset: 'no' })
+    screenPrsStore._onOverviewStatus(URL_, 'done')
+  }
+
+  it('starts with the fetched diff re-attached, as deep review does', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await waitFor(() => expect(screen.getByTestId('run-overview')).toBeEnabled())
+    await fireEvent.click(screen.getByTestId('run-overview'))
+    const call = invoke.mock.calls.find(([ch]) => ch === 'screenprs:overview-start')
+    expect(call?.[1]).toMatchObject({ url: URL_, diff: DIFF })
+  })
+
+  it('opens What changed and keeps the other sections collapsed', async () => {
+    showOverview()
+    render(PrDetail, { pr: CARD, connected: true })
+    expect(screen.getByTestId('overview-section-what')).toHaveTextContent('Tightens it.')
+    expect(screen.getByTestId('overview-section-lookInto')).not.toHaveTextContent('inverted')
+    expect(screen.queryByTestId('overview-discuss')).toBeNull()
+  })
+
+  it('switches to Files and lands on the cited line', async () => {
+    showOverview()
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    render(PrDetail, { pr: CARD, connected: true })
+    await waitFor(() => expect(screen.getByTestId('run-overview')).toBeEnabled()) // diff fetched
+    await fireEvent.click(within(screen.getByTestId('overview-section-lookInto')).getByRole('button'))
+    await fireEvent.click(screen.getByTestId('overview-ref'))
+    await waitFor(() => expect(document.querySelector('[data-revealed]')).toHaveAttribute('data-line', '11'))
+    expect(screen.getByTestId('pane-files')).toHaveAttribute('aria-pressed', 'true')
+    vi.restoreAllMocks()
+  })
+
+  it('＋ review lifts an item into the draft as a question, stamped with its head', async () => {
+    showOverview()
+    render(PrDetail, { pr: CARD, connected: true })
+    await waitFor(() => expect(screen.getByTestId('run-overview')).toBeEnabled())
+    await fireEvent.click(within(screen.getByTestId('overview-section-lookInto')).getByRole('button'))
+    await fireEvent.click(screen.getByTestId('overview-add-review'))
+    expect(screenPrsStore.draftFor(URL_).comments).toEqual([
+      { source: 'overview', file: 'src/gate.ts', line: '11', text: 'question: Is the gate inverted? `src/gate.ts:11`', sha: 'sha1' },
+    ])
+  })
+})
+
 describe('PR detail — base warning', () => {
   it('warns when GitHub’s diff includes a lower stack layer it could not isolate', async () => {
     const polluted: ScreenPrCard = {

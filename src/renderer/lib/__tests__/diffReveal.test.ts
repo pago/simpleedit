@@ -57,6 +57,11 @@ describe('findRevealTarget', () => {
     expect(findRevealTarget(files, 'old/name.ts', '1')).toEqual({ path: 'new/name.ts', row: 2 })
   })
 
+  it('finds a file from a shortened path when only one diff path ends with it', () => {
+    expect(findRevealTarget(files, 'a.ts', '11')).toEqual({ path: 'src/a.ts', row: 3 })
+    expect(findRevealTarget(files, 'name.ts', '1')).toEqual({ path: 'new/name.ts', row: 2 })
+  })
+
   it('returns null for a file the diff does not contain', () => {
     expect(findRevealTarget(files, 'src/missing.ts', '1')).toBeNull()
   })

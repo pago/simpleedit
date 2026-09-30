@@ -1,1 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
+/* The build root is src/web, so the one renderer component the phone renders
+   has to be named for its classes to be generated. */
+@source "../renderer/components/screenprs/OverviewCard.svelte";

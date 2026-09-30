@@ -5,6 +5,8 @@
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { parseUnifiedDiff, type DiffFile } from '../../lib/parseDiff'
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
+  import OverviewCard from './OverviewCard.svelte'
+  import { resolveRefPath, type OverviewLookIntoItem, type OverviewRef } from '../../../shared/pr-overview'
   import ReviewComposer from './ReviewComposer.svelte'
   import SplitButton from '../SplitButton.svelte'
   import { loadAgentModels, type AgentModel } from '../../lib/agentModels'
@@ -27,7 +29,7 @@
       null
   })
 
-  function buildBrief(): string {
+  function buildBrief(focus?: OverviewLookIntoItem): string {
     const lines = [
       `You are helping me review a GitHub pull request. This is a REVIEW session — the PR is NOT ours to modify unless I explicitly ask. When I'm ready, you'll post the review to GitHub yourself with \`gh pr review\` (approve / comment / request-changes). Don't post anything until I tell you to.`,
       ``,
@@ -43,11 +45,15 @@
       lines.push('', 'Triage (diff-only) flagged:')
       for (const f of triage) lines.push(`- [${f.label}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`)
     }
+    if (overview?.text) {
+      lines.push('', 'The PR overview (what changed, why, impact, what to look into):', '', overview.text)
+    }
     const dv = deep?.findings ?? []
     if (dv.length) {
       lines.push('', 'Deep review flagged:')
       for (const f of dv) lines.push(`- [${f.severity}/${f.lens}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}: ${f.detail}`)
     }
+    if (focus) lines.push('', `I want to dig into this question from the overview first:`, focus.markdown)
     lines.push(
       '',
       `Start by running \`gh pr diff ${context.url}\` to see the change (and \`gh pr checkout\` if you want to run it), then help me decide whether it's ready.`
@@ -55,13 +61,13 @@
     return lines.join('\n')
   }
 
-  function discuss(m: AgentModel): void {
+  function discuss(m: AgentModel, focus?: OverviewLookIntoItem): void {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
     if (!root || !wt) return
     const id = sessionsStore.createAgent(m.target, root, wt.path, {
       ...(m.target.provider === 'claude' && m.target.model ? { model: m.target.model } : {}),
-      initialPrompt: buildBrief(),
+      initialPrompt: buildBrief(focus),
       label: `review ${context.repo}#${context.number}`,
     })
     uiView.show('workspace')
@@ -69,12 +75,16 @@
   }
 
   let deep = $derived(screenPrsStore.deepFor(context.url))
+  let overview = $derived(screenPrsStore.overviewFor(context.url))
   let triageExpanded = $state(false)
   let deepActive = $derived(deep != null && deep.status !== 'idle')
-  let triageCollapsed = $derived(deepActive && !triageExpanded)
+  let overviewActive = $derived(overview != null && overview.status !== 'idle')
+  let triageCollapsed = $derived((deepActive || overviewActive) && !triageExpanded)
+  let supersededBy = $derived(deepActive ? 'deep review' : 'the overview')
   let triageInProgress = $derived(!card)
 
   let files = $derived<DiffFile[]>(parseUnifiedDiff(context.diff))
+  let diffView = $state<UnifiedDiffView>()
   let warning = $derived(baseWarning(context))
 
   const LABEL_CLASS: Record<TriageFinding['label'], string> = {
@@ -105,6 +115,29 @@
       line: f.line,
       text: f.detail ? `${f.title} — ${f.detail}` : f.title,
     })
+  }
+
+  function showRef(ref: OverviewRef): void {
+    void diffView?.reveal(ref.path, ref.line)
+  }
+  // ＋ review on a Look-into item: a question anchored to its first citation,
+  // the same composer path the findings take.
+  function addOverviewComment(item: OverviewLookIntoItem): void {
+    const ref = item.refs[0]
+    screenPrsStore.addComment(context.url, {
+      source: 'overview',
+      file: ref ? (resolveRefPath(files.map((f) => f.path), ref.path) ?? ref.path) : '',
+      line: ref?.line,
+      text: `question: ${item.markdown}`,
+      sha: overview?.headSha,
+    })
+  }
+  function discussItem(item: OverviewLookIntoItem): void {
+    const m = agentModels.find((a) => a.id === discussModelId) ?? agentModels[0]
+    if (m) discuss(m, item)
+  }
+  function runOverview(): void {
+    void screenPrsStore.startOverview(context)
   }
 
   function openExternal(): void {
@@ -140,6 +173,17 @@
       {#if deep?.status === 'running'}
         <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancelDeep(context.url)}>Stop</button>
       {/if}
+      <button
+        class="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+        onclick={runOverview}
+        disabled={overview?.status === 'running' || !context.diff}
+        data-testid="run-overview"
+      >
+        {#if overview?.status === 'running'}☰ Writing…{:else if overview?.status === 'done'}☰ Overview again{:else}☰ Overview{/if}
+      </button>
+      {#if overview?.status === 'running'}
+        <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancelOverview(context.url)}>Stop</button>
+      {/if}
       {#if agentModels.length}
         <SplitButton label="Discuss" icon="✦" models={agentModels} bind:selectedId={discussModelId} onstart={discuss} />
       {/if}
@@ -150,6 +194,11 @@
     {#if warning}
       <div class="mx-4 mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200" data-testid="base-warning">
         {warning}
+      </div>
+    {/if}
+    {#if overviewActive && overview}
+      <div class="mx-4 mt-4">
+        <OverviewCard {context} {overview} onref={showRef} onreview={addOverviewComment} ondiscuss={agentModels.length ? discussItem : undefined} />
       </div>
     {/if}
     {#if triageInProgress}
@@ -164,9 +213,9 @@
       <div class="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 text-[11px] text-zinc-400">
         <span class="rounded border border-orange-400/30 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-orange-300/80">Triage</span>
         <span>diff-only quick review</span>
-        {#if deepActive && card}
+        {#if (deepActive || overviewActive) && card}
           <button class="ml-auto rounded px-1.5 py-0.5 text-[10.5px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300" onclick={() => (triageExpanded = !triageExpanded)}>
-            {triageCollapsed ? `▸ ${card.findings.length} finding${card.findings.length !== 1 ? 's' : ''} · superseded by deep review` : '▾ hide (superseded)'}
+            {triageCollapsed ? `▸ ${card.findings.length} finding${card.findings.length !== 1 ? 's' : ''} · superseded by ${supersededBy}` : '▾ hide (superseded)'}
           </button>
         {/if}
       </div>
@@ -248,7 +297,7 @@
 
     <!-- Diff — one section per file (git plumbing stripped, syntax-highlighted) -->
     <div class="mx-4 mb-6 mt-4">
-      <UnifiedDiffView {files} />
+      <UnifiedDiffView bind:this={diffView} {files} />
     </div>
   </div>
 

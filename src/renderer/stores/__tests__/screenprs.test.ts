@@ -11,6 +11,8 @@ type Handlers = {
   'screenprs:deep-lens'?: (d: EventMap['screenprs:deep-lens']) => void
   'screenprs:deep-result'?: (d: EventMap['screenprs:deep-result']) => void
   'screenprs:deep-status'?: (d: EventMap['screenprs:deep-status']) => void
+  'screenprs:overview-result'?: (d: EventMap['screenprs:overview-result']) => void
+  'screenprs:overview-status'?: (d: EventMap['screenprs:overview-status']) => void
 }
 
 let handlers: Handlers
@@ -115,9 +117,33 @@ describe('screenPrsStore ingestion', () => {
     expect(screenPrsStore.deepFor('other')).toBeUndefined()
   })
 
+  it('tracks an overview by url: running on start, then the raw text, facts and head', async () => {
+    const c = ctx({ number: 3, url: 'u3', headSha: 'sha3', diff: 'the diff' })
+    await screenPrsStore.startOverview(c)
+    expect(screenPrsStore.overviewFor('u3')).toMatchObject({ status: 'running', headSha: 'sha3' })
+    const invoke = (window.api.invoke as ReturnType<typeof vi.fn>).mock.calls.find(([ch]) => ch === 'screenprs:overview-start')
+    // A plain object, diff included: a $state proxy can't cross IPC.
+    expect(invoke?.[1]).toEqual(c)
+
+    handlers['screenprs:overview-result']!({ url: 'u3', headSha: 'sha3', text: '## What changed\nA', facts: { draft: false, changeset: 'no' } })
+    handlers['screenprs:overview-status']!({ url: 'u3', status: 'done' })
+    expect(screenPrsStore.overviewFor('u3')).toEqual({
+      status: 'done', text: '## What changed\nA', facts: { draft: false, changeset: 'no' }, headSha: 'sha3', error: undefined,
+    })
+    expect(screenPrsStore.overviewFor('other')).toBeUndefined()
+  })
+
+  it('settles a cancelled overview locally, since main sends nothing for it', async () => {
+    await screenPrsStore.startOverview(ctx({ number: 4, url: 'u4' }))
+    await screenPrsStore.cancelOverview('u4')
+    expect(screenPrsStore.overviewFor('u4')?.status).toBe('idle')
+    expect(window.api.invoke).toHaveBeenCalledWith('screenprs:overview-cancel', 'u4')
+  })
+
   it('unsubscribes cleanly', () => {
     dispose()
     expect(handlers['screenprs:card']).toBeUndefined()
     expect(handlers['screenprs:deep-status']).toBeUndefined()
+    expect(handlers['screenprs:overview-result']).toBeUndefined()
   })
 })
