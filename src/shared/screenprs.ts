@@ -46,6 +46,54 @@ export interface PrContext extends PrRef {
   approvedByOther: boolean
   body: string
   diff: string
+  /** How the PR's base relates to the default branch; absent when it couldn't be determined. */
+  base?: BaseAnalysis
+}
+
+/**
+ * Whether GitHub's diff for a PR can be trusted.
+ *
+ * When a lower stack layer is rebased, the upper PR still carries the lower
+ * layer's old commits, and GitHub's diff (computed from the old merge-base)
+ * shows the whole stack. Those commits are `foreign`; `own` are the PR's own.
+ * `isolated` means the own commits form a contiguous suffix, so the diff shown
+ * could be narrowed to them; the context's size figures then describe that
+ * narrowed diff, and `github` keeps the figures GitHub shows.
+ */
+export type BaseAnalysis =
+  | { kind: 'default' }
+  | { kind: 'clean' }
+  | {
+      kind: 'polluted'
+      basePr?: number
+      foreign: number
+      behindBy: number
+      own: { sha: string; subject: string }[]
+      isolated: boolean
+      github?: DiffStats
+    }
+
+export interface DiffStats {
+  additions: number
+  deletions: number
+  changedFiles: number
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/** The warning shown above a polluted PR's diff, or null when there is nothing to warn about. */
+export function baseWarning(pr: Pick<PrContext, 'base' | 'baseRefName' | 'changedFiles'>): string | null {
+  const { base, baseRefName } = pr
+  if (base?.kind !== 'polluted') return null
+  const from = base.basePr != null ? `#${base.basePr}` : baseRefName
+  const why = base.behindBy > 0 ? `base rebased, behind by ${base.behindBy}` : 'base rebased'
+  const head = `Misleading diff on GitHub: includes ${plural(base.foreign, 'commit')} from ${from} (${why}).`
+  if (base.isolated && base.github) {
+    return `${head} GitHub shows ${plural(base.github.changedFiles, 'file')}; this PR's own ${plural(base.own.length, 'commit')} touch ${pr.changedFiles}. Showing only those.`
+  }
+  return base.isolated
+    ? `${head} Showing only this PR's ${plural(base.own.length, 'commit')}.`
+    : `${head} Couldn't isolate this PR's commits; the diff below includes the lower layer.`
 }
 
 export type TriageImpact = 'low' | 'medium' | 'high'

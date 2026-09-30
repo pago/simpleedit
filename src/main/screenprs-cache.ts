@@ -1,7 +1,9 @@
 /**
  * Persistent triage/deep-review cache (plans/screen-prs.md). Keyed by PR url +
- * head commit SHA: an unchanged SHA means the diff is identical, so the model's
- * triage/deep findings are still valid and needn't be recomputed. Re-screening
+ * head commit SHA + base key (see `baseKey` in github/stack-base.ts): unchanged,
+ * the review diff is identical, so the model's triage/deep findings are still
+ * valid and needn't be recomputed. The head alone isn't enough — a rebased
+ * lower stack layer changes an upper PR's diff without touching its head. Re-screening
  * then only spends tokens on new or newly-pushed PRs. Metadata (CI/reviews) is
  * NOT cached — the orchestrator always refetches it so buckets stay current.
  *
@@ -11,10 +13,12 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import { createHash } from 'crypto'
-import type { TriageResult, DeepFinding } from '../shared/screenprs'
+import type { TriageResult, DeepFinding, BaseAnalysis } from '../shared/screenprs'
 
 export interface CacheEntry {
   headSha: string
+  baseKey?: string
+  base?: BaseAnalysis
   diff: string
   triage: TriageResult
   triageFingerprint?: string
@@ -70,19 +74,32 @@ export function analysisFingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
 }
 
-export function getCached(url: string, headSha: string, triageFingerprint: string): CacheEntry | undefined {
+export function getCached(url: string, headSha: string, triageFingerprint: string, baseKey: string): CacheEntry | undefined {
   const e = load()[url]
-  return e && e.headSha === headSha && e.triageFingerprint === triageFingerprint ? e : undefined
+  return e && e.headSha === headSha && e.baseKey === baseKey && e.triageFingerprint === triageFingerprint ? e : undefined
 }
 
-/** Store (or replace) the triage result + diff for a PR at a given SHA. */
-export function putTriage(url: string, headSha: string, diff: string, triage: TriageResult, triageFingerprint: string): void {
+/** The cached review diff for `url` at `headSha`, whatever produced it. */
+export function getCachedDiff(url: string, headSha: string): string | undefined {
+  const e = load()[url]
+  return e?.headSha === headSha ? e.diff : undefined
+}
+
+/** Store (or replace) the triage result + review diff for a PR at a given SHA and base. */
+export function putTriage(
+  url: string,
+  headSha: string,
+  diff: string,
+  triage: TriageResult,
+  triageFingerprint: string,
+  base: { key: string; analysis?: BaseAnalysis }
+): void {
   const cache = load()
-  // A new SHA supersedes the old entry entirely (its deep result is stale too).
+  // A new SHA or base supersedes the old entry entirely (its deep result is stale too).
   const prior = cache[url]
   cache[url] = {
-    headSha, diff, triage, triageFingerprint, at: new Date().toISOString(),
-    ...(prior?.headSha === headSha && prior.triageFingerprint === triageFingerprint && prior.deep && prior.deepFingerprint
+    headSha, baseKey: base.key, base: base.analysis, diff, triage, triageFingerprint, at: new Date().toISOString(),
+    ...(prior?.headSha === headSha && prior.baseKey === base.key && prior.triageFingerprint === triageFingerprint && prior.deep && prior.deepFingerprint
       ? { deep: prior.deep, deepFingerprint: prior.deepFingerprint }
       : {}),
   }

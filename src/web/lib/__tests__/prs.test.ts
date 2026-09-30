@@ -29,6 +29,12 @@ describe('fetchDiff', () => {
     expect(invoke).toHaveBeenCalledTimes(1)
   })
 
+  it('asks for the diff at its head, so main can serve the review diff it screened', async () => {
+    diffs.set('u0', 'DIFF')
+    await fetchDiff('u0', 'sha')
+    expect(invoke).toHaveBeenCalledWith('screenprs:pr-diff', { url: 'u0', headSha: 'sha' })
+  })
+
   it('serves a second visit from the cache', async () => {
     diffs.set('u2', 'DIFF')
     await fetchDiff('u2', 'sha')

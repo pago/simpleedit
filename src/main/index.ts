@@ -35,7 +35,7 @@ import {
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
-import { startScreening, cancelScreening, cancelAllScreening } from './screenprs'
+import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor } from './screenprs'
 import { startDeepReview, cancelDeepReview, cancelAllDeepReviews } from './deep-review'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
@@ -88,7 +88,7 @@ import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
 import type { PrContext, PrRef } from '../shared/screenprs'
 import { buildReviewPayload } from '../shared/screenprs'
-import { GhTimeoutError, getPrDiff, postReview } from './github/gh'
+import { GhTimeoutError, postReview } from './github/gh'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -945,8 +945,8 @@ function registerAllHandlers(): void {
     cancelScreening(hubFor(event.sender))
   })
 
-  handleInvoke('screenprs:pr-diff', (_event, pr: Pick<PrRef, 'url'>) => {
-    return getPrDiff(pr)
+  handleInvoke('screenprs:pr-diff', (_event, pr: Pick<PrRef, 'url'> & { headSha?: string }) => {
+    return reviewDiffFor(pr)
   })
 
   handleInvoke('screenprs:deep-start', (event, context: PrContext) => {

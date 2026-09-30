@@ -24,34 +24,36 @@ const triage: TriageResult = { impact: 'high', findings: [{ label: 'issue', file
 const deep: DeepFinding[] = [{ lens: 'soundness', severity: 'blocking', file: 'a.ts', title: 'npe', detail: 'guard' }]
 const FP = 'triage-v1'
 const DEEP_FP = 'deep-v1'
+const KEY = 'default:main'
+const BASE = { key: KEY }
 
 describe('screenprs-cache', () => {
   it('misses when empty', () => {
-    expect(cache.getCached('u1', 'sha1', FP)).toBeUndefined()
+    expect(cache.getCached('u1', 'sha1', FP, KEY)).toBeUndefined()
   })
 
   it('round-trips a triage result at a given SHA', () => {
-    cache.putTriage('u1', 'sha1', 'the diff', triage, FP)
-    const hit = cache.getCached('u1', 'sha1', FP)
+    cache.putTriage('u1', 'sha1', 'the diff', triage, FP, BASE)
+    const hit = cache.getCached('u1', 'sha1', FP, KEY)
     expect(hit?.triage).toEqual(triage)
     expect(hit?.diff).toBe('the diff')
   })
 
   it('invalidates when the head SHA changes', () => {
-    cache.putTriage('u1', 'sha1', 'd', triage, FP)
-    expect(cache.getCached('u1', 'sha2', FP)).toBeUndefined() // new push ⇒ miss
-    expect(cache.getCached('u1', 'sha1', FP)).toBeDefined()
+    cache.putTriage('u1', 'sha1', 'd', triage, FP, BASE)
+    expect(cache.getCached('u1', 'sha2', FP, KEY)).toBeUndefined() // new push ⇒ miss
+    expect(cache.getCached('u1', 'sha1', FP, KEY)).toBeDefined()
   })
 
   it('persists across a reload (new module instance reads the file)', async () => {
-    cache.putTriage('u1', 'sha1', 'd', triage, FP)
+    cache.putTriage('u1', 'sha1', 'd', triage, FP, BASE)
     vi.resetModules()
     const reloaded = await import('../screenprs-cache')
-    expect(reloaded.getCached('u1', 'sha1', FP)?.triage).toEqual(triage)
+    expect(reloaded.getCached('u1', 'sha1', FP, KEY)?.triage).toEqual(triage)
   })
 
   it('attaches deep results only when the SHA matches', () => {
-    cache.putTriage('u1', 'sha1', 'd', triage, FP)
+    cache.putTriage('u1', 'sha1', 'd', triage, FP, BASE)
     cache.putDeep('u1', 'sha1', deep, DEEP_FP)
     expect(cache.getCachedDeep('u1', 'sha1', DEEP_FP)).toEqual(deep)
 
@@ -61,10 +63,35 @@ describe('screenprs-cache', () => {
   })
 
   it('misses legacy and mismatched analysis fingerprints', () => {
-    cache.putTriage('u1', 'sha1', 'd', triage, FP)
-    expect(cache.getCached('u1', 'sha1', 'other')).toBeUndefined()
+    cache.putTriage('u1', 'sha1', 'd', triage, FP, BASE)
+    expect(cache.getCached('u1', 'sha1', 'other', KEY)).toBeUndefined()
     cache.putDeep('u1', 'sha1', deep, DEEP_FP)
     expect(cache.getCachedDeep('u1', 'sha1', 'other')).toBeUndefined()
+  })
+
+  it('misses when the base moves under an unchanged head', () => {
+    cache.putTriage('u1', 'sha1', 'polluted diff', triage, FP, { key: 'stacked:base1' })
+    expect(cache.getCached('u1', 'sha1', FP, 'stacked:base2')).toBeUndefined()
+    expect(cache.getCached('u1', 'sha1', FP, 'stacked:base1')).toBeDefined()
+  })
+
+  it('round-trips the base analysis', () => {
+    const analysis = { kind: 'polluted' as const, foreign: 1, behindBy: 3, own: [{ sha: 'b', subject: 'mine' }], isolated: true }
+    cache.putTriage('u1', 'sha1', 'd', triage, FP, { key: 'stacked:base1', analysis })
+    expect(cache.getCached('u1', 'sha1', FP, 'stacked:base1')?.base).toEqual(analysis)
+  })
+
+  it('drops the deep result when the base moves', () => {
+    cache.putTriage('u1', 'sha1', 'd', triage, FP, { key: 'stacked:base1' })
+    cache.putDeep('u1', 'sha1', deep, DEEP_FP)
+    cache.putTriage('u1', 'sha1', 'd2', triage, FP, { key: 'stacked:base2' })
+    expect(cache.getCachedDeep('u1', 'sha1', DEEP_FP)).toBeUndefined()
+  })
+
+  it('serves the cached diff at a head regardless of fingerprint', () => {
+    cache.putTriage('u1', 'sha1', 'the diff', triage, FP, BASE)
+    expect(cache.getCachedDiff('u1', 'sha1')).toBe('the diff')
+    expect(cache.getCachedDiff('u1', 'sha2')).toBeUndefined()
   })
 
   it('prunes entries older than 30 days', () => {
