@@ -2,15 +2,17 @@
   import ModelsPane from './ModelsPane.svelte'
   import DefaultModelPane from './DefaultModelPane.svelte'
   import DeepReviewPane from './DeepReviewPane.svelte'
+  import PromptsPane from './PromptsPane.svelte'
   import RemoteAccessPane from './RemoteAccessPane.svelte'
 
-  type PaneId = 'models' | 'defaults' | 'deepreview' | 'remote'
+  type PaneId = 'models' | 'defaults' | 'deepreview' | 'prompts' | 'remote'
   let active = $state<PaneId>('models')
 
   const NAV: { id: PaneId; label: string }[] = [
     { id: 'models', label: 'Models' },
     { id: 'defaults', label: 'Default Model' },
     { id: 'deepreview', label: 'Deep Review' },
+    { id: 'prompts', label: 'Prompts' },
     { id: 'remote', label: 'Remote Access' },
   ]
 </script>
@@ -48,6 +50,10 @@
             <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
               <circle cx="7" cy="7" r="3.5" /><path d="M9.6 9.6L14 14" stroke-linecap="round" /><path d="M15 17h5M15 20h5" />
             </svg>
+          {:else if item.id === 'prompts'}
+            <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M5 4h10l4 4v12H5z" stroke-linejoin="round" /><path d="M8.5 11h7M8.5 14.5h7M8.5 18h4" stroke-linecap="round" />
+            </svg>
           {:else}
             <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
               <rect x="7" y="2.5" width="10" height="19" rx="2.2" /><path d="M10.8 18.6h2.4" stroke-linecap="round" />
@@ -70,6 +76,8 @@
         <DefaultModelPane />
       {:else if active === 'deepreview'}
         <DeepReviewPane />
+      {:else if active === 'prompts'}
+        <PromptsPane />
       {:else}
         <RemoteAccessPane />
       {/if}

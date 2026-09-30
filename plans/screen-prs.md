@@ -124,8 +124,10 @@ read-only note shows what's running and links there.
 - **Per-PR context** is gathered in **plain JS** (`gh` calls), not by the model: size, CI,
   reviews, base branch (→ stacked detection), and the diff. Metadata is pure JSON; the model
   only reads the diff.
-- **Per-PR judgment** is one `triageTask` (a `Task`, diff embedded in the prompt) run through
-  **`DirectRunner` + a cheap local model**. It emits `{findings[], impact}`.
+- **Per-PR judgment** is one triage `Task` (`makeTriageTask`, diff embedded in the prompt) run
+  through **`DirectRunner` + a cheap local model**. It emits `{findings[], impact}`. Its
+  instructions — like every lens's and the synthesis step's — are user-overridable from
+  Settings → Prompts (`src/main/prompts/`); the output contract and the diff stay in code.
 - **Bucketing is deterministic code** (a reduce over results; the skill's rules): CI-failing →
   waiting-on-author; approved-by-other → top-if-critical else FYI; unapproved → by size/CI/
   staleness. Verdict is *derived*, not model-assigned — keeps the local model's job tiny and the

@@ -165,6 +165,28 @@ Consequences worth knowing before touching this:
 - Exchanges are bounded: hop budget, per-sender rate limit, message size cap.
   `agent-message:sent` / `:delivered` are emitted for UI surfacing.
 
+### Screen PRs prompt overrides (`src/main/prompts/`)
+Triage, each deep-review lens and the synthesis step build their prompt as
+**instructions + contract + input**. Only the instructions are overridable, from
+Settings → Prompts, as `userData/config/prompts/<id>.md` (frontmatter
+`based-on: <id>@<defaultVersion>`). There are no placeholders: the output
+contract (JSON/NDJSON shape) and the PR/diff framing are owned by the task
+modules, so an override can't break parsing or drop the diff — the task tests
+guard exactly that.
+- `resolveInstructions(id)` reads the file on every run and falls back to the
+  default on missing/empty/unreadable, recording `error` for Settings. A bad
+  override never fails a run.
+- The triage and deep-review cache fingerprints hash the **effective**
+  instruction text, so editing an override or shipping a new default
+  invalidates cached results without a version bump. `*_PROMPT_VERSION` still
+  means "contract or input framing changed"; a registry entry's
+  `defaultVersion` means "default instructions changed" and drives `outdated`.
+- Resolve once per run and pass the text into the task factory, so the
+  fingerprint and every model call see the same text.
+- Adding a prompt = a `PromptId` + one `PROMPTS` entry in `registry.ts`. Ids
+  arrive over IPC (the phone too) and become paths, so `promptDefinition`
+  rejects anything unregistered.
+
 ### Diff review flow
 GitLog (in the session workspace) → click commit → `openDiffTab`
 (`diffReview.svelte.ts`) → the session's `SessionWorkspace` opens a **diff tab**
@@ -244,6 +266,8 @@ src/
     review.ts, deep-review.ts, tour.ts ← Review/tour features
     tasks/, agent-tasks/ ← Bounded agent-task orchestration (gate, runner)
     models/            ← Model catalog (Claude cloud + Ollama) + recommendations
+    prompts/           ← Overridable prompt-instruction registry + userData overrides
+    config-dir.ts      ← `userData/config[/sub]` helper for persisted state
     lsp-manager.ts     ← Language-server management
     session-store.ts   ← Session persistence (durable sessions)
     recent-repos.ts    ← Recently opened repos (persisted JSON)
