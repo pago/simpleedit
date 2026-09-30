@@ -11,7 +11,9 @@
  *   (Ollama #13949) — routing local tasks here is why they work at all.
  *
  * Both extract NDJSON result objects from the model's text with the same
- * `json-scanner`, so a task's validator (`parse`) is reused unchanged.
+ * `json-scanner`, so a task's validator (`parse`) is reused unchanged. A
+ * request with `output: 'text'` skips the scanner instead: `parse` receives the
+ * run's final assistant text, once, when the run ends cleanly.
  */
 import { spawn } from 'child_process'
 import * as readline from 'readline'
@@ -34,7 +36,16 @@ export interface RunRequest<Item> {
   parse: (obj: unknown) => Item | null
   /** A chosen model. `anthropic` adds `--model`; `ollama` targets `/api/chat`. */
   model?: ModelRef
+  /**
+   * `json` (default) scans the streamed text for `{…}` objects. `text` hands
+   * `parse` the final assistant message as a string instead — for tasks whose
+   * answer is prose (markdown), where braces in code spans would otherwise be
+   * mistaken for results.
+   */
+  output?: RunOutput
 }
+
+export type RunOutput = 'json' | 'text'
 
 export interface RunOptions {
   signal?: AbortSignal
@@ -73,6 +84,21 @@ function createFindingScanner<Item>(parse: (obj: unknown) => Item | null): (chun
       pos = scanPos
     }
     return items
+  }
+}
+
+/**
+ * The text-mode result: `parse` applied once to the final assistant text. A
+ * run that produced no text yields nothing, the same as a JSON run that found
+ * no objects. Errors from `parse` are swallowed exactly as the scanner does.
+ */
+function finalTextItems<Item>(parse: (obj: unknown) => Item | null, text: string | null): Item[] {
+  if (text === null) return []
+  try {
+    const item = parse(text)
+    return item === null ? [] : [item]
+  } catch {
+    return []
   }
 }
 
@@ -202,6 +228,14 @@ export class ClaudeCodeRunner implements Runner {
     proc.stdin.end()
 
     const scan = createFindingScanner<Item>(req.parse)
+    const textMode = req.output === 'text'
+    // Text mode reads only the `result` event: it is the last assistant
+    // message alone, whereas the deltas also carry text from turns that ended
+    // in a tool call.
+    let finalText: string | null = null
+    // An error result (max turns, an API error) still carries a `result`
+    // string; as an answer it would render as a malformed overview.
+    let resultError: string | null = null
 
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
     rl.on('line', (line) => {
@@ -209,6 +243,16 @@ export class ClaudeCodeRunner implements Runner {
       if (!trimmed.startsWith('{')) return
       try {
         const ev = JSON.parse(trimmed) as Record<string, unknown>
+        if (textMode) {
+          if (ev['type'] !== 'result') return
+          if (ev['is_error'] === true) {
+            const detail = typeof ev['result'] === 'string' && ev['result'] ? ev['result'] : ev['subtype']
+            resultError = typeof detail === 'string' && detail ? detail : 'claude reported an error result'
+          } else if (typeof ev['result'] === 'string') {
+            finalText = ev['result'] as string
+          }
+          return
+        }
         // Each stream_event carries a growing snapshot of the assistant text.
         if (ev['type'] === 'stream_event') {
           const inner = ev['event'] as Record<string, unknown> | undefined
@@ -237,8 +281,12 @@ export class ClaudeCodeRunner implements Runner {
       rl.close()
       opts?.signal?.removeEventListener('abort', onAbort)
       if (stderrBuf) console.error('[runner] claude stderr:', stderrBuf.slice(0, 500))
-      if (code === 0) stream.close()
-      else stream.fail(new Error(`claude exited with code ${code}`))
+      if (code === 0 && resultError) {
+        stream.fail(new Error(`claude run failed: ${resultError}`))
+      } else if (code === 0) {
+        for (const item of finalTextItems(req.parse, finalText)) stream.push(item)
+        stream.close()
+      } else stream.fail(new Error(`claude exited with code ${code}`))
     })
 
     proc.on('error', (err: Error) => {
@@ -269,6 +317,8 @@ export class DirectRunner implements Runner {
       : [{ role: 'user', content: req.user }]
 
     const scan = createFindingScanner<Item>(req.parse)
+    // No harness and no tools, so the whole stream is the one final message.
+    let text = ''
     for await (const chunk of chatStream({
       model: model.model,
       messages,
@@ -276,8 +326,10 @@ export class DirectRunner implements Runner {
       // num_ctx default (past Ollama's truncating 4096) lives in chatStream.
       signal: opts?.signal,
     })) {
-      for (const item of scan(chunk)) yield item
+      if (req.output === 'text') text += chunk
+      else for (const item of scan(chunk)) yield item
     }
+    if (req.output === 'text') yield* finalTextItems(req.parse, text || null)
   }
 }
 
@@ -504,12 +556,16 @@ export class OpenCodeRunner implements Runner {
     const scan = createFindingScanner<Item>(req.parse)
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
     let turnFailure: string | null = null
+    // Each `text` frame is a complete block; earlier ones precede tool calls,
+    // so the last is the answer.
+    let finalText: string | null = null
     rl.on('line', (line) => {
       try {
         const event: unknown = JSON.parse(line)
         turnFailure ??= openCodeTurnFailure(event)
         const text = openCodeAgentText(event)
-        if (text) for (const parsed of scan(text)) stream.push(parsed)
+        if (req.output === 'text') finalText = text || finalText
+        else if (text) for (const parsed of scan(text)) stream.push(parsed)
       } catch {
         // Ignore diagnostics and malformed frames; exit status stays authoritative.
       }
@@ -526,6 +582,7 @@ export class OpenCodeRunner implements Runner {
         // read "no findings" as a clean pass.
         stream.fail(new Error(`opencode turn failed: ${turnFailure}`))
       } else {
+        for (const item of finalTextItems(req.parse, finalText)) stream.push(item)
         stream.close()
       }
     })
@@ -566,12 +623,16 @@ export class CodexRunner implements Runner {
     const scan = createFindingScanner<Item>(req.parse)
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })
     let turnFailure: string | null = null
+    // Codex completes one `agent_message` per turn segment, including the
+    // commentary it writes before a tool call; the last one is the answer.
+    let finalText: string | null = null
     rl.on('line', (line) => {
       try {
         const event: unknown = JSON.parse(line)
         turnFailure ??= codexTurnFailure(event)
         const text = codexAgentText(event)
-        if (text) for (const parsed of scan(text)) stream.push(parsed)
+        if (req.output === 'text') finalText = text || finalText
+        else if (text) for (const parsed of scan(text)) stream.push(parsed)
       } catch {
         // Ignore diagnostics and malformed events; the exit status remains authoritative.
       }
@@ -588,6 +649,7 @@ export class CodexRunner implements Runner {
         // read "no findings" as a clean pass.
         stream.fail(new Error(`codex turn failed: ${turnFailure}`))
       } else {
+        for (const item of finalTextItems(req.parse, finalText)) stream.push(item)
         stream.close()
       }
     })
