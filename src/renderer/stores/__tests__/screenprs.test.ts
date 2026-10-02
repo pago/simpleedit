@@ -243,7 +243,7 @@ describe('screenPrsStore draft mirror', () => {
     expect(screenPrsStore.draftFor('d7').summary).toBe('persisted')
   })
 
-  it('keeps everything typed when a quick approve posts', async () => {
+  it('keeps everything typed when a submit does not ask to clear the draft', async () => {
     vi.useFakeTimers()
     try {
       handlers['screenprs:draft-changed']!({ url: 'd9', draft: draft({ summary: 'stored' }), rev: next() })
@@ -254,9 +254,10 @@ describe('screenPrsStore draft mirror', () => {
         return undefined
       })
       const pr = { owner: 'acme', repo: 'ui', number: 9, url: 'd9' }
-      await screenPrsStore.submitReview(pr, { ...emptyReviewDraft(), verdict: 'approve' }, { headSha: 'sha1', keepDraft: true })
-      expect(vi.mocked(window.api.invoke)).toHaveBeenCalledWith('screenprs:submit-review', expect.objectContaining({ keepDraft: true }))
-      expect(screenPrsStore.submittedFor('d9')).toMatchObject({ verdict: 'approve', draftKept: true })
+      await screenPrsStore.submitReview(pr, { ...emptyReviewDraft(), verdict: 'approve' }, { headSha: 'sha1' })
+      expect(vi.mocked(window.api.invoke)).toHaveBeenCalledWith('screenprs:submit-review', expect.not.objectContaining({ clearDraft: true }))
+      expect(screenPrsStore.submittedFor('d9')).toMatchObject({ verdict: 'approve' })
+      expect(screenPrsStore.submittedFor('d9')?.draftCleared).toBeFalsy()
       expect(screenPrsStore.draftFor('d9').summary).toBe('still typing')
 
       vi.advanceTimersByTime(400)
@@ -268,8 +269,18 @@ describe('screenPrsStore draft mirror', () => {
     }
   })
 
-  it('clears the draft in main on "compose another"', () => {
+  it('clears the draft in main on "compose another" after posting it', async () => {
     handlers['screenprs:draft-changed']!({ url: 'd8', draft: draft({ summary: 's' }), rev: next() })
+    vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'screenprs:submit-review') return { ok: true, folded: { count: 0, reasons: {} } }
+      if (channel === 'screenprs:draft-op') opCalls.push(args[0] as { url: string; op: { kind: string } })
+      return undefined
+    })
+    const pr = { owner: 'acme', repo: 'ui', number: 8, url: 'd8' }
+    await screenPrsStore.submitReview(pr, screenPrsStore.draftFor('d8'), { clearDraft: true })
+    expect(vi.mocked(window.api.invoke)).toHaveBeenCalledWith('screenprs:submit-review', expect.objectContaining({ clearDraft: true }))
+    expect(screenPrsStore.submittedFor('d8')).toMatchObject({ draftCleared: true })
+    expect(screenPrsStore.draftFor('d8')).toEqual(emptyReviewDraft())
     screenPrsStore.resetSubmitted('d8')
     expect(screenPrsStore.draftFor('d8')).toEqual(emptyReviewDraft())
     expect(opCalls).toEqual([{ url: 'd8', op: { kind: 'clear' } }])

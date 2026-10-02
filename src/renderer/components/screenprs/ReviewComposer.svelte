@@ -72,7 +72,7 @@
   async function confirmPost(): Promise<void> {
     error = null
     try {
-      const res = await screenPrsStore.submitReview(context, draft, { headSha, isolatedBase })
+      const res = await screenPrsStore.submitReview(context, draft, { headSha, isolatedBase, clearDraft: true })
       if (!res.ok) error = res.error
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)

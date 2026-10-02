@@ -136,8 +136,8 @@
     try {
       // Without a head nothing can be pinned, so only the already-folded draft may go.
       const res = headSha
-        ? await screenPrsStore.submitReview(pr, rawDraft, { headSha, isolatedBase })
-        : await screenPrsStore.submitReview(pr, draft)
+        ? await screenPrsStore.submitReview(pr, rawDraft, { headSha, isolatedBase, clearDraft: true })
+        : await screenPrsStore.submitReview(pr, draft, { clearDraft: true })
       if (res.ok) {
         nav.close(confirmId)
         // Posted and done with: a follow-up starts from no verdict.

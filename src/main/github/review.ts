@@ -94,7 +94,7 @@ export async function submitReview(request: SubmitReviewRequest): Promise<{ revi
 
 /**
  * The `screenprs:submit-review` handler: post, then clear the PR's stored
- * draft — unless what was posted wasn't that draft.
+ * draft if what was posted was that draft.
  */
 export async function handleSubmitReview(
   request: SubmitReviewRequest,
@@ -102,7 +102,7 @@ export async function handleSubmitReview(
 ): Promise<SubmitReviewResult> {
   try {
     const { reviewUrl, folded } = await submitReview(request)
-    if (!request.keepDraft) {
+    if (request.clearDraft) {
       try {
         clearDraft(request.pr.url)
       } catch (err) {
