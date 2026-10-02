@@ -11,7 +11,7 @@
  */
 import { parseLineAnchor } from '../../shared/screenprs'
 import { resolveRefPath } from '../../shared/pr-overview'
-import type { DiffFile } from './parseDiff'
+import type { DiffFile } from '../../shared/parseDiff'
 
 export interface RevealTarget {
   path: string

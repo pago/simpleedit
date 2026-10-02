@@ -3,7 +3,7 @@
   import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity } from '../../../shared/screenprs'
   import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, baseWarning } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
-  import { parseUnifiedDiff, type DiffFile } from '../../lib/parseDiff'
+  import { parseUnifiedDiff, type DiffFile } from '../../../shared/parseDiff'
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
   import OverviewCard from './OverviewCard.svelte'
   import { resolveRefPath, type OverviewLookIntoItem, type OverviewRef } from '../../../shared/pr-overview'
