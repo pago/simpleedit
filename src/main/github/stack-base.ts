@@ -215,7 +215,8 @@ async function basePrNumber(meta: ReviewDiffTarget, siblings: ReviewDiffSibling[
   }
 }
 
-function isolatedDiff(url: string, from: string, to: string): Promise<string> {
+/** GitHub's three-dot compare `from...to` — the diff from their merge base, as a PR's is. */
+export function compareDiff(url: string, from: string, to: string): Promise<string> {
   const r = repoOf(url)
   return runGh([
     'api', '--hostname', r.host, '-H', 'Accept: application/vnd.github.diff',
@@ -264,7 +265,7 @@ export async function getReviewDiff(
   if (base.isolated) {
     const parent = prCommits[prCommits.length - base.own.length - 1].sha
     try {
-      return { diff: await isolatedDiff(meta.url, parent, meta.headSha), base }
+      return { diff: await compareDiff(meta.url, parent, meta.headSha), base }
     } catch {
       return { diff: await getPrDiff(meta), base: { ...base, isolated: false } }
     }
