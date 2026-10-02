@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyDraftOp, clearPostedOp, isEmptyDraft, parseDraftOpRequest, parseReviewDraft, type PrReviewDraftOp } from '../review-drafts'
+import { applyDraftOp, clearPostedOp, isEmptyDraft, parseDraftOpRequest, parseReviewDraft, truncateSnippet, type PrReviewDraftOp } from '../review-drafts'
 import { emptyReviewDraft, type PrReviewComment, type PrReviewDraft } from '../screenprs'
 
 const comment = (over: Partial<PrReviewComment> = {}): PrReviewComment => ({
@@ -191,5 +191,26 @@ describe('parseReviewDraft', () => {
   it('is null for something that is not a draft, or nothing left of one', () => {
     expect(parseReviewDraft('x')).toBeNull()
     expect(parseReviewDraft({ comments: [{}], summary: 3 })).toBeNull()
+  })
+})
+
+describe('truncateSnippet', () => {
+  it('leaves a short snippet alone', () => {
+    expect(truncateSnippet('+a\n-b')).toBe('+a\n-b')
+  })
+
+  it('cuts a long range to its first lines, and a wide line to a few KB', () => {
+    const range = Array.from({ length: 5000 }, (_, i) => `+line ${i}`).join('\n')
+    const cut = truncateSnippet(range)
+    expect(cut.split('\n')).toHaveLength(40)
+    expect(cut.endsWith('+line 39…')).toBe(true)
+    expect(truncateSnippet('x'.repeat(100_000))).toBe(`${'x'.repeat(4096)}…`)
+  })
+
+  it('keeps any range the desktop or phone can select under the validator’s cap', () => {
+    const url = 'https://github.com/acme/app/pull/7'
+    const snippet = truncateSnippet(Array.from({ length: 5000 }, () => 'y'.repeat(200)).join('\n'))
+    const op = { kind: 'add-comment', comment: comment({ snippet }) }
+    expect(parseDraftOpRequest({ url, op }).op).toEqual(op)
   })
 })

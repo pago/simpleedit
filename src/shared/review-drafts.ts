@@ -50,6 +50,21 @@ export function clearPostedOp(posted: PrReviewDraft): PrReviewDraftOp {
   return { kind: 'clear-posted', ids: posted.comments.map((c) => c.id), summary: posted.summary, verdict: posted.verdict }
 }
 
+const SNIPPET_LINES = 40
+const SNIPPET_CHARS = 4 * 1024
+
+/**
+ * `snippet` cut to what a reader needs for context, with an ellipsis where it
+ * was cut. Applied where a comment is written, so a wide range selection
+ * never reaches the validator's cap.
+ */
+export function truncateSnippet(snippet: string): string {
+  const lines = snippet.split('\n')
+  let out = lines.slice(0, SNIPPET_LINES).join('\n')
+  if (out.length > SNIPPET_CHARS) out = out.slice(0, SNIPPET_CHARS)
+  return out.length < snippet.length ? `${out}…` : snippet
+}
+
 /** The same finding shouldn't stack up if ＋review is clicked twice. */
 function isDuplicate(a: Omit<PrReviewComment, 'id'>, b: Omit<PrReviewComment, 'id'>): boolean {
   return a.text === b.text && a.file === b.file && a.line === b.line && (a.side ?? 'RIGHT') === (b.side ?? 'RIGHT')
