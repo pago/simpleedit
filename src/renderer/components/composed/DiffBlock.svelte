@@ -10,7 +10,7 @@
   import { getActionContext } from '@json-render/svelte'
   import type { z } from 'zod'
   import type { DiffBlockProps as DiffBlockPropsSchema, ActionRef } from '../../../shared/gen-ui-catalog'
-  import { parseUnifiedDiff } from '../../lib/parseDiff'
+  import { parseUnifiedDiff } from '../../../shared/parseDiff'
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
   import { actionRefToBinding } from './action-ref'
 

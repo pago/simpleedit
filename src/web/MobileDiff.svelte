@@ -18,7 +18,7 @@
    * deliberately the same structure so that lift is mechanical rather than a
    * rewrite.
    */
-  import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../renderer/lib/parseDiff'
+  import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
 
   interface Props {
     diff: string

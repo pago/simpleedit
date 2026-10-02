@@ -9,7 +9,7 @@
    */
   import * as monaco from 'monaco-editor'
   import { tick, type Snippet } from 'svelte'
-  import { languageForPath, type DiffFile } from '../../lib/parseDiff'
+  import { languageForPath, type DiffFile } from '../../../shared/parseDiff'
   import { findRevealTarget, REVEAL_FLASH_MS, scrollBehavior, type RevealTarget } from '../../lib/diffReveal'
 
   interface Props {

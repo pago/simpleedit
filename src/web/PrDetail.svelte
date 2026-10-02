@@ -27,7 +27,7 @@
   import PrDiff from './PrDiff.svelte'
   import OverviewCard from '../renderer/components/screenprs/OverviewCard.svelte'
   import { resolveRefPath, type OverviewLookIntoItem, type OverviewRef } from '../shared/pr-overview'
-  import { parseUnifiedDiff } from '../renderer/lib/parseDiff'
+  import { parseUnifiedDiff } from '../shared/parseDiff'
   import { tick } from 'svelte'
   import ComposeSheet from './ComposeSheet.svelte'
   import PrReviewSheet from './PrReviewSheet.svelte'

@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/svelte'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { tick } from 'svelte'
 import UnifiedDiffView from '../UnifiedDiffView.svelte'
-import { parseUnifiedDiff } from '../../../lib/parseDiff'
+import { parseUnifiedDiff } from '../../../../shared/parseDiff'
 import { REVEAL_FLASH_MS } from '../../../lib/diffReveal'
 
 const DIFF = [

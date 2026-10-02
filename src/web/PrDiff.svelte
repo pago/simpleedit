@@ -13,7 +13,7 @@
    * That rule is enforced here, at the tap, not asserted in the sheet's copy.
    */
   import { tick } from 'svelte'
-  import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../renderer/lib/parseDiff'
+  import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
   import { findRevealTarget, REVEAL_FLASH_MS, scrollBehavior, type RevealTarget } from '../renderer/lib/diffReveal'
   import { parseLineAnchor, type PrReviewComment } from '../shared/screenprs'
   import type { CommentTarget } from './lib/prs.svelte'

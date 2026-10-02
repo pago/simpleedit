@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { findRevealTarget } from '../diffReveal'
-import { parseUnifiedDiff } from '../parseDiff'
+import { parseUnifiedDiff } from '../../../shared/parseDiff'
 
 const DIFF = [
   'diff --git a/src/a.ts b/src/a.ts',
