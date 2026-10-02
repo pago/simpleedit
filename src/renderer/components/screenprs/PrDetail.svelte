@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity } from '../../../shared/screenprs'
-  import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, baseWarning } from '../../../shared/screenprs'
+  import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity, PrReviewComment } from '../../../shared/screenprs'
+  import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, baseWarning, parseLineRange } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
-  import { parseUnifiedDiff, type DiffFile } from '../../../shared/parseDiff'
+  import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../../../shared/parseDiff'
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
   import OverviewCard from './OverviewCard.svelte'
   import { resolveRefPath, type OverviewLookIntoItem, type OverviewRef } from '../../../shared/pr-overview'
   import ReviewComposer from './ReviewComposer.svelte'
+  import InlineCommentEditor from './InlineCommentEditor.svelte'
+  import { SOURCE_CLASS } from './commentSource'
   import SplitButton from '../SplitButton.svelte'
   import { loadAgentModels, type AgentModel } from '../../lib/agentModels'
   import { uiView } from '../../stores/uiView.svelte'
@@ -142,6 +144,127 @@
   }
   function runOverview(): void {
     void screenPrsStore.startOverview(context)
+  }
+
+  // ── Inline comments: ＋ on a diff line opens an editor under it ─────────────
+  type Side = 'LEFT' | 'RIGHT'
+  interface Composing {
+    /** The detail view is reused across PRs, so an open editor belongs to one. */
+    url: string
+    path: string
+    side: Side
+    /** The line first clicked; a shift-click spans from it to the new line. */
+    anchor: number
+    from: number
+    to: number
+    /** Set when editing a comment already in the draft. */
+    editingId?: string
+    initial: string
+    text: string
+  }
+
+  let draft = $derived(screenPrsStore.draftFor(context.url))
+  let composing = $state<Composing | null>(null)
+  let active = $derived(composing?.url === context.url ? composing : null)
+  let editor = $state<InlineCommentEditor>()
+  let selectedRange = $derived(active ? { path: active.path, side: active.side, from: active.from, to: active.to } : undefined)
+
+  // A deletion exists only in the old file, so it anchors to its old number on
+  // LEFT; additions and context lines anchor to their new number on RIGHT.
+  const sideOf = (row: DiffRow): Side => (row.kind === 'del' ? 'LEFT' : 'RIGHT')
+  const lineOn = (row: DiffRow, side: Side): number | undefined => (side === 'LEFT' ? row.oldNo : row.newNo)
+
+  function openEditor(next: Composing): void {
+    if (active && editor) editor.confirmLeave(() => (composing = next))
+    else composing = next
+  }
+
+  function lineClick(f: DiffFile, row: DiffRow, _index: number, ev: MouseEvent): void {
+    const side = sideOf(row)
+    const n = lineOn(row, side)
+    if (n === undefined) return
+    if (ev.shiftKey && active && !active.editingId && active.path === f.path && active.side === side) {
+      composing = { ...active, from: Math.min(active.anchor, n), to: Math.max(active.anchor, n) }
+      return
+    }
+    openEditor({ url: context.url, path: f.path, side, anchor: n, from: n, to: n, initial: '', text: '' })
+  }
+
+  function editComment(c: PrReviewComment): void {
+    const range = parseLineRange(c.line)
+    if (!range) return
+    openEditor({
+      url: context.url,
+      path: c.file,
+      side: c.side ?? 'RIGHT',
+      anchor: range.start,
+      from: range.start,
+      to: range.end,
+      editingId: c.id,
+      initial: c.text,
+      text: c.text,
+    })
+  }
+
+  function submitInline(text: string): void {
+    const a = active
+    if (!a) return
+    if (a.editingId) {
+      screenPrsStore.updateComment(context.url, a.editingId, { text })
+    } else {
+      const rows = files.find((f) => f.path === a.path)?.rows ?? []
+      const snippet = rows
+        .filter((r) => {
+          const n = lineOn(r, a.side)
+          return r.kind !== 'hunk' && n !== undefined && n >= a.from && n <= a.to
+        })
+        .map((r) => r.text)
+        .join('\n')
+      screenPrsStore.addComment(context.url, {
+        source: 'you',
+        file: a.path,
+        line: a.from === a.to ? String(a.from) : `${a.from}-${a.to}`,
+        side: a.side,
+        snippet,
+        text,
+        sha: context.headSha,
+      })
+    }
+    composing = null
+  }
+
+  function deleteInline(): void {
+    if (active?.editingId) screenPrsStore.removeComment(context.url, active.editingId)
+    composing = null
+  }
+
+  /** A comment sits under the last row it covers, matched on its own side's numbers. */
+  function endsAt(c: PrReviewComment, f: DiffFile, row: DiffRow): boolean {
+    if (c.file !== f.path || row.kind === 'hunk') return false
+    const end = parseLineRange(c.line)?.end
+    return end !== undefined && lineOn(row, c.side ?? 'RIGHT') === end
+  }
+  const commentsUnder = (f: DiffFile, row: DiffRow): PrReviewComment[] =>
+    draft.comments.filter((c) => c.id !== active?.editingId && endsAt(c, f, row))
+  const editorUnder = (f: DiffFile, row: DiffRow): boolean =>
+    active !== null && active.path === f.path && row.kind !== 'hunk' && lineOn(row, active.side) === active.to
+
+  /** Whether the comment's line is in this diff, so it can be revealed and edited in place. */
+  function inDiff(c: PrReviewComment): boolean {
+    const f = files.find((x) => x.path === c.file)
+    return f?.rows.some((row) => endsAt(c, f, row)) ?? false
+  }
+  function revealComment(c: PrReviewComment): void {
+    void diffView?.reveal(c.file, c.line, c.side)
+  }
+  function editFromComposer(c: PrReviewComment): void {
+    revealComment(c)
+    editComment(c)
+  }
+
+  function editorLabel(a: Composing): string {
+    const lines = a.from === a.to ? `line ${a.from}` : `lines ${a.from}–${a.to}`
+    return `Comment on ${a.side === 'LEFT' ? 'deleted ' : ''}${lines}`
   }
 
   function openExternal(): void {
@@ -303,10 +426,32 @@
 
     <!-- Diff — one section per file (git plumbing stripped, syntax-highlighted) -->
     <div class="mx-4 mb-6 mt-4">
-      <UnifiedDiffView bind:this={diffView} {files} />
+      <UnifiedDiffView bind:this={diffView} {files} onLineClick={lineClick} {belowRow} {selectedRange} />
     </div>
   </div>
 
   <!-- Decide: the review composer — the human path to GitHub (docked footer) -->
-  <ReviewComposer {context} />
+  <ReviewComposer {context} editable={inDiff} onreveal={revealComment} onedit={editFromComposer} />
 </div>
+
+{#snippet belowRow(f: DiffFile, row: DiffRow)}
+  {#each commentsUnder(f, row) as c (c.id)}
+    <div class="mx-3 my-1 flex items-start gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 font-sans" data-testid="inline-comment">
+      <span class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wide {SOURCE_CLASS[c.source]}">{c.source}</span>
+      <span class="min-w-0 flex-1 whitespace-pre-wrap text-[11.5px] text-zinc-200">{c.text}</span>
+      <button type="button" class="flex-none rounded px-1.5 text-[10.5px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" aria-label="Edit comment" onclick={() => editComment(c)}>Edit</button>
+      <button type="button" class="flex-none rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-red-400" aria-label="Remove comment" title="Remove" onclick={() => screenPrsStore.removeComment(context.url, c.id)}>✕</button>
+    </div>
+  {/each}
+  {#if active && editorUnder(f, row)}
+    <InlineCommentEditor
+      bind:this={editor}
+      bind:text={() => active?.text ?? '', (v) => { if (composing) composing.text = v }}
+      initial={active.initial}
+      label={editorLabel(active)}
+      onsubmit={submitInline}
+      oncancel={() => (composing = null)}
+      ondelete={active.editingId ? deleteInline : undefined}
+    />
+  {/if}
+{/snippet}
