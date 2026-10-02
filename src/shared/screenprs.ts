@@ -255,6 +255,12 @@ export interface PrReviewComment {
    * what an absent head means.
    */
   sha?: string
+  /**
+   * The line `anchorsForHead` took away, and why — set only on its output,
+   * never stored. The comment no longer anchors (`line` is gone), but its
+   * bullet in the review body still says where it was written.
+   */
+  foldedLine?: { line: string; reason: 'moved' | 'unverified' }
 }
 
 export interface PrReviewDraft {
@@ -360,7 +366,8 @@ function foldsAway(state: AnchorState): boolean {
  * Everything else loses its line and keeps its file and text, so
  * `buildReviewPayload` folds it into the review body — the same treatment an
  * unanchorable finding already gets. Nothing is dropped; placement is what is
- * given up, and only where placement could not be shown to be right.
+ * given up, and only where placement could not be shown to be right. The
+ * line moves to `foldedLine`, so the bullet can still cite it as old.
  *
  * Returns the draft unchanged when every anchor is verified, so a caller can
  * compare by identity.
@@ -369,9 +376,11 @@ export function anchorsForHead(draft: PrReviewDraft, headSha: string): PrReviewD
   if (!draft.comments.some((c) => foldsAway(anchorState(c, headSha)))) return draft
   return {
     ...draft,
-    comments: draft.comments.map((c) =>
-      foldsAway(anchorState(c, headSha)) ? { ...c, line: undefined } : c
-    ),
+    comments: draft.comments.map((c) => {
+      const state = anchorState(c, headSha)
+      if (state !== 'moved' && state !== 'unverified') return c
+      return { ...c, line: undefined, foldedLine: { line: c.line ?? '', reason: state } }
+    }),
   }
 }
 
@@ -464,11 +473,17 @@ function quoted(snippet: string): string {
   return snippet.split('\n').map((l) => `\n  > ${l}`).join('')
 }
 
+const FOLDED_LINE_NOTE: Record<NonNullable<PrReviewComment['foldedLine']>['reason'], string> = {
+  moved: ' (on an earlier commit)',
+  unverified: ' (not checked against this commit)',
+}
+
 function foldedBullet(c: PrReviewComment): string {
   // A non-numeric line ("—") is just noise in the body, so only a real number
   // is kept next to the file.
-  const range = parseLineRange(c.line)
-  const loc = !c.file ? '' : range ? `${location(c.file, range.start, range.end, c.side ?? 'RIGHT')} — ` : `${c.file} — `
+  const range = parseLineRange(c.line ?? c.foldedLine?.line)
+  const note = c.foldedLine && range ? FOLDED_LINE_NOTE[c.foldedLine.reason] : ''
+  const loc = !c.file ? '' : range ? `${location(c.file, range.start, range.end, c.side ?? 'RIGHT')}${note} — ` : `${c.file} — `
   return `- ${loc}${c.text}${c.snippet ? quoted(c.snippet) : ''}`
 }
 
@@ -480,10 +495,27 @@ function foldedBullet(c: PrReviewComment): string {
  * cost the others their lines.
  */
 export function buildReviewPayload(draft: PrReviewDraft, opts: ReviewPayloadOptions = {}): GithubReviewPayload {
+  return payloadOf(draft, opts, (c) => resolveAnchor(c, opts))
+}
+
+/**
+ * `draft` with every comment in the body — the recovery path when the reviews
+ * API rejects an anchor that isn't part of the diff (422). Keeps the content,
+ * and the pin to `headSha`, rather than failing the whole submit.
+ */
+export function foldedReviewPayload(draft: PrReviewDraft, opts: ReviewPayloadOptions = {}): GithubReviewPayload {
+  return payloadOf(draft, opts, () => ({ fold: 'no-line' }))
+}
+
+function payloadOf(
+  draft: PrReviewDraft,
+  opts: ReviewPayloadOptions,
+  place: (c: PrReviewComment) => ReturnType<typeof resolveAnchor>
+): GithubReviewPayload {
   const anchored: GithubReviewComment[] = []
   const folded: string[] = []
   for (const c of draft.comments) {
-    const placed = resolveAnchor(c, opts)
+    const placed = place(c)
     if ('anchor' in placed) anchored.push(placed.anchor)
     else folded.push(foldedBullet(c))
   }
@@ -547,20 +579,6 @@ export function describeFolds(folds: ReviewFolds): string {
     .filter((r) => folds.reasons[r])
     .map((r) => `${folds.reasons[r]} ${FOLD_REASON_LABEL[r]}`)
     .join(', ')
-}
-
-/**
- * Collapse every anchored comment into the body — the recovery path when the
- * reviews API rejects an anchor that isn't part of the diff (422). Keeps the
- * content rather than failing the whole submit.
- */
-export function foldCommentsIntoBody(payload: GithubReviewPayload): GithubReviewPayload {
-  if (payload.comments.length === 0) return payload
-  const bullets = payload.comments.map(
-    (c) => `- ${location(c.path, c.start_line ?? c.line, c.line, c.side)} — ${c.body}`
-  )
-  const body = [payload.body, bullets.join('\n')].filter(Boolean).join('\n\n')
-  return { ...payload, body, comments: [] }
 }
 
 /**
