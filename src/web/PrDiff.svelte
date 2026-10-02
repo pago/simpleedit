@@ -155,7 +155,7 @@
                       <span>{row.text}</span>
                     </button>
                   {/if}
-                  {#each commentsOn(file, row) as c (c.source + c.text)}
+                  {#each commentsOn(file, row) as c (c.id)}
                     <div
                       class="mx-2 my-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-1.5 font-sans text-[11px] leading-relaxed text-blue-100"
                       data-testid="inline-comment"

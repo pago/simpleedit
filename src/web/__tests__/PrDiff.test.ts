@@ -66,7 +66,7 @@ describe('PrDiff tap targets', () => {
   it('shows a draft comment under the line it is anchored to', () => {
     render(PrDiff, {
       diff: DIFF,
-      comments: [{ source: 'you', file: 'src/gate.ts', line: '11', text: 'why the rename?' }],
+      comments: [{ id: 'c1', source: 'you', file: 'src/gate.ts', line: '11', text: 'why the rename?' }],
       oncomment: vi.fn(),
     })
     expect(screen.getByTestId('inline-comment')).toHaveTextContent('why the rename?')

@@ -73,14 +73,14 @@
           <div class="py-1 text-[11px] italic text-zinc-600">No line comments yet — add them from the findings above (＋ review), or just pick a verdict and post.</div>
         {:else}
           <div class="flex flex-col gap-1.5">
-            {#each draft.comments as c, i (c.source + c.file + c.line + c.text)}
+            {#each draft.comments as c (c.id)}
               <div class="flex items-start gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5">
                 <span class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wide {SOURCE_CLASS[c.source]}">{c.source}</span>
                 <div class="min-w-0 flex-1">
                   {#if c.file}<span class="block font-mono text-[10px] text-zinc-500">{c.file}{c.line ? ':' + c.line : ''}</span>{/if}
                   <span class="text-[11.5px] text-zinc-200">{c.text}</span>
                 </div>
-                <button class="flex-none rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-red-400" title="Remove" onclick={() => screenPrsStore.removeComment(url, i)}>×</button>
+                <button class="flex-none rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-red-400" title="Remove" onclick={() => screenPrsStore.removeComment(url, c.id)}>×</button>
               </div>
             {/each}
           </div>

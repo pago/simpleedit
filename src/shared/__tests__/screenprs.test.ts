@@ -133,7 +133,7 @@ describe('parseLineAnchor', () => {
 
 describe('anchorState', () => {
   const at = (sha: string | undefined, line?: string): PrReviewComment => ({
-    source: 'you', file: 'a.ts', text: 'note', ...(line === undefined ? {} : { line }), ...(sha === undefined ? {} : { sha }),
+    id: 'c', source: 'you', file: 'a.ts', text: 'note', ...(line === undefined ? {} : { line }), ...(sha === undefined ? {} : { sha }),
   })
 
   it('is `current` only when the stamp matches the head on screen', () => {
@@ -160,7 +160,7 @@ describe('anchorState', () => {
 
 describe('anchorsForHead', () => {
   const at = (sha: string | undefined, line: string, text = `note ${line}`): PrReviewComment => ({
-    source: 'you', file: 'a.ts', line, text, ...(sha === undefined ? {} : { sha }),
+    id: 'c', source: 'you', file: 'a.ts', line, text, ...(sha === undefined ? {} : { sha }),
   })
   const draftOf = (...comments: PrReviewComment[]): PrReviewDraft => ({ comments, summary: '', verdict: 'comment' })
 
@@ -204,8 +204,8 @@ describe('buildReviewPayload', () => {
   it('anchors single/range lines to the RIGHT side', () => {
     const p = buildReviewPayload(draft({
       comments: [
-        { source: 'triage', file: 'a.ts', line: '88', text: 'x' },
-        { source: 'deep', file: 'b.ts', line: '10–14', text: 'y' },
+        { id: 'c1', source: 'triage', file: 'a.ts', line: '88', text: 'x' },
+        { id: 'c2', source: 'deep', file: 'b.ts', line: '10–14', text: 'y' },
       ],
     }))
     expect(p.comments).toEqual([
@@ -217,8 +217,8 @@ describe('buildReviewPayload', () => {
     const p = buildReviewPayload(draft({
       summary: 'Overall LGTM',
       comments: [
-        { source: 'you', file: 'c.ts', line: '—', text: 'no anchor' },
-        { source: 'you', file: '', text: 'general note' },
+        { id: 'c3', source: 'you', file: 'c.ts', line: '—', text: 'no anchor' },
+        { id: 'c4', source: 'you', file: '', text: 'general note' },
       ],
     }))
     expect(p.comments).toEqual([])
@@ -289,7 +289,7 @@ describe('commentableLines', () => {
 
 describe('buildReviewPayload against GitHub\'s diff', () => {
   const commentable = commentableLines(GH_DIFF)
-  const you = (over: Partial<PrReviewComment>): PrReviewComment => ({ source: 'you', file: 'a.ts', text: 'n', ...over })
+  const you = (over: Partial<PrReviewComment>): PrReviewComment => ({ id: 'c', source: 'you', file: 'a.ts', text: 'n', ...over })
   const build = (comments: PrReviewComment[], opts: Parameters<typeof buildReviewPayload>[1] = {}) =>
     buildReviewPayload(draft({ comments }), { commentable, ...opts })
 
@@ -335,8 +335,8 @@ describe('buildReviewPayload without a commentable set', () => {
   it('honours the side but does not check or widen anchors', () => {
     const p = buildReviewPayload(draft({
       comments: [
-        { source: 'you', file: 'a.ts', line: '5', side: 'LEFT', text: 'x' },
-        { source: 'you', file: 'a.ts', line: '30-41', text: 'y' },
+        { id: 'c5', source: 'you', file: 'a.ts', line: '5', side: 'LEFT', text: 'x' },
+        { id: 'c6', source: 'you', file: 'a.ts', line: '30-41', text: 'y' },
       ],
     }))
     expect(p.comments).toEqual([
@@ -350,7 +350,7 @@ describe('buildReviewPayload without a commentable set', () => {
 describe('foldCommentsIntoBody (422 recovery)', () => {
   it('collapses anchored comments into body bullets and clears comments', () => {
     const p = buildReviewPayload(draft({
-      summary: 's', comments: [{ source: 'triage', file: 'a.ts', line: '5', text: 'boom' }],
+      summary: 's', comments: [{ id: 'c7', source: 'triage', file: 'a.ts', line: '5', text: 'boom' }],
     }))
     const folded = foldCommentsIntoBody(p)
     expect(folded.comments).toEqual([])
@@ -383,7 +383,7 @@ describe('reviewSubmitError', () => {
   it('is satisfied by a body or by a comment', () => {
     expect(reviewSubmitError(draft({ verdict: 'comment', summary: 'hi' }))).toBeNull()
     expect(reviewSubmitError(draft({
-      verdict: 'request_changes', comments: [{ source: 'you', file: 'a.ts', line: '1', text: 'fix' }],
+      verdict: 'request_changes', comments: [{ id: 'c8', source: 'you', file: 'a.ts', line: '1', text: 'fix' }],
     }))).toBeNull()
   })
 })

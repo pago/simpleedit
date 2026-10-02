@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screenPrsStore, initScreenPrsListeners } from '../screenprs.svelte'
 import type { EventMap } from '../../../shared/ipc-types'
-import { bucketOf, type ScreenPrCard, type PrContext } from '../../../shared/screenprs'
+import { bucketOf, emptyReviewDraft, type ScreenPrCard, type PrContext, type PrReviewDraft } from '../../../shared/screenprs'
+import type { DraftOpResult } from '../../../shared/review-drafts'
 
 type Handlers = {
   'screenprs:queued'?: (d: EventMap['screenprs:queued']) => void
@@ -13,6 +14,7 @@ type Handlers = {
   'screenprs:deep-status'?: (d: EventMap['screenprs:deep-status']) => void
   'screenprs:overview-result'?: (d: EventMap['screenprs:overview-result']) => void
   'screenprs:overview-status'?: (d: EventMap['screenprs:overview-status']) => void
+  'screenprs:draft-changed'?: (d: EventMap['screenprs:draft-changed']) => void
 }
 
 let handlers: Handlers
@@ -41,7 +43,7 @@ beforeEach(async () => {
       return () => { delete (handlers as Record<string, unknown>)[channel] }
     },
     once: vi.fn(),
-    invoke: vi.fn().mockResolvedValue(undefined),
+    invoke: vi.fn(async (channel: string) => (channel === 'screenprs:drafts-load' ? { drafts: {}, rev: 0 } : undefined)),
   })
   await screenPrsStore.start() // resets entries/selection/status
   dispose = initScreenPrsListeners()
@@ -145,5 +147,106 @@ describe('screenPrsStore ingestion', () => {
     expect(handlers['screenprs:card']).toBeUndefined()
     expect(handlers['screenprs:deep-status']).toBeUndefined()
     expect(handlers['screenprs:overview-result']).toBeUndefined()
+  })
+})
+
+describe('screenPrsStore draft mirror', () => {
+  // The store is a module singleton that ignores revisions older than one it
+  // has seen, so every test uses its own url and revisions only ever rise.
+  let rev = 1_000
+  const next = (): number => ++rev
+  const draft = (over: Partial<PrReviewDraft>): PrReviewDraft => ({ ...emptyReviewDraft(), ...over })
+
+  /** Each `draft-op` waits until the test answers it, as main would — later. */
+  let replies: ((res: DraftOpResult) => void)[]
+  let opCalls: { url: string; op: { kind: string } }[]
+  beforeEach(() => {
+    replies = []
+    opCalls = []
+    vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'screenprs:draft-op') {
+        opCalls.push(args[0] as { url: string; op: { kind: string } })
+        return new Promise<DraftOpResult>((resolve) => replies.push(resolve))
+      }
+      return undefined
+    })
+  })
+
+  it('takes a change made on another client', () => {
+    handlers['screenprs:draft-changed']!({ url: 'd1', draft: draft({ summary: 'from the phone' }), rev: next() })
+    expect(screenPrsStore.draftFor('d1').summary).toBe('from the phone')
+    handlers['screenprs:draft-changed']!({ url: 'd1', draft: null, rev: next() })
+    expect(screenPrsStore.draftFor('d1')).toEqual(emptyReviewDraft())
+  })
+
+  it('ignores a state older than one it already has', () => {
+    const late = next()
+    handlers['screenprs:draft-changed']!({ url: 'd2', draft: draft({ summary: 'newer' }), rev: next() })
+    handlers['screenprs:draft-changed']!({ url: 'd2', draft: draft({ summary: 'older' }), rev: late })
+    expect(screenPrsStore.draftFor('d2').summary).toBe('newer')
+  })
+
+  it('mints an id per comment and sends it to main', () => {
+    screenPrsStore.addComment('d3', { source: 'you', file: 'a.ts', line: '1', text: 'x' })
+    const [c] = screenPrsStore.draftFor('d3').comments
+    expect(c.id).toEqual(expect.any(String))
+    expect(opCalls).toEqual([{ url: 'd3', op: { kind: 'add-comment', comment: c } }])
+  })
+
+  it('does not let a state that predates its own op undo it', async () => {
+    screenPrsStore.addComment('d4', { source: 'you', file: 'a.ts', line: '1', text: 'mine' })
+    const mine = screenPrsStore.draftFor('d4')
+    // Another client's change, applied by main before ours arrived.
+    handlers['screenprs:draft-changed']!({ url: 'd4', draft: draft({ verdict: 'comment' }), rev: next() })
+    expect(screenPrsStore.draftFor('d4').comments).toEqual(mine.comments)
+
+    replies[0]({ draft: { ...mine, verdict: 'comment' }, rev: next() })
+    await vi.waitFor(() => expect(screenPrsStore.draftFor('d4').verdict).toBe('comment'))
+    expect(screenPrsStore.draftFor('d4').comments).toEqual(mine.comments)
+  })
+
+  it('removes and updates a comment by id', () => {
+    screenPrsStore.addComment('d5', { source: 'you', file: 'a.ts', line: '1', text: 'one' })
+    screenPrsStore.addComment('d5', { source: 'you', file: 'a.ts', line: '2', text: 'two' })
+    const [one, two] = screenPrsStore.draftFor('d5').comments
+    screenPrsStore.updateComment('d5', two.id, { text: 'two, edited' })
+    screenPrsStore.removeComment('d5', one.id)
+    expect(screenPrsStore.draftFor('d5').comments).toEqual([{ ...two, text: 'two, edited' }])
+    expect(opCalls.slice(2).map((c) => c.op)).toEqual([
+      { kind: 'update-comment', id: two.id, patch: { text: 'two, edited' } },
+      { kind: 'remove-comment', id: one.id },
+    ])
+  })
+
+  it('keeps summary text still being typed here over an incoming change, then sends it', async () => {
+    vi.useFakeTimers()
+    try {
+      screenPrsStore.setSummary('d6', 'half a sent')
+      expect(opCalls).toEqual([]) // debounced
+      handlers['screenprs:draft-changed']!({ url: 'd6', draft: draft({ summary: 'stale', verdict: 'comment' }), rev: next() })
+      expect(screenPrsStore.draftFor('d6')).toMatchObject({ summary: 'half a sent', verdict: 'comment' })
+
+      screenPrsStore.setSummary('d6', 'half a sentence')
+      vi.advanceTimersByTime(400)
+      expect(opCalls).toEqual([{ url: 'd6', op: { kind: 'set-summary', summary: 'half a sentence' } }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('loads every draft main holds', async () => {
+    const snapshot = { drafts: { d7: draft({ summary: 'persisted' }) }, rev: next() }
+    vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ..._args: unknown[]) =>
+      channel === 'screenprs:drafts-load' ? snapshot : undefined
+    )
+    await screenPrsStore.loadDrafts()
+    expect(screenPrsStore.draftFor('d7').summary).toBe('persisted')
+  })
+
+  it('clears the draft in main on "compose another"', () => {
+    handlers['screenprs:draft-changed']!({ url: 'd8', draft: draft({ summary: 's' }), rev: next() })
+    screenPrsStore.resetSubmitted('d8')
+    expect(screenPrsStore.draftFor('d8')).toEqual(emptyReviewDraft())
+    expect(opCalls).toEqual([{ url: 'd8', op: { kind: 'clear' } }])
   })
 })

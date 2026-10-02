@@ -295,6 +295,7 @@ src/
     github/pr-overview-context.ts ← PR overview context + input budget
     github/stack-base.ts ← Stacked-PR base analysis + the review diff
     screenprs.ts, screenprs-cache.ts ← Screen-PRs data + cache
+    screenprs-drafts.ts ← Persisted review drafts (main owns them; desktop + phone mirror via ops)
     review.ts, deep-review.ts, tour.ts ← Review/tour features
     pr-overview.ts     ← PR overview run + cache (screen-PRs)
     tasks/, agent-tasks/ ← Bounded agent-task orchestration (gate, runner)

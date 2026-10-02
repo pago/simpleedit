@@ -6,6 +6,7 @@
 
 import type { Spec } from './gen-ui-catalog'
 import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus, PrReviewDraft } from './screenprs'
+import type { DraftOpResult, DraftsSnapshot, PrReviewDraftOp } from './review-drafts'
 import type { OverviewFacts, OverviewStatus } from './pr-overview'
 
 // ── Worktree ──────────────────────────────────────────────
@@ -469,6 +470,10 @@ export interface ScreenPrsInvokeMap {
   'screenprs:overview-cancel': { args: [url: string]; result: void }
   /** Post a review to GitHub — the composer's write path (guarded by a confirm). */
   'screenprs:submit-review': { args: [request: SubmitReviewRequest]; result: SubmitReviewResult }
+  /** Every persisted review draft — what a client's mirror starts from. */
+  'screenprs:drafts-load': { args: []; result: DraftsSnapshot }
+  /** Change one PR's draft. Main applies it, persists, and broadcasts `screenprs:draft-changed`. */
+  'screenprs:draft-op': { args: [request: { url: string; op: PrReviewDraftOp }]; result: DraftOpResult }
 }
 
 /** Identify the PR + the composed review to post. */
@@ -510,6 +515,8 @@ export interface ScreenPrsEventMap {
   /** The overview's raw markdown (parsed on render) and the facts code gathered with it. */
   'screenprs:overview-result': { url: string; headSha: string; text: string; facts: OverviewFacts }
   'screenprs:overview-status': { url: string; status: OverviewStatus; error?: string }
+  /** A PR's draft changed, from any client — sent to every window and phone. `null`: it is gone. */
+  'screenprs:draft-changed': { url: string } & DraftOpResult
 }
 
 export interface TourEventMap {

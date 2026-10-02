@@ -36,6 +36,8 @@ import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } f
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor } from './screenprs'
+import { loadDrafts, applyOp as applyDraftOp } from './screenprs-drafts'
+import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
 import { startDeepReview, cancelDeepReview, cancelAllDeepReviews } from './deep-review'
 import { startOverview, cancelOverview, cancelAllOverviews } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
@@ -80,7 +82,7 @@ import { inheritShellPath } from './shell-path'
 import { listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent, resetPrompt, revealTarget } from './prompts/overrides'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { createSessionOnce, resolveSessionCreate } from './session-create'
@@ -289,6 +291,24 @@ function broadcastServeStatus(status: TailscaleServeStatus): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('remote:serve-changed', status)
   }
+}
+
+/**
+ * To every window AND every phone. A phone's socket is reachable only through
+ * the hub of the window it joined, so each hub fans out to its own transports
+ * and a window that has no hub yet is sent to directly — each client once.
+ */
+function broadcastToAllClients<K extends keyof EventMap>(channel: K, data: EventMap[K]): void {
+  for (const hub of clientHubs.values()) hub.send(channel, data)
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && !clientHubs.has(win.webContents.id)) win.webContents.send(channel, data)
+  }
+}
+
+function applyAndBroadcastDraftOp(url: string, op: PrReviewDraftOp): DraftOpResult {
+  const { draft, rev, changed } = applyDraftOp(url, op)
+  if (changed) broadcastToAllClients('screenprs:draft-changed', { url, draft, rev })
+  return { draft, rev }
 }
 
 /**
@@ -970,6 +990,12 @@ function registerAllHandlers(): void {
   handleInvoke('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
     try {
       const { reviewUrl, foldedComments } = await postReview(request.pr, buildReviewPayload(request.draft))
+      try {
+        applyAndBroadcastDraftOp(request.pr.url, { kind: 'clear' })
+      } catch (err) {
+        // The review IS posted; reporting a failure here would invite a second one.
+        console.error('[SimpleEdit] Failed to clear a submitted review draft:', err)
+      }
       return { ok: true, reviewUrl, foldedComments }
     } catch (err: unknown) {
       const error = err instanceof Error ? err.message : String(err)
@@ -977,6 +1003,12 @@ function registerAllHandlers(): void {
       // here is what would make a retry post the review twice.
       return err instanceof GhTimeoutError ? { ok: false, error, delivered: 'unknown' } : { ok: false, error }
     }
+  })
+
+  handleInvoke('screenprs:drafts-load', () => loadDrafts())
+
+  handleInvoke('screenprs:draft-op', (_event, request: { url: string; op: PrReviewDraftOp }) => {
+    return applyAndBroadcastDraftOp(request.url, request.op)
   })
 
   // ── Tour ───────────────────────────────────────────────

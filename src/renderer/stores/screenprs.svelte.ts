@@ -19,6 +19,7 @@ import type {
   PrReviewVerdict,
 } from '../../shared/screenprs'
 import { BUCKET_ORDER, compareInBucket, emptyReviewDraft, reviewSubmitError } from '../../shared/screenprs'
+import { applyDraftOp, type DraftOpResult, type PrReviewCommentPatch, type PrReviewDraftOp } from '../../shared/review-drafts'
 import type { OverviewFacts, OverviewStatus } from '../../shared/pr-overview'
 
 export interface DeepState {
@@ -88,14 +89,81 @@ export interface SubmittedReview {
   reviewUrl?: string
   foldedComments: boolean
 }
-let _drafts = $state<Map<string, PrReviewDraft>>(new Map())
 let _submitted = $state<Map<string, SubmittedReview>>(new Map())
 let _submitting = $state<Set<string>>(new Set())
 
-function setDraft(url: string, patch: Partial<PrReviewDraft>): void {
+// ── draft mirror ──
+// Main owns the drafts (main/screenprs-drafts.ts); `_drafts` mirrors them. A
+// local change applies here at once and goes to main as an op. Main's answer
+// to it, and every other client's change, arrive as revisioned server states.
+// While any op for a PR is still unanswered, its server states are held, not
+// applied: they predate that op, and applying one would briefly undo it.
+let _drafts = $state<Map<string, PrReviewDraft>>(new Map())
+const _server = new Map<string, DraftOpResult>()
+const _inFlight = new Map<string, number>()
+/** PRs whose newest server state has not reached the mirror yet. */
+const _held = new Set<string>()
+/**
+ * Summary text typed on THIS client and not yet sent. It wins over any server
+ * state, so another client's change can't rewrite the field mid-sentence.
+ */
+const _pendingSummary = new Map<string, { text: string; timer: ReturnType<typeof setTimeout> }>()
+const SUMMARY_DEBOUNCE_MS = 400
+
+function setMirror(url: string, draft: PrReviewDraft | null): void {
   const next = new Map(_drafts)
-  next.set(url, { ...(next.get(url) ?? emptyReviewDraft()), ...patch })
+  if (draft) next.set(url, draft)
+  else next.delete(url)
   _drafts = next
+}
+
+function applyServer(url: string): void {
+  _held.delete(url)
+  let draft = _server.get(url)?.draft ?? null
+  const pending = _pendingSummary.get(url)
+  if (pending) draft = applyDraftOp(draft, { kind: 'set-summary', summary: pending.text })
+  setMirror(url, draft)
+}
+
+function receiveServer(url: string, state: DraftOpResult): void {
+  if (state.rev < (_server.get(url)?.rev ?? -Infinity)) return
+  _server.set(url, state)
+  if (_inFlight.get(url)) _held.add(url)
+  else applyServer(url)
+}
+
+function sendOp(url: string, op: PrReviewDraftOp): void {
+  _inFlight.set(url, (_inFlight.get(url) ?? 0) + 1)
+  window.api
+    .invoke('screenprs:draft-op', { url, op })
+    .then((res) => receiveServer(url, res))
+    // The optimistic change stays: the op may yet have reached main, and the
+    // next server state for this PR — a broadcast or a reload — settles it.
+    .catch((err: unknown) => console.warn('[screenprs] draft op failed:', err))
+    .finally(() => {
+      const left = (_inFlight.get(url) ?? 1) - 1
+      if (left > 0) {
+        _inFlight.set(url, left)
+        return
+      }
+      _inFlight.delete(url)
+      if (_held.has(url)) applyServer(url)
+    })
+}
+
+function localOp(url: string, op: PrReviewDraftOp): void {
+  const cur = _drafts.get(url) ?? null
+  const next = applyDraftOp(cur, op)
+  if (next === cur) return
+  setMirror(url, next)
+  sendOp(url, op)
+}
+
+function dropPendingSummary(url: string): void {
+  const pending = _pendingSummary.get(url)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  _pendingSummary.delete(url)
 }
 
 function setDeep(url: string, patch: Partial<DeepState>): void {
@@ -228,22 +296,39 @@ export const screenPrsStore = {
   draftError(url: string): string | null {
     return reviewSubmitError(_drafts.get(url) ?? emptyReviewDraft())
   },
-  addComment(url: string, c: PrReviewComment): void {
-    const cur = _drafts.get(url) ?? emptyReviewDraft()
-    // Dedupe: the same finding shouldn't stack up if ＋review is clicked twice.
-    if (cur.comments.some((x) => x.text === c.text && x.file === c.file && x.line === c.line)) return
-    setDraft(url, { comments: [...cur.comments, c] })
+  /** Add a comment (deduped on text, file, line and side); its `id` is minted here. */
+  addComment(url: string, c: Omit<PrReviewComment, 'id'>): void {
+    // Snapshot: `c` can carry $state proxies, and it is about to cross IPC.
+    localOp(url, { kind: 'add-comment', comment: { ...$state.snapshot(c), id: crypto.randomUUID() } })
   },
-  removeComment(url: string, index: number): void {
-    const cur = _drafts.get(url)
-    if (!cur) return
-    setDraft(url, { comments: cur.comments.filter((_, i) => i !== index) })
+  updateComment(url: string, id: string, patch: PrReviewCommentPatch): void {
+    localOp(url, { kind: 'update-comment', id, patch: $state.snapshot(patch) })
   },
+  removeComment(url: string, id: string): void {
+    localOp(url, { kind: 'remove-comment', id })
+  },
+  /** The mirror takes the text at once; main gets it once typing pauses. */
   setSummary(url: string, summary: string): void {
-    setDraft(url, { summary })
+    setMirror(url, applyDraftOp(_drafts.get(url) ?? null, { kind: 'set-summary', summary }))
+    dropPendingSummary(url)
+    const timer = setTimeout(() => {
+      _pendingSummary.delete(url)
+      sendOp(url, { kind: 'set-summary', summary })
+    }, SUMMARY_DEBOUNCE_MS)
+    _pendingSummary.set(url, { text: summary, timer })
   },
   setVerdict(url: string, verdict: PrReviewVerdict): void {
-    setDraft(url, { verdict })
+    localOp(url, { kind: 'set-verdict', verdict })
+  },
+  /** Replace the mirror with main's drafts — at start, and after a reconnect missed broadcasts. */
+  async loadDrafts(): Promise<void> {
+    try {
+      const { drafts, rev } = await window.api.invoke('screenprs:drafts-load')
+      const urls = new Set([..._server.keys(), ..._drafts.keys(), ...Object.keys(drafts)])
+      for (const url of urls) receiveServer(url, { draft: drafts[url] ?? null, rev })
+    } catch (err: unknown) {
+      console.warn('[screenprs] loading drafts failed:', err)
+    }
   },
   /** Post `draft` to GitHub. `pr` carries the routing fields (owner/repo/number/url). */
   async submitReview(
@@ -262,6 +347,10 @@ export const screenPrsStore = {
         const next = new Map(_submitted)
         next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, foldedComments: res.foldedComments })
         _submitted = next
+        // Main has cleared the draft; a summary still waiting to be sent would
+        // bring the posted text back as a fresh one.
+        dropPendingSummary(url)
+        setMirror(url, null)
       }
       return res
     } finally {
@@ -276,7 +365,12 @@ export const screenPrsStore = {
     const next = new Map(_submitted)
     next.delete(url)
     _submitted = next
-    setDraft(url, emptyReviewDraft())
+    dropPendingSummary(url)
+    setMirror(url, null)
+    sendOp(url, { kind: 'clear' })
+  },
+  _onDraftChanged(url: string, state: DraftOpResult): void {
+    receiveServer(url, state)
   },
   _onDeepLens(url: string, lens: DeepLensId, status: DeepLensStatus): void {
     const cur = _deep.get(url)
@@ -322,7 +416,7 @@ export const screenPrsStore = {
   },
 }
 
-/** Subscribe to the `screenprs:*` stream. Call once at app start; returns an unsub. */
+/** Subscribe to the `screenprs:*` stream and load the drafts. Call once at app start; returns an unsub. */
 export function initScreenPrsListeners(): () => void {
   const unsubQueued = window.api.on('screenprs:queued', (d) => screenPrsStore._onQueued(d.refs))
   const unsubScreening = window.api.on('screenprs:screening', (d) => screenPrsStore._onScreening(d.context))
@@ -338,6 +432,10 @@ export function initScreenPrsListeners(): () => void {
   const unsubOverviewStatus = window.api.on('screenprs:overview-status', (d) =>
     screenPrsStore._onOverviewStatus(d.url, d.status, d.error)
   )
+  const unsubDraftChanged = window.api.on('screenprs:draft-changed', (d) =>
+    screenPrsStore._onDraftChanged(d.url, { draft: d.draft, rev: d.rev })
+  )
+  void screenPrsStore.loadDrafts()
   return () => {
     unsubQueued()
     unsubScreening()
@@ -349,5 +447,6 @@ export function initScreenPrsListeners(): () => void {
     unsubDeepStatus()
     unsubOverviewResult()
     unsubOverviewStatus()
+    unsubDraftChanged()
   }
 }
