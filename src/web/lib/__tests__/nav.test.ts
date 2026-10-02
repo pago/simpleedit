@@ -159,6 +159,13 @@ describe('the draft guard', () => {
     expect(draftAtRisk('  ', true)).toBe(true)
   })
 
+  it('holds an edit only once its text differs from what was saved', () => {
+    expect(draftAtRisk('saved', false, 'saved')).toBe(false)
+    expect(draftAtRisk('saved  ', false, 'saved')).toBe(false)
+    expect(draftAtRisk('changed', false, 'saved')).toBe(true)
+    expect(draftAtRisk('', false, 'saved')).toBe(true)
+  })
+
   it('gives a notification\'s session the hold it was asked to carry', () => {
     const hold = vi.fn(() => true)
     const state = openFromNotification(initialNav(), 'b', hold)

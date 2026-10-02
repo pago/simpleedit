@@ -180,9 +180,12 @@ export function decidePop(state: NavState, depth: number, force = false): PopDec
  * A recording counts even with an empty field: the words are in the audio and
  * not yet in the text, and leaving destroys the audio (it is never uploaded
  * for a screen nobody is on). So Back asks first, exactly as for typed text.
+ *
+ * When editing, `initial` is the text already saved: only a change to it is
+ * at risk, so opening a comment and backing out does not ask.
  */
-export function draftAtRisk(text: string, dictating: boolean): boolean {
-  return dictating || text.trim().length > 0
+export function draftAtRisk(text: string, dictating: boolean, initial = ''): boolean {
+  return dictating || text.trim() !== initial.trim()
 }
 
 /** What goes in `history.state`. Anything else found there reads as the base. */

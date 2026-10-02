@@ -252,7 +252,7 @@
                 <span class="min-w-0 flex-1">
                   {#if c.file}
                     <span class="block truncate font-mono text-[10px] text-zinc-500"
-                      >{c.file}{c.line ? `:${c.line}` : ' (in summary)'}</span
+                      >{c.file}{c.line ? `:${c.line}` : ' (in summary)'}{c.line && c.side === 'LEFT' ? ' · deleted line' : ''}</span
                     >
                   {/if}
                   <span class="text-[11.5px] text-zinc-200">{c.text}</span>

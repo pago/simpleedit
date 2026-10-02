@@ -4,13 +4,12 @@ import PrDiff from '../PrDiff.svelte'
 import type { CommentTarget } from '../lib/prs.svelte'
 
 /**
- * Which lines can carry an anchor, and which honestly cannot.
+ * Which number, on which side, a tapped line anchors to.
  *
- * `buildReviewPayload` posts anchored comments with `side: 'RIGHT'`, so only a
- * line that exists in the NEW file has a number GitHub will accept. A deleted
- * line has an old number and no new one — anchoring to it produces a 422 that
- * the recovery path then folds into the body anyway. This proves the tap layer
- * refuses to invent that anchor in the first place.
+ * A deleted line has an old number and no new one, so it anchors on `LEFT`;
+ * everything else anchors to its new number on `RIGHT`. A context line has
+ * both numbers, which is where a side mix-up would put a comment on the
+ * wrong line without anything looking broken.
  */
 const DIFF = [
   'diff --git a/src/gate.ts b/src/gate.ts',
@@ -26,7 +25,7 @@ const DIFF = [
 
 function renderDiff() {
   const taps: CommentTarget[] = []
-  render(PrDiff, { diff: DIFF, comments: [], oncomment: (t: CommentTarget) => taps.push(t) })
+  render(PrDiff, { diff: DIFF, comments: [], oncomment: (t: CommentTarget) => taps.push(t), onedit: vi.fn() })
   return taps
 }
 
@@ -41,19 +40,24 @@ describe('PrDiff tap targets', () => {
   it('anchors an added line to its new-file line number', async () => {
     const taps = renderDiff()
     await fireEvent.click(row('const added = 2'))
-    expect(taps).toEqual([{ file: 'src/gate.ts', line: '11', snippet: 'const added = 2' }])
+    expect(taps).toEqual([{ file: 'src/gate.ts', line: '11', side: 'RIGHT', snippet: 'const added = 2' }])
   })
 
   it('anchors a context line too — comments are not limited to what changed', async () => {
     const taps = renderDiff()
     await fireEvent.click(row('const after = 3'))
-    expect(taps[0].line).toBe('12')
+    expect(taps[0]).toMatchObject({ line: '12', side: 'RIGHT' })
   })
 
-  it('raises a deleted line with NO line, so it folds into the body', async () => {
+  it('anchors a deleted line to its old-file number on the LEFT', async () => {
     const taps = renderDiff()
     await fireEvent.click(row('const removed = 2'))
-    expect(taps).toEqual([{ file: 'src/gate.ts', line: undefined, snippet: 'const removed = 2' }])
+    expect(taps).toEqual([{ file: 'src/gate.ts', line: '11', side: 'LEFT', snippet: 'const removed = 2' }])
+  })
+
+  it('shows a deleted line its old number in the gutter', () => {
+    renderDiff()
+    expect(row('const removed = 2').firstElementChild).toHaveTextContent('11')
   })
 
   it('does not make the hunk header a tap target', () => {
@@ -68,8 +72,65 @@ describe('PrDiff tap targets', () => {
       diff: DIFF,
       comments: [{ id: 'c1', source: 'you', file: 'src/gate.ts', line: '11', text: 'why the rename?' }],
       oncomment: vi.fn(),
+      onedit: vi.fn(),
     })
     expect(screen.getByTestId('inline-comment')).toHaveTextContent('why the rename?')
+  })
+
+  it('hands a tapped draft comment over for editing', async () => {
+    const onedit = vi.fn()
+    const comment = { id: 'c1', source: 'you' as const, file: 'src/gate.ts', line: '11', text: 'why the rename?' }
+    render(PrDiff, { diff: DIFF, comments: [comment], oncomment: vi.fn(), onedit })
+    await fireEvent.click(screen.getByTestId('inline-comment'))
+    expect(onedit).toHaveBeenCalledWith(comment)
+  })
+})
+
+describe('PrDiff comment placement by side', () => {
+  // Offset hunk: `kept` is old 11 / new 12, `gone` is old 12. Line 12 means a
+  // different row on each side.
+  const OFFSET = [
+    'diff --git a/src/gate.ts b/src/gate.ts',
+    '--- a/src/gate.ts',
+    '+++ b/src/gate.ts',
+    '@@ -10,4 +10,4 @@',
+    ' const before = 1',
+    '+const inserted = 2',
+    ' const kept = 3',
+    '-const gone = 4',
+    ' const after = 5',
+  ].join('\n')
+
+  /** The diff row an inline comment renders under. */
+  function rowOf(text: string): string {
+    const el = screen.getAllByTestId('inline-comment').find((c) => c.textContent?.includes(text))
+    return el?.closest('li')?.querySelector('[data-testid="diff-line"]')?.textContent ?? ''
+  }
+
+  it('puts a LEFT comment under its deleted row and a RIGHT one under the context row', () => {
+    render(PrDiff, {
+      diff: OFFSET,
+      comments: [
+        { id: 'l', source: 'you', file: 'src/gate.ts', line: '12', side: 'LEFT', text: 'old twelve' },
+        { id: 'r', source: 'you', file: 'src/gate.ts', line: '12', side: 'RIGHT', text: 'new twelve' },
+      ],
+      oncomment: vi.fn(),
+      onedit: vi.fn(),
+    })
+    expect(screen.getAllByTestId('inline-comment')).toHaveLength(2)
+    expect(rowOf('old twelve')).toContain('const gone = 4')
+    expect(rowOf('new twelve')).toContain('const kept = 3')
+  })
+
+  it('reads a comment without a side as RIGHT', () => {
+    render(PrDiff, {
+      diff: OFFSET,
+      comments: [{ id: 'f', source: 'triage', file: 'src/gate.ts', line: '12', text: 'a finding' }],
+      oncomment: vi.fn(),
+      onedit: vi.fn(),
+    })
+    expect(screen.getAllByTestId('inline-comment')).toHaveLength(1)
+    expect(rowOf('a finding')).toContain('const kept = 3')
   })
 })
 
@@ -90,7 +151,7 @@ describe('PrDiff reveal', () => {
     vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
       scrolled.push(this)
     })
-    const { component, container } = render(PrDiff, { diff, comments: [], oncomment: vi.fn() })
+    const { component, container } = render(PrDiff, { diff, comments: [], oncomment: vi.fn(), onedit: vi.fn() })
     return { component, container, scrolled }
   }
 

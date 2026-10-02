@@ -2,15 +2,13 @@
   /**
    * The diff, with every line a tap target.
    *
-   * **Only a RIGHT-side line can be anchored.** `buildReviewPayload` posts
-   * anchored comments with `side: 'RIGHT'`, so a line that exists only in the
-   * old file — a deletion — has no line number GitHub would accept. Tapping one
-   * is still allowed (a deletion is often exactly what you want to ask about),
-   * but the comment is raised WITHOUT a line: `buildReviewPayload` folds it into
-   * the review body with its file for context, which is the honest outcome
-   * rather than an anchor that 422s and gets folded anyway.
+   * A tap anchors to the side of the diff the row lives on: a deletion exists
+   * only in the old file, so it anchors to its OLD number on `LEFT`; an
+   * addition or a context line anchors to its new number on `RIGHT`. The
+   * gutter shows the number the anchor will use, so a deleted row reads its
+   * old number rather than nothing.
    *
-   * That rule is enforced here, at the tap, not asserted in the sheet's copy.
+   * Tapping a draft comment under its line edits it.
    */
   import { tick } from 'svelte'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
@@ -23,9 +21,10 @@
     /** Draft comments, so the ones already made show under their line. */
     comments: PrReviewComment[]
     oncomment: (target: CommentTarget) => void
+    onedit: (comment: PrReviewComment) => void
   }
 
-  let { diff, comments, oncomment }: Props = $props()
+  let { diff, comments, oncomment, onedit }: Props = $props()
 
   let files = $derived<DiffFile[]>(parseUnifiedDiff(diff))
   /**
@@ -57,11 +56,10 @@
 
   function tap(file: DiffFile, row: DiffRow): void {
     if (row.kind === 'hunk') return
-    oncomment({
-      file: file.path,
-      line: row.newNo !== undefined ? String(row.newNo) : undefined,
-      snippet: row.text,
-    })
+    const left = row.kind === 'del'
+    const n = left ? row.oldNo : row.newNo
+    if (n === undefined) return
+    oncomment({ file: file.path, line: String(n), side: left ? 'LEFT' : 'RIGHT', snippet: row.text })
   }
 
   let root = $state<HTMLDivElement>()
@@ -96,10 +94,17 @@
   /** A row keeps its add/del tint, which a second background would fight; the ring alone marks it. */
   const REVEAL_ROW_CLASS = 'ring-2 ring-inset ring-orange-500/70'
 
-  /** Draft comments already anchored to this exact line. */
+  /**
+   * Draft comments already anchored to this exact line. A context row carries
+   * both numbers, and each side is matched against its own: old line 12 and
+   * new line 12 are different lines.
+   */
   function commentsOn(file: DiffFile, row: DiffRow): PrReviewComment[] {
-    if (row.newNo === undefined) return []
-    return comments.filter((c) => c.file === file.path && parseLineAnchor(c.line) === row.newNo)
+    return comments.filter((c) => {
+      if (c.file !== file.path) return false
+      const n = c.side === 'LEFT' ? row.oldNo : row.newNo
+      return n !== undefined && parseLineAnchor(c.line) === n
+    })
   }
 </script>
 
@@ -149,20 +154,23 @@
                       class="flex w-full min-w-full items-start gap-2 whitespace-pre px-2 py-[3px] text-left active:bg-zinc-700/60 {ROW_CLASS[row.kind]} {isRevealed(file, i) ? REVEAL_ROW_CLASS : ''}"
                     >
                       <span class="w-9 flex-none select-none text-right text-[10px] text-zinc-600 tabular-nums"
-                        >{row.newNo ?? ''}</span
+                        >{row.kind === 'del' ? row.oldNo : row.newNo}</span
                       >
                       <span class="flex-none">{row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '}</span>
                       <span>{row.text}</span>
                     </button>
                   {/if}
                   {#each commentsOn(file, row) as c (c.id)}
-                    <div
-                      class="mx-2 my-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-1.5 font-sans text-[11px] leading-relaxed text-blue-100"
+                    <button
+                      type="button"
+                      onclick={() => onedit(c)}
+                      aria-label="Edit comment"
+                      class="mx-2 my-1 block w-[calc(100%-1rem)] rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-1.5 text-left font-sans text-[11px] leading-relaxed text-blue-100 active:bg-blue-500/20"
                       data-testid="inline-comment"
                     >
                       <span class="mr-1.5 rounded bg-blue-500/25 px-1 py-0.5 text-[8.5px] font-bold uppercase">{c.source}</span
                       >{c.text}
-                    </div>
+                    </button>
                   {/each}
                 </li>
               {/each}

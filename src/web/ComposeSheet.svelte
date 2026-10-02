@@ -13,10 +13,12 @@
    *
    * Text in the field — or a recording still in progress — is not in the
    * draft yet, so nothing but this sheet holds it. Every way out — ✕, the scrim, and the system Back gesture through
-   * `holdForDraft` — asks before throwing it away.
+   * `holdForDraft` — asks before throwing it away. Editing a comment already in
+   * the draft starts the field at its text, and only a change to it is held.
    */
   import VoiceComposer from './VoiceComposer.svelte'
   import DiscardConfirm from './DiscardConfirm.svelte'
+  import { untrack } from 'svelte'
   import { draftAtRisk } from './lib/nav'
 
   interface Props {
@@ -28,19 +30,24 @@
     note?: string
     sendLabel: string
     placeholder: string
+    /** The comment's saved text, when editing one rather than writing a new one. */
+    initial?: string
     onadd: (text: string) => void
+    /** Offered only when editing: takes the comment out of the draft. */
+    ondelete?: () => void
     onclose: () => void
   }
 
-  let { title, snippet, note, sendLabel, placeholder, onadd, onclose }: Props = $props()
+  let { title, snippet, note, sendLabel, placeholder, initial = '', onadd, ondelete, onclose }: Props = $props()
 
-  let text = $state('')
+  // Mounted once per open, so the starting text never needs to follow the prop.
+  let text = $state(untrack(() => initial))
   let confirmingDiscard = $state(false)
   let composer = $state<VoiceComposer | undefined>()
 
   /** True when leaving has to wait — there is a draft, and the confirm is now up. */
   export function holdForDraft(): boolean {
-    if (!draftAtRisk(text, composer?.dictating() ?? false)) return false
+    if (!draftAtRisk(text, composer?.dictating() ?? false, initial)) return false
     confirmingDiscard = true
     return true
   }
@@ -74,6 +81,14 @@
             class="mt-1 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 px-2 py-1 font-mono text-[10.5px] text-zinc-400">{snippet}</pre>
         {/if}
       </div>
+      {#if ondelete}
+        <button
+          type="button"
+          onclick={() => { ondelete(); onclose() }}
+          data-testid="compose-delete"
+          class="min-h-9 flex-none rounded border border-red-500/30 px-2.5 text-[11px] text-red-300"
+        >Delete</button>
+      {/if}
       <button
         type="button"
         onclick={requestClose}
@@ -92,8 +107,8 @@
 
 {#if confirmingDiscard}
   <DiscardConfirm
-    title="Discard this comment?"
-    body="It hasn’t been added to the review yet."
+    title={initial ? 'Discard your changes?' : 'Discard this comment?'}
+    body={initial ? 'The comment keeps the text it had.' : 'It hasn’t been added to the review yet.'}
     testid="compose-discard-confirm"
     onkeep={() => { confirmingDiscard = false }}
     ondiscard={() => {
