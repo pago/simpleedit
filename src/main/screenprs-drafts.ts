@@ -13,14 +13,25 @@ import { isPrUrl, type PrReviewDraft } from '../shared/screenprs'
 import { applyDraftOp, parseReviewDraft, type DraftOpResult, type DraftsSnapshot, type PrReviewDraftOp } from '../shared/review-drafts'
 
 export interface StoredDraft {
-  draft: PrReviewDraft
+  /** Null once the draft is empty but `removed` still has to be kept. */
+  draft: PrReviewDraft | null
   /** ISO timestamp of the last op — used for age-based pruning. */
   at: string
+  /**
+   * Ids of comments that left this draft, newest last. A phone whose socket
+   * dropped after sending an add replays it on reconnect, and by then the
+   * comment may have been removed or posted; replayed, it would come back and
+   * could post twice. Ids are minted per add and never reused, so an add for
+   * one of these is always such a replay. Never sent to clients.
+   */
+  removed?: string[]
 }
 
 type Drafts = Record<string, StoredDraft>
 
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+const MAX_REMOVED = 500
+const MAX_ID = 1024
 
 let mem: Drafts | null = null
 /**
@@ -56,9 +67,13 @@ export function sanitize(raw: unknown): Drafts {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out
   for (const [url, entry] of Object.entries(raw as Record<string, unknown>)) {
     if (!isPrUrl(url) || typeof entry !== 'object' || entry === null) continue
-    const { draft, at } = entry as Record<string, unknown>
+    const { draft, at, removed } = entry as Record<string, unknown>
     const clean = parseReviewDraft(draft)
-    if (clean && typeof at === 'string') out[url] = { draft: clean, at }
+    const ids = Array.isArray(removed)
+      ? removed.filter((id): id is string => typeof id === 'string' && id.length <= MAX_ID).slice(-MAX_REMOVED)
+      : []
+    if ((!clean && ids.length === 0) || typeof at !== 'string') continue
+    out[url] = ids.length ? { draft: clean, at, removed: ids } : { draft: clean, at }
   }
   return out
 }
@@ -81,7 +96,9 @@ function save(drafts: Drafts): void {
 }
 
 export function loadDrafts(): DraftsSnapshot {
-  return { drafts: Object.fromEntries(Object.entries(load()).map(([url, d]) => [url, d.draft])), rev }
+  const drafts: Record<string, PrReviewDraft> = {}
+  for (const [url, d] of Object.entries(load())) if (d.draft) drafts[url] = d.draft
+  return { drafts, rev }
 }
 
 /**
@@ -91,11 +108,19 @@ export function loadDrafts(): DraftsSnapshot {
  */
 export function applyOp(url: string, op: PrReviewDraftOp, now = new Date()): DraftOpResult & { changed: boolean } {
   const drafts = load()
-  const prior = drafts[url]?.draft ?? null
+  const stored = drafts[url]
+  const prior = stored?.draft ?? null
+  const removed = stored?.removed ?? []
+  if (op.kind === 'add-comment' && removed.includes(op.comment.id)) return { draft: prior, rev, changed: false }
   const draft = applyDraftOp(prior, op)
   if (draft === prior) return { draft, rev, changed: false }
+  const kept = new Set(draft?.comments.map((c) => c.id))
+  const left = (prior?.comments ?? []).filter((c) => !kept.has(c.id)).map((c) => c.id)
+  const nextRemoved = [...removed, ...left].slice(-MAX_REMOVED)
   const next = { ...drafts }
-  if (draft) next[url] = { draft, at: now.toISOString() }
+  const at = now.toISOString()
+  if (nextRemoved.length) next[url] = { draft, at, removed: nextRemoved }
+  else if (draft) next[url] = { draft, at }
   else delete next[url]
   save(next)
   mem = next
