@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte'
+import { render, screen, fireEvent, within } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import PrDetail from '../PrDetail.svelte'
 import type { BaseAnalysis, PrContext, PrReviewDraft } from '../../../../shared/screenprs'
@@ -199,5 +199,143 @@ describe('desktop PR detail — anchoring a review to the head', () => {
     expect(await screen.findByTestId('review-folded')).toHaveTextContent(
       '2 comments folded into the summary: 1 outside GitHub’s diff, 1 written before the branch moved'
     )
+  })
+})
+
+describe('desktop PR detail — inline comments', () => {
+  const URL_ = 'https://github.com/ivx/ui-pack/pull/2800'
+  const DIFF = [
+    'diff --git a/src/x.ts b/src/x.ts',
+    '--- a/src/x.ts',
+    '+++ b/src/x.ts',
+    '@@ -10,3 +10,3 @@',
+    ' const a = 1',
+    '-const gone = 2',
+    '+const b = 2',
+    ' const c = 3',
+  ].join('\n')
+  const ctx: PrContext = { ...CONTEXT, url: URL_, number: 2800, diff: DIFF, headSha: 'head-x' }
+
+  async function store(): Promise<typeof import('../../../stores/screenprs.svelte').screenPrsStore> {
+    const { screenPrsStore } = await import('../../../stores/screenprs.svelte')
+    screenPrsStore.resetSubmitted(URL_)
+    for (const c of screenPrsStore.draftFor(URL_).comments) screenPrsStore.removeComment(URL_, c.id)
+    return screenPrsStore
+  }
+
+  // Row order in DIFF: ctx 10/10, del 11/–, add –/11, ctx 12/12.
+  const plus = (i: number): HTMLElement => screen.getAllByTestId('diff-line-comment')[i]
+  const field = (): HTMLTextAreaElement => screen.getByLabelText('Comment text')
+
+  it('＋ opens a focused editor under the row and adds a “you” comment with side, snippet and head', async () => {
+    const s = await store()
+    render(PrDetail, { props: { context: ctx } })
+    await fireEvent.click(plus(2))
+    expect(field()).toHaveFocus()
+    expect(screen.getByText('Comment on line 11')).toBeInTheDocument()
+    await fireEvent.input(field(), { target: { value: 'nit: name' } })
+    screen.getByText('Add comment').click()
+    expect(s.draftFor(URL_).comments).toEqual([
+      { id: expect.any(String), source: 'you', file: 'src/x.ts', line: '11', side: 'RIGHT', snippet: 'const b = 2', text: 'nit: name', sha: 'head-x' },
+    ])
+    await vi.waitFor(() => expect(screen.queryByTestId('inline-comment-editor')).toBeNull())
+    expect(screen.getByTestId('inline-comment')).toHaveTextContent('nit: name')
+  })
+
+  it('anchors a deleted row to its old number on LEFT', async () => {
+    const s = await store()
+    render(PrDetail, { props: { context: ctx } })
+    await fireEvent.click(plus(1))
+    expect(screen.getByText('Comment on deleted line 11')).toBeInTheDocument()
+    await fireEvent.input(field(), { target: { value: 'why?' } })
+    await fireEvent.keyDown(field(), { key: 'Enter', metaKey: true })
+    expect(s.draftFor(URL_).comments[0]).toMatchObject({ line: '11', side: 'LEFT', snippet: 'const gone = 2' })
+  })
+
+  it('shift-click extends to a range on the same side, keeping the text; a different side restarts', async () => {
+    const s = await store()
+    const { container } = render(PrDetail, { props: { context: ctx } })
+    await fireEvent.click(plus(0))
+    await fireEvent.input(field(), { target: { value: 'span' } })
+    await fireEvent.click(plus(3), { shiftKey: true })
+    expect(screen.getByText('Comment on lines 10–12')).toBeInTheDocument()
+    expect(field().value).toBe('span')
+    expect(container.querySelectorAll('[data-selected]')).toHaveLength(3)
+    screen.getByText('Add comment').click()
+    expect(s.draftFor(URL_).comments[0]).toMatchObject({ line: '10-12', side: 'RIGHT', snippet: 'const a = 1\nconst b = 2\nconst c = 3' })
+
+    await fireEvent.click(plus(0))
+    await fireEvent.click(plus(1), { shiftKey: true })
+    expect(screen.getByText('Comment on deleted line 11')).toBeInTheDocument()
+  })
+
+  it('Esc cancels an empty editor at once, but asks before discarding typed text', async () => {
+    await store()
+    render(PrDetail, { props: { context: ctx } })
+    await fireEvent.click(plus(0))
+    await fireEvent.keyDown(field(), { key: 'Escape' })
+    expect(screen.queryByTestId('inline-comment-editor')).toBeNull()
+
+    await fireEvent.click(plus(0))
+    await fireEvent.input(field(), { target: { value: 'draft' } })
+    await fireEvent.keyDown(field(), { key: 'Escape' })
+    expect(screen.getByTestId('inline-comment-discard')).toHaveTextContent('Discard this comment?')
+    screen.getByText('Keep editing').click()
+    await vi.waitFor(() => expect(screen.queryByTestId('inline-comment-discard')).toBeNull())
+    expect(field().value).toBe('draft')
+
+    // Opening another editor asks too, and only switches once discarded.
+    await fireEvent.click(plus(3))
+    expect(screen.getByText('Comment on line 10')).toBeInTheDocument()
+    ;(await screen.findByText('Discard')).click()
+    await vi.waitFor(() => expect(screen.getByText('Comment on line 12')).toBeInTheDocument())
+    expect(field().value).toBe('')
+  })
+
+  it('shows any anchored draft comment under its line; Edit saves through updateComment and ✕ removes', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'deep', file: 'src/x.ts', line: '12', text: 'race here', sha: 'head-x' })
+    s.addComment(URL_, { source: 'triage', file: 'src/x.ts', line: '99', text: 'off the diff', sha: 'head-x' })
+    const update = vi.spyOn(s, 'updateComment')
+    render(PrDetail, { props: { context: ctx } })
+    const inline = screen.getByTestId('inline-comment')
+    expect(inline).toHaveTextContent('deep')
+    expect(inline).toHaveTextContent('race here')
+
+    screen.getByRole('button', { name: 'Edit comment' }).click()
+    await vi.waitFor(() => expect(field().value).toBe('race here'))
+    expect(screen.queryByTestId('inline-comment')).toBeNull()
+    await fireEvent.input(field(), { target: { value: 'race here, twice' } })
+    screen.getByText('Save').click()
+    const id = s.draftFor(URL_).comments[0].id
+    expect(update).toHaveBeenCalledWith(URL_, id, { text: 'race here, twice' })
+    expect(await screen.findByTestId('inline-comment')).toHaveTextContent('race here, twice')
+
+    screen.getByRole('button', { name: 'Remove comment' }).click()
+    await vi.waitFor(() => expect(screen.queryByTestId('inline-comment')).toBeNull())
+    expect(s.draftFor(URL_).comments.map((c) => c.text)).toEqual(['off the diff'])
+    update.mockRestore()
+  })
+
+  it('the composer list reveals a comment in the diff, marks deleted lines, and edits in place', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'you', file: 'src/x.ts', line: '11', side: 'LEFT', text: 'gone?', sha: 'head-x' })
+    s.addComment(URL_, { source: 'triage', file: 'src/x.ts', line: '99', text: 'off the diff', sha: 'head-x' })
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    const { container } = render(PrDetail, { props: { context: ctx } })
+    screen.getByText('📝 Review to post').click()
+    const items = await screen.findAllByTestId('composer-comment')
+    expect(items[0]).toHaveTextContent('· deleted line')
+    expect(items[1]).not.toHaveTextContent('deleted line')
+    // Off the diff: nothing to reveal or edit in place.
+    expect(within(items[1]).queryByText('Edit')).toBeNull()
+
+    within(items[0]).getByText('src/x.ts:11').click()
+    await vi.waitFor(() => expect(container.querySelector('[data-revealed]')).toHaveTextContent('const gone = 2'))
+
+    within(items[0]).getByText('Edit').click()
+    await vi.waitFor(() => expect(field().value).toBe('gone?'))
+    expect(screen.getByText('Comment on deleted line 11')).toBeInTheDocument()
+    vi.restoreAllMocks()
   })
 })

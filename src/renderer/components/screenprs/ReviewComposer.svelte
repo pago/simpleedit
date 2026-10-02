@@ -1,10 +1,19 @@
 <script lang="ts">
-  import type { PrContext, PrReviewVerdict, PrReviewCommentSource } from '../../../shared/screenprs'
+  import type { PrContext, PrReviewVerdict, PrReviewComment } from '../../../shared/screenprs'
   import { describeFolds } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import ConfirmReviewModal from './ConfirmReviewModal.svelte'
+  import { SOURCE_CLASS } from './commentSource'
 
-  let { context }: { context: PrContext } = $props()
+  interface Props {
+    context: PrContext
+    /** Whether a comment's line is in the diff on screen, so it can be revealed and edited there. */
+    editable?: (c: PrReviewComment) => boolean
+    onreveal?: (c: PrReviewComment) => void
+    onedit?: (c: PrReviewComment) => void
+  }
+
+  let { context, editable, onreveal, onedit }: Props = $props()
 
   let url = $derived(context.url)
   let draft = $derived(screenPrsStore.draftFor(url))
@@ -23,13 +32,6 @@
     approve: '✓ Approve',
     comment: 'Comment',
     request_changes: '⟳ Request changes',
-  }
-  const SOURCE_CLASS: Record<PrReviewCommentSource, string> = {
-    triage: 'bg-orange-500/15 text-orange-300',
-    deep: 'bg-blue-500/15 text-blue-300',
-    overview: 'bg-teal-500/15 text-teal-300',
-    agent: 'bg-violet-500/18 text-violet-300',
-    you: 'bg-zinc-700 text-zinc-200',
   }
   const VERDICTS: PrReviewVerdict[] = ['approve', 'comment', 'request_changes']
 
@@ -75,16 +77,28 @@
       <div class="flex max-h-[42vh] flex-col gap-2.5 overflow-y-auto px-5 pb-4 pt-0.5">
         <!-- collected line comments -->
         {#if draft.comments.length === 0}
-          <div class="py-1 text-[11px] italic text-zinc-600">No line comments yet — add them from the findings above (＋ review), or just pick a verdict and post.</div>
+          <div class="py-1 text-[11px] italic text-zinc-600">No line comments yet — add them with ＋ on a diff line or from the findings above (＋ review), or just pick a verdict and post.</div>
         {:else}
           <div class="flex flex-col gap-1.5">
             {#each draft.comments as c (c.id)}
-              <div class="flex items-start gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5">
+              {@const inDiff = editable?.(c) ?? false}
+              <div class="flex items-start gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5" data-testid="composer-comment">
                 <span class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wide {SOURCE_CLASS[c.source]}">{c.source}</span>
                 <div class="min-w-0 flex-1">
-                  {#if c.file}<span class="block font-mono text-[10px] text-zinc-500">{c.file}{c.line ? ':' + c.line : ''}</span>{/if}
-                  <span class="text-[11.5px] text-zinc-200">{c.text}</span>
+                  {#if c.file}
+                    {@const where = `${c.file}${c.line ? ':' + c.line : ''}`}
+                    <span class="block font-mono text-[10px] text-zinc-500">
+                      {#if inDiff && onreveal}
+                        <button type="button" class="hover:text-blue-300 hover:underline" title="Show in the diff" onclick={() => onreveal(c)}>{where}</button>
+                      {:else}{where}{/if}
+                      {#if c.side === 'LEFT'}<span class="ml-1 text-red-400/80">· deleted line</span>{/if}
+                    </span>
+                  {/if}
+                  <span class="whitespace-pre-wrap text-[11.5px] text-zinc-200">{c.text}</span>
                 </div>
+                {#if inDiff && onedit}
+                  <button class="flex-none rounded px-1.5 text-[10.5px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" title="Edit in the diff" onclick={() => onedit(c)}>Edit</button>
+                {/if}
                 <button class="flex-none rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-red-400" title="Remove" onclick={() => screenPrsStore.removeComment(url, c.id)}>×</button>
               </div>
             {/each}
