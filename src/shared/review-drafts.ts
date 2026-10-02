@@ -133,35 +133,38 @@ function isVerdict(value: unknown): value is PrReviewVerdict {
 
 /**
  * The comment fields present in `value`, each checked, or null if any is
- * malformed. Unknown keys are left behind rather than stored.
+ * malformed. Unknown keys are left behind rather than stored. A key holding
+ * `undefined` counts as absent: structured clone keeps such keys, so the
+ * desktop sends `line: undefined` for a finding with no line.
  */
 function commentFields(value: Fields): PrReviewCommentPatch | null {
   const out: PrReviewCommentPatch = {}
-  if ('source' in value) {
+  const has = (key: keyof PrReviewCommentPatch): boolean => value[key] !== undefined
+  if (has('source')) {
     if (!SOURCES.includes(value.source as PrReviewCommentSource)) return null
     out.source = value.source as PrReviewCommentSource
   }
-  if ('file' in value) {
+  if (has('file')) {
     if (!isString(value.file, MAX_FIELD)) return null
     out.file = value.file
   }
-  if ('line' in value) {
+  if (has('line')) {
     if (!isString(value.line, MAX_FIELD)) return null
     out.line = value.line
   }
-  if ('side' in value) {
+  if (has('side')) {
     if (value.side !== 'LEFT' && value.side !== 'RIGHT') return null
     out.side = value.side
   }
-  if ('text' in value) {
+  if (has('text')) {
     if (!isString(value.text, MAX_TEXT)) return null
     out.text = value.text
   }
-  if ('snippet' in value) {
+  if (has('snippet')) {
     if (!isString(value.snippet, MAX_TEXT)) return null
     out.snippet = value.snippet
   }
-  if ('sha' in value) {
+  if (has('sha')) {
     if (!isString(value.sha, MAX_FIELD)) return null
     // Stored, '' would claim a head the comment doesn't belong to (see `sha`).
     if (value.sha) out.sha = value.sha
