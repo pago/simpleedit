@@ -501,8 +501,6 @@ export type SubmitReviewResult =
       reviewUrl?: string
       /** The comments raised on a line that went into the review body, by reason. */
       folded: ReviewFolds
-      /** `folded.count > 0`; kept until the phone reads `folded`. */
-      foldedComments: boolean
     }
   | {
       ok: false

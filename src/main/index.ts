@@ -996,7 +996,7 @@ function registerAllHandlers(): void {
         // The review IS posted; reporting a failure here would invite a second one.
         console.error('[SimpleEdit] Failed to clear a submitted review draft:', err)
       }
-      return { ok: true, reviewUrl, folded, foldedComments: folded.count > 0 }
+      return { ok: true, reviewUrl, folded }
     } catch (err: unknown) {
       const error = err instanceof Error ? err.message : String(err)
       // A killed POST may still have been received. Saying "nothing was posted"

@@ -89,7 +89,6 @@ export interface SubmittedReview {
   verdict: PrReviewVerdict
   reviewUrl?: string
   folded: ReviewFolds
-  foldedComments: boolean
 }
 let _submitted = $state<Map<string, SubmittedReview>>(new Map())
 let _submitting = $state<Set<string>>(new Set())
@@ -353,7 +352,7 @@ export const screenPrsStore = {
       })
       if (res.ok) {
         const next = new Map(_submitted)
-        next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, folded: res.folded, foldedComments: res.foldedComments })
+        next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, folded: res.folded })
         _submitted = next
         // Main has cleared the draft; a summary still waiting to be sent would
         // bring the posted text back as a fresh one.

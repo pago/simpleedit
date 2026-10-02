@@ -25,15 +25,16 @@
    * can be finished at the desk. Drafts untouched for 30 days are pruned.
    *
    * A draft that outlives a push is handled rather than prevented: each comment
-   * carries the head it was written on, and the `draft` arriving here has
-   * already been through `anchorsForHead`, so a line anchor survives only
-   * where it was verified against the head on screen.
+   * carries the head it was written on, and the `draft` shown here has already
+   * been through `anchorsForHead`, so a line anchor survives only where it was
+   * verified against the head on screen. Main posts the raw draft through the
+   * same function, pinned to that head, and reports what it folded.
    * Everything else — moved, or simply not checkable — folds into the body,
    * and the two reasons are reported apart because they mean different things
    * to the person deciding whether to post.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import type { AnchorState, PrRef, PrReviewCommentSource, PrReviewDraft, PrReviewVerdict } from '../shared/screenprs'
+  import { describeFolds, type AnchorState, type PrRef, type PrReviewCommentSource, type PrReviewDraft, type PrReviewVerdict } from '../shared/screenprs'
   import { unknownOutcome, verdictChoice, type SubmitOutcome } from './lib/prs.svelte'
   import { NotSentError } from './api-shim'
   import ComposeSheet from './ComposeSheet.svelte'
@@ -48,6 +49,12 @@
      * what is counted in the confirm, and what is sent are the same object.
      */
     draft: PrReviewDraft
+    /** The draft before `anchorsForHead` — what is sent while `headSha` is known. */
+    rawDraft: PrReviewDraft
+    /** The head whose diff is on screen; '' until it is known. */
+    headSha: string
+    /** The diff on screen is the isolated stacked compare, not GitHub's. */
+    isolatedBase: boolean
     /**
      * How many comments are in each anchor state, counted on the draft BEFORE
      * folding. Passed in rather than derived here so the sheet, the confirm and
@@ -58,7 +65,7 @@
     connected: boolean
   }
 
-  let { pr, draft, anchors, connected }: Props = $props()
+  let { pr, draft, rawDraft, headSha, isolatedBase, anchors, connected }: Props = $props()
 
   let url = $derived(pr.url)
   let submitted = $derived(screenPrsStore.submittedFor(url))
@@ -127,7 +134,10 @@
     if (latched) return
     outcome = null
     try {
-      const res = await screenPrsStore.submitReview(pr, draft)
+      // Without a head nothing can be pinned, so only the already-folded draft may go.
+      const res = headSha
+        ? await screenPrsStore.submitReview(pr, rawDraft, { headSha, isolatedBase })
+        : await screenPrsStore.submitReview(pr, draft)
       if (res.ok) {
         nav.close(confirmId)
         // Posted and done with: a follow-up starts from no verdict.
@@ -175,9 +185,10 @@
   {#if submitted}
     <div class="px-3 py-3 text-[12px] text-emerald-300" data-testid="review-submitted">
       <p class="font-medium">✓ Review posted — {VERDICT_LABEL[submitted.verdict]}</p>
-      {#if submitted.foldedComments}
-        <p class="mt-1 text-[11px] text-amber-300/80">
-          Some comments couldn’t anchor to the diff and were folded into the summary.
+      {#if submitted.folded.count > 0}
+        <p class="mt-1 text-[11px] text-amber-300/80" data-testid="submitted-folds">
+          {submitted.folded.count === 1 ? 'A comment' : `${submitted.folded.count} comments`} went into the summary
+          instead of on a line: {describeFolds(submitted.folded)}.
         </p>
       {/if}
       <button
