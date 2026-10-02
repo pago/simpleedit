@@ -90,7 +90,8 @@
     if (!quickTarget) return
     quickError = null
     try {
-      const res = await screenPrsStore.submitReview(quickTarget, quickDraft)
+      // Pinned to the card's head: an approval must not land on a push the reviewer never screened.
+      const res = await screenPrsStore.submitReview(quickTarget, quickDraft, { headSha: quickTarget.headSha })
       if (res.ok) quickTarget = null
       else quickError = res.error // keep the modal open so the failure is visible
     } catch (e) {
