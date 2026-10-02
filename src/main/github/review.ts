@@ -9,8 +9,8 @@
  */
 import type { PrRef, ReviewFolds, GithubReviewPayload, CommentableSides } from '../../shared/screenprs'
 import { addFolds, anchorsForHead, buildReviewPayload, commentableLines, foldCommentsIntoBody, reviewFolds } from '../../shared/screenprs'
-import type { SubmitReviewRequest } from '../../shared/ipc-types'
-import { getPrDiff, runGh } from './gh'
+import type { SubmitReviewRequest, SubmitReviewResult } from '../../shared/ipc-types'
+import { getPrDiff, GhTimeoutError, runGh } from './gh'
 import { compareDiff } from './stack-base'
 
 export interface PostReviewResult {
@@ -90,4 +90,31 @@ export async function submitReview(request: SubmitReviewRequest): Promise<{ revi
   const draft = request.headSha ? anchorsForHead(request.draft, request.headSha) : request.draft
   const { reviewUrl, rejected } = await postReview(request.pr, buildReviewPayload(draft, opts))
   return { reviewUrl, folded: addFolds(reviewFolds(request.draft, opts), 'rejected', rejected) }
+}
+
+/**
+ * The `screenprs:submit-review` handler: post, then clear the PR's stored
+ * draft — unless what was posted wasn't that draft.
+ */
+export async function handleSubmitReview(
+  request: SubmitReviewRequest,
+  clearDraft: (url: string) => void
+): Promise<SubmitReviewResult> {
+  try {
+    const { reviewUrl, folded } = await submitReview(request)
+    if (!request.keepDraft) {
+      try {
+        clearDraft(request.pr.url)
+      } catch (err) {
+        // The review IS posted; reporting a failure here would invite a second one.
+        console.error('[SimpleEdit] Failed to clear a submitted review draft:', err)
+      }
+    }
+    return { ok: true, reviewUrl, folded }
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err.message : String(err)
+    // A killed POST may still have been received. Saying "nothing was posted"
+    // here is what would make a retry post the review twice.
+    return err instanceof GhTimeoutError ? { ok: false, error, delivered: 'unknown' } : { ok: false, error }
+  }
 }
