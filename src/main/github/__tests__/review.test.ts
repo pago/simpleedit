@@ -8,7 +8,7 @@ vi.mock('../gh', async (importOriginal) => ({
 
 import { runGh, getPrDiff, GhTimeoutError } from '../gh'
 import { handleSubmitReview, postReview, submitReview } from '../review'
-import type { GithubReviewPayload, PrReviewComment } from '../../../shared/screenprs'
+import type { GithubReviewPayload, PrReviewComment, PrReviewDraft } from '../../../shared/screenprs'
 import type { SubmitReviewRequest } from '../../../shared/ipc-types'
 
 const GH_DIFF = `diff --git a/a.ts b/a.ts
@@ -184,16 +184,28 @@ describe('handleSubmitReview', () => {
 })
 
 describe('postReview', () => {
-  const payload: GithubReviewPayload = { event: 'COMMENT', body: '', comments: [{ path: 'a.ts', line: 1, side: 'RIGHT', body: 'n' }] }
+  const draft: PrReviewDraft = { comments: [you({ line: '1' })], summary: '', verdict: 'comment' }
 
   it('rethrows a failure that folding cannot fix', async () => {
     post.mockRejectedValueOnce(new Error('gh api exited 1: HTTP 401'))
-    await expect(postReview(PR, payload)).rejects.toThrow('401')
+    await expect(postReview(PR, draft)).rejects.toThrow('401')
     expect(post).toHaveBeenCalledTimes(1)
   })
 
   it('rethrows a 422 when there were no anchors to blame', async () => {
     post.mockRejectedValueOnce(new Error('HTTP 422'))
-    await expect(postReview(PR, { ...payload, comments: [] })).rejects.toThrow('422')
+    await expect(postReview(PR, { ...draft, comments: [you({ file: '', line: undefined })] })).rejects.toThrow('422')
+  })
+
+  it('builds the retry from the draft, so snippets and old lines survive', async () => {
+    post.mockRejectedValueOnce(new Error('HTTP 422'))
+    const comments = [you({ line: '11', side: 'LEFT', snippet: 'gone11' }), you({ id: 'm', file: 'b.ts', foldedLine: { line: '4', reason: 'moved' } })]
+    await postReview(PR, { ...draft, comments }, { headSha: HEAD })
+    expect(posted()[1]).toEqual({
+      event: 'COMMENT',
+      commit_id: HEAD,
+      comments: [],
+      body: '- a.ts:11 (deleted line) — n\n  > gone11\n- b.ts:4 (on an earlier commit) — n',
+    })
   })
 })

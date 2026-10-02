@@ -7,8 +7,8 @@
  * sent, one comment at a time, because GitHub answers a single bad anchor by
  * rejecting the whole review (plans/screen-prs.md §3.4).
  */
-import type { PrRef, ReviewFolds, GithubReviewPayload, CommentableSides } from '../../shared/screenprs'
-import { addFolds, anchorsForHead, buildReviewPayload, commentableLines, foldCommentsIntoBody, reviewFolds } from '../../shared/screenprs'
+import type { PrRef, ReviewFolds, GithubReviewPayload, CommentableSides, PrReviewDraft, ReviewPayloadOptions } from '../../shared/screenprs'
+import { addFolds, anchorsForHead, buildReviewPayload, commentableLines, foldedReviewPayload, reviewFolds } from '../../shared/screenprs'
 import type { SubmitReviewRequest, SubmitReviewResult } from '../../shared/ipc-types'
 import { clearPostedOp, type PrReviewDraftOp } from '../../shared/review-drafts'
 import { getPrDiff, GhTimeoutError, runGh } from './gh'
@@ -38,7 +38,12 @@ function htmlUrlOf(out: string): string | undefined {
  * every comment folded into the body so the content survives — by now only
  * the last resort, since `submitReview` has checked each anchor already.
  */
-export async function postReview(pr: PrReviewTarget, payload: GithubReviewPayload): Promise<PostReviewResult> {
+export async function postReview(
+  pr: PrReviewTarget,
+  draft: PrReviewDraft,
+  opts: ReviewPayloadOptions = {}
+): Promise<PostReviewResult> {
+  const payload = buildReviewPayload(draft, opts)
   const endpoint = `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`
   const post = (body: GithubReviewPayload): Promise<string> =>
     runGh(['api', '--method', 'POST', endpoint, '--input', '-'], { input: JSON.stringify(body) })
@@ -54,7 +59,7 @@ export async function postReview(pr: PrReviewTarget, payload: GithubReviewPayloa
   // an approval included — to whatever the head is now, which the reviewer
   // may never have read.
   try {
-    return { reviewUrl: htmlUrlOf(await post(foldCommentsIntoBody(payload))), rejected: payload.comments.length }
+    return { reviewUrl: htmlUrlOf(await post(foldedReviewPayload(draft, opts))), rejected: payload.comments.length }
   } catch (err) {
     if (!payload.commit_id || !isUnprocessable(err)) throw err
     // With no line left to blame, a second 422 is GitHub refusing the commit itself.
@@ -100,7 +105,7 @@ export async function submitReview(request: SubmitReviewRequest): Promise<{ revi
   }
   const opts = { commentable, headSha: request.headSha, isolatedBase: request.isolatedBase }
   const draft = request.headSha ? anchorsForHead(request.draft, request.headSha) : request.draft
-  const { reviewUrl, rejected } = await postReview(request.pr, buildReviewPayload(draft, opts))
+  const { reviewUrl, rejected } = await postReview(request.pr, draft, opts)
   return { reviewUrl, folded: addFolds(reviewFolds(request.draft, opts), 'rejected', rejected) }
 }
 

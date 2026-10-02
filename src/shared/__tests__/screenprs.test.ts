@@ -8,7 +8,7 @@ import {
   parseLineRange,
   commentableLines,
   buildReviewPayload,
-  foldCommentsIntoBody,
+  foldedReviewPayload,
   addFolds,
   describeFolds,
   reviewSubmitError,
@@ -21,6 +21,7 @@ import {
   anchorState,
   anchorsForHead,
   anchorCounts,
+  reviewFolds,
   baseWarning,
   type BaseAnalysis,
 } from '../screenprs'
@@ -175,7 +176,19 @@ describe('anchorsForHead', () => {
   it('folds a moved anchor into the body, keeping the file and the text', () => {
     const payload = buildReviewPayload(anchorsForHead(draftOf(at('sha1', '11')), 'sha2'))
     expect(payload.comments).toEqual([])
-    expect(payload.body).toContain('a.ts — note 11')
+    expect(payload.body).toContain('a.ts:11 (on an earlier commit) — note 11')
+  })
+
+  it('cites an unchecked line as unchecked, and only a real number', () => {
+    expect(buildReviewPayload(anchorsForHead(draftOf(at(undefined, '11')), 'sha1')).body).toBe('- a.ts:11 (not checked against this commit) — note 11')
+    expect(buildReviewPayload(anchorsForHead(draftOf(at('sha1', '—')), 'sha2')).body).toBe('- a.ts — note —')
+  })
+
+  it('leaves the counts as they were on the raw draft', () => {
+    const raw = draftOf(at('sha1', '11'), at(undefined, '12'), at('sha2', '13'))
+    expect(anchorCounts(raw, 'sha2')).toEqual({ none: 0, current: 1, moved: 1, unverified: 1 })
+    expect(reviewFolds(raw, { headSha: 'sha2' })).toEqual({ count: 2, reasons: { moved: 1, unverified: 1 } })
+    expect(anchorsForHead(raw, 'sha2').comments.map((c) => c.line)).toEqual([undefined, undefined, '13'])
   })
 
   it('folds an anchor it cannot check, for either reason', () => {
@@ -349,28 +362,23 @@ describe('buildReviewPayload without a commentable set', () => {
   })
 })
 
-describe('foldCommentsIntoBody (422 recovery)', () => {
-  it('collapses anchored comments into body bullets and clears comments', () => {
-    const p = buildReviewPayload(draft({
-      summary: 's', comments: [{ id: 'c7', source: 'triage', file: 'a.ts', line: '5', text: 'boom' }],
+describe('foldedReviewPayload (422 recovery)', () => {
+  it('puts every comment in the body, in draft order, and clears comments', () => {
+    const folded = foldedReviewPayload(draft({
+      summary: 's', comments: [{ id: 'c7', source: 'triage', file: 'a.ts', line: '5', text: 'boom' }, { id: 'c8', source: 'you', file: '', text: 'note' }],
     }))
-    const folded = foldCommentsIntoBody(p)
     expect(folded.comments).toEqual([])
-    expect(folded.body).toBe('s\n\n- a.ts:5 — boom')
+    expect(folded.body).toBe('s\n\n- a.ts:5 — boom\n- note')
   })
-  it('keeps the side, the range and the commit', () => {
-    const folded = foldCommentsIntoBody({
-      event: 'COMMENT', body: '', commit_id: 'abc',
+  it('keeps the side, the range, the snippet and the commit', () => {
+    const folded = foldedReviewPayload(draft({
+      verdict: 'comment',
       comments: [
-        { path: 'a.ts', start_line: 3, start_side: 'RIGHT', line: 5, side: 'RIGHT', body: 'r' },
-        { path: 'b.ts', line: 6, side: 'LEFT', body: 'l' },
+        { id: 'r', source: 'you', file: 'a.ts', line: '3-5', text: 'r' },
+        { id: 'l', source: 'you', file: 'b.ts', line: '6', side: 'LEFT', text: 'l', snippet: 'old()' },
       ],
-    })
-    expect(folded).toEqual({ event: 'COMMENT', commit_id: 'abc', comments: [], body: '- a.ts:3-5 — r\n- b.ts:6 (deleted line) — l' })
-  })
-  it('is a no-op when there are no anchored comments', () => {
-    const p = buildReviewPayload(draft({ summary: 's' }))
-    expect(foldCommentsIntoBody(p)).toEqual(p)
+    }), { headSha: 'abc' })
+    expect(folded).toEqual({ event: 'COMMENT', commit_id: 'abc', comments: [], body: '- a.ts:3-5 — r\n- b.ts:6 (deleted line) — l\n  > old()' })
   })
 })
 
