@@ -1,8 +1,8 @@
-import { render, screen } from '@testing-library/svelte'
+import { render, screen, fireEvent } from '@testing-library/svelte'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { tick } from 'svelte'
+import { createRawSnippet, tick } from 'svelte'
 import UnifiedDiffView from '../UnifiedDiffView.svelte'
-import { parseUnifiedDiff } from '../../../../shared/parseDiff'
+import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../../../../shared/parseDiff'
 import { REVEAL_FLASH_MS } from '../../../lib/diffReveal'
 
 const DIFF = [
@@ -116,5 +116,54 @@ describe('UnifiedDiffView reveal', () => {
     const { component, scrolled } = renderView()
     expect(await component.reveal('src/missing.ts', '1')).toBe(false)
     expect(scrolled).toEqual([])
+  })
+})
+
+describe('UnifiedDiffView line hooks', () => {
+  it('stays read-only without onLineClick: no ＋, no extra row content', async () => {
+    const { container } = render(UnifiedDiffView, { files: parseUnifiedDiff(DIFF) })
+    await tick()
+    expect(screen.queryAllByTestId('diff-line-comment')).toHaveLength(0)
+    expect(container.querySelector('.sticky')).toBeNull()
+  })
+
+  it('offers a labelled ＋ on every line row that reports the row it sits on', async () => {
+    const onLineClick = vi.fn()
+    const files = parseUnifiedDiff(DIFF)
+    render(UnifiedDiffView, { files, onLineClick })
+    await tick()
+    const pluses = screen.getAllByTestId('diff-line-comment')
+    expect(pluses).toHaveLength(3)
+    expect(screen.getByRole('button', { name: 'Comment on deleted line 2' })).toBe(pluses[2])
+    await fireEvent.click(pluses[1], { shiftKey: true })
+    const [file, row, index, ev] = onLineClick.mock.calls[0]
+    expect(file).toBe(files[0])
+    expect(row).toMatchObject({ kind: 'add', newNo: 2 })
+    expect(index).toBe(2)
+    expect((ev as MouseEvent).shiftKey).toBe(true)
+  })
+
+  it('highlights the selected range on its own side only', async () => {
+    const files = parseUnifiedDiff(DIFF)
+    const { container, rerender } = render(UnifiedDiffView, {
+      files,
+      onLineClick: () => {},
+      selectedRange: { path: 'src/a.ts', side: 'RIGHT', from: 1, to: 2 },
+    })
+    await tick()
+    const selected = () => [...container.querySelectorAll('[data-selected]')].map((el) => el.textContent)
+    expect(selected()).toEqual([expect.stringContaining('export const a = 1'), expect.stringContaining('export const added = 2')])
+
+    await rerender({ selectedRange: { path: 'src/a.ts', side: 'LEFT', from: 2, to: 2 } })
+    expect(selected()).toEqual([expect.stringContaining('export const gone = 3')])
+  })
+
+  it('renders belowRow after each line row, but not after hunk headers', async () => {
+    const belowRow = createRawSnippet<[DiffFile, DiffRow, number]>((_f, row, i) => ({
+      render: () => `<p data-testid="below">${i()}:${row().kind}</p>`,
+    }))
+    render(UnifiedDiffView, { files: parseUnifiedDiff(DIFF), belowRow })
+    await tick()
+    expect(screen.getAllByTestId('below').map((el) => el.textContent)).toEqual(['1:ctx', '2:add', '3:del'])
   })
 })

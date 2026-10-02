@@ -46,6 +46,11 @@ describe('findRevealTarget', () => {
     expect(findRevealTarget(files, 'src/a.ts', '1')).toEqual({ path: 'src/a.ts', row: 1 })
   })
 
+  it('matches a LEFT line against old-file numbers, landing on the deleted row', () => {
+    expect(findRevealTarget(files, 'src/a.ts', '11', 'LEFT')).toEqual({ path: 'src/a.ts', row: 2 })
+    expect(findRevealTarget(files, 'src/a.ts', '11', 'RIGHT')).toEqual({ path: 'src/a.ts', row: 3 })
+  })
+
   it('lands on the header without a usable line, or for a binary file', () => {
     expect(findRevealTarget(files, 'src/a.ts')).toEqual({ path: 'src/a.ts', row: null })
     expect(findRevealTarget(files, 'src/a.ts', 'n/a')).toEqual({ path: 'src/a.ts', row: null })
