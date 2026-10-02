@@ -24,6 +24,28 @@ export interface PrRef {
   updatedAt: string
 }
 
+/**
+ * True for a pull-request URL — `http(s)://<host>/<owner>/<repo>/pull/<n>`.
+ *
+ * `spawn` takes no shell, so there is nothing to inject; the hazard is that an
+ * argument beginning with `-` is a FLAG, and `screenprs:pr-diff` takes its url
+ * from whatever asked, including a socket. The host is deliberately not
+ * constrained — enterprise instances are real — but the path is, so that the
+ * check means what its name says rather than merely "some absolute URL".
+ */
+const PR_PATH = /^\/[^/]+\/[^/]+\/pull\/\d+$/
+
+export function isPrUrl(value: string): boolean {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return false
+  return PR_PATH.test(url.pathname.replace(/\/$/, ''))
+}
+
 export interface PrReviewer {
   login: string
   state: PrReviewerState

@@ -9,8 +9,8 @@
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { configDir } from './config-dir'
-import type { PrReviewDraft } from '../shared/screenprs'
-import { applyDraftOp, type DraftOpResult, type DraftsSnapshot, type PrReviewDraftOp } from '../shared/review-drafts'
+import { isPrUrl, type PrReviewDraft } from '../shared/screenprs'
+import { applyDraftOp, parseReviewDraft, type DraftOpResult, type DraftsSnapshot, type PrReviewDraftOp } from '../shared/review-drafts'
 
 export interface StoredDraft {
   draft: PrReviewDraft
@@ -46,10 +46,27 @@ export function prune(drafts: Drafts, now: number): Drafts {
   return out
 }
 
+/**
+ * The drafts in a parsed file, with whatever doesn't hold up dropped — a bad
+ * comment on its own, so one bad entry doesn't take the rest of the draft
+ * with it. Pure — exported for tests.
+ */
+export function sanitize(raw: unknown): Drafts {
+  const out: Drafts = {}
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out
+  for (const [url, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isPrUrl(url) || typeof entry !== 'object' || entry === null) continue
+    const { draft, at } = entry as Record<string, unknown>
+    const clean = parseReviewDraft(draft)
+    if (clean && typeof at === 'string') out[url] = { draft: clean, at }
+  }
+  return out
+}
+
 function load(): Drafts {
   if (mem) return mem
   try {
-    mem = prune(JSON.parse(readFileSync(filePath(), 'utf-8')) as Drafts, Date.now())
+    mem = prune(sanitize(JSON.parse(readFileSync(filePath(), 'utf-8'))), Date.now())
   } catch {
     mem = {}
   }

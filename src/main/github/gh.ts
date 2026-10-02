@@ -16,6 +16,9 @@ import type {
   PrReviewer,
   PrReviewerState,
 } from '../../shared/screenprs'
+import { isPrUrl } from '../../shared/screenprs'
+
+export { isPrUrl }
 
 /** Run `gh` and resolve its stdout. `allowFail` keeps stdout on a nonzero exit
  *  (e.g. `gh pr checks` returns 8 when a check is failing but still prints JSON).
@@ -204,28 +207,6 @@ export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
     runGh(['pr', 'checks', ref.url, '--json', 'name,state,bucket'], { allowFail: true }),
   ])
   return assembleMeta(ref, viewJson, checksJson, handle)
-}
-
-/**
- * True for a pull-request URL — `http(s)://<host>/<owner>/<repo>/pull/<n>`.
- *
- * `spawn` takes no shell, so there is nothing to inject; the hazard is that an
- * argument beginning with `-` is a FLAG, and `screenprs:pr-diff` takes its url
- * from whatever asked, including a socket. The host is deliberately not
- * constrained — enterprise instances are real — but the path is, so that the
- * check means what its name says rather than merely "some absolute URL".
- */
-const PR_PATH = /^\/[^/]+\/[^/]+\/pull\/\d+$/
-
-export function isPrUrl(value: string): boolean {
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    return false
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) return false
-  return PR_PATH.test(url.pathname.replace(/\/$/, ''))
 }
 
 /** The expensive-to-refetch half: the unified diff. Skipped on a cache hit. */
