@@ -38,6 +38,7 @@ import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor } from './screenprs'
 import { loadDrafts, applyOp as applyDraftOp } from './screenprs-drafts'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
+import { parseDraftOpRequest } from '../shared/review-drafts'
 import { startDeepReview, cancelDeepReview, cancelAllDeepReviews } from './deep-review'
 import { startOverview, cancelOverview, cancelAllOverviews } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
@@ -992,8 +993,9 @@ function registerAllHandlers(): void {
 
   handleInvoke('screenprs:drafts-load', () => loadDrafts())
 
-  handleInvoke('screenprs:draft-op', (_event, request: { url: string; op: PrReviewDraftOp }) => {
-    return applyAndBroadcastDraftOp(request.url, request.op)
+  handleInvoke('screenprs:draft-op', (_event, request: unknown) => {
+    const { url, op } = parseDraftOpRequest(request)
+    return applyAndBroadcastDraftOp(url, op)
   })
 
   // ── Tour ───────────────────────────────────────────────

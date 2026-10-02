@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyDraftOp, clearPostedOp, isEmptyDraft } from '../review-drafts'
+import { applyDraftOp, clearPostedOp, isEmptyDraft, parseDraftOpRequest, parseReviewDraft } from '../review-drafts'
 import { emptyReviewDraft, type PrReviewComment, type PrReviewDraft } from '../screenprs'
 
 const comment = (over: Partial<PrReviewComment> = {}): PrReviewComment => ({
@@ -104,5 +104,68 @@ describe('clear-posted', () => {
 
   it('is a no-op on a draft already cleared elsewhere', () => {
     expect(applyDraftOp(null, clearPostedOp(posted))).toBeNull()
+  })
+})
+
+describe('parseDraftOpRequest', () => {
+  const URL = 'https://github.com/acme/app/pull/7'
+  const req = (op: unknown, url: unknown = URL): unknown => ({ url, op })
+
+  it('passes every well-formed op through', () => {
+    const ops = [
+      { kind: 'add-comment', comment: comment({ side: 'LEFT', snippet: 'x', sha: 'abc' }) },
+      { kind: 'update-comment', id: 'c1', patch: { text: 'better', line: '6' } },
+      { kind: 'remove-comment', id: 'c1' },
+      { kind: 'set-summary', summary: 'LGTM' },
+      { kind: 'set-verdict', verdict: 'request_changes' },
+      { kind: 'clear' },
+      { kind: 'clear-posted', ids: ['c1'], summary: '', verdict: 'approve' },
+    ]
+    for (const op of ops) expect(parseDraftOpRequest(req(op))).toEqual({ url: URL, op })
+  })
+
+  it('rejects a url that is not a pull request, or too long', () => {
+    const op = { kind: 'clear' }
+    for (const url of ['u1', '__proto__', 'https://github.com/acme/app/issues/7', 42, `${URL}?${'x'.repeat(600)}`]) {
+      expect(() => parseDraftOpRequest(req(op, url))).toThrow(/pull-request URL/)
+    }
+  })
+
+  it('rejects an unknown kind or a mistyped field', () => {
+    const bad = [
+      null,
+      { kind: 'drop-table' },
+      { kind: 'add-comment', comment: { ...comment(), text: 5 } },
+      { kind: 'add-comment', comment: { ...comment(), source: 'admin' } },
+      { kind: 'add-comment', comment: { ...comment(), side: 'MIDDLE' } },
+      { kind: 'add-comment', comment: { ...comment(), id: '' } },
+      { kind: 'add-comment', comment: { id: 'c1', source: 'you', file: 'a.ts' } },
+      { kind: 'update-comment', id: 'c1', patch: { line: 6 } },
+      { kind: 'update-comment', id: 'c1' },
+      { kind: 'remove-comment', id: ['c1'] },
+      { kind: 'set-summary', summary: 'x'.repeat(64 * 1024 + 1) },
+      { kind: 'add-comment', comment: comment({ snippet: 'x'.repeat(64 * 1024 + 1) }) },
+      { kind: 'set-verdict', verdict: 'merge' },
+      { kind: 'clear-posted', ids: [1], summary: '', verdict: 'approve' },
+    ]
+    for (const op of bad) expect(() => parseDraftOpRequest(req(op)), JSON.stringify(op)?.slice(0, 80)).toThrow(/Malformed/)
+    expect(() => parseDraftOpRequest(null)).toThrow(/Malformed/)
+  })
+
+  it('stores only the fields it knows, and no empty head stamp', () => {
+    const op = { kind: 'add-comment', comment: { ...comment(), sha: '', extra: 'x'.repeat(1e6) } }
+    expect(parseDraftOpRequest(req(op)).op).toEqual({ kind: 'add-comment', comment: comment() })
+  })
+})
+
+describe('parseReviewDraft', () => {
+  it('drops a malformed comment and keeps the others', () => {
+    const raw = { comments: [comment(), { id: 'c2' }, 'x'], summary: 's', verdict: 'comment' }
+    expect(parseReviewDraft(raw)).toEqual({ comments: [comment()], summary: 's', verdict: 'comment' })
+  })
+
+  it('is null for something that is not a draft, or nothing left of one', () => {
+    expect(parseReviewDraft('x')).toBeNull()
+    expect(parseReviewDraft({ comments: [{}], summary: 3 })).toBeNull()
   })
 })
