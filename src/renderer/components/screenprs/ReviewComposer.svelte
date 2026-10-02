@@ -1,9 +1,29 @@
+<script lang="ts" module>
+  interface ListEdit {
+    id: string
+    initial: string
+    text: string
+  }
+  /**
+   * Per PR, the comment being edited in this list — the ones whose line is
+   * not in the diff, so there is no row to edit them under. Module-level for
+   * the same reason as PrDetail's line editors: typed text outlives a PR switch.
+   */
+  const listEditByUrl = $state<Record<string, ListEdit>>({})
+
+  /** Tests only: forget every open list editor. */
+  export function _resetListEditors(): void {
+    for (const url of Object.keys(listEditByUrl)) delete listEditByUrl[url]
+  }
+</script>
+
 <script lang="ts">
   import type { PrContext, PrReviewVerdict, PrReviewComment } from '../../../shared/screenprs'
   import { describeFolds } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import ConfirmReviewModal from './ConfirmReviewModal.svelte'
   import { SOURCE_CLASS } from './commentSource'
+  import InlineCommentEditor from './InlineCommentEditor.svelte'
 
   interface Props {
     context: PrContext
@@ -23,6 +43,20 @@
   let headSha = $derived(context.headSha)
   // Only the isolated compare diff has old-side numbers that aren't GitHub's.
   let isolatedBase = $derived(context.base?.kind === 'polluted' && context.base.isolated)
+
+  let listEdit = $derived(listEditByUrl[url] ?? null)
+  let listEditor = $state<InlineCommentEditor>()
+
+  function editInList(c: PrReviewComment): void {
+    const start = (): void => {
+      listEditByUrl[url] = { id: c.id, initial: c.text, text: c.text }
+    }
+    if (listEdit && listEditor) listEditor.confirmLeave(start)
+    else start()
+  }
+  function closeListEdit(): void {
+    delete listEditByUrl[url]
+  }
 
   let open = $state(false)
   let confirming = $state(false)
@@ -94,10 +128,24 @@
                       {#if c.side === 'LEFT'}<span class="ml-1 text-red-400/80">· deleted line</span>{/if}
                     </span>
                   {/if}
-                  <span class="whitespace-pre-wrap text-[11.5px] text-zinc-200">{c.text}</span>
+                  {#if listEdit?.id === c.id}
+                    <InlineCommentEditor
+                      bind:this={listEditor}
+                      bind:text={() => listEdit?.text ?? '', (v) => { if (listEdit) listEdit.text = v }}
+                      initial={listEdit.initial}
+                      label="Edit comment"
+                      onsubmit={(text) => { screenPrsStore.updateComment(url, c.id, { text }); closeListEdit() }}
+                      oncancel={closeListEdit}
+                      ondelete={() => { screenPrsStore.removeComment(url, c.id); closeListEdit() }}
+                    />
+                  {:else}
+                    <span class="whitespace-pre-wrap text-[11.5px] text-zinc-200">{c.text}</span>
+                  {/if}
                 </div>
                 {#if inDiff && onedit}
                   <button class="flex-none rounded px-1.5 text-[10.5px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" title="Edit in the diff" onclick={() => onedit(c)}>Edit</button>
+                {:else if listEdit?.id !== c.id}
+                  <button class="flex-none rounded px-1.5 text-[10.5px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" title="Edit" onclick={() => editInList(c)}>Edit</button>
                 {/if}
                 <button class="flex-none rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-red-400" title="Remove" onclick={() => screenPrsStore.removeComment(url, c.id)}>×</button>
               </div>

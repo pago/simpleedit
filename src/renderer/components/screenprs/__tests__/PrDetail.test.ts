@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, within } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
-import PrDetail from '../PrDetail.svelte'
+import PrDetail, { _resetInlineEditors } from '../PrDetail.svelte'
+import { _resetListEditors } from '../ReviewComposer.svelte'
 import type { BaseAnalysis, PrContext, PrReviewDraft } from '../../../../shared/screenprs'
 import { applyDraftOp, type PrReviewDraftOp } from '../../../../shared/review-drafts'
 
@@ -219,6 +220,8 @@ describe('desktop PR detail — inline comments', () => {
   async function store(): Promise<typeof import('../../../stores/screenprs.svelte').screenPrsStore> {
     const { screenPrsStore } = await import('../../../stores/screenprs.svelte')
     screenPrsStore.resetSubmitted(URL_)
+    _resetInlineEditors()
+    _resetListEditors()
     for (const c of screenPrsStore.draftFor(URL_).comments) screenPrsStore.removeComment(URL_, c.id)
     return screenPrsStore
   }
@@ -327,8 +330,8 @@ describe('desktop PR detail — inline comments', () => {
     const items = await screen.findAllByTestId('composer-comment')
     expect(items[0]).toHaveTextContent('· deleted line')
     expect(items[1]).not.toHaveTextContent('deleted line')
-    // Off the diff: nothing to reveal or edit in place.
-    expect(within(items[1]).queryByText('Edit')).toBeNull()
+    // Off the diff: nothing to reveal.
+    expect(within(items[1]).queryByRole('button', { name: /src\/x\.ts:99/ })).toBeNull()
 
     within(items[0]).getByText('src/x.ts:11').click()
     await vi.waitFor(() => expect(container.querySelector('[data-revealed]')).toHaveTextContent('const gone = 2'))
@@ -337,5 +340,43 @@ describe('desktop PR detail — inline comments', () => {
     await vi.waitFor(() => expect(field().value).toBe('gone?'))
     expect(screen.getByText('Comment on deleted line 11')).toBeInTheDocument()
     vi.restoreAllMocks()
+  })
+
+  it('edits a comment whose line is not in the diff right in the composer list', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'triage', file: 'src/x.ts', line: '99', text: 'off the diff', sha: 'head-x' })
+    render(PrDetail, { props: { context: ctx } })
+    screen.getByText('📝 Review to post').click()
+    const item = (await screen.findAllByTestId('composer-comment'))[0]
+    within(item).getByText('Edit').click()
+    await vi.waitFor(() => expect(field().value).toBe('off the diff'))
+    await fireEvent.input(field(), { target: { value: 'off the diff, reworded' } })
+    await fireEvent.keyDown(field(), { key: 'Enter', metaKey: true })
+    expect(s.draftFor(URL_).comments[0].text).toBe('off the diff, reworded')
+    await vi.waitFor(() => expect(screen.queryByTestId('inline-comment-editor')).toBeNull())
+  })
+
+  it('keeps each PR’s half-written comment across switching PRs, and one PR’s editor never touches another’s', async () => {
+    await store()
+    const other: PrContext = { ...ctx, url: 'https://github.com/ivx/ui-pack/pull/2801', number: 2801 }
+    const { rerender, unmount } = render(PrDetail, { props: { context: ctx } })
+    await fireEvent.click(plus(2))
+    await fireEvent.input(field(), { target: { value: 'half-written' } })
+
+    await rerender({ context: other })
+    expect(screen.queryByTestId('inline-comment-editor')).toBeNull()
+    await fireEvent.click(plus(0))
+    expect(screen.queryByTestId('inline-comment-discard')).toBeNull()
+    await fireEvent.input(field(), { target: { value: 'on the other PR' } })
+
+    await rerender({ context: ctx })
+    expect(screen.getByText('Comment on line 11')).toBeInTheDocument()
+    expect(field().value).toBe('half-written')
+
+    // Survives the view remounting, too.
+    unmount()
+    render(PrDetail, { props: { context: other } })
+    expect(screen.getByText('Comment on line 10')).toBeInTheDocument()
+    expect(field().value).toBe('on the other PR')
   })
 })
