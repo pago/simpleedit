@@ -101,7 +101,7 @@ async function confirmPost(): Promise<void> {
   await waitFor(() => expect(submitCalls()).toHaveLength(1))
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   nav.reset()
   mainDrafts = new Map()
   submitResult = async () => ({ ok: true, folded: { count: 0, reasons: {} } })
@@ -110,6 +110,7 @@ beforeEach(() => {
     if (channel === 'screenprs:pr-diff') return diffResult()
     if (channel === 'stt:status') return { installed: false, binary: null, modelPath: null, modelReady: false, ready: false, hint: 'not installed.' }
     if (channel === 'screenprs:submit-review') return submitResult()
+    if (channel === 'screenprs:drafts-load') return { drafts: Object.fromEntries(mainDrafts), rev: ++mainRev }
     if (channel === 'screenprs:draft-op') {
       const { url, op } = args[0] as { url: string; op: PrReviewDraftOp }
       const draft = applyDraftOp(mainDrafts.get(url) ?? null, op)
@@ -124,6 +125,7 @@ beforeEach(() => {
   // The store and the verdict choice are module singletons; a test must not
   // inherit the previous one's draft.
   screenPrsStore.resetSubmitted(URL_)
+  await screenPrsStore.loadDrafts() // main holds none: the mirror empties
   verdictChoice.reset(URL_)
   unknownOutcome.clear(URL_)
   screenPrsStore._onDeepResult(URL_, [], '')
@@ -362,6 +364,21 @@ describe('PR detail — the path to GitHub', () => {
     await confirmPost()
     expect(postedComments()[0].line).toBe('11')
     expect(sentRequest()).toMatchObject({ headSha: 'sha1', isolatedBase: false, clearDraft: true })
+  })
+
+  it('shows a change main refused in the review sheet', async () => {
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'screenprs:pr-diff') return diffResult()
+      if (channel === 'screenprs:draft-op') throw new Error('disk full')
+      return undefined
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    render(PrDetail, { pr: CARD, connected: true })
+    screenPrsStore.addComment(URL_, { source: 'you', file: 'src/gate.ts', line: '11', text: 'refused', sha: 'sha1' })
+    expect(await screen.findByTestId('draft-notice')).toHaveTextContent("couldn't be saved")
+    await fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('draft-notice')).toBeNull()
+    vi.restoreAllMocks()
   })
 
   it('folds an anchor it cannot check rather than posting it', async () => {

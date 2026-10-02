@@ -112,6 +112,13 @@ const _held = new Set<string>()
  */
 const _pendingSummary = new Map<string, { text: string; timer: ReturnType<typeof setTimeout> }>()
 const SUMMARY_DEBOUNCE_MS = 400
+/**
+ * Ops a dropped connection never got answered, per PR and in order. They stay
+ * applied over every server state until a reconnect resends them.
+ */
+const _unsent = new Map<string, PrReviewDraftOp[]>()
+/** Why a change to a PR's draft was undone, until dismissed. */
+let _notices = $state<Map<string, string>>(new Map())
 
 function setMirror(url: string, draft: PrReviewDraft | null): void {
   const next = new Map(_drafts)
@@ -123,6 +130,7 @@ function setMirror(url: string, draft: PrReviewDraft | null): void {
 function applyServer(url: string): void {
   _held.delete(url)
   let draft = _server.get(url)?.draft ?? null
+  for (const op of _unsent.get(url) ?? []) draft = applyDraftOp(draft, op)
   const pending = _pendingSummary.get(url)
   if (pending) draft = applyDraftOp(draft, { kind: 'set-summary', summary: pending.text })
   setMirror(url, draft)
@@ -135,14 +143,46 @@ function receiveServer(url: string, state: DraftOpResult): void {
   else applyServer(url)
 }
 
+/**
+ * The connection died with the op (the phone's socket), as opposed to main
+ * answering it with an error. Matched by name: the error classes live in the
+ * web shim, which the desktop build never loads.
+ */
+function isTransportFailure(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'NotSentError' || err.name === 'ConnectionLostError')
+}
+
+function setNotice(url: string, notice: string | null): void {
+  const next = new Map(_notices)
+  if (notice) next.set(url, notice)
+  else next.delete(url)
+  _notices = next
+}
+
 function sendOp(url: string, op: PrReviewDraftOp): void {
+  // Behind an op still waiting to be resent, so a replay keeps their order.
+  const waiting = _unsent.get(url)
+  if (waiting) {
+    waiting.push(op)
+    return
+  }
   _inFlight.set(url, (_inFlight.get(url) ?? 0) + 1)
   window.api
     .invoke('screenprs:draft-op', { url, op })
     .then((res) => receiveServer(url, res))
-    // The optimistic change stays: the op may yet have reached main, and the
-    // next server state for this PR — a broadcast or a reload — settles it.
-    .catch((err: unknown) => console.warn('[screenprs] draft op failed:', err))
+    .catch((err: unknown) => {
+      if (isTransportFailure(err)) {
+        // Kept, optimistic change and all, for `loadDrafts` to replay on
+        // reconnect. Comment ops are idempotent, so one that did reach main
+        // replays as a no-op; a summary or verdict lands again as this
+        // client's last word on it.
+        _unsent.set(url, [...(_unsent.get(url) ?? []), op])
+        return
+      }
+      console.warn('[screenprs] draft op failed:', err)
+      setNotice(url, "A change to this review couldn't be saved, so it was undone.")
+      _held.add(url)
+    })
     .finally(() => {
       const left = (_inFlight.get(url) ?? 1) - 1
       if (left > 0) {
@@ -152,6 +192,13 @@ function sendOp(url: string, op: PrReviewDraftOp): void {
       _inFlight.delete(url)
       if (_held.has(url)) applyServer(url)
     })
+}
+
+/** Resend what a lost connection left unsent, in the order it was made. */
+function replayUnsent(): void {
+  const all = [..._unsent]
+  _unsent.clear()
+  for (const [url, ops] of all) for (const op of ops) sendOp(url, op)
 }
 
 function localOp(url: string, op: PrReviewDraftOp): void {
@@ -323,8 +370,19 @@ export const screenPrsStore = {
   setVerdict(url: string, verdict: PrReviewVerdict): void {
     localOp(url, { kind: 'set-verdict', verdict })
   },
-  /** Replace the mirror with main's drafts — at start, and after a reconnect missed broadcasts. */
+  draftNoticeFor(url: string): string | undefined {
+    return _notices.get(url)
+  },
+  dismissDraftNotice(url: string): void {
+    setNotice(url, null)
+  },
+  /**
+   * Replace the mirror with main's drafts — at start, and after a reconnect
+   * missed broadcasts — with this client's unsent ops replayed over them.
+   */
   async loadDrafts(): Promise<void> {
+    // Sent first: main answers in order, so the snapshot already holds them.
+    replayUnsent()
     try {
       const { drafts, rev } = await window.api.invoke('screenprs:drafts-load')
       const urls = new Set([..._server.keys(), ..._drafts.keys(), ...Object.keys(drafts)])
@@ -357,12 +415,10 @@ export const screenPrsStore = {
         const next = new Map(_submitted)
         next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, folded: res.folded, draftCleared: opts?.clearDraft })
         _submitted = next
-        if (opts?.clearDraft) {
-          // Main has cleared the draft; a summary still waiting to be sent would
-          // bring the posted text back as a fresh one.
-          dropPendingSummary(url)
-          setMirror(url, null)
-        }
+        // The mirror is left for main's post-clear broadcast to settle: it keeps
+        // whatever was added while the post was in flight. Only a summary that
+        // is exactly what was posted goes, or it would come back as a new one.
+        if (opts?.clearDraft && _pendingSummary.get(url)?.text === draft.summary) dropPendingSummary(url)
       }
       return res
     } finally {
@@ -371,18 +427,14 @@ export const screenPrsStore = {
       _submitting = s
     }
   },
-  /** Clear the local "submitted" marker so a follow-up review can be composed,
-   *  starting from an empty draft unless the post left the stored one standing.
+  /** Clear the local "submitted" marker so a follow-up review can be composed.
+   *  The draft is not touched: a post that took it has already had main clear
+   *  it, and anything added since is the follow-up's.
    *  Does NOT retract the posted review — GitHub has no such API. */
   resetSubmitted(url: string): void {
-    const posted = _submitted.get(url)
     const next = new Map(_submitted)
     next.delete(url)
     _submitted = next
-    if (posted && !posted.draftCleared) return
-    dropPendingSummary(url)
-    setMirror(url, null)
-    sendOp(url, { kind: 'clear' })
   },
   _onDraftChanged(url: string, state: DraftOpResult): void {
     receiveServer(url, state)

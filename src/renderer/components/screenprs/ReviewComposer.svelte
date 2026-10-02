@@ -40,6 +40,7 @@
   let submitted = $derived(screenPrsStore.submittedFor(url))
   let submitting = $derived(screenPrsStore.isSubmitting(url))
   let draftError = $derived(screenPrsStore.draftError(url))
+  let notice = $derived(screenPrsStore.draftNoticeFor(url))
   let headSha = $derived(context.headSha)
   // Only the isolated compare diff has old-side numbers that aren't GitHub's.
   let isolatedBase = $derived(context.base?.kind === 'polluted' && context.base.isolated)
@@ -107,6 +108,12 @@
       <span class="text-[11px] text-zinc-500">{VERDICT_LABEL[draft.verdict]}</span>
     </button>
 
+    {#if notice}
+      <div class="mx-5 mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200" data-testid="draft-notice">
+        <span class="flex-1">{notice}</span>
+        <button class="flex-none text-amber-300/80 hover:text-amber-100" title="Dismiss" onclick={() => screenPrsStore.dismissDraftNotice(url)}>×</button>
+      </div>
+    {/if}
     {#if open}
       <div class="flex max-h-[42vh] flex-col gap-2.5 overflow-y-auto px-5 pb-4 pt-0.5">
         <!-- collected line comments -->

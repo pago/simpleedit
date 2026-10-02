@@ -171,6 +171,10 @@ describe('api-shim outbox', () => {
 
     await expect(sent).rejects.not.toBeInstanceOf(NotSentError)
     await expect(held).rejects.toBeInstanceOf(NotSentError)
+    // By name, too: the draft store tells a lost connection from a refusal
+    // without importing this module.
+    await expect(sent).rejects.toMatchObject({ name: 'ConnectionLostError' })
+    await expect(held).rejects.toMatchObject({ name: 'NotSentError' })
   })
 
   it('still delivers a call made while waiting for the reconnect', async () => {

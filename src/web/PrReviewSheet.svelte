@@ -73,6 +73,7 @@
   let draftError = $derived(screenPrsStore.draftError(url))
   let chosen = $derived(verdictChoice.made(url))
   let latched = $derived(unknownOutcome.pending(url))
+  let notice = $derived(screenPrsStore.draftNoticeFor(url))
 
   let open = $state(false)
   // Both overlays are layers on the navigation stack, so Back dismisses them —
@@ -216,6 +217,20 @@
       <span class="text-[11px] text-zinc-500">{chosen ? VERDICT_LABEL[draft.verdict] : 'no verdict'}</span>
     </button>
 
+    {#if notice}
+      <div
+        class="mx-3 mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200"
+        data-testid="draft-notice"
+      >
+        <span class="flex-1">{notice}</span>
+        <button
+          type="button"
+          onclick={() => screenPrsStore.dismissDraftNotice(url)}
+          aria-label="Dismiss"
+          class="flex-none px-1.5 text-amber-300/80"
+        >×</button>
+      </div>
+    {/if}
     {#if open}
       <div class="flex max-h-[52vh] flex-col gap-2.5 overflow-y-auto px-3 pb-3">
         {#if outcome}
