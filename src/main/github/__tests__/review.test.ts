@@ -141,7 +141,7 @@ describe('submitReview', () => {
     expect(retry.comments).toEqual([])
     expect(retry.body).toContain('a.ts:11 — n')
     expect(retry.body).toContain('a.ts:40 — n')
-    expect(retry.commit_id).toBeUndefined()
+    expect(retry.commit_id).toBe(HEAD)
     expect(res.folded).toEqual({ count: 2, reasons: { rejected: 2 } })
   })
 })
@@ -165,6 +165,15 @@ describe('handleSubmitReview', () => {
     const clear = vi.fn()
     post.mockRejectedValueOnce(new Error('HTTP 401'))
     expect(await handleSubmitReview(request([], { clearDraft: true }), clear)).toEqual({ ok: false, error: 'HTTP 401' })
+    expect(clear).not.toHaveBeenCalled()
+  })
+
+  it('posts nothing unpinned when the reviewed head has left the PR', async () => {
+    const clear = vi.fn()
+    post.mockRejectedValueOnce(new Error('HTTP 422')).mockRejectedValueOnce(new Error('HTTP 422 Unprocessable Entity'))
+    const res = await handleSubmitReview(request([you({ line: '11' })], { clearDraft: true, draft: { comments: [you({ line: '11' })], summary: '', verdict: 'approve' } }), clear)
+    expect(res).toEqual({ ok: false, error: expect.stringMatching(/no longer on the PR.*Nothing was posted/) })
+    expect(posted().map((p) => p.commit_id)).toEqual([HEAD, HEAD])
     expect(clear).not.toHaveBeenCalled()
   })
 
