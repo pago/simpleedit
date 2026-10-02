@@ -177,7 +177,16 @@ describe('PR detail — the path to GitHub', () => {
     expect(request.draft.verdict).toBe('request_changes')
     expect(request.draft.comments).toEqual([
       // Stamped with the head its line was read off — see the head-move tests.
-      { id: expect.any(String), source: 'you', file: 'src/gate.ts', line: '11', text: 'this gate is inverted', sha: 'sha1' },
+      {
+        id: expect.any(String),
+        source: 'you',
+        file: 'src/gate.ts',
+        line: '11',
+        side: 'RIGHT',
+        snippet: 'const added = 2',
+        text: 'this gate is inverted',
+        sha: 'sha1',
+      },
     ])
     await screen.findByTestId('review-submitted')
   })
@@ -525,6 +534,63 @@ describe('PR detail — the path to GitHub', () => {
     await tick()
     expect(screen.queryByTestId('compose-sheet')).toBeNull()
     expect(screen.queryByTestId('compose-discard-confirm')).toBeNull()
+  })
+
+  /** Every `update-comment` op the phone sent to main. */
+  function updateOps(): PrReviewDraftOp[] {
+    return invoke.mock.calls
+      .filter(([ch]) => ch === 'screenprs:draft-op')
+      .map(([, req]) => (req as { op: PrReviewDraftOp }).op)
+      .filter((op) => op.kind === 'update-comment')
+  }
+
+  it('edits a draft comment by tapping it under its line', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+    await fireEvent.click(await screen.findByTestId('inline-comment'))
+
+    const field = screen.getByTestId('composer-text')
+    expect(field).toHaveValue('this gate is inverted')
+    await fireEvent.input(field, { target: { value: 'this gate is backwards' } })
+    await fireEvent.click(screen.getByTestId('composer-send'))
+    await waitFor(() => expect(screen.queryByTestId('compose-sheet')).toBeNull())
+
+    const id = mainDrafts.get(URL_)!.comments[0].id
+    expect(updateOps()).toEqual([{ kind: 'update-comment', id, patch: { text: 'this gate is backwards' } }])
+    await waitFor(() => expect(screen.getByTestId('inline-comment')).toHaveTextContent('this gate is backwards'))
+    expect(mainDrafts.get(URL_)!.comments).toHaveLength(1)
+  })
+
+  it('lets Back leave an unchanged edit without asking, and asks once it changed', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+
+    await fireEvent.click(await screen.findByTestId('inline-comment'))
+    nav.back()
+    await tick()
+    expect(screen.queryByTestId('compose-sheet')).toBeNull()
+    expect(screen.queryByTestId('compose-discard-confirm')).toBeNull()
+
+    await fireEvent.click(screen.getByTestId('inline-comment'))
+    await fireEvent.input(screen.getByTestId('composer-text'), { target: { value: 'second thoughts' } })
+    nav.back()
+    await tick()
+    expect(screen.getByTestId('compose-discard-confirm')).toBeInTheDocument()
+    await fireEvent.click(screen.getByTestId('compose-discard-confirmed'))
+    expect(updateOps()).toEqual([])
+    expect(screen.getByTestId('inline-comment')).toHaveTextContent('this gate is inverted')
+  })
+
+  it('deletes a draft comment from its edit sheet', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+    await fireEvent.click(await screen.findByTestId('inline-comment'))
+    await fireEvent.click(screen.getByTestId('compose-delete'))
+
+    expect(screen.queryByTestId('compose-sheet')).toBeNull()
+    await waitFor(() => expect(screen.queryByTestId('inline-comment')).toBeNull())
+    expect(mainDrafts.get(URL_)?.comments ?? []).toHaveLength(0)
+    expect(nav.stack()).toEqual([])
   })
 
   it('will not let Back take the confirm away while a post is in flight', async () => {

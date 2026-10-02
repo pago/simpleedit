@@ -33,8 +33,9 @@ export type SubmitOutcome =
 /** What a tap on a diff line hands to the comment sheet. */
 export interface CommentTarget {
   file: string
-  /** Absent when the tapped line has no RIGHT-side number — i.e. a deletion. */
-  line?: string
+  line: string
+  /** `LEFT` for a deleted row, whose `line` counts in the old file. */
+  side: 'LEFT' | 'RIGHT'
   /** The line as it reads in the diff, shown once the keyboard covers the code. */
   snippet: string
 }

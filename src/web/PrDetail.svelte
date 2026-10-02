@@ -20,6 +20,7 @@
     DeepFinding,
     DeepSeverity,
     PrRef,
+    PrReviewComment,
     TriageFinding,
     PrCiStatus,
   } from '../shared/screenprs'
@@ -120,15 +121,28 @@
 
   // ── line comments ──
   // The sheet is a layer on the navigation stack, so Back dismisses it — after
-  // asking, when there is text in it.
+  // asking, when there is text in it. A new comment and an edit share it.
   let target = $state<CommentTarget | null>(null)
+  let editing = $state<PrReviewComment | null>(null)
   let composeId = $state<number | null>(null)
   let composeSheet = $state<ComposeSheet | undefined>()
 
-  function openCompose(next: CommentTarget): void {
-    target = next
+  function pushCompose(): void {
     composeId = nav.push({ kind: 'compose', url }, () => composeSheet?.holdForDraft() ?? false).id
   }
+  function openCompose(next: CommentTarget): void {
+    target = next
+    editing = null
+    pushCompose()
+  }
+  function openEdit(c: PrReviewComment): void {
+    target = null
+    editing = c
+    pushCompose()
+  }
+
+  const where = (file: string, line: string | undefined, side: 'LEFT' | 'RIGHT' | undefined): string =>
+    `${file}${line ? `:${line}` : ''}${side === 'LEFT' ? ' · deleted line' : ''}`
 
   /**
    * A comment is stamped with the head ITS OWN line was computed against, which
@@ -147,7 +161,15 @@
   function addLineComment(text: string): void {
     const t = target
     if (!t) return
-    screenPrsStore.addComment(url, { source: 'you', file: t.file, line: t.line, text, sha: headSha || undefined })
+    screenPrsStore.addComment(url, {
+      source: 'you',
+      file: t.file,
+      line: t.line,
+      side: t.side,
+      snippet: t.snippet,
+      text,
+      sha: headSha || undefined,
+    })
   }
 
   function addTriage(f: TriageFinding): void {
@@ -409,7 +431,7 @@
     {:else if loadingDiff}
       <p class="p-4 text-[12px] text-zinc-500" data-testid="diff-loading">Fetching the diff…</p>
     {:else}
-      <PrDiff bind:this={prDiff} {diff} comments={draft.comments} oncomment={openCompose} />
+      <PrDiff bind:this={prDiff} {diff} comments={draft.comments} oncomment={openCompose} onedit={openEdit} />
     {/if}
   </div>
 
@@ -419,14 +441,24 @@
 {#if target && nav.has(composeId)}
   <ComposeSheet
     bind:this={composeSheet}
-    title="{target.file}{target.line ? `:${target.line}` : ''}"
+    title={where(target.file, target.line, target.side)}
     snippet={target.snippet}
-    note={target.line
-      ? undefined
-      : 'A removed line has no place in the new file to pin a comment to, so this one goes in the review summary tagged with the file.'}
     sendLabel="Add"
     placeholder="What about this line?"
     onadd={addLineComment}
+    onclose={() => nav.close(composeId)}
+  />
+{:else if editing && nav.has(composeId)}
+  {@const id = editing.id}
+  <ComposeSheet
+    bind:this={composeSheet}
+    title={where(editing.file, editing.line, editing.side)}
+    snippet={editing.snippet}
+    initial={editing.text}
+    sendLabel="Save"
+    placeholder="What about this line?"
+    onadd={(text) => screenPrsStore.updateComment(url, id, { text })}
+    ondelete={() => screenPrsStore.removeComment(url, id)}
     onclose={() => nav.close(composeId)}
   />
 {/if}
