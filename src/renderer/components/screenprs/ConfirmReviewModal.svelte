@@ -1,11 +1,13 @@
 <script lang="ts">
   import type { PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
-  import { buildReviewPayload } from '../../../shared/screenprs'
+  import { anchorCounts, anchorsForHead, buildReviewPayload } from '../../../shared/screenprs'
 
   let {
     repo,
     number,
     draft,
+    headSha,
+    isolatedBase = false,
     submitting = false,
     error = null,
     onconfirm,
@@ -13,17 +15,26 @@
   }: {
     repo: string
     number: number
+    /** The raw draft — re-anchored here for `headSha`, as main does before posting. */
     draft: PrReviewDraft
+    /** The head on screen. Absent: the draft's anchors are previewed as they stand. */
+    headSha?: string
+    isolatedBase?: boolean
     submitting?: boolean
     error?: string | null
     onconfirm: () => void
     oncancel: () => void
   } = $props()
 
-  // Show exactly what will hit GitHub — the anchored/folded split is computed by
-  // the same pure builder the main process posts with, so the preview can't drift.
-  let payload = $derived(buildReviewPayload(draft))
+  // Show what will hit GitHub — the anchored/folded split is computed by the
+  // same pure builder the main process posts with, so the preview can't drift.
+  // Only main's check against GitHub's own diff is missing here: it can fold
+  // more, never fewer.
+  let payload = $derived(buildReviewPayload(headSha ? anchorsForHead(draft, headSha) : draft, { isolatedBase }))
   let foldedCount = $derived(draft.comments.length - payload.comments.length)
+  // Counted on the raw draft: after `anchorsForHead` a moved anchor looks like
+  // a note that never had a line.
+  let anchors = $derived(headSha ? anchorCounts(draft, headSha) : null)
 
   const VERDICT: Record<PrReviewVerdict, { label: string; tone: 'approve' | 'comment' | 'request' }> = {
     approve: { label: 'Approve', tone: 'approve' },
@@ -73,9 +84,20 @@
       <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-400">
         <span><b class="text-zinc-200">{payload.comments.length}</b> line comment{payload.comments.length === 1 ? '' : 's'} anchored</span>
         {#if foldedCount > 0}
-          <span class="text-amber-300/90">{foldedCount} folded into the summary (no diff anchor)</span>
+          <span class="text-amber-300/90" data-testid="confirm-folded">{foldedCount} folded into the summary (no diff anchor)</span>
         {/if}
       </div>
+      {#if anchors && anchors.moved > 0}
+        <p class="text-[11px] leading-relaxed text-amber-300/90" data-testid="confirm-moved">
+          {anchors.moved} written against an earlier commit — the branch has moved, so
+          {anchors.moved === 1 ? 'that line no longer points' : 'those lines no longer point'} at the code you read.
+        </p>
+      {/if}
+      {#if anchors && anchors.unverified > 0}
+        <p class="text-[11px] leading-relaxed text-amber-300/90" data-testid="confirm-unverified">
+          {anchors.unverified} that can’t be checked against this branch’s current commit.
+        </p>
+      {/if}
       {#if payload.body.trim()}
         <div class="mt-1">
           <div class="mb-1 text-[10px] uppercase tracking-wider text-zinc-600">Summary body</div>

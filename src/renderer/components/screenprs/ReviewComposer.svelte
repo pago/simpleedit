@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PrContext, PrReviewVerdict, PrReviewCommentSource } from '../../../shared/screenprs'
+  import { describeFolds } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import ConfirmReviewModal from './ConfirmReviewModal.svelte'
 
@@ -10,6 +11,9 @@
   let submitted = $derived(screenPrsStore.submittedFor(url))
   let submitting = $derived(screenPrsStore.isSubmitting(url))
   let draftError = $derived(screenPrsStore.draftError(url))
+  let headSha = $derived(context.headSha)
+  // Only the isolated compare diff has old-side numbers that aren't GitHub's.
+  let isolatedBase = $derived(context.base?.kind === 'polluted' && context.base.isolated)
 
   let open = $state(false)
   let confirming = $state(false)
@@ -32,7 +36,7 @@
   async function confirmPost(): Promise<void> {
     error = null
     try {
-      const res = await screenPrsStore.submitReview(context, draft)
+      const res = await screenPrsStore.submitReview(context, draft, { headSha, isolatedBase })
       if (!res.ok) error = res.error
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -46,8 +50,9 @@
   {#if submitted}
     <div class="flex items-center gap-2 px-5 py-3 text-[12px] text-emerald-300">
       <span class="font-medium">✓ Review submitted to GitHub — {VERDICT_LABEL[submitted.verdict].replace(/^[✓⟳]\s*/, '')}</span>
-      {#if submitted.foldedComments}
-        <span class="text-[10.5px] text-amber-300/80">(some comments couldn’t anchor to the diff — folded into the summary)</span>
+      {#if submitted.folded.count > 0}
+        <span class="text-[10.5px] text-amber-300/80" data-testid="review-folded"
+          >({submitted.folded.count} comment{submitted.folded.count === 1 ? '' : 's'} folded into the summary: {describeFolds(submitted.folded)})</span>
       {/if}
       <div class="flex-1"></div>
       {#if submitted.reviewUrl}
@@ -133,6 +138,8 @@
     repo={context.repo}
     number={context.number}
     {draft}
+    {headSha}
+    {isolatedBase}
     {submitting}
     onconfirm={confirmPost}
     oncancel={() => (confirming = false)}
