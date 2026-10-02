@@ -70,6 +70,7 @@ describe('desktop PR detail — overview', () => {
     const { screenPrsStore } = await import('../../../stores/screenprs.svelte')
     screenPrsStore._onOverviewStatus(URL_, 'idle')
     screenPrsStore.resetSubmitted(URL_)
+    await screenPrsStore.loadDrafts() // main holds none: the mirror empties
   })
 
   async function withOverview(): Promise<typeof import('../../../stores/screenprs.svelte').screenPrsStore> {
@@ -142,6 +143,7 @@ describe('desktop PR detail — anchoring a review to the head', () => {
   async function store(): Promise<typeof import('../../../stores/screenprs.svelte').screenPrsStore> {
     const { screenPrsStore } = await import('../../../stores/screenprs.svelte')
     screenPrsStore.resetSubmitted(URL_)
+    await screenPrsStore.loadDrafts() // main holds none: the mirror empties
     screenPrsStore._onDeepStatus(URL_, 'idle')
     return screenPrsStore
   }
@@ -221,6 +223,7 @@ describe('desktop PR detail — inline comments', () => {
   async function store(): Promise<typeof import('../../../stores/screenprs.svelte').screenPrsStore> {
     const { screenPrsStore } = await import('../../../stores/screenprs.svelte')
     screenPrsStore.resetSubmitted(URL_)
+    await screenPrsStore.loadDrafts() // main holds none: the mirror empties
     _resetInlineEditors()
     _resetListEditors()
     for (const c of screenPrsStore.draftFor(URL_).comments) screenPrsStore.removeComment(URL_, c.id)
@@ -355,6 +358,24 @@ describe('desktop PR detail — inline comments', () => {
     await fireEvent.keyDown(field(), { key: 'Enter', metaKey: true })
     expect(s.draftFor(URL_).comments[0].text).toBe('off the diff, reworded')
     await vi.waitFor(() => expect(screen.queryByTestId('inline-comment-editor')).toBeNull())
+  })
+
+  it('says so when main refuses a change, until dismissed', async () => {
+    const s = await store()
+    const invoke = window.api.invoke as Mock
+    const answer = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'screenprs:draft-op') throw new Error('disk full')
+      return answer(channel, ...args)
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    render(PrDetail, { props: { context: ctx } })
+    s.addComment(URL_, { source: 'you', file: 'src/x.ts', line: '12', text: 'lost', sha: 'head-x' })
+    expect(await screen.findByTestId('draft-notice')).toHaveTextContent("couldn't be saved")
+    expect(s.draftFor(URL_).comments).toEqual([])
+    within(screen.getByTestId('draft-notice')).getByTitle('Dismiss').click()
+    await vi.waitFor(() => expect(screen.queryByTestId('draft-notice')).toBeNull())
+    vi.restoreAllMocks()
   })
 
   it('keeps each PR’s half-written comment across switching PRs, and one PR’s editor never touches another’s', async () => {

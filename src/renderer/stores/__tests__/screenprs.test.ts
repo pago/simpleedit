@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screenPrsStore, initScreenPrsListeners } from '../screenprs.svelte'
 import type { EventMap } from '../../../shared/ipc-types'
 import { bucketOf, emptyReviewDraft, type ScreenPrCard, type PrContext, type PrReviewDraft } from '../../../shared/screenprs'
-import type { DraftOpResult } from '../../../shared/review-drafts'
+import { applyDraftOp, type DraftOpResult, type PrReviewDraftOp } from '../../../shared/review-drafts'
 
 type Handlers = {
   'screenprs:queued'?: (d: EventMap['screenprs:queued']) => void
@@ -269,20 +269,123 @@ describe('screenPrsStore draft mirror', () => {
     }
   })
 
-  it('clears the draft in main on "compose another" after posting it', async () => {
+  it('leaves a posted draft for main to clear, keeping what was added mid-post', async () => {
     handlers['screenprs:draft-changed']!({ url: 'd8', draft: draft({ summary: 's' }), rev: next() })
+    const posted = screenPrsStore.draftFor('d8')
+    let stored: PrReviewDraft | null = posted
     vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
       if (channel === 'screenprs:submit-review') return { ok: true, folded: { count: 0, reasons: {} } }
-      if (channel === 'screenprs:draft-op') opCalls.push(args[0] as { url: string; op: { kind: string } })
+      if (channel === 'screenprs:draft-op') {
+        const call = args[0] as { url: string; op: PrReviewDraftOp }
+        opCalls.push(call)
+        stored = applyDraftOp(stored, call.op)
+        return { draft: stored, rev: next() }
+      }
       return undefined
     })
     const pr = { owner: 'acme', repo: 'ui', number: 8, url: 'd8' }
-    await screenPrsStore.submitReview(pr, screenPrsStore.draftFor('d8'), { clearDraft: true })
+    const submitting = screenPrsStore.submitReview(pr, posted, { clearDraft: true })
+    screenPrsStore.addComment('d8', { source: 'you', file: 'a.ts', line: '3', text: 'while posting' })
+    await submitting
     expect(vi.mocked(window.api.invoke)).toHaveBeenCalledWith('screenprs:submit-review', expect.objectContaining({ clearDraft: true }))
     expect(screenPrsStore.submittedFor('d8')).toMatchObject({ draftCleared: true })
-    expect(screenPrsStore.draftFor('d8')).toEqual(emptyReviewDraft())
+    // Not emptied locally: main's broadcast of what it kept is what settles it.
+    expect(screenPrsStore.draftFor('d8').comments.map((c) => c.text)).toEqual(['while posting'])
+    const kept = screenPrsStore.draftFor('d8').comments
+    handlers['screenprs:draft-changed']!({ url: 'd8', draft: draft({ comments: kept }), rev: next() })
+    await vi.waitFor(() => expect(screenPrsStore.draftFor('d8')).toEqual(draft({ comments: kept })))
+
     screenPrsStore.resetSubmitted('d8')
-    expect(screenPrsStore.draftFor('d8')).toEqual(emptyReviewDraft())
-    expect(opCalls).toEqual([{ url: 'd8', op: { kind: 'clear' } }])
+    expect(screenPrsStore.submittedFor('d8')).toBeUndefined()
+    expect(screenPrsStore.draftFor('d8').comments).toEqual(kept)
+    expect(opCalls.map((c) => c.op.kind)).toEqual(['add-comment'])
+  })
+
+  it('drops a pending summary that was posted, but keeps one typed after', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
+        if (channel === 'screenprs:submit-review') return { ok: true, folded: { count: 0, reasons: {} } }
+        if (channel === 'screenprs:draft-op') opCalls.push(args[0] as { url: string; op: { kind: string } })
+        return undefined
+      })
+      const pr = (url: string) => ({ owner: 'acme', repo: 'ui', number: 10, url })
+      screenPrsStore.setSummary('d10', 'posted text')
+      await screenPrsStore.submitReview(pr('d10'), screenPrsStore.draftFor('d10'), { clearDraft: true })
+
+      screenPrsStore.setSummary('d11', 'posted text')
+      const posting = screenPrsStore.submitReview(pr('d11'), screenPrsStore.draftFor('d11'), { clearDraft: true })
+      screenPrsStore.setSummary('d11', 'a follow-up')
+      await posting
+
+      vi.advanceTimersByTime(400)
+      expect(opCalls).toEqual([{ url: 'd11', op: { kind: 'set-summary', summary: 'a follow-up' } }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('replays ops a lost connection left unsent, so a reload keeps them', async () => {
+    const lost = (name: string): Error => Object.assign(new Error('gone'), { name })
+    let failNext: string | null = 'NotSentError'
+    const loads: string[] = []
+    // Changed on the desktop while the phone was away.
+    let stored: PrReviewDraft | null = draft({ verdict: 'comment' })
+    vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'screenprs:draft-op') {
+        const call = args[0] as { url: string; op: { kind: string } }
+        if (failNext) {
+          const name = failNext
+          failNext = name === 'NotSentError' ? 'ConnectionLostError' : null
+          throw lost(name)
+        }
+        opCalls.push(call)
+        stored = applyDraftOp(stored, (call as { op: PrReviewDraftOp }).op)
+        return { draft: stored, rev: next() }
+      }
+      if (channel === 'screenprs:drafts-load') {
+        loads.push(opCalls.map((c) => c.op.kind).join(','))
+        const drafts: Record<string, PrReviewDraft> = stored ? { d12: stored } : {}
+        return { drafts, rev: next() }
+      }
+      return undefined
+    })
+    screenPrsStore.addComment('d12', { source: 'you', file: 'a.ts', line: '1', text: 'offline one' })
+    const [one] = screenPrsStore.draftFor('d12').comments
+    screenPrsStore.updateComment('d12', one.id, { text: 'offline one, edited' })
+    expect(failNext).toBeNull()
+    await new Promise((r) => setTimeout(r)) // let both failures land
+    // Made after the failures: it waits behind them rather than overtaking.
+    screenPrsStore.addComment('d12', { source: 'you', file: 'a.ts', line: '2', text: 'offline two' })
+    expect(opCalls).toEqual([])
+
+    // The snapshot predates the replayed ops' answers, yet must not drop them.
+    await screenPrsStore.loadDrafts()
+    expect(loads).toEqual(['add-comment,update-comment,add-comment'])
+    await vi.waitFor(() =>
+      expect(screenPrsStore.draftFor('d12')).toMatchObject({ verdict: 'comment', comments: [{ text: 'offline one, edited' }, { text: 'offline two' }] })
+    )
+  })
+
+  it('undoes an op main refused, and says so', async () => {
+    handlers['screenprs:draft-changed']!({ url: 'd13', draft: draft({ summary: 'kept' }), rev: next() })
+    vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'screenprs:draft-op') {
+        opCalls.push(args[0] as { url: string; op: { kind: string } })
+        throw new Error('disk full')
+      }
+      return undefined
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    screenPrsStore.addComment('d13', { source: 'you', file: 'a.ts', line: '1', text: 'refused' })
+    await vi.waitFor(() => expect(screenPrsStore.draftFor('d13').comments).toEqual([]))
+    expect(screenPrsStore.draftFor('d13').summary).toBe('kept')
+    expect(screenPrsStore.draftNoticeFor('d13')).toMatch(/couldn't be saved/)
+
+    // Not retried by a reload.
+    await screenPrsStore.loadDrafts()
+    expect(opCalls).toHaveLength(1)
+    screenPrsStore.dismissDraftNotice('d13')
+    expect(screenPrsStore.draftNoticeFor('d13')).toBeUndefined()
   })
 })

@@ -37,7 +37,15 @@ interface Queued {
  * user is told: a call that was never sent had no effect, while one that was
  * sent and never answered may have had every effect it asked for.
  */
-export class NotSentError extends Error {}
+export class NotSentError extends Error {
+  // The draft store tells these apart by name, without importing this file.
+  override name = 'NotSentError'
+}
+
+/** Thrown for a call that was sent and whose socket closed before an answer came. */
+export class ConnectionLostError extends Error {
+  override name = 'ConnectionLostError'
+}
 
 /** What the socket learned about itself when it attached. */
 export interface RemoteIdentity {
@@ -175,7 +183,7 @@ export function installRemoteApi(): RemoteConnection {
         waiting.reject(
           neverSent.has(id)
             ? new NotSentError('The connection went before the call was sent')
-            : new Error('Connection lost'),
+            : new ConnectionLostError('Connection lost'),
         )
       }
       pending.clear()
