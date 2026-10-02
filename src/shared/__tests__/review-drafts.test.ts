@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyDraftOp, clearPostedOp, isEmptyDraft, parseDraftOpRequest, parseReviewDraft } from '../review-drafts'
+import { applyDraftOp, clearPostedOp, isEmptyDraft, parseDraftOpRequest, parseReviewDraft, type PrReviewDraftOp } from '../review-drafts'
 import { emptyReviewDraft, type PrReviewComment, type PrReviewDraft } from '../screenprs'
 
 const comment = (over: Partial<PrReviewComment> = {}): PrReviewComment => ({
@@ -150,6 +150,30 @@ describe('parseDraftOpRequest', () => {
     ]
     for (const op of bad) expect(() => parseDraftOpRequest(req(op)), JSON.stringify(op)?.slice(0, 80)).toThrow(/Malformed/)
     expect(() => parseDraftOpRequest(null)).toThrow(/Malformed/)
+  })
+
+  // Each shape a client sends, as structured clone delivers it: a key whose
+  // value is `undefined` survives the clone and must read as absent.
+  it('takes every producer’s op with its optional fields left undefined', () => {
+    const finding = { file: 'a.ts', line: undefined, text: 'finding', sha: undefined }
+    const ops: PrReviewDraftOp[] = [
+      { kind: 'add-comment', comment: { id: 't', source: 'triage', ...finding } },
+      { kind: 'add-comment', comment: { id: 'd', source: 'deep', ...finding } },
+      { kind: 'add-comment', comment: { id: 'o', source: 'overview', ...finding, file: '' } },
+      { kind: 'add-comment', comment: { id: 'r', source: 'you', file: 'a.ts', line: '3-5', side: 'LEFT', snippet: '-x', text: 'n', sha: 'abc' } },
+      { kind: 'add-comment', comment: { id: 'p', source: 'you', file: 'a.ts', line: '3', side: 'RIGHT', snippet: '+x', text: 'n', sha: undefined } },
+      { kind: 'update-comment', id: 'r', patch: { text: 'edited', line: undefined, side: undefined, snippet: undefined, sha: undefined } },
+      { kind: 'set-summary', summary: 'LGTM' },
+      { kind: 'set-verdict', verdict: 'comment' },
+      clearPostedOp(draftOf(comment(), comment({ id: 'c2', line: undefined }))),
+    ]
+    for (const op of ops) {
+      const cloned = structuredClone(op)
+      const parsed = parseDraftOpRequest(req(cloned)).op
+      expect(parsed, op.kind).toEqual(op)
+      if (parsed.kind === 'add-comment') expect(Object.values(parsed.comment)).not.toContain(undefined)
+      if (parsed.kind === 'update-comment') expect(parsed.patch).toStrictEqual({ text: 'edited' })
+    }
   })
 
   it('stores only the fields it knows, and no empty head stamp', () => {
