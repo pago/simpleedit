@@ -105,8 +105,11 @@
   let lensesRunning = $derived(activeLenses.some((l) => deep?.lenses[l] === 'running'))
 
   // ＋ review: lift a finding into the composer draft as a line comment.
+  // Each is stamped with the head ITS line was computed against: a triage
+  // finding's card, or the commit the deep lenses ran over, which can be an
+  // older head than the one on screen — deep findings outlive their card.
   function addTriageComment(f: TriageFinding): void {
-    screenPrsStore.addComment(context.url, { source: 'triage', file: f.file, line: f.line, text: f.title })
+    screenPrsStore.addComment(context.url, { source: 'triage', file: f.file, line: f.line, text: f.title, sha: card?.headSha })
   }
   function addDeepComment(f: DeepFinding): void {
     screenPrsStore.addComment(context.url, {
@@ -114,6 +117,7 @@
       file: f.file,
       line: f.line,
       text: f.detail ? `${f.title} — ${f.detail}` : f.title,
+      sha: deep?.headSha,
     })
   }
 
@@ -238,6 +242,7 @@
                 class="flex-none self-center rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 opacity-0 transition-opacity hover:border-blue-500 hover:bg-blue-500/15 hover:text-blue-200 group-hover:opacity-100"
                 title="Add to the review composer as a line comment"
                 onclick={() => addTriageComment(f)}
+                data-testid="add-triage"
               >＋ review</button>
             </div>
           {/each}
@@ -288,6 +293,7 @@
                 class="flex-none self-start rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 opacity-0 transition-opacity hover:border-blue-500 hover:bg-blue-500/15 hover:text-blue-200 group-hover:opacity-100"
                 title="Add to the review composer as a line comment"
                 onclick={() => addDeepComment(f)}
+                data-testid="add-deep"
               >＋ review</button>
             </div>
           {/each}

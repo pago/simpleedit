@@ -17,6 +17,7 @@ import type {
   PrReviewDraft,
   PrReviewComment,
   PrReviewVerdict,
+  ReviewFolds,
 } from '../../shared/screenprs'
 import { BUCKET_ORDER, compareInBucket, emptyReviewDraft, reviewSubmitError } from '../../shared/screenprs'
 import { applyDraftOp, type DraftOpResult, type PrReviewCommentPatch, type PrReviewDraftOp } from '../../shared/review-drafts'
@@ -87,6 +88,7 @@ let _overview = $state<Map<string, OverviewState>>(new Map())
 export interface SubmittedReview {
   verdict: PrReviewVerdict
   reviewUrl?: string
+  folded: ReviewFolds
   foldedComments: boolean
 }
 let _submitted = $state<Map<string, SubmittedReview>>(new Map())
@@ -330,10 +332,15 @@ export const screenPrsStore = {
       console.warn('[screenprs] loading drafts failed:', err)
     }
   },
-  /** Post `draft` to GitHub. `pr` carries the routing fields (owner/repo/number/url). */
+  /**
+   * Post `draft` to GitHub. `pr` carries the routing fields (owner/repo/number/url).
+   * With `anchoring`, `draft` is the raw draft and main checks its anchors
+   * against that head; without, the caller has run `anchorsForHead` itself.
+   */
   async submitReview(
     pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>,
-    draft: PrReviewDraft
+    draft: PrReviewDraft,
+    anchoring?: { headSha: string; isolatedBase: boolean }
   ): Promise<SubmitReviewResult> {
     const url = pr.url
     _submitting = new Set(_submitting).add(url)
@@ -342,10 +349,11 @@ export const screenPrsStore = {
         // Plain literals + snapshot — no $state proxy may cross IPC (structured clone throws).
         pr: { owner: pr.owner, repo: pr.repo, number: pr.number, url: pr.url },
         draft: $state.snapshot(draft),
+        ...anchoring,
       })
       if (res.ok) {
         const next = new Map(_submitted)
-        next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, foldedComments: res.foldedComments })
+        next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, folded: res.folded, foldedComments: res.foldedComments })
         _submitted = next
         // Main has cleared the draft; a summary still waiting to be sent would
         // bring the posted text back as a fresh one.

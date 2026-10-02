@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/svelte'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import PrDetail from '../PrDetail.svelte'
 import type { BaseAnalysis, PrContext, PrReviewDraft } from '../../../../shared/screenprs'
 import { applyDraftOp, type PrReviewDraftOp } from '../../../../shared/review-drafts'
@@ -124,5 +124,80 @@ describe('desktop PR detail — overview', () => {
         sha: 'sha9',
       },
     ])
+  })
+})
+
+describe('desktop PR detail — anchoring a review to the head', () => {
+  const URL_ = 'https://github.com/ivx/ui-pack/pull/2700'
+  const ctx: PrContext = { ...CONTEXT, url: URL_, number: 2700, headSha: 'head-new' }
+  const CARD = {
+    ...ctx,
+    impact: 'low' as const,
+    findings: [{ label: 'issue' as const, file: 'a.ts', line: '3', title: 'bug' }],
+    bucket: 'quick' as const,
+  }
+  const FINDING = { lens: 'soundness' as const, severity: 'concern' as const, file: 'b.ts', line: '9', title: 'race', detail: '' }
+
+  async function store(): Promise<typeof import('../../../stores/screenprs.svelte').screenPrsStore> {
+    const { screenPrsStore } = await import('../../../stores/screenprs.svelte')
+    screenPrsStore.resetSubmitted(URL_)
+    screenPrsStore._onDeepStatus(URL_, 'idle')
+    return screenPrsStore
+  }
+
+  function submits(): unknown[] {
+    return (window.api.invoke as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([ch]) => ch === 'screenprs:submit-review')
+      .map(([, req]) => req)
+  }
+
+  it('stamps a triage finding with its card’s head and a deep finding with the head the lenses ran on', async () => {
+    const s = await store()
+    render(PrDetail, { props: { context: ctx, card: CARD } })
+    screen.getByTestId('add-triage').click()
+    // A finished deep review collapses triage, so it arrives second.
+    s.startDeep({ ...ctx, headSha: 'head-old' })
+    s._onDeepResult(URL_, [FINDING], 'head-old')
+    s._onDeepStatus(URL_, 'done')
+    ;(await screen.findByTestId('add-deep')).click()
+    expect(s.draftFor(URL_).comments.map((c) => [c.source, c.sha])).toEqual([['triage', 'head-new'], ['deep', 'head-old']])
+  })
+
+  it('counts the moved anchor in the confirm and sends the raw draft with the head to main', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'you', file: 'a.ts', line: '3', text: 'old', sha: 'head-old' })
+    s.addComment(URL_, { source: 'you', file: 'a.ts', line: '4', text: 'new', sha: 'head-new' })
+    const isolated = { ...ctx, base: POLLUTED }
+    render(PrDetail, { props: { context: isolated, card: { ...CARD, ...isolated } } })
+    screen.getByText('📝 Review to post').click()
+    ;(await screen.findByText(/on GitHub →/)).click()
+    expect(await screen.findByTestId('confirm-moved')).toHaveTextContent('1 written against an earlier commit')
+    expect(screen.getByTestId('confirm-folded')).toHaveTextContent('1 folded into the summary')
+    screen.getByText('Post approve on GitHub').click()
+    await vi.waitFor(() => expect(submits()).toHaveLength(1))
+    expect(submits()[0]).toMatchObject({
+      headSha: 'head-new',
+      isolatedBase: true,
+      draft: { comments: [{ line: '3', sha: 'head-old' }, { line: '4', sha: 'head-new' }] },
+    })
+  })
+
+  it('says after posting which comments went into the summary, and why', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'you', file: 'a.ts', line: '3', text: 'x', sha: 'head-new' })
+    const invoke = window.api.invoke as unknown as Mock<(ch: string, ...args: unknown[]) => Promise<unknown>>
+    const fallback = invoke.getMockImplementation()
+    invoke.mockImplementation(async (ch: string, ...args: unknown[]) =>
+      ch === 'screenprs:submit-review'
+        ? { ok: true, folded: { count: 2, reasons: { 'not-in-diff': 1, moved: 1 } }, foldedComments: true }
+        : fallback?.(ch, ...args)
+    )
+    render(PrDetail, { props: { context: ctx, card: CARD } })
+    screen.getByText('📝 Review to post').click()
+    ;(await screen.findByText(/on GitHub →/)).click()
+    ;(await screen.findByText('Post approve on GitHub')).click()
+    expect(await screen.findByTestId('review-folded')).toHaveTextContent(
+      '2 comments folded into the summary: 1 outside GitHub’s diff, 1 written before the branch moved'
+    )
   })
 })
