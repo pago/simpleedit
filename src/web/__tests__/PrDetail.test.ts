@@ -6,7 +6,8 @@ import { unknownOutcome, verdictChoice } from '../lib/prs.svelte'
 import { NotSentError } from '../api-shim'
 import { nav } from '../lib/nav.svelte'
 import { tick } from 'svelte'
-import type { ScreenPrCard } from '../../shared/screenprs'
+import type { PrReviewDraft, ScreenPrCard } from '../../shared/screenprs'
+import { applyDraftOp, type PrReviewDraftOp } from '../../shared/review-drafts'
 
 /**
  * The one invariant this screen exists to hold:
@@ -40,6 +41,10 @@ const CARD: ScreenPrCard = {
 }
 
 let invoke: ReturnType<typeof vi.fn>
+/** Main's side of the drafts, so the store's mirror has something to agree with. */
+let mainDrafts: Map<string, PrReviewDraft>
+// Never reset: the store is a module singleton and ignores revisions older than one it has seen.
+let mainRev = 0
 let submitResult: () => Promise<unknown>
 let diffResult: () => Promise<string>
 /**
@@ -87,13 +92,20 @@ async function confirmPost(): Promise<void> {
 
 beforeEach(() => {
   nav.reset()
+  mainDrafts = new Map()
   submitResult = async () => ({ ok: true, foldedComments: false })
   diffResult = async () => DIFF
   invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
     if (channel === 'screenprs:pr-diff') return diffResult()
     if (channel === 'stt:status') return { installed: false, binary: null, modelPath: null, modelReady: false, ready: false, hint: 'not installed.' }
     if (channel === 'screenprs:submit-review') return submitResult()
-    void args
+    if (channel === 'screenprs:draft-op') {
+      const { url, op } = args[0] as { url: string; op: PrReviewDraftOp }
+      const draft = applyDraftOp(mainDrafts.get(url) ?? null, op)
+      if (draft) mainDrafts.set(url, draft)
+      else mainDrafts.delete(url)
+      return { draft, rev: ++mainRev }
+    }
     return undefined
   })
   vi.stubGlobal('api', { invoke, on: () => () => {} })
@@ -165,7 +177,7 @@ describe('PR detail — the path to GitHub', () => {
     expect(request.draft.verdict).toBe('request_changes')
     expect(request.draft.comments).toEqual([
       // Stamped with the head its line was read off — see the head-move tests.
-      { source: 'you', file: 'src/gate.ts', line: '11', text: 'this gate is inverted', sha: 'sha1' },
+      { id: expect.any(String), source: 'you', file: 'src/gate.ts', line: '11', text: 'this gate is inverted', sha: 'sha1' },
     ])
     await screen.findByTestId('review-submitted')
   })
@@ -582,7 +594,7 @@ describe('PR detail — overview', () => {
     await fireEvent.click(within(screen.getByTestId('overview-section-lookInto')).getByRole('button'))
     await fireEvent.click(screen.getByTestId('overview-add-review'))
     expect(screenPrsStore.draftFor(URL_).comments).toEqual([
-      { source: 'overview', file: 'src/gate.ts', line: '11', text: 'question: Is the gate inverted? `src/gate.ts:11`', sha: 'sha1' },
+      { id: expect.any(String), source: 'overview', file: 'src/gate.ts', line: '11', text: 'question: Is the gate inverted? `src/gate.ts:11`', sha: 'sha1' },
     ])
   })
 })

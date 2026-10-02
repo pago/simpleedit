@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import PrDetail from '../PrDetail.svelte'
-import type { BaseAnalysis, PrContext } from '../../../../shared/screenprs'
+import type { BaseAnalysis, PrContext, PrReviewDraft } from '../../../../shared/screenprs'
+import { applyDraftOp, type PrReviewDraftOp } from '../../../../shared/review-drafts'
 
 const CONTEXT: PrContext = {
   owner: 'ivx', repo: 'ui-pack', number: 2532, url: 'https://github.com/ivx/ui-pack/pull/2532',
@@ -15,8 +16,23 @@ const POLLUTED: BaseAnalysis = {
   own: [{ sha: 'own-1', subject: 'Improve Timeline' }, { sha: 'own-2', subject: 'Virtualize rows' }],
 }
 
+// Never reset: the store is a module singleton and ignores revisions older than one it has seen.
+let mainRev = 0
+
 beforeEach(() => {
-  vi.stubGlobal('api', { invoke: vi.fn(async () => []), on: () => () => {} })
+  const mainDrafts = new Map<string, PrReviewDraft>()
+  const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+    if (channel === 'screenprs:drafts-load') return { drafts: {}, rev: ++mainRev }
+    if (channel === 'screenprs:draft-op') {
+      const { url, op } = args[0] as { url: string; op: PrReviewDraftOp }
+      const draft = applyDraftOp(mainDrafts.get(url) ?? null, op)
+      if (draft) mainDrafts.set(url, draft)
+      else mainDrafts.delete(url)
+      return { draft, rev: ++mainRev }
+    }
+    return []
+  })
+  vi.stubGlobal('api', { invoke, on: () => () => {} })
 })
 
 describe('desktop PR detail — base warning', () => {
@@ -100,6 +116,7 @@ describe('desktop PR detail — overview', () => {
     screen.getByTestId('overview-add-review').click()
     expect(store.draftFor(URL_).comments).toEqual([
       {
+        id: expect.any(String),
         source: 'overview',
         file: 'packages/ui/src/Table/body.tsx',
         line: '41',

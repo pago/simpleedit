@@ -18,16 +18,16 @@
    *    one review becomes two.
    *
    * ── Draft lifetime ───────────────────────────────────────────────────────
-   * The draft lives in the shared store, keyed by PR url, for the life of the
-   * PAGE — not of this screen. Leaving a PR and coming back keeps what you
-   * dictated, which on a phone is the difference between a usable review and a
-   * lost one; a reconnect keeps it too, since nothing about it lives on the Mac.
-   * A reload drops it, deliberately: a draft restored days later would carry
-   * line anchors into a head SHA that has moved.
+   * The draft is owned by main and persisted there, keyed by PR url; the store
+   * holds a mirror of it. Leaving a PR, reloading the page or reconnecting keeps
+   * what you dictated — on a phone the difference between a usable review and
+   * a lost one — and the desktop edits the same draft, so a review started here
+   * can be finished at the desk. Drafts untouched for 30 days are pruned.
    *
-   * Within a session that same move is handled rather than prevented: the
-   * `draft` arriving here has already been through `anchorsForHead`, so a line
-   * anchor survives only where it was verified against the head on screen.
+   * A draft that outlives a push is handled rather than prevented: each comment
+   * carries the head it was written on, and the `draft` arriving here has
+   * already been through `anchorsForHead`, so a line anchor survives only
+   * where it was verified against the head on screen.
    * Everything else — moved, or simply not checkable — folds into the body,
    * and the two reasons are reported apart because they mean different things
    * to the person deciding whether to post.
@@ -243,7 +243,7 @@
           </p>
         {:else}
           <ul class="flex flex-col gap-1.5">
-            {#each draft.comments as c, i (c.source + c.file + c.line + c.text)}
+            {#each draft.comments as c (c.id)}
               <li class="flex items-start gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-2">
                 <span
                   class="mt-0.5 flex-none rounded px-1.5 py-0.5 text-[8.5px] font-bold uppercase {SOURCE_CLASS[c.source]}"
@@ -259,7 +259,7 @@
                 </span>
                 <button
                   type="button"
-                  onclick={() => screenPrsStore.removeComment(url, i)}
+                  onclick={() => screenPrsStore.removeComment(url, c.id)}
                   aria-label="Remove comment"
                   class="flex-none px-1.5 text-zinc-600"
                 >×</button>

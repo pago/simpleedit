@@ -195,6 +195,12 @@ export type PrReviewVerdict = 'approve' | 'comment' | 'request_changes'
 export type PrReviewCommentSource = 'triage' | 'deep' | 'overview' | 'agent' | 'you'
 
 export interface PrReviewComment {
+  /**
+   * Stable identity, minted when the comment joins a draft. Every edit and
+   * removal addresses a comment by it: an array index means a different
+   * comment on each client the moment another one adds or removes.
+   */
+  id: string
   source: PrReviewCommentSource
   /** File path relative to the repo root (empty for a PR-level note). */
   file: string
