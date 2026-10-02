@@ -34,7 +34,7 @@
    * to the person deciding whether to post.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import { describeFolds, type AnchorState, type PrRef, type PrReviewCommentSource, type PrReviewDraft, type PrReviewVerdict } from '../shared/screenprs'
+  import { commentableLines, describeFolds, type AnchorState, type PrRef, type PrReviewCommentSource, type PrReviewDraft, type PrReviewVerdict } from '../shared/screenprs'
   import { unknownOutcome, verdictChoice, type SubmitOutcome } from './lib/prs.svelte'
   import { NotSentError } from './api-shim'
   import ComposeSheet from './ComposeSheet.svelte'
@@ -55,6 +55,8 @@
     headSha: string
     /** The diff on screen is the isolated stacked compare, not GitHub's. */
     isolatedBase: boolean
+    /** The diff on screen, '' until loaded. */
+    diff: string
     /**
      * How many comments are in each anchor state, counted on the draft BEFORE
      * folding. Passed in rather than derived here so the sheet, the confirm and
@@ -65,7 +67,7 @@
     connected: boolean
   }
 
-  let { pr, draft, rawDraft, headSha, isolatedBase, anchors, connected }: Props = $props()
+  let { pr, draft, rawDraft, headSha, isolatedBase, diff, anchors, connected }: Props = $props()
 
   let url = $derived(pr.url)
   let submitted = $derived(screenPrsStore.submittedFor(url))
@@ -74,6 +76,8 @@
   let chosen = $derived(verdictChoice.made(url))
   let latched = $derived(unknownOutcome.pending(url))
   let notice = $derived(screenPrsStore.draftNoticeFor(url))
+  // Otherwise the diff on screen is GitHub's own, the one main checks anchors against.
+  let commentable = $derived(!isolatedBase && diff ? commentableLines(diff) : undefined)
 
   let open = $state(false)
   // Both overlays are layers on the navigation stack, so Back dismisses them —
@@ -363,6 +367,8 @@
     repo={pr.repo}
     number={pr.number}
     {draft}
+    {isolatedBase}
+    {commentable}
     {submitting}
     {connected}
     {anchors}

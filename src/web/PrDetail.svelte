@@ -436,7 +436,7 @@
     {/if}
   </div>
 
-  <PrReviewSheet {pr} {draft} {rawDraft} {headSha} {isolatedBase} {anchors} {connected} />
+  <PrReviewSheet {pr} {draft} {rawDraft} {headSha} {isolatedBase} {diff} {anchors} {connected} />
 </div>
 
 {#if target && nav.has(composeId)}

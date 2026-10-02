@@ -132,6 +132,21 @@ describe('PrDiff comment placement by side', () => {
     expect(screen.getAllByTestId('inline-comment')).toHaveLength(1)
     expect(rowOf('a finding')).toContain('const kept = 3')
   })
+
+  it('puts a range under its last row, matched on its side, as the desktop does', () => {
+    render(PrDiff, {
+      diff: OFFSET,
+      comments: [
+        { id: 'r', source: 'you', file: 'src/gate.ts', line: '10-12', side: 'RIGHT', text: 'new span' },
+        { id: 'l', source: 'you', file: 'src/gate.ts', line: '11-12', side: 'LEFT', text: 'old span' },
+      ],
+      oncomment: vi.fn(),
+      onedit: vi.fn(),
+    })
+    expect(screen.getAllByTestId('inline-comment')).toHaveLength(2)
+    expect(rowOf('new span')).toContain('const kept = 3')
+    expect(rowOf('old span')).toContain('const gone = 4')
+  })
 })
 
 /**

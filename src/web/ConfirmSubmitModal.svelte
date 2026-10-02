@@ -22,13 +22,19 @@
    *    key, so posting again after an outcome nobody knows is how one review
    *    becomes two. Re-arming takes an explicit acknowledgement.
    */
-  import { buildReviewPayload, type AnchorState, type PrReviewDraft, type PrReviewVerdict } from '../shared/screenprs'
+  import { buildReviewPayload, type AnchorState, type CommentableSides, type PrReviewDraft, type PrReviewVerdict } from '../shared/screenprs'
   import type { SubmitOutcome } from './lib/prs.svelte'
 
   interface Props {
     repo: string
     number: number
     draft: PrReviewDraft
+    isolatedBase: boolean
+    /**
+     * `commentableLines` of GitHub's own diff, when that is the diff on screen.
+     * Absent (an isolated stacked diff, or none loaded): main's check can still fold more.
+     */
+    commentable?: Map<string, CommentableSides>
     submitting: boolean
     connected: boolean
     /** How many comments are in each anchor state, so the two reasons a line
@@ -44,11 +50,11 @@
   }
 
   let {
-    repo, number, draft, submitting, connected, anchors, outcome, latched,
+    repo, number, draft, isolatedBase, commentable, submitting, connected, anchors, outcome, latched,
     onacknowledge, onconfirm, oncancel,
   }: Props = $props()
 
-  let payload = $derived(buildReviewPayload(draft))
+  let payload = $derived(buildReviewPayload(draft, { isolatedBase, commentable }))
   let foldedCount = $derived(draft.comments.length - payload.comments.length)
 
   const VERDICT: Record<PrReviewVerdict, { label: string; chip: string; button: string }> = {
@@ -159,6 +165,11 @@
           >
         {/if}
       </div>
+      {#if !commentable && payload.comments.length > 0}
+        <p class="text-[11px] leading-relaxed text-zinc-500" data-testid="confirm-unchecked">
+          Lines are checked against GitHub’s diff when this posts; any it can’t place go into the summary.
+        </p>
+      {/if}
       {#if anchors.moved > 0}
         <p class="text-[11px] leading-relaxed text-amber-300/90" data-testid="confirm-moved">
           {anchors.moved} written against an earlier commit — the branch has moved, so

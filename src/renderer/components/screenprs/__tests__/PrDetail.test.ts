@@ -360,6 +360,44 @@ describe('desktop PR detail — inline comments', () => {
     await vi.waitFor(() => expect(screen.queryByTestId('inline-comment-editor')).toBeNull())
   })
 
+  it('keeps a comment from an earlier head out of the diff, editable in the list with a note', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'you', file: 'src/x.ts', line: '12', text: 'read on the old head', sha: 'head-old' })
+    render(PrDetail, { props: { context: ctx } })
+    expect(screen.queryByTestId('inline-comment')).toBeNull()
+    screen.getByText('📝 Review to post').click()
+    const item = (await screen.findAllByTestId('composer-comment'))[0]
+    expect(within(item).getByTestId('comment-earlier-commit')).toHaveTextContent('earlier commit')
+    expect(within(item).queryByRole('button', { name: /src\/x\.ts:12/ })).toBeNull()
+    within(item).getByText('Edit').click()
+    await vi.waitFor(() => expect(field().value).toBe('read on the old head'))
+    expect(screen.getByText('Edit comment')).toBeInTheDocument()
+  })
+
+  it('previews against GitHub’s diff: a line outside its hunks is shown folded', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'you', file: 'src/x.ts', line: '12', text: 'in a hunk', sha: 'head-x' })
+    s.addComment(URL_, { source: 'triage', file: 'src/x.ts', line: '99', text: 'outside', sha: 'head-x' })
+    render(PrDetail, { props: { context: ctx } })
+    screen.getByText('📝 Review to post').click()
+    ;(await screen.findByText(/on GitHub →/)).click()
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('1 line comment anchored')
+    expect(within(dialog).getByTestId('confirm-folded')).toHaveTextContent('1 folded')
+    expect(within(dialog).queryByTestId('confirm-unchecked')).toBeNull()
+  })
+
+  it('previews an isolated stacked diff as it stands, saying lines are checked on submit', async () => {
+    const s = await store()
+    s.addComment(URL_, { source: 'triage', file: 'src/x.ts', line: '99', text: 'outside', sha: 'head-x' })
+    render(PrDetail, { props: { context: { ...ctx, base: POLLUTED } } })
+    screen.getByText('📝 Review to post').click()
+    ;(await screen.findByText(/on GitHub →/)).click()
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('1 line comment anchored')
+    expect(within(dialog).getByTestId('confirm-unchecked')).toHaveTextContent('checked against GitHub’s diff when this posts')
+  })
+
   it('says so when main refuses a change, until dismissed', async () => {
     const s = await store()
     const invoke = window.api.invoke as Mock

@@ -13,7 +13,7 @@
   import { tick } from 'svelte'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
   import { findRevealTarget, REVEAL_FLASH_MS, scrollBehavior, type RevealTarget } from '../renderer/lib/diffReveal'
-  import { parseLineAnchor, type PrReviewComment } from '../shared/screenprs'
+  import { parseLineRange, type PrReviewComment } from '../shared/screenprs'
   import type { CommentTarget } from './lib/prs.svelte'
 
   interface Props {
@@ -95,15 +95,16 @@
   const REVEAL_ROW_CLASS = 'ring-2 ring-inset ring-orange-500/70'
 
   /**
-   * Draft comments already anchored to this exact line. A context row carries
-   * both numbers, and each side is matched against its own: old line 12 and
-   * new line 12 are different lines.
+   * Draft comments that end on this row — a range sits under its last line,
+   * as on the desktop. A context row carries both numbers, and each side is
+   * matched against its own: old line 12 and new line 12 are different lines.
    */
   function commentsOn(file: DiffFile, row: DiffRow): PrReviewComment[] {
+    if (row.kind === 'hunk') return []
     return comments.filter((c) => {
       if (c.file !== file.path) return false
       const n = c.side === 'LEFT' ? row.oldNo : row.newNo
-      return n !== undefined && parseLineAnchor(c.line) === n
+      return n !== undefined && parseLineRange(c.line)?.end === n
     })
   }
 </script>
