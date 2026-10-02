@@ -47,14 +47,25 @@ export async function postReview(pr: PrReviewTarget, payload: GithubReviewPayloa
     // Only the anchor-rejection case is recoverable by folding. A 422 is GitHub
     // saying a comment's line isn't part of the diff; any other failure (auth,
     // network, 5xx) would just fail again — rethrow so the real error surfaces.
-    const msg = err instanceof Error ? err.message : String(err)
-    if (payload.comments.length === 0 || !/\b422\b|unprocessable/i.test(msg)) throw err
-    // A head force-pushed out of the PR 422s too. With nothing left on a line
-    // the pin has no job, so it goes rather than failing the retry the same way.
-    const folded = foldCommentsIntoBody(payload)
-    delete folded.commit_id
-    return { reviewUrl: htmlUrlOf(await post(folded)), rejected: payload.comments.length }
+    if (payload.comments.length === 0 || !isUnprocessable(err)) throw err
   }
+  // The retry keeps `commit_id`. Dropping it would let GitHub pin the review —
+  // an approval included — to whatever the head is now, which the reviewer
+  // may never have read.
+  try {
+    return { reviewUrl: htmlUrlOf(await post(foldCommentsIntoBody(payload))), rejected: payload.comments.length }
+  } catch (err) {
+    if (!payload.commit_id || !isUnprocessable(err)) throw err
+    // With no line left to blame, a second 422 is GitHub refusing the commit itself.
+    throw new Error(
+      `GitHub refused the review: the commit it was written against (${payload.commit_id.slice(0, 7)}) is no longer on the PR, ` +
+        'probably after a force-push. Nothing was posted — reload the PR and review its current head.'
+    )
+  }
+}
+
+function isUnprocessable(err: unknown): boolean {
+  return /\b422\b|unprocessable/i.test(err instanceof Error ? err.message : String(err))
 }
 
 /**
