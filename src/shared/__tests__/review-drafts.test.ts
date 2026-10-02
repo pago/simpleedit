@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyDraftOp, isEmptyDraft } from '../review-drafts'
+import { applyDraftOp, clearPostedOp, isEmptyDraft } from '../review-drafts'
 import { emptyReviewDraft, type PrReviewComment, type PrReviewDraft } from '../screenprs'
 
 const comment = (over: Partial<PrReviewComment> = {}): PrReviewComment => ({
@@ -81,5 +81,28 @@ describe('isEmptyDraft', () => {
     expect(isEmptyDraft({ ...emptyReviewDraft(), summary: ' ' })).toBe(false)
     expect(isEmptyDraft({ ...emptyReviewDraft(), verdict: 'comment' })).toBe(false)
     expect(isEmptyDraft(draftOf(comment()))).toBe(false)
+  })
+})
+
+describe('clear-posted', () => {
+  const posted: PrReviewDraft = { comments: [comment()], summary: 'LGTM', verdict: 'request_changes' }
+
+  it('deletes the draft when it is still exactly what was posted', () => {
+    expect(applyDraftOp(posted, clearPostedOp(posted))).toBeNull()
+  })
+
+  it('keeps a comment added while the post was in flight', () => {
+    const late = comment({ id: 'c2', text: 'one more' })
+    const stored = { ...posted, comments: [...posted.comments, late] }
+    expect(applyDraftOp(stored, clearPostedOp(posted))).toEqual({ ...emptyReviewDraft(), comments: [late] })
+  })
+
+  it('keeps a summary or verdict changed while the post was in flight', () => {
+    const stored = { ...posted, summary: 'LGTM, one nit', verdict: 'comment' as const }
+    expect(applyDraftOp(stored, clearPostedOp(posted))).toEqual({ comments: [], summary: 'LGTM, one nit', verdict: 'comment' })
+  })
+
+  it('is a no-op on a draft already cleared elsewhere', () => {
+    expect(applyDraftOp(null, clearPostedOp(posted))).toBeNull()
   })
 })

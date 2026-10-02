@@ -987,7 +987,7 @@ function registerAllHandlers(): void {
   })
 
   handleInvoke('screenprs:submit-review', (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> =>
-    handleSubmitReview(request, (url) => applyAndBroadcastDraftOp(url, { kind: 'clear' }))
+    handleSubmitReview(request, applyAndBroadcastDraftOp)
   )
 
   handleInvoke('screenprs:drafts-load', () => loadDrafts())

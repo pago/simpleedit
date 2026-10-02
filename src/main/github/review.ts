@@ -10,6 +10,7 @@
 import type { PrRef, ReviewFolds, GithubReviewPayload, CommentableSides } from '../../shared/screenprs'
 import { addFolds, anchorsForHead, buildReviewPayload, commentableLines, foldCommentsIntoBody, reviewFolds } from '../../shared/screenprs'
 import type { SubmitReviewRequest, SubmitReviewResult } from '../../shared/ipc-types'
+import { clearPostedOp, type PrReviewDraftOp } from '../../shared/review-drafts'
 import { getPrDiff, GhTimeoutError, runGh } from './gh'
 import { compareDiff } from './stack-base'
 
@@ -104,18 +105,18 @@ export async function submitReview(request: SubmitReviewRequest): Promise<{ revi
 }
 
 /**
- * The `screenprs:submit-review` handler: post, then clear the PR's stored
- * draft if what was posted was that draft.
+ * The `screenprs:submit-review` handler: post, then clear from the PR's stored
+ * draft what was posted, if what was posted was that draft.
  */
 export async function handleSubmitReview(
   request: SubmitReviewRequest,
-  clearDraft: (url: string) => void
+  applyDraftOp: (url: string, op: PrReviewDraftOp) => void
 ): Promise<SubmitReviewResult> {
   try {
     const { reviewUrl, folded } = await submitReview(request)
     if (request.clearDraft) {
       try {
-        clearDraft(request.pr.url)
+        applyDraftOp(request.pr.url, clearPostedOp(request.draft))
       } catch (err) {
         // The review IS posted; reporting a failure here would invite a second one.
         console.error('[SimpleEdit] Failed to clear a submitted review draft:', err)

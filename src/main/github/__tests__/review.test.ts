@@ -150,7 +150,7 @@ describe('handleSubmitReview', () => {
   it('clears the draft it posted', async () => {
     const clear = vi.fn()
     expect(await handleSubmitReview(request([you({ line: '11' })], { clearDraft: true }), clear)).toMatchObject({ ok: true })
-    expect(clear).toHaveBeenCalledWith(PR.url)
+    expect(clear).toHaveBeenCalledWith(PR.url, { kind: 'clear-posted', ids: ['c'], summary: 'LGTM', verdict: 'comment' })
   })
 
   it('keeps the draft when the caller does not ask to clear it', async () => {
