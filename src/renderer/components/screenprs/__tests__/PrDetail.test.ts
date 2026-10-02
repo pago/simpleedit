@@ -189,7 +189,7 @@ describe('desktop PR detail — anchoring a review to the head', () => {
     const fallback = invoke.getMockImplementation()
     invoke.mockImplementation(async (ch: string, ...args: unknown[]) =>
       ch === 'screenprs:submit-review'
-        ? { ok: true, folded: { count: 2, reasons: { 'not-in-diff': 1, moved: 1 } }, foldedComments: true }
+        ? { ok: true, folded: { count: 2, reasons: { 'not-in-diff': 1, moved: 1 } } }
         : fallback?.(ch, ...args)
     )
     render(PrDetail, { props: { context: ctx, card: CARD } })

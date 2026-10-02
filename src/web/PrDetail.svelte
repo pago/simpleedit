@@ -67,10 +67,10 @@
    * The draft as it would be posted.
    *
    * A line anchor survives only where it can be shown to belong to the head on
-   * screen. The reviews API carries no commit id, so GitHub attaches whatever
-   * it is given to whatever the head is at that moment — silently. Resolved
-   * once, here, so the diff, the sheet, the confirm's counts and the submitted
-   * payload cannot disagree.
+   * screen; a line number read off another commit would land on whatever code
+   * sits there now. Resolved once, here, so the diff, the sheet and the
+   * confirm's counts cannot disagree. Main runs the same `anchorsForHead` on
+   * the raw draft before posting, so it can say which comments it folded.
    */
   let rawDraft = $derived(screenPrsStore.draftFor(url))
   let draft = $derived(anchorsForHead(rawDraft, headSha))
@@ -80,6 +80,7 @@
    * had a line" and the reviewer would be told nothing.
    */
   let anchors = $derived(anchorCounts(rawDraft, headSha))
+  let isolatedBase = $derived(context?.base?.kind === 'polluted' && context.base.isolated)
   let diff = $state('')
   let diffError = $state<string | null>(null)
   let loadingDiff = $state(false)
@@ -435,7 +436,7 @@
     {/if}
   </div>
 
-  <PrReviewSheet {pr} {draft} {anchors} {connected} />
+  <PrReviewSheet {pr} {draft} {rawDraft} {headSha} {isolatedBase} {anchors} {connected} />
 </div>
 
 {#if target && nav.has(composeId)}

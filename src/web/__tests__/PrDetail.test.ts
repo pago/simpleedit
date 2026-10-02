@@ -61,17 +61,27 @@ function submitCalls(): unknown[][] {
   return invoke.mock.calls.filter(([channel]) => channel === 'screenprs:submit-review')
 }
 
+interface SentRequest {
+  draft: { comments: { line?: string; sha?: string; text: string }[] }
+  headSha?: string
+  isolatedBase?: boolean
+}
+
+function sentRequest(): SentRequest {
+  return (submitCalls()[0] as [string, SentRequest])[1]
+}
+
 /**
- * What actually went to GitHub.
+ * What went to main. With a head attached main re-anchors these before
+ * GitHub sees them (its own tests cover that); without one, this is the post.
  *
  * Every anchoring assertion reads this, not the banner. Two rounds of this
  * predicate were wrong in ways a notice-only test could not see: once the
  * notice contradicted the payload, once the notice was deleted and the payload
  * left as it was.
  */
-function postedComments(): { line?: string; sha?: string; text: string }[] {
-  const [, request] = submitCalls()[0] as [string, { draft: { comments: { line?: string; sha?: string; text: string }[] } }]
-  return request.draft.comments
+function postedComments(): SentRequest['draft']['comments'] {
+  return sentRequest().draft.comments
 }
 
 afterEach(() => {
@@ -93,7 +103,7 @@ async function confirmPost(): Promise<void> {
 beforeEach(() => {
   nav.reset()
   mainDrafts = new Map()
-  submitResult = async () => ({ ok: true, foldedComments: false })
+  submitResult = async () => ({ ok: true, folded: { count: 0, reasons: {} } })
   diffResult = async () => DIFF
   invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
     if (channel === 'screenprs:pr-diff') return diffResult()
@@ -287,7 +297,7 @@ describe('PR detail — the path to GitHub', () => {
     // board behind while an irreversible write is in flight.
     submitResult = () =>
       new Promise((resolve) => {
-        releasePendingSubmit = () => resolve({ ok: true, foldedComments: false })
+        releasePendingSubmit = () => resolve({ ok: true, folded: { count: 0, reasons: {} } })
       })
 
     render(PrDetail, { pr: CARD, connected: true })
@@ -350,6 +360,7 @@ describe('PR detail — the path to GitHub', () => {
 
     await confirmPost()
     expect(postedComments()[0].line).toBe('11')
+    expect(sentRequest()).toMatchObject({ headSha: 'sha1', isolatedBase: false })
   })
 
   it('folds an anchor it cannot check rather than posting it', async () => {
@@ -370,6 +381,7 @@ describe('PR detail — the path to GitHub', () => {
     expect(screen.getByTestId('confirm-unverified')).toBeInTheDocument()
 
     await confirmPost()
+    expect(sentRequest().headSha).toBeUndefined()
     expect(postedComments()[0].line).toBeUndefined()
     expect(postedComments()[0].text).toBe('this gate is inverted')
   })
@@ -397,9 +409,23 @@ describe('PR detail — the path to GitHub', () => {
     await openConfirm()
     expect(screen.getByTestId('confirm-moved')).toBeInTheDocument()
 
+    // The raw anchors go, pinned to the new head, so main can fold them and
+    // say why; it never trusts a line stamped with another commit.
     await confirmPost()
-    expect(postedComments()).toHaveLength(2)
-    expect(postedComments().map((c) => c.line)).toEqual([undefined, undefined])
+    expect(sentRequest().headSha).toBe('sha2')
+    expect(postedComments().map((c) => [c.line, c.sha])).toEqual([['11', 'sha1'], ['11', 'sha1']])
+  })
+
+  it('names why comments went into the summary once posted', async () => {
+    submitResult = async () => ({ ok: true, folded: { count: 2, reasons: { moved: 2 } } })
+    render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await openConfirm()
+    await confirmPost()
+    expect(await screen.findByTestId('submitted-folds')).toHaveTextContent(
+      '2 comments went into the summary instead of on a line: 2 written before the branch moved.'
+    )
   })
 
   it('stamps a lifted finding with the head it was computed against', async () => {
@@ -596,7 +622,7 @@ describe('PR detail — the path to GitHub', () => {
   it('will not let Back take the confirm away while a post is in flight', async () => {
     submitResult = () =>
       new Promise((resolve) => {
-        releasePendingSubmit = () => resolve({ ok: true, foldedComments: false })
+        releasePendingSubmit = () => resolve({ ok: true, folded: { count: 0, reasons: {} } })
       })
     render(PrDetail, { pr: CARD, connected: true })
     await fireEvent.click(screen.getByTestId('review-toggle'))
