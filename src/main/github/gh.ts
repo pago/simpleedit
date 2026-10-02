@@ -3,7 +3,7 @@
  * existing `gh` auth — the one genuinely new context source the bounded-task
  * substrate gains (plans/screen-prs.md §4.3). Read-only here: search the review
  * queue and gather per-PR context (size, CI, reviews, base, body, diff). The
- * write path (`gh pr review …`) lands with the review composer.
+ * write path is `review.ts`.
  *
  * The JSON parsers are exported and pure so they can be unit-tested without a
  * live `gh`; `runGh` itself is the thin, untested shell seam.
@@ -15,9 +15,7 @@ import type {
   PrCiStatus,
   PrReviewer,
   PrReviewerState,
-  GithubReviewPayload,
 } from '../../shared/screenprs'
-import { foldCommentsIntoBody } from '../../shared/screenprs'
 
 /** Run `gh` and resolve its stdout. `allowFail` keeps stdout on a nonzero exit
  *  (e.g. `gh pr checks` returns 8 when a check is failing but still prints JSON).
@@ -240,48 +238,4 @@ export function getPrDiff(ref: Pick<PrRef, 'url'>): Promise<string> {
 export async function getPrContext(ref: PrRef, handle: string): Promise<PrContext> {
   const [meta, diff] = await Promise.all([getPrMeta(ref, handle), getPrDiff(ref)])
   return { ...meta, diff }
-}
-
-// ── write path (the review composer) ──────────────────────────────────────────
-
-export interface PostReviewResult {
-  /** The created review's html_url, if GitHub returned one. */
-  reviewUrl?: string
-  /** True when line anchors were rejected and we fell back to a body-only post. */
-  foldedComments: boolean
-}
-
-/** The subset of a PR we need to address the reviews endpoint. */
-export type PrReviewTarget = Pick<PrRef, 'owner' | 'repo' | 'number'>
-
-function htmlUrlOf(out: string): string | undefined {
-  try {
-    return (JSON.parse(out) as { html_url?: string }).html_url
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Post a single review via the reviews API (the `gh pr review` CLI can't attach
- * per-line comments — only the API's `comments[]` can). The JSON body goes over
- * stdin (`--input -`) because it nests an array. If GitHub rejects a line anchor
- * that isn't part of the diff (422), retry once with every comment folded into
- * the body so the content survives (plans/screen-prs.md §3.4).
- */
-export async function postReview(pr: PrReviewTarget, payload: GithubReviewPayload): Promise<PostReviewResult> {
-  const endpoint = `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`
-  const post = (body: GithubReviewPayload): Promise<string> =>
-    runGh(['api', '--method', 'POST', endpoint, '--input', '-'], { input: JSON.stringify(body) })
-  try {
-    return { reviewUrl: htmlUrlOf(await post(payload)), foldedComments: false }
-  } catch (err) {
-    // Only the anchor-rejection case is recoverable by folding. A 422 is GitHub
-    // saying a comment's line isn't part of the diff; any other failure (auth,
-    // network, 5xx) would just fail again — rethrow so the real error surfaces.
-    const msg = err instanceof Error ? err.message : String(err)
-    if (payload.comments.length === 0 || !/\b422\b|unprocessable/i.test(msg)) throw err
-    const folded = foldCommentsIntoBody(payload)
-    return { reviewUrl: htmlUrlOf(await post(folded)), foldedComments: true }
-  }
 }
