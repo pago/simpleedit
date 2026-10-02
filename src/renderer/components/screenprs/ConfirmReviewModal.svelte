@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
+  import type { CommentableSides, PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
   import { anchorCounts, anchorsForHead, buildReviewPayload } from '../../../shared/screenprs'
 
   let {
@@ -8,6 +8,7 @@
     draft,
     headSha,
     isolatedBase = false,
+    commentable,
     submitting = false,
     error = null,
     onconfirm,
@@ -20,6 +21,11 @@
     /** The head on screen. Absent: the draft's anchors are previewed as they stand. */
     headSha?: string
     isolatedBase?: boolean
+    /**
+     * `commentableLines` of GitHub's own diff, when that is the diff on screen.
+     * Absent (an isolated stacked diff): main's check can still fold more.
+     */
+    commentable?: Map<string, CommentableSides>
     submitting?: boolean
     error?: string | null
     onconfirm: () => void
@@ -28,9 +34,7 @@
 
   // Show what will hit GitHub — the anchored/folded split is computed by the
   // same pure builder the main process posts with, so the preview can't drift.
-  // Only main's check against GitHub's own diff is missing here: it can fold
-  // more, never fewer.
-  let payload = $derived(buildReviewPayload(headSha ? anchorsForHead(draft, headSha) : draft, { isolatedBase }))
+  let payload = $derived(buildReviewPayload(headSha ? anchorsForHead(draft, headSha) : draft, { isolatedBase, commentable }))
   let foldedCount = $derived(draft.comments.length - payload.comments.length)
   // Counted on the raw draft: after `anchorsForHead` a moved anchor looks like
   // a note that never had a line.
@@ -87,6 +91,11 @@
           <span class="text-amber-300/90" data-testid="confirm-folded">{foldedCount} folded into the summary (no diff anchor)</span>
         {/if}
       </div>
+      {#if !commentable && payload.comments.length > 0}
+        <p class="text-[11px] leading-relaxed text-zinc-500" data-testid="confirm-unchecked">
+          Lines are checked against GitHub’s diff when this posts; any it can’t place go into the summary.
+        </p>
+      {/if}
       {#if anchors && anchors.moved > 0}
         <p class="text-[11px] leading-relaxed text-amber-300/90" data-testid="confirm-moved">
           {anchors.moved} written against an earlier commit — the branch has moved, so

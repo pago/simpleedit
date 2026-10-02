@@ -19,7 +19,7 @@
 
 <script lang="ts">
   import type { PrContext, PrReviewVerdict, PrReviewComment } from '../../../shared/screenprs'
-  import { describeFolds } from '../../../shared/screenprs'
+  import { anchorState, commentableLines, describeFolds } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import ConfirmReviewModal from './ConfirmReviewModal.svelte'
   import { SOURCE_CLASS } from './commentSource'
@@ -44,6 +44,8 @@
   let headSha = $derived(context.headSha)
   // Only the isolated compare diff has old-side numbers that aren't GitHub's.
   let isolatedBase = $derived(context.base?.kind === 'polluted' && context.base.isolated)
+  // Otherwise the diff on screen is GitHub's own, the one main checks anchors against.
+  let commentable = $derived(!isolatedBase && context.diff ? commentableLines(context.diff) : undefined)
 
   let listEdit = $derived(listEditByUrl[url] ?? null)
   let listEditor = $state<InlineCommentEditor>()
@@ -128,12 +130,18 @@
                 <div class="min-w-0 flex-1">
                   {#if c.file}
                     {@const where = `${c.file}${c.line ? ':' + c.line : ''}`}
+                    {@const anchor = anchorState(c, headSha)}
                     <span class="block font-mono text-[10px] text-zinc-500">
                       {#if inDiff && onreveal}
                         <button type="button" class="hover:text-blue-300 hover:underline" title="Show in the diff" onclick={() => onreveal(c)}>{where}</button>
                       {:else}{where}{/if}
                       {#if c.side === 'LEFT'}<span class="ml-1 text-red-400/80">· deleted line</span>{/if}
                     </span>
+                    {#if anchor === 'moved'}
+                      <span class="block text-[10px] text-amber-300/80" data-testid="comment-earlier-commit">Line is from an earlier commit — it goes in the summary.</span>
+                    {:else if anchor === 'unverified'}
+                      <span class="block text-[10px] text-amber-300/80" data-testid="comment-unverified">Line can’t be checked against this commit — it goes in the summary.</span>
+                    {/if}
                   {/if}
                   {#if listEdit?.id === c.id}
                     <InlineCommentEditor
@@ -209,6 +217,7 @@
     {draft}
     {headSha}
     {isolatedBase}
+    {commentable}
     {submitting}
     onconfirm={confirmPost}
     oncancel={() => (confirming = false)}

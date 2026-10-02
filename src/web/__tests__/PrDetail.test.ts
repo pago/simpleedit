@@ -366,6 +366,17 @@ describe('PR detail — the path to GitHub', () => {
     expect(sentRequest()).toMatchObject({ headSha: 'sha1', isolatedBase: false, clearDraft: true })
   })
 
+  it('previews a line outside GitHub’s hunks as folded, as main will post it', async () => {
+    render(PrDetail, { pr: CARD, connected: true })
+    await commentOnAddedLine('this gate is inverted')
+    screenPrsStore.addComment(URL_, { source: 'triage', file: 'src/gate.ts', line: '99', text: 'far away', sha: 'sha1' })
+    await fireEvent.click(screen.getByTestId('review-toggle'))
+    await openConfirm()
+    expect(screen.getByTestId('confirm-anchored')).toHaveTextContent('1 line comment anchored')
+    expect(screen.getByTestId('confirm-folded')).toHaveTextContent('1 folded')
+    expect(screen.queryByTestId('confirm-unchecked')).toBeNull()
+  })
+
   it('shows a change main refused in the review sheet', async () => {
     invoke.mockImplementation(async (channel: string) => {
       if (channel === 'screenprs:pr-diff') return diffResult()

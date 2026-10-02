@@ -35,7 +35,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity, PrReviewComment } from '../../../shared/screenprs'
-  import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, baseWarning, parseLineRange } from '../../../shared/screenprs'
+  import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, anchorState, baseWarning, parseLineRange } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../../../shared/parseDiff'
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
@@ -255,9 +255,13 @@
     setComposing(context.url, null)
   }
 
-  /** A comment sits under the last row it covers, matched on its own side's numbers. */
+  /**
+   * A comment sits under the last row it covers, matched on its own side's
+   * numbers. Only one read off the head on screen: an older head's line
+   * number would put it under different code.
+   */
   function endsAt(c: PrReviewComment, f: DiffFile, row: DiffRow): boolean {
-    if (c.file !== f.path || row.kind === 'hunk') return false
+    if (c.file !== f.path || row.kind === 'hunk' || anchorState(c, context.headSha) !== 'current') return false
     const end = parseLineRange(c.line)?.end
     return end !== undefined && lineOn(row, c.side ?? 'RIGHT') === end
   }
