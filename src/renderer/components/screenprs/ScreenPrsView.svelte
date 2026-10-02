@@ -92,7 +92,7 @@
     try {
       // Pinned to the card's head: an approval must not land on a push the reviewer never screened.
       // A separate empty review, so whatever is drafted for this PR stays.
-      const res = await screenPrsStore.submitReview(quickTarget, quickDraft, { headSha: quickTarget.headSha, keepDraft: true })
+      const res = await screenPrsStore.submitReview(quickTarget, quickDraft, { headSha: quickTarget.headSha })
       if (res.ok) quickTarget = null
       else quickError = res.error // keep the modal open so the failure is visible
     } catch (e) {

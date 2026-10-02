@@ -179,6 +179,7 @@ describe('desktop PR detail — anchoring a review to the head', () => {
     expect(submits()[0]).toMatchObject({
       headSha: 'head-new',
       isolatedBase: true,
+      clearDraft: true,
       draft: { comments: [{ line: '3', sha: 'head-old' }, { line: '4', sha: 'head-new' }] },
     })
   })

@@ -149,13 +149,13 @@ describe('submitReview', () => {
 describe('handleSubmitReview', () => {
   it('clears the draft it posted', async () => {
     const clear = vi.fn()
-    expect(await handleSubmitReview(request([you({ line: '11' })]), clear)).toMatchObject({ ok: true })
+    expect(await handleSubmitReview(request([you({ line: '11' })], { clearDraft: true }), clear)).toMatchObject({ ok: true })
     expect(clear).toHaveBeenCalledWith(PR.url)
   })
 
-  it('quick approve keeps the draft', async () => {
+  it('keeps the draft when the caller does not ask to clear it', async () => {
     const clear = vi.fn()
-    const res = await handleSubmitReview(request([], { draft: { comments: [], summary: '', verdict: 'approve' }, keepDraft: true }), clear)
+    const res = await handleSubmitReview(request([], { draft: { comments: [], summary: '', verdict: 'approve' } }), clear)
     expect(res).toMatchObject({ ok: true })
     expect(posted()[0].event).toBe('APPROVE')
     expect(clear).not.toHaveBeenCalled()
@@ -164,7 +164,7 @@ describe('handleSubmitReview', () => {
   it('keeps the draft when nothing was posted', async () => {
     const clear = vi.fn()
     post.mockRejectedValueOnce(new Error('HTTP 401'))
-    expect(await handleSubmitReview(request([]), clear)).toEqual({ ok: false, error: 'HTTP 401' })
+    expect(await handleSubmitReview(request([], { clearDraft: true }), clear)).toEqual({ ok: false, error: 'HTTP 401' })
     expect(clear).not.toHaveBeenCalled()
   })
 

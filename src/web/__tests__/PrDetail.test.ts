@@ -65,6 +65,7 @@ interface SentRequest {
   draft: { comments: { line?: string; sha?: string; text: string }[] }
   headSha?: string
   isolatedBase?: boolean
+  clearDraft?: boolean
 }
 
 function sentRequest(): SentRequest {
@@ -360,7 +361,7 @@ describe('PR detail — the path to GitHub', () => {
 
     await confirmPost()
     expect(postedComments()[0].line).toBe('11')
-    expect(sentRequest()).toMatchObject({ headSha: 'sha1', isolatedBase: false })
+    expect(sentRequest()).toMatchObject({ headSha: 'sha1', isolatedBase: false, clearDraft: true })
   })
 
   it('folds an anchor it cannot check rather than posting it', async () => {
