@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screenPrsStore, initScreenPrsListeners } from '../screenprs.svelte'
 import type { EventMap } from '../../../shared/ipc-types'
 import { bucketOf, emptyReviewDraft, type ScreenPrCard, type PrContext, type PrReviewDraft } from '../../../shared/screenprs'
-import { applyDraftOp, type DraftOpResult, type PrReviewDraftOp } from '../../../shared/review-drafts'
+import { applyDraftOp, clearPostedOp, type DraftOpResult, type PrReviewDraftOp } from '../../../shared/review-drafts'
 
 type Handlers = {
   'screenprs:queued'?: (d: EventMap['screenprs:queued']) => void
@@ -301,17 +301,27 @@ describe('screenPrsStore draft mirror', () => {
     expect(opCalls.map((c) => c.op.kind)).toEqual(['add-comment'])
   })
 
-  it('drops a pending summary that was posted, but keeps one typed after', async () => {
+  it('sends a pending summary before posting it, and keeps one typed after', async () => {
     vi.useFakeTimers()
     try {
+      const order: string[] = []
       vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
-        if (channel === 'screenprs:submit-review') return { ok: true, folded: { count: 0, reasons: {} } }
-        if (channel === 'screenprs:draft-op') opCalls.push(args[0] as { url: string; op: { kind: string } })
+        if (channel === 'screenprs:submit-review') {
+          order.push('submit')
+          return { ok: true, folded: { count: 0, reasons: {} } }
+        }
+        if (channel === 'screenprs:draft-op') {
+          const call = args[0] as { url: string; op: PrReviewDraftOp }
+          opCalls.push(call)
+          order.push(call.op.kind)
+          return { draft: applyDraftOp(null, call.op), rev: next() }
+        }
         return undefined
       })
       const pr = (url: string) => ({ owner: 'acme', repo: 'ui', number: 10, url })
       screenPrsStore.setSummary('d10', 'posted text')
       await screenPrsStore.submitReview(pr('d10'), screenPrsStore.draftFor('d10'), { clearDraft: true })
+      expect(order).toEqual(['set-summary', 'submit'])
 
       screenPrsStore.setSummary('d11', 'posted text')
       const posting = screenPrsStore.submitReview(pr('d11'), screenPrsStore.draftFor('d11'), { clearDraft: true })
@@ -319,7 +329,42 @@ describe('screenPrsStore draft mirror', () => {
       await posting
 
       vi.advanceTimersByTime(400)
-      expect(opCalls).toEqual([{ url: 'd11', op: { kind: 'set-summary', summary: 'a follow-up' } }])
+      expect(opCalls).toEqual([
+        { url: 'd10', op: { kind: 'set-summary', summary: 'posted text' } },
+        { url: 'd11', op: { kind: 'set-summary', summary: 'posted text' } },
+        { url: 'd11', op: { kind: 'set-summary', summary: 'a follow-up' } },
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not let main’s older summary outlive a post of the one still being typed', async () => {
+    vi.useFakeTimers()
+    try {
+      let stored: PrReviewDraft | null = draft({ summary: 'older' })
+      handlers['screenprs:draft-changed']!({ url: 'd14', draft: stored, rev: next() })
+      vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
+        if (channel === 'screenprs:draft-op') {
+          const call = args[0] as { url: string; op: PrReviewDraftOp }
+          stored = applyDraftOp(stored, call.op)
+          return { draft: stored, rev: next() }
+        }
+        if (channel === 'screenprs:submit-review') {
+          // What main does after posting: clear what was posted, then broadcast.
+          const req = args[0] as { draft: PrReviewDraft }
+          stored = applyDraftOp(stored, clearPostedOp(req.draft))
+          handlers['screenprs:draft-changed']!({ url: 'd14', draft: stored, rev: next() })
+          return { ok: true, folded: { count: 0, reasons: {} } }
+        }
+        return undefined
+      })
+      screenPrsStore.setSummary('d14', 'final words')
+      const pr = { owner: 'acme', repo: 'ui', number: 14, url: 'd14' }
+      await screenPrsStore.submitReview(pr, screenPrsStore.draftFor('d14'), { clearDraft: true })
+      vi.advanceTimersByTime(400)
+      expect(stored).toBeNull()
+      expect(screenPrsStore.draftFor('d14')).toEqual(emptyReviewDraft())
     } finally {
       vi.useRealTimers()
     }

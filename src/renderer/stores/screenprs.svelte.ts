@@ -159,15 +159,16 @@ function setNotice(url: string, notice: string | null): void {
   _notices = next
 }
 
-function sendOp(url: string, op: PrReviewDraftOp): void {
+/** Settles once main has answered `op`, or it has failed; never rejects. */
+function sendOp(url: string, op: PrReviewDraftOp): Promise<void> {
   // Behind an op still waiting to be resent, so a replay keeps their order.
   const waiting = _unsent.get(url)
   if (waiting) {
     waiting.push(op)
-    return
+    return Promise.resolve()
   }
   _inFlight.set(url, (_inFlight.get(url) ?? 0) + 1)
-  window.api
+  return window.api
     .invoke('screenprs:draft-op', { url, op })
     .then((res) => receiveServer(url, res))
     .catch((err: unknown) => {
@@ -198,7 +199,7 @@ function sendOp(url: string, op: PrReviewDraftOp): void {
 function replayUnsent(): void {
   const all = [..._unsent]
   _unsent.clear()
-  for (const [url, ops] of all) for (const op of ops) sendOp(url, op)
+  for (const [url, ops] of all) for (const op of ops) void sendOp(url, op)
 }
 
 function localOp(url: string, op: PrReviewDraftOp): void {
@@ -206,7 +207,7 @@ function localOp(url: string, op: PrReviewDraftOp): void {
   const next = applyDraftOp(cur, op)
   if (next === cur) return
   setMirror(url, next)
-  sendOp(url, op)
+  void sendOp(url, op)
 }
 
 function dropPendingSummary(url: string): void {
@@ -363,7 +364,7 @@ export const screenPrsStore = {
     dropPendingSummary(url)
     const timer = setTimeout(() => {
       _pendingSummary.delete(url)
-      sendOp(url, { kind: 'set-summary', summary })
+      void sendOp(url, { kind: 'set-summary', summary })
     }, SUMMARY_DEBOUNCE_MS)
     _pendingSummary.set(url, { text: summary, timer })
   },
@@ -405,6 +406,14 @@ export const screenPrsStore = {
     const url = pr.url
     _submitting = new Set(_submitting).add(url)
     try {
+      // Main clears the summary it holds only if it is the one posted, so a
+      // summary still in its debounce has to reach main first: left behind,
+      // main's older text would survive the clear and come back.
+      const pending = _pendingSummary.get(url)
+      if (opts?.clearDraft && pending) {
+        dropPendingSummary(url)
+        await sendOp(url, { kind: 'set-summary', summary: pending.text })
+      }
       const res = await window.api.invoke('screenprs:submit-review', {
         // Plain literals + snapshot — no $state proxy may cross IPC (structured clone throws).
         pr: { owner: pr.owner, repo: pr.repo, number: pr.number, url: pr.url },
