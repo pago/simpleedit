@@ -1,3 +1,37 @@
+<script lang="ts" module>
+  type Side = 'LEFT' | 'RIGHT'
+  interface Composing {
+    url: string
+    path: string
+    side: Side
+    /** The line first clicked; a shift-click spans from it to the new line. */
+    anchor: number
+    from: number
+    to: number
+    /** Set when editing a comment already in the draft. */
+    editingId?: string
+    initial: string
+    text: string
+  }
+
+  /**
+   * The open line editor of each PR, typed text included. Module-level so a
+   * half-written comment survives switching PRs and the view remounting; it
+   * is never persisted, since it is not in the draft yet.
+   */
+  const composingByUrl = $state<Record<string, Composing>>({})
+
+  function setComposing(url: string, next: Composing | null): void {
+    if (next) composingByUrl[url] = next
+    else delete composingByUrl[url]
+  }
+
+  /** Tests only: forget every open editor. */
+  export function _resetInlineEditors(): void {
+    for (const url of Object.keys(composingByUrl)) delete composingByUrl[url]
+  }
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity, PrReviewComment } from '../../../shared/screenprs'
@@ -147,25 +181,8 @@
   }
 
   // ── Inline comments: ＋ on a diff line opens an editor under it ─────────────
-  type Side = 'LEFT' | 'RIGHT'
-  interface Composing {
-    /** The detail view is reused across PRs, so an open editor belongs to one. */
-    url: string
-    path: string
-    side: Side
-    /** The line first clicked; a shift-click spans from it to the new line. */
-    anchor: number
-    from: number
-    to: number
-    /** Set when editing a comment already in the draft. */
-    editingId?: string
-    initial: string
-    text: string
-  }
-
   let draft = $derived(screenPrsStore.draftFor(context.url))
-  let composing = $state<Composing | null>(null)
-  let active = $derived(composing?.url === context.url ? composing : null)
+  let active = $derived(composingByUrl[context.url] ?? null)
   let editor = $state<InlineCommentEditor>()
   let selectedRange = $derived(active ? { path: active.path, side: active.side, from: active.from, to: active.to } : undefined)
 
@@ -175,8 +192,8 @@
   const lineOn = (row: DiffRow, side: Side): number | undefined => (side === 'LEFT' ? row.oldNo : row.newNo)
 
   function openEditor(next: Composing): void {
-    if (active && editor) editor.confirmLeave(() => (composing = next))
-    else composing = next
+    if (active && editor) editor.confirmLeave(() => setComposing(next.url, next))
+    else setComposing(next.url, next)
   }
 
   function lineClick(f: DiffFile, row: DiffRow, _index: number, ev: MouseEvent): void {
@@ -184,7 +201,7 @@
     const n = lineOn(row, side)
     if (n === undefined) return
     if (ev.shiftKey && active && !active.editingId && active.path === f.path && active.side === side) {
-      composing = { ...active, from: Math.min(active.anchor, n), to: Math.max(active.anchor, n) }
+      setComposing(context.url, { ...active, from: Math.min(active.anchor, n), to: Math.max(active.anchor, n) })
       return
     }
     openEditor({ url: context.url, path: f.path, side, anchor: n, from: n, to: n, initial: '', text: '' })
@@ -230,12 +247,12 @@
         sha: context.headSha,
       })
     }
-    composing = null
+    setComposing(context.url, null)
   }
 
   function deleteInline(): void {
     if (active?.editingId) screenPrsStore.removeComment(context.url, active.editingId)
-    composing = null
+    setComposing(context.url, null)
   }
 
   /** A comment sits under the last row it covers, matched on its own side's numbers. */
@@ -446,11 +463,11 @@
   {#if active && editorUnder(f, row)}
     <InlineCommentEditor
       bind:this={editor}
-      bind:text={() => active?.text ?? '', (v) => { if (composing) composing.text = v }}
+      bind:text={() => active?.text ?? '', (v) => { if (active) active.text = v }}
       initial={active.initial}
       label={editorLabel(active)}
       onsubmit={submitInline}
-      oncancel={() => (composing = null)}
+      oncancel={() => setComposing(context.url, null)}
       ondelete={active.editingId ? deleteInline : undefined}
     />
   {/if}
