@@ -9,7 +9,7 @@
    */
   import * as monaco from 'monaco-editor'
   import { tick, type Snippet } from 'svelte'
-  import { languageForPath, type DiffFile } from '../../../shared/parseDiff'
+  import { languageForPath, type DiffFile, type DiffRow } from '../../../shared/parseDiff'
   import { findRevealTarget, REVEAL_FLASH_MS, scrollBehavior, type RevealTarget } from '../../lib/diffReveal'
 
   interface Props {
@@ -23,9 +23,15 @@
     /** Extra chrome for a file's header row (e.g. a jump-to-file link). */
     fileHeaderExtra?: Snippet<[DiffFile]>
     emptyLabel?: string
+    /** Offers a gutter ＋ on every line row; absent, the view stays read-only. */
+    onLineClick?: (file: DiffFile, row: DiffRow, index: number, ev: MouseEvent) => void
+    /** Content rendered under a line row (e.g. comments on it). */
+    belowRow?: Snippet<[DiffFile, DiffRow, number]>
+    /** Lines to highlight, counted on `side`: old-file numbers for LEFT, new-file for RIGHT. */
+    selectedRange?: { path: string; side: 'LEFT' | 'RIGHT'; from: number; to: number }
   }
 
-  let { files, language, fileHeaderExtra, emptyLabel = 'No diff.' }: Props = $props()
+  let { files, language, fileHeaderExtra, emptyLabel = 'No diff.', onLineClick, belowRow, selectedRange }: Props = $props()
 
   let root = $state<HTMLDivElement>()
   let revealed = $state<RevealTarget | null>(null)
@@ -33,12 +39,12 @@
 
   /**
    * Scroll `path` into view and briefly highlight it: the row nearest `line`
-   * (a new-file number, or a `12-18` range) when given, else the file header.
-   * Resolves false when the diff has no such file. Call it with the view
-   * visible — a hidden container has nothing to scroll.
+   * (a new-file number, or a `12-18` range; old-file for `LEFT`) when given,
+   * else the file header. Resolves false when the diff has no such file. Call
+   * it with the view visible — a hidden container has nothing to scroll.
    */
-  export async function reveal(path: string, line?: string | number): Promise<boolean> {
-    const target = findRevealTarget(files, path, line)
+  export async function reveal(path: string, line?: string | number, side?: 'LEFT' | 'RIGHT'): Promise<boolean> {
+    const target = findRevealTarget(files, path, line, side)
     if (!target) return false
     clearTimeout(revealTimer)
     revealed = target
@@ -53,6 +59,14 @@
   const isRevealed = (f: DiffFile, row: number | null): boolean =>
     revealed?.path === f.path && revealed.row === row
   const REVEAL_CLASS = 'bg-orange-500/15 ring-1 ring-inset ring-orange-500/70'
+
+  function isSelected(f: DiffFile, row: DiffRow): boolean {
+    const r = selectedRange
+    if (!r || r.path !== f.path) return false
+    const n = r.side === 'LEFT' ? row.oldNo : row.newNo
+    return n !== undefined && n >= r.from && n <= r.to
+  }
+  const SELECTED_CLASS = 'bg-blue-500/[0.14]'
 
   // ── syntax highlighting (Monaco colorize; falls back to plain on any miss) ──
   // Map<file path, HTML per row index>. Recomputed when the diff changes.
@@ -131,14 +145,31 @@
               <div class="bg-zinc-900/60 px-3 py-0.5 text-[10.5px] text-zinc-500">⋯ {row.text}</div>
             {:else}
               <div
-                class="flex {isRevealed(f, i) ? REVEAL_CLASS : ROW_BG[row.kind]}"
+                class="flex {isRevealed(f, i) ? REVEAL_CLASS : isSelected(f, row) ? SELECTED_CLASS : ROW_BG[row.kind]}
+                  {onLineClick ? 'group relative' : ''}"
                 data-revealed={isRevealed(f, i) || undefined}
+                data-selected={isSelected(f, row) || undefined}
               >
+                {#if onLineClick}
+                  {@const n = row.kind === 'del' ? row.oldNo : row.newNo}
+                  <button
+                    type="button"
+                    class="absolute left-[4.1rem] top-1/2 z-10 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded bg-blue-600 text-[11px] leading-none text-white opacity-0 shadow transition-opacity hover:bg-blue-500 focus-visible:opacity-100 group-hover:opacity-100"
+                    aria-label="Comment on {row.kind === 'del' ? 'deleted ' : ''}line {n}"
+                    title="Comment on this line (shift-click to extend a range)"
+                    data-testid="diff-line-comment"
+                    onclick={(ev) => onLineClick(f, row, i, ev)}
+                  >＋</button>
+                {/if}
                 <span class="w-10 flex-none select-none border-r border-zinc-800/60 pr-2 text-right text-zinc-500 tabular-nums">{row.oldNo ?? ''}</span>
                 <span class="w-10 flex-none select-none border-r border-zinc-800/60 pr-2 text-right text-zinc-500 tabular-nums">{row.newNo ?? ''}</span>
                 <span class="w-4 flex-none select-none text-center {row.kind === 'add' ? 'text-emerald-400' : row.kind === 'del' ? 'text-red-400' : 'text-zinc-600'}">{row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ''}</span>
                 <span class="whitespace-pre pl-2 pr-4 text-zinc-200">{@html rowHtml(f, i, row.text)}</span>
               </div>
+              {#if belowRow}
+                <!-- sticky so a comment stays in view when a wide row is scrolled sideways -->
+                <div class="sticky left-0">{@render belowRow(f, row, i)}</div>
+              {/if}
             {/if}
           {/each}
         </div>

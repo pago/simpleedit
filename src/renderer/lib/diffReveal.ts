@@ -8,6 +8,9 @@
  * on the change nearest the line the model meant. A file with no new-side rows
  * (binary, deleted), or a citation with no line, lands on the file header. A
  * shortened path finds its file when only one diff path ends with it.
+ *
+ * A `LEFT` line is a deleted-file number, so it is matched against old-file
+ * numbers instead.
  */
 import { parseLineAnchor } from '../../shared/screenprs'
 import { resolveRefPath } from '../../shared/pr-overview'
@@ -22,7 +25,12 @@ export interface RevealTarget {
 /** How long a revealed row or header stays highlighted. */
 export const REVEAL_FLASH_MS = 1400
 
-export function findRevealTarget(files: DiffFile[], path: string, line?: string | number): RevealTarget | null {
+export function findRevealTarget(
+  files: DiffFile[],
+  path: string,
+  line?: string | number,
+  side: 'LEFT' | 'RIGHT' = 'RIGHT'
+): RevealTarget | null {
   const resolved = resolveRefPath(files.map((f) => f.path), path)
   const file = files.find((f) => f.path === resolved) ?? files.find((f) => f.oldPath === path)
   if (!file) return null
@@ -32,8 +40,9 @@ export function findRevealTarget(files: DiffFile[], path: string, line?: string 
   let best: number | null = null
   let bestDistance = Infinity
   file.rows.forEach((r, i) => {
-    if (r.newNo === undefined) return
-    const distance = Math.abs(r.newNo - wanted)
+    const n = side === 'LEFT' ? r.oldNo : r.newNo
+    if (n === undefined) return
+    const distance = Math.abs(n - wanted)
     if (distance < bestDistance) {
       best = i
       bestDistance = distance
