@@ -8,6 +8,7 @@
  * over `gh`.
  */
 import type { ConventionalCommentLabel } from './ipc-types'
+import { parseUnifiedDiff } from './parseDiff'
 
 export type PrCiStatus = 'green' | 'pending' | 'failing'
 export type PrReviewerState = 'approved' | 'changes_requested' | 'commented' | 'pending'
@@ -199,14 +200,26 @@ export interface PrReviewComment {
   file: string
   /** Raw finding line ("88", "88–94", "L88", "—" …) — anchored best-effort. */
   line?: string
+  /**
+   * Which side of the diff `line` counts on: `LEFT` is the old file (a deleted
+   * row), `RIGHT` the new one. Absent means `RIGHT`, which is what every
+   * finding is.
+   */
+  side?: 'LEFT' | 'RIGHT'
   text: string
+  /**
+   * The row text the comment was written on. Quoted when the comment folds into
+   * the review body, so it keeps its context without a line to sit on.
+   */
+  snippet?: string
   /**
    * The head commit this comment's `line` was read off, when it is known.
    *
-   * The reviews API takes no `commit_id`, so GitHub anchors against whatever
-   * the head is when the review is POSTed. If the head moved after the comment
-   * was raised, that number now points at different code — see
-   * `reanchorForHead`, which is what has to run before a draft is posted.
+   * GitHub anchors a review against its `commit_id`, which defaults to the
+   * PR's latest head when the payload leaves it out. Either way that is the
+   * head at POST time: if it moved after the comment was raised, the number
+   * now points at different code — see `anchorsForHead`, which is what has to
+   * run before a draft is posted.
    *
    * `undefined` means UNKNOWN, and unknown is not "a different head": a comment
    * with no stamp is never treated as stale. Never store `''` here — that is a
@@ -236,8 +249,12 @@ export const REVIEW_EVENT: Record<PrReviewVerdict, 'APPROVE' | 'COMMENT' | 'REQU
 /** A line-anchored comment in the shape the reviews API expects. */
 export interface GithubReviewComment {
   path: string
+  /** The single line, or the LAST line of a range. */
   line: number
-  side: 'RIGHT'
+  side: 'LEFT' | 'RIGHT'
+  /** Set only for a multi-line range; GitHub requires it below `line`. */
+  start_line?: number
+  start_side?: 'LEFT' | 'RIGHT'
   body: string
 }
 
@@ -246,23 +263,35 @@ export interface GithubReviewPayload {
   event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'
   body: string
   comments: GithubReviewComment[]
+  /** The head the anchors were checked against; GitHub defaults to the latest. */
+  commit_id?: string
 }
 
 /**
- * Reduce a finding's line field to a single GitHub-anchorable line number.
- * "88" → 88, "88–94"/"88-94" → 88 (first line of the range), "L88" → 88;
- * "—", "", undefined, or non-numeric → null (the comment gets folded into the
- * review body instead of anchored).
+ * Read a finding's line field as a line range. "88" → 88–88, "88–94"/"88-94"/
+ * "L88-L94" → 88–94; "—", "", undefined, or non-numeric → null. A reversed
+ * range keeps only its first line.
  */
-export function parseLineAnchor(line?: string): number | null {
+export function parseLineRange(line?: string): { start: number; end: number } | null {
   if (!line) return null
-  const m = line.match(/\d+/)
+  const m = line.match(/(\d+)(?:\s*[-–—]\s*L?(\d+))?/)
   if (!m) return null
-  const n = Number(m[0])
+  const start = Number(m[1])
   // Files are 1-based, so 0 is not a line GitHub can anchor to — and a single
   // rejected anchor 422s the review, collapsing EVERY anchor in it into the
   // body. Folding one comment beats losing the placement of all of them.
-  return n > 0 ? n : null
+  if (start <= 0) return null
+  const end = m[2] === undefined ? start : Number(m[2])
+  return { start, end: end > start ? end : start }
+}
+
+/**
+ * Reduce a finding's line field to a single GitHub-anchorable line number: the
+ * first line of `parseLineRange`, or null (the comment gets folded into the
+ * review body instead of anchored).
+ */
+export function parseLineAnchor(line?: string): number | null {
+  return parseLineRange(line)?.start ?? null
 }
 
 /**
@@ -273,7 +302,8 @@ export function parseLineAnchor(line?: string): number | null {
  * the missing answer was resolved as "go ahead". On a write other people see,
  * ONLY a positive match may anchor: a line number that cannot be checked is a
  * line number that might land on code the reviewer never read, and GitHub
- * accepts it silently because the reviews API carries no commit id.
+ * accepts it silently: it checks the line against the review's commit, not
+ * against the commit the reviewer read.
  */
 export type AnchorState =
   /** No line was raised — a file-level note. Nothing to anchor either way. */
@@ -327,29 +357,112 @@ export function anchorCounts(draft: PrReviewDraft, headSha: string): Record<Anch
   return counts
 }
 
-function foldedBullet(c: PrReviewComment): string {
-  // A folded comment has no anchorable line (or no file at all), so the raw line
-  // string would just be noise — keep only the file for context.
-  const loc = c.file ? `${c.file} — ` : ''
-  return `- ${loc}${c.text}`
+/** Per side, each line GitHub accepts a comment on, mapped to its hunk's index. */
+export interface CommentableSides {
+  LEFT: Map<number, number>
+  RIGHT: Map<number, number>
 }
 
 /**
- * Turn a draft into a single review payload. Comments with a resolvable
- * file+line anchor to the diff's RIGHT side; the rest (no file, or an
- * unparseable/"—" line) fold into the review body as a bullet list so nothing
- * is silently dropped (the decision recorded in plans/screen-prs.md §3.4).
+ * The lines of a diff that GitHub will anchor a review comment to, by path:
+ * RIGHT is every added or context row's new number, LEFT every deleted or
+ * context row's old number. Feed it GitHub's own diff of the PR — a comment on
+ * a row outside its hunks 422s the whole review.
  */
-export function buildReviewPayload(draft: PrReviewDraft): GithubReviewPayload {
+export function commentableLines(diff: string): Map<string, CommentableSides> {
+  const out = new Map<string, CommentableSides>()
+  for (const file of parseUnifiedDiff(diff)) {
+    const sides: CommentableSides = { LEFT: new Map(), RIGHT: new Map() }
+    let hunk = -1
+    for (const row of file.rows) {
+      if (row.kind === 'hunk') { hunk++; continue }
+      if (row.kind !== 'del' && row.newNo !== undefined) sides.RIGHT.set(row.newNo, hunk)
+      if (row.kind !== 'add' && row.oldNo !== undefined) sides.LEFT.set(row.oldNo, hunk)
+    }
+    out.set(file.path, sides)
+  }
+  return out
+}
+
+export interface ReviewPayloadOptions {
+  /** From `commentableLines` on GitHub's diff. Absent: anchors aren't checked. */
+  commentable?: Map<string, CommentableSides>
+  /** Sent as `commit_id`, pinning the anchors to the head they were checked on. */
+  headSha?: string
+  /**
+   * The diff the reviewer read was taken against a different base than
+   * GitHub's (a stacked PR's parent), so its old-side numbers are not GitHub's.
+   */
+  isolatedBase?: boolean
+}
+
+/** Why a comment went into the review body instead of onto a line. */
+export type FoldReason =
+  /** No file, or no numeric line. */
+  | 'no-line'
+  /** A deleted-line comment read off a diff with a different base. */
+  | 'isolated-base'
+  /** The line is outside GitHub's hunks for that file. */
+  | 'not-in-diff'
+
+/** Where one draft comment goes in the payload: onto a line, or into the body. */
+export function resolveAnchor(
+  c: PrReviewComment,
+  opts: ReviewPayloadOptions = {}
+): { anchor: GithubReviewComment } | { fold: FoldReason } {
+  const range = c.file ? parseLineRange(c.line) : null
+  if (!range) return { fold: 'no-line' }
+  const side = c.side ?? 'RIGHT'
+  if (side === 'LEFT' && opts.isolatedBase) return { fold: 'isolated-base' }
+  const single = { anchor: { path: c.file, line: range.start, side, body: c.text } }
+  if (!opts.commentable) return single
+  const lines = opts.commentable.get(c.file)?.[side]
+  const startHunk = lines?.get(range.start)
+  if (startHunk === undefined) return { fold: 'not-in-diff' }
+  // GitHub rejects a range that spans hunks, so it narrows to its first line.
+  if (range.end === range.start || lines?.get(range.end) !== startHunk) return single
+  return {
+    anchor: { path: c.file, start_line: range.start, start_side: side, line: range.end, side, body: c.text },
+  }
+}
+
+function location(file: string, start: number, end: number, side: 'LEFT' | 'RIGHT'): string {
+  const lines = end > start ? `${start}-${end}` : `${start}`
+  const deleted = side === 'LEFT' ? (end > start ? ' (deleted lines)' : ' (deleted line)') : ''
+  return `${file}:${lines}${deleted}`
+}
+
+function quoted(snippet: string): string {
+  return snippet.split('\n').map((l) => `\n  > ${l}`).join('')
+}
+
+function foldedBullet(c: PrReviewComment): string {
+  // A non-numeric line ("—") is just noise in the body, so only a real number
+  // is kept next to the file.
+  const range = parseLineRange(c.line)
+  const loc = !c.file ? '' : range ? `${location(c.file, range.start, range.end, c.side ?? 'RIGHT')} — ` : `${c.file} — `
+  return `- ${loc}${c.text}${c.snippet ? quoted(c.snippet) : ''}`
+}
+
+/**
+ * Turn a draft into a single review payload. Each comment anchors where
+ * `resolveAnchor` can place it; the rest fold into the review body as a bullet
+ * list so nothing is silently dropped (the decision recorded in
+ * plans/screen-prs.md §3.4). Folding is per comment, so one bad anchor does not
+ * cost the others their lines.
+ */
+export function buildReviewPayload(draft: PrReviewDraft, opts: ReviewPayloadOptions = {}): GithubReviewPayload {
   const anchored: GithubReviewComment[] = []
   const folded: string[] = []
   for (const c of draft.comments) {
-    const anchor = c.file ? parseLineAnchor(c.line) : null
-    if (c.file && anchor != null) anchored.push({ path: c.file, line: anchor, side: 'RIGHT', body: c.text })
+    const placed = resolveAnchor(c, opts)
+    if ('anchor' in placed) anchored.push(placed.anchor)
     else folded.push(foldedBullet(c))
   }
   const body = [draft.summary.trim(), folded.join('\n')].filter(Boolean).join('\n\n')
-  return { event: REVIEW_EVENT[draft.verdict], body, comments: anchored }
+  const payload: GithubReviewPayload = { event: REVIEW_EVENT[draft.verdict], body, comments: anchored }
+  if (opts.headSha) payload.commit_id = opts.headSha
+  return payload
 }
 
 /**
@@ -359,9 +472,11 @@ export function buildReviewPayload(draft: PrReviewDraft): GithubReviewPayload {
  */
 export function foldCommentsIntoBody(payload: GithubReviewPayload): GithubReviewPayload {
   if (payload.comments.length === 0) return payload
-  const bullets = payload.comments.map((c) => `- ${c.path}:${c.line} — ${c.body}`)
+  const bullets = payload.comments.map(
+    (c) => `- ${location(c.path, c.start_line ?? c.line, c.line, c.side)} — ${c.body}`
+  )
   const body = [payload.body, bullets.join('\n')].filter(Boolean).join('\n\n')
-  return { event: payload.event, body, comments: [] }
+  return { ...payload, body, comments: [] }
 }
 
 /**

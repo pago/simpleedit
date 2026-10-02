@@ -5,6 +5,8 @@ import {
   compareInBucket,
   compareDeepFindings,
   parseLineAnchor,
+  parseLineRange,
+  commentableLines,
   buildReviewPayload,
   foldCommentsIntoBody,
   reviewSubmitError,
@@ -227,6 +229,124 @@ describe('buildReviewPayload', () => {
   })
 })
 
+describe('parseLineRange', () => {
+  it('reads single lines and ranges', () => {
+    expect(parseLineRange('88')).toEqual({ start: 88, end: 88 })
+    expect(parseLineRange('88–94')).toEqual({ start: 88, end: 94 })
+    expect(parseLineRange('88-94')).toEqual({ start: 88, end: 94 })
+    expect(parseLineRange('L88-L94')).toEqual({ start: 88, end: 94 })
+  })
+  it('keeps only the first line of a reversed range', () => {
+    expect(parseLineRange('94-88')).toEqual({ start: 94, end: 94 })
+  })
+  it('returns null where there is no line to anchor', () => {
+    expect(parseLineRange(undefined)).toBeNull()
+    expect(parseLineRange('—')).toBeNull()
+    expect(parseLineRange('0-4')).toBeNull()
+  })
+})
+
+// a.ts: two hunks. b.ts: one hunk, a deletion only.
+const GH_DIFF = `diff --git a/a.ts b/a.ts
+index 1111111..2222222 100644
+--- a/a.ts
++++ b/a.ts
+@@ -10,4 +10,5 @@ fn
+ ctx10
+-old11
++new11
++new12
+ ctx13
+ ctx14
+@@ -40,3 +41,3 @@ other
+ ctx41
+-old41
++new42
+ ctx43
+diff --git a/b.ts b/b.ts
+index 3333333..4444444 100644
+--- a/b.ts
++++ b/b.ts
+@@ -5,3 +5,2 @@
+ keep5
+-gone6
+ keep6
+`
+
+describe('commentableLines', () => {
+  const lines = commentableLines(GH_DIFF)
+  it('maps each side of each file to the hunk a line sits in', () => {
+    const a = lines.get('a.ts')
+    expect([...(a?.RIGHT ?? [])]).toEqual([[10, 0], [11, 0], [12, 0], [13, 0], [14, 0], [41, 1], [42, 1], [43, 1]])
+    expect([...(a?.LEFT ?? [])]).toEqual([[10, 0], [11, 0], [12, 0], [13, 0], [40, 1], [41, 1], [42, 1]])
+  })
+  it('keeps files apart', () => {
+    const b = lines.get('b.ts')
+    expect([...(b?.RIGHT.keys() ?? [])]).toEqual([5, 6])
+    expect([...(b?.LEFT.keys() ?? [])]).toEqual([5, 6, 7])
+  })
+})
+
+describe('buildReviewPayload against GitHub\'s diff', () => {
+  const commentable = commentableLines(GH_DIFF)
+  const you = (over: Partial<PrReviewComment>): PrReviewComment => ({ source: 'you', file: 'a.ts', text: 'n', ...over })
+  const build = (comments: PrReviewComment[], opts: Parameters<typeof buildReviewPayload>[1] = {}) =>
+    buildReviewPayload(draft({ comments }), { commentable, ...opts })
+
+  it('posts a range inside one hunk as a real range', () => {
+    expect(build([you({ line: '11-13' })]).comments).toEqual([
+      { path: 'a.ts', start_line: 11, start_side: 'RIGHT', line: 13, side: 'RIGHT', body: 'n' },
+    ])
+  })
+  it('narrows a range across hunks to its first line', () => {
+    expect(build([you({ line: '12-42' })]).comments).toEqual([{ path: 'a.ts', line: 12, side: 'RIGHT', body: 'n' }])
+  })
+  it('anchors a deleted line on the LEFT side', () => {
+    expect(build([you({ file: 'b.ts', line: '6', side: 'LEFT' })]).comments).toEqual([
+      { path: 'b.ts', line: 6, side: 'LEFT', body: 'n' },
+    ])
+  })
+  it('folds a deleted-line comment on an isolated base, keeping its line and snippet', () => {
+    const p = build([you({ file: 'b.ts', line: '6', side: 'LEFT', text: 'why?', snippet: 'gone6' })], { isolatedBase: true })
+    expect(p.comments).toEqual([])
+    expect(p.body).toBe('- b.ts:6 (deleted line) — why?\n  > gone6')
+  })
+  it('still anchors new-side comments on an isolated base', () => {
+    expect(build([you({ line: '11' })], { isolatedBase: true }).comments).toHaveLength(1)
+  })
+  it('folds a row outside the hunks alone while the others anchor', () => {
+    const p = build([you({ line: '11', text: 'ok' }), you({ line: '30', text: 'out', snippet: 'far away' })])
+    expect(p.comments).toEqual([{ path: 'a.ts', line: 11, side: 'RIGHT', body: 'ok' }])
+    expect(p.body).toBe('- a.ts:30 — out\n  > far away')
+  })
+  it('folds a range whose first line is outside the hunks, keeping the range', () => {
+    expect(build([you({ line: '30-41' })]).body).toBe('- a.ts:30-41 — n')
+  })
+  it('folds a comment on a file GitHub does not show', () => {
+    expect(build([you({ file: 'c.ts', line: '1' })]).comments).toEqual([])
+  })
+  it('pins the review to the head it was checked against', () => {
+    expect(build([], { headSha: 'abc123' }).commit_id).toBe('abc123')
+    expect(build([]).commit_id).toBeUndefined()
+  })
+})
+
+describe('buildReviewPayload without a commentable set', () => {
+  it('honours the side but does not check or widen anchors', () => {
+    const p = buildReviewPayload(draft({
+      comments: [
+        { source: 'you', file: 'a.ts', line: '5', side: 'LEFT', text: 'x' },
+        { source: 'you', file: 'a.ts', line: '30-41', text: 'y' },
+      ],
+    }))
+    expect(p.comments).toEqual([
+      { path: 'a.ts', line: 5, side: 'LEFT', body: 'x' },
+      { path: 'a.ts', line: 30, side: 'RIGHT', body: 'y' },
+    ])
+    expect(p.commit_id).toBeUndefined()
+  })
+})
+
 describe('foldCommentsIntoBody (422 recovery)', () => {
   it('collapses anchored comments into body bullets and clears comments', () => {
     const p = buildReviewPayload(draft({
@@ -235,6 +355,16 @@ describe('foldCommentsIntoBody (422 recovery)', () => {
     const folded = foldCommentsIntoBody(p)
     expect(folded.comments).toEqual([])
     expect(folded.body).toBe('s\n\n- a.ts:5 — boom')
+  })
+  it('keeps the side, the range and the commit', () => {
+    const folded = foldCommentsIntoBody({
+      event: 'COMMENT', body: '', commit_id: 'abc',
+      comments: [
+        { path: 'a.ts', start_line: 3, start_side: 'RIGHT', line: 5, side: 'RIGHT', body: 'r' },
+        { path: 'b.ts', line: 6, side: 'LEFT', body: 'l' },
+      ],
+    })
+    expect(folded).toEqual({ event: 'COMMENT', commit_id: 'abc', comments: [], body: '- a.ts:3-5 — r\n- b.ts:6 (deleted line) — l' })
   })
   it('is a no-op when there are no anchored comments', () => {
     const p = buildReviewPayload(draft({ summary: 's' }))
