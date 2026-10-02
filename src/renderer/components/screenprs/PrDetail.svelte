@@ -37,6 +37,7 @@
   import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity, PrReviewComment } from '../../../shared/screenprs'
   import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, anchorState, baseWarning, parseLineRange } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
+  import { truncateSnippet } from '../../../shared/review-drafts'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../../../shared/parseDiff'
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
   import OverviewCard from './OverviewCard.svelte'
@@ -242,7 +243,7 @@
         file: a.path,
         line: a.from === a.to ? String(a.from) : `${a.from}-${a.to}`,
         side: a.side,
-        snippet,
+        snippet: truncateSnippet(snippet),
         text,
         sha: context.headSha,
       })

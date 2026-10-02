@@ -16,6 +16,7 @@
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
   import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, anchorCounts, anchorsForHead, baseWarning } from '../shared/screenprs'
+  import { truncateSnippet } from '../shared/review-drafts'
   import type {
     DeepFinding,
     DeepSeverity,
@@ -167,7 +168,7 @@
       file: t.file,
       line: t.line,
       side: t.side,
-      snippet: t.snippet,
+      snippet: truncateSnippet(t.snippet),
       text,
       sha: headSha || undefined,
     })
