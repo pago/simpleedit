@@ -493,6 +493,12 @@ export interface SubmitReviewRequest {
   headSha?: string
   /** The diff on screen was the isolated stacked compare, not GitHub's (`BaseAnalysis.isolated`). */
   isolatedBase?: boolean
+  /**
+   * The review posted is not the PR's stored draft (quick approve), so a
+   * successful post must leave that draft alone. Absent: it was the draft,
+   * and main clears it.
+   */
+  keepDraft?: boolean
 }
 
 export type SubmitReviewResult =

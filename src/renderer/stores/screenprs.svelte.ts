@@ -89,6 +89,8 @@ export interface SubmittedReview {
   verdict: PrReviewVerdict
   reviewUrl?: string
   folded: ReviewFolds
+  /** What was posted wasn't the stored draft (quick approve), which stays as typed. */
+  draftKept?: boolean
 }
 let _submitted = $state<Map<string, SubmittedReview>>(new Map())
 let _submitting = $state<Set<string>>(new Set())
@@ -333,13 +335,14 @@ export const screenPrsStore = {
   },
   /**
    * Post `draft` to GitHub. `pr` carries the routing fields (owner/repo/number/url).
-   * With `anchoring`, `draft` is the raw draft and main checks its anchors
+   * With `headSha`, `draft` is the raw draft and main checks its anchors
    * against that head; without, the caller has run `anchorsForHead` itself.
+   * With `keepDraft`, `draft` is not the PR's stored draft, which survives.
    */
   async submitReview(
     pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>,
     draft: PrReviewDraft,
-    anchoring?: { headSha: string; isolatedBase?: boolean }
+    opts?: { headSha?: string; isolatedBase?: boolean; keepDraft?: boolean }
   ): Promise<SubmitReviewResult> {
     const url = pr.url
     _submitting = new Set(_submitting).add(url)
@@ -348,16 +351,18 @@ export const screenPrsStore = {
         // Plain literals + snapshot — no $state proxy may cross IPC (structured clone throws).
         pr: { owner: pr.owner, repo: pr.repo, number: pr.number, url: pr.url },
         draft: $state.snapshot(draft),
-        ...anchoring,
+        ...opts,
       })
       if (res.ok) {
         const next = new Map(_submitted)
-        next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, folded: res.folded })
+        next.set(url, { verdict: draft.verdict, reviewUrl: res.reviewUrl, folded: res.folded, draftKept: opts?.keepDraft })
         _submitted = next
-        // Main has cleared the draft; a summary still waiting to be sent would
-        // bring the posted text back as a fresh one.
-        dropPendingSummary(url)
-        setMirror(url, null)
+        if (!opts?.keepDraft) {
+          // Main has cleared the draft; a summary still waiting to be sent would
+          // bring the posted text back as a fresh one.
+          dropPendingSummary(url)
+          setMirror(url, null)
+        }
       }
       return res
     } finally {
@@ -366,12 +371,15 @@ export const screenPrsStore = {
       _submitting = s
     }
   },
-  /** Clear the local "submitted" marker so a follow-up review can be composed.
+  /** Clear the local "submitted" marker so a follow-up review can be composed,
+   *  starting from an empty draft unless the post left the stored one standing.
    *  Does NOT retract the posted review — GitHub has no such API. */
   resetSubmitted(url: string): void {
+    const kept = _submitted.get(url)?.draftKept
     const next = new Map(_submitted)
     next.delete(url)
     _submitted = next
+    if (kept) return
     dropPendingSummary(url)
     setMirror(url, null)
     sendOp(url, { kind: 'clear' })

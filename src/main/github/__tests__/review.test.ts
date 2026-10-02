@@ -6,8 +6,8 @@ vi.mock('../gh', async (importOriginal) => ({
   getPrDiff: vi.fn(),
 }))
 
-import { runGh, getPrDiff } from '../gh'
-import { postReview, submitReview } from '../review'
+import { runGh, getPrDiff, GhTimeoutError } from '../gh'
+import { handleSubmitReview, postReview, submitReview } from '../review'
 import type { GithubReviewPayload, PrReviewComment } from '../../../shared/screenprs'
 import type { SubmitReviewRequest } from '../../../shared/ipc-types'
 
@@ -143,6 +143,34 @@ describe('submitReview', () => {
     expect(retry.body).toContain('a.ts:40 — n')
     expect(retry.commit_id).toBeUndefined()
     expect(res.folded).toEqual({ count: 2, reasons: { rejected: 2 } })
+  })
+})
+
+describe('handleSubmitReview', () => {
+  it('clears the draft it posted', async () => {
+    const clear = vi.fn()
+    expect(await handleSubmitReview(request([you({ line: '11' })]), clear)).toMatchObject({ ok: true })
+    expect(clear).toHaveBeenCalledWith(PR.url)
+  })
+
+  it('quick approve keeps the draft', async () => {
+    const clear = vi.fn()
+    const res = await handleSubmitReview(request([], { draft: { comments: [], summary: '', verdict: 'approve' }, keepDraft: true }), clear)
+    expect(res).toMatchObject({ ok: true })
+    expect(posted()[0].event).toBe('APPROVE')
+    expect(clear).not.toHaveBeenCalled()
+  })
+
+  it('keeps the draft when nothing was posted', async () => {
+    const clear = vi.fn()
+    post.mockRejectedValueOnce(new Error('HTTP 401'))
+    expect(await handleSubmitReview(request([]), clear)).toEqual({ ok: false, error: 'HTTP 401' })
+    expect(clear).not.toHaveBeenCalled()
+  })
+
+  it('says a killed post may have landed', async () => {
+    post.mockRejectedValueOnce(new GhTimeoutError('gh api did not finish'))
+    expect(await handleSubmitReview(request([]), vi.fn())).toMatchObject({ ok: false, delivered: 'unknown' })
   })
 })
 

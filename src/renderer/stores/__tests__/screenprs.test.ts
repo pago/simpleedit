@@ -243,6 +243,31 @@ describe('screenPrsStore draft mirror', () => {
     expect(screenPrsStore.draftFor('d7').summary).toBe('persisted')
   })
 
+  it('keeps everything typed when a quick approve posts', async () => {
+    vi.useFakeTimers()
+    try {
+      handlers['screenprs:draft-changed']!({ url: 'd9', draft: draft({ summary: 'stored' }), rev: next() })
+      screenPrsStore.setSummary('d9', 'still typing')
+      vi.mocked(window.api.invoke).mockImplementation(async (channel: string, ...args: unknown[]) => {
+        if (channel === 'screenprs:submit-review') return { ok: true, folded: { count: 0, reasons: {} } }
+        if (channel === 'screenprs:draft-op') opCalls.push(args[0] as { url: string; op: { kind: string } })
+        return undefined
+      })
+      const pr = { owner: 'acme', repo: 'ui', number: 9, url: 'd9' }
+      await screenPrsStore.submitReview(pr, { ...emptyReviewDraft(), verdict: 'approve' }, { headSha: 'sha1', keepDraft: true })
+      expect(vi.mocked(window.api.invoke)).toHaveBeenCalledWith('screenprs:submit-review', expect.objectContaining({ keepDraft: true }))
+      expect(screenPrsStore.submittedFor('d9')).toMatchObject({ verdict: 'approve', draftKept: true })
+      expect(screenPrsStore.draftFor('d9').summary).toBe('still typing')
+
+      vi.advanceTimersByTime(400)
+      screenPrsStore.resetSubmitted('d9')
+      expect(screenPrsStore.draftFor('d9').summary).toBe('still typing')
+      expect(opCalls).toEqual([{ url: 'd9', op: { kind: 'set-summary', summary: 'still typing' } }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('clears the draft in main on "compose another"', () => {
     handlers['screenprs:draft-changed']!({ url: 'd8', draft: draft({ summary: 's' }), rev: next() })
     screenPrsStore.resetSubmitted('d8')
