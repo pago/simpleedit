@@ -32,13 +32,37 @@ const request = (comments: PrReviewComment[], over: Partial<SubmitReviewRequest>
   ...over,
 })
 
+/** The same PR at the older head `head0`, one added line shorter. */
+const GH_DIFF_HEAD0 = `diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -10,3 +10,3 @@
+ keep10
+-gone11
++new11
+ keep12
+`
+
+const isPost = (args: string[]): boolean => args.includes('POST')
+
 /** Every payload POSTed, in order. */
 function posted(): GithubReviewPayload[] {
-  return vi.mocked(runGh).mock.calls.map(([, opts]) => JSON.parse(opts?.input ?? '{}') as GithubReviewPayload)
+  return vi.mocked(runGh).mock.calls.filter(([args]) => isPost(args)).map(([, opts]) => JSON.parse(opts?.input ?? '{}') as GithubReviewPayload)
 }
 
+/** The reviews endpoint's answers, in order; `runGh`'s other reads are routed by args. */
+const post = vi.fn<() => Promise<string>>()
+let headOnGithub = HEAD
+
 beforeEach(() => {
-  vi.mocked(runGh).mockReset().mockResolvedValue(JSON.stringify({ html_url: 'https://github.com/acme/app/pull/7#r1' }))
+  headOnGithub = HEAD
+  post.mockReset().mockResolvedValue(JSON.stringify({ html_url: 'https://github.com/acme/app/pull/7#r1' }))
+  vi.mocked(runGh).mockReset().mockImplementation(async (args) => {
+    if (isPost(args)) return post()
+    if (args[0] === 'pr' && args[1] === 'view') return JSON.stringify({ baseRefOid: 'base1', headRefOid: headOnGithub })
+    if (args.at(-1) === 'repos/acme/app/compare/base1...head0') return GH_DIFF_HEAD0
+    throw new Error(`unexpected gh ${args.join(' ')}`)
+  })
   vi.mocked(getPrDiff).mockReset().mockResolvedValue(GH_DIFF)
 })
 
@@ -54,7 +78,25 @@ describe('submitReview', () => {
   it('pins the review to the head on screen', async () => {
     await submitReview(request([you({ line: '11' })]))
     expect(posted()[0].commit_id).toBe(HEAD)
-    expect(vi.mocked(runGh).mock.calls[0][0]).toEqual(['api', '--method', 'POST', 'repos/acme/app/pulls/7/reviews', '--input', '-'])
+    expect(vi.mocked(runGh).mock.calls.find(([args]) => isPost(args))?.[0]).toEqual(['api', '--method', 'POST', 'repos/acme/app/pulls/7/reviews', '--input', '-'])
+  })
+
+  it('checks anchors against the diff at the pinned head once the branch has moved', async () => {
+    // Line 13 is in the latest head's hunk only; pinned to head0, GitHub would refuse it.
+    headOnGithub = 'head2'
+    const sha = 'head0'
+    const res = await submitReview(request([you({ id: 'a', line: '11', sha }), you({ id: 'b', line: '13', sha })], { headSha: sha }))
+    expect(runGh).toHaveBeenCalledWith(['api', '--hostname', 'github.com', '-H', 'Accept: application/vnd.github.diff', 'repos/acme/app/compare/base1...head0'])
+    expect(posted()[0].comments).toEqual([{ path: 'a.ts', line: 11, side: 'RIGHT', body: 'n' }])
+    expect(res.folded).toEqual({ count: 1, reasons: { 'not-in-diff': 1 } })
+  })
+
+  it('posts unchecked when the diff at the pinned head cannot be fetched', async () => {
+    headOnGithub = 'head2'
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const res = await submitReview(request([you({ line: '40', sha: 'gone' })], { headSha: 'gone' }))
+    expect(posted()[0].comments).toEqual([{ path: 'a.ts', line: 40, side: 'RIGHT', body: 'n' }])
+    expect(res.folded.count).toBe(0)
   })
 
   it('folds anchors from another head, or none, and says which', async () => {
@@ -91,7 +133,7 @@ describe('submitReview', () => {
   })
 
   it('still folds everything when GitHub refuses an anchor', async () => {
-    vi.mocked(runGh).mockRejectedValueOnce(new Error('gh api exited 1: HTTP 422 Unprocessable Entity'))
+    post.mockRejectedValueOnce(new Error('gh api exited 1: HTTP 422 Unprocessable Entity'))
     vi.mocked(getPrDiff).mockRejectedValue(new Error('offline'))
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const res = await submitReview(request([you({ id: 'a', line: '11' }), you({ id: 'b', line: '40' })]))
@@ -108,13 +150,13 @@ describe('postReview', () => {
   const payload: GithubReviewPayload = { event: 'COMMENT', body: '', comments: [{ path: 'a.ts', line: 1, side: 'RIGHT', body: 'n' }] }
 
   it('rethrows a failure that folding cannot fix', async () => {
-    vi.mocked(runGh).mockRejectedValueOnce(new Error('gh api exited 1: HTTP 401'))
+    post.mockRejectedValueOnce(new Error('gh api exited 1: HTTP 401'))
     await expect(postReview(PR, payload)).rejects.toThrow('401')
-    expect(runGh).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledTimes(1)
   })
 
   it('rethrows a 422 when there were no anchors to blame', async () => {
-    vi.mocked(runGh).mockRejectedValueOnce(new Error('HTTP 422'))
+    post.mockRejectedValueOnce(new Error('HTTP 422'))
     await expect(postReview(PR, { ...payload, comments: [] })).rejects.toThrow('422')
   })
 })

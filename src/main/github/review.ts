@@ -11,6 +11,7 @@ import type { PrRef, ReviewFolds, GithubReviewPayload, CommentableSides } from '
 import { addFolds, anchorsForHead, buildReviewPayload, commentableLines, foldCommentsIntoBody, reviewFolds } from '../../shared/screenprs'
 import type { SubmitReviewRequest } from '../../shared/ipc-types'
 import { getPrDiff, runGh } from './gh'
+import { compareDiff } from './stack-base'
 
 export interface PostReviewResult {
   /** The created review's html_url, if GitHub returned one. */
@@ -57,6 +58,23 @@ export async function postReview(pr: PrReviewTarget, payload: GithubReviewPayloa
 }
 
 /**
+ * GitHub's diff of the PR as of `headSha` — what a review pinned to that commit
+ * is checked against. `gh pr diff` only ever shows the latest head, so when a
+ * push has landed since, the PR's diff at `headSha` is rebuilt the way GitHub
+ * builds it: from the merge base with the base branch. Both reads go at once;
+ * the compare is only needed when the head has moved.
+ */
+async function prDiffAt(pr: SubmitReviewRequest['pr'], headSha: string | undefined): Promise<string> {
+  if (!headSha) return getPrDiff(pr)
+  const [view, latest] = await Promise.all([
+    runGh(['pr', 'view', pr.url, '--json', 'baseRefOid,headRefOid']),
+    getPrDiff(pr),
+  ])
+  const { baseRefOid, headRefOid } = JSON.parse(view) as { baseRefOid: string; headRefOid: string }
+  return headRefOid === headSha ? latest : compareDiff(pr.url, baseRefOid, headSha)
+}
+
+/**
  * Post a review draft. A failed fetch of GitHub's diff doesn't block the
  * submit: the anchors then go unchecked, as they did before checking existed,
  * and `postReview`'s fallback is what catches a bad one.
@@ -64,7 +82,7 @@ export async function postReview(pr: PrReviewTarget, payload: GithubReviewPayloa
 export async function submitReview(request: SubmitReviewRequest): Promise<{ reviewUrl?: string; folded: ReviewFolds }> {
   let commentable: Map<string, CommentableSides> | undefined
   try {
-    commentable = commentableLines(await getPrDiff(request.pr))
+    commentable = commentableLines(await prDiffAt(request.pr, request.headSha))
   } catch (err) {
     console.warn('[SimpleEdit] Could not fetch the PR diff to check review anchors:', err)
   }
