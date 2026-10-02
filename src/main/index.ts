@@ -91,8 +91,8 @@ import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
 import type { PrContext, PrRef } from '../shared/screenprs'
-import { buildReviewPayload } from '../shared/screenprs'
-import { GhTimeoutError, postReview } from './github/gh'
+import { GhTimeoutError } from './github/gh'
+import { submitReview } from './github/review'
 
 // Privileged schemes must be registered before the app is ready.
 registerAssetProtocolScheme()
@@ -989,14 +989,14 @@ function registerAllHandlers(): void {
 
   handleInvoke('screenprs:submit-review', async (_event, request: SubmitReviewRequest): Promise<SubmitReviewResult> => {
     try {
-      const { reviewUrl, foldedComments } = await postReview(request.pr, buildReviewPayload(request.draft))
+      const { reviewUrl, folded } = await submitReview(request)
       try {
         applyAndBroadcastDraftOp(request.pr.url, { kind: 'clear' })
       } catch (err) {
         // The review IS posted; reporting a failure here would invite a second one.
         console.error('[SimpleEdit] Failed to clear a submitted review draft:', err)
       }
-      return { ok: true, reviewUrl, foldedComments }
+      return { ok: true, reviewUrl, folded, foldedComments: folded.count > 0 }
     } catch (err: unknown) {
       const error = err instanceof Error ? err.message : String(err)
       // A killed POST may still have been received. Saying "nothing was posted"

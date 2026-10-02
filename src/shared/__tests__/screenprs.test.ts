@@ -9,6 +9,8 @@ import {
   commentableLines,
   buildReviewPayload,
   foldCommentsIntoBody,
+  addFolds,
+  describeFolds,
   reviewSubmitError,
   groupStacks,
   type ScreenPrCard,
@@ -369,6 +371,14 @@ describe('foldCommentsIntoBody (422 recovery)', () => {
   it('is a no-op when there are no anchored comments', () => {
     const p = buildReviewPayload(draft({ summary: 's' }))
     expect(foldCommentsIntoBody(p)).toEqual(p)
+  })
+})
+
+describe('describeFolds', () => {
+  it('names each reason with its count, in a fixed order', () => {
+    const folds = addFolds(addFolds({ count: 0, reasons: {} }, 'moved'), 'not-in-diff', 2)
+    expect(folds.count).toBe(3)
+    expect(describeFolds(folds)).toBe('2 outside GitHub’s diff, 1 written before the branch moved')
   })
 })
 

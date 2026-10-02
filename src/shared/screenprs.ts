@@ -472,6 +472,62 @@ export function buildReviewPayload(draft: PrReviewDraft, opts: ReviewPayloadOpti
 }
 
 /**
+ * Why a comment raised on a line was posted in the review body instead:
+ * `resolveAnchor`'s reasons, `anchorState`'s two failing states, and
+ * `rejected` for an anchor GitHub refused, which folds every anchor at once.
+ */
+export type ReviewFoldReason = FoldReason | 'moved' | 'unverified' | 'rejected'
+
+export interface ReviewFolds {
+  count: number
+  reasons: Partial<Record<ReviewFoldReason, number>>
+}
+
+export function addFolds(folds: ReviewFolds, reason: ReviewFoldReason, n = 1): ReviewFolds {
+  if (n <= 0) return folds
+  return { count: folds.count + n, reasons: { ...folds.reasons, [reason]: (folds.reasons[reason] ?? 0) + n } }
+}
+
+/**
+ * How many of the draft's comments lose their line, and why. Counted on the
+ * draft BEFORE `anchorsForHead`: after it, a moved anchor is indistinguishable
+ * from a note that never had a line. Such notes (no `line` at all) are not
+ * counted — the body is where they were always going. With no `headSha`, the
+ * head check is assumed to have run already.
+ */
+export function reviewFolds(draft: PrReviewDraft, opts: ReviewPayloadOptions = {}): ReviewFolds {
+  let folds: ReviewFolds = { count: 0, reasons: {} }
+  for (const c of draft.comments) {
+    if (c.line === undefined) continue
+    const state = opts.headSha ? anchorState(c, opts.headSha) : 'current'
+    if (state === 'moved' || state === 'unverified') {
+      folds = addFolds(folds, state)
+      continue
+    }
+    const placed = resolveAnchor(c, opts)
+    if ('fold' in placed) folds = addFolds(folds, placed.fold)
+  }
+  return folds
+}
+
+const FOLD_REASON_LABEL: Record<ReviewFoldReason, string> = {
+  'no-line': 'no line number',
+  'isolated-base': 'on a deleted line of the stacked diff',
+  'not-in-diff': 'outside GitHub’s diff',
+  moved: 'written before the branch moved',
+  unverified: 'not checkable against the current commit',
+  rejected: 'refused by GitHub',
+}
+
+/** "2 outside GitHub’s diff, 1 written before the branch moved" — for a post-submit note. */
+export function describeFolds(folds: ReviewFolds): string {
+  return (Object.keys(FOLD_REASON_LABEL) as ReviewFoldReason[])
+    .filter((r) => folds.reasons[r])
+    .map((r) => `${folds.reasons[r]} ${FOLD_REASON_LABEL[r]}`)
+    .join(', ')
+}
+
+/**
  * Collapse every anchored comment into the body — the recovery path when the
  * reviews API rejects an anchor that isn't part of the diff (422). Keeps the
  * content rather than failing the whole submit.

@@ -5,7 +5,7 @@
  */
 
 import type { Spec } from './gen-ui-catalog'
-import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus, PrReviewDraft } from './screenprs'
+import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus, PrReviewDraft, ReviewFolds } from './screenprs'
 import type { DraftOpResult, DraftsSnapshot, PrReviewDraftOp } from './review-drafts'
 import type { OverviewFacts, OverviewStatus } from './pr-overview'
 
@@ -479,11 +479,31 @@ export interface ScreenPrsInvokeMap {
 /** Identify the PR + the composed review to post. */
 export interface SubmitReviewRequest {
   pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>
+  /**
+   * The draft as composed. With `headSha` set it may still hold anchors read
+   * off an older head: main runs `anchorsForHead` itself, so it can report
+   * which comments lost their line to it.
+   */
   draft: PrReviewDraft
+  /**
+   * The head whose diff was on screen. Sent as the review's `commit_id`, so a
+   * push landing mid-submit can't shift the anchors. Absent: the draft has
+   * been through `anchorsForHead` already and GitHub pins to its latest head.
+   */
+  headSha?: string
+  /** The diff on screen was the isolated stacked compare, not GitHub's (`BaseAnalysis.isolated`). */
+  isolatedBase?: boolean
 }
 
 export type SubmitReviewResult =
-  | { ok: true; reviewUrl?: string; foldedComments: boolean }
+  | {
+      ok: true
+      reviewUrl?: string
+      /** The comments raised on a line that went into the review body, by reason. */
+      folded: ReviewFolds
+      /** `folded.count > 0`; kept until the phone reads `folded`. */
+      foldedComments: boolean
+    }
   | {
       ok: false
       error: string
