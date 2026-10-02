@@ -339,7 +339,7 @@ export const screenPrsStore = {
   async submitReview(
     pr: Pick<PrRef, 'owner' | 'repo' | 'number' | 'url'>,
     draft: PrReviewDraft,
-    anchoring?: { headSha: string; isolatedBase: boolean }
+    anchoring?: { headSha: string; isolatedBase?: boolean }
   ): Promise<SubmitReviewResult> {
     const url = pr.url
     _submitting = new Set(_submitting).add(url)
