@@ -17,6 +17,11 @@ export type PrReviewDraftOp =
   | { kind: 'set-summary'; summary: string }
   | { kind: 'set-verdict'; verdict: PrReviewVerdict }
   | { kind: 'clear' }
+  /**
+   * What a successful post makes redundant, and nothing else: a comment added,
+   * or a summary or verdict changed, while the post was in flight survives.
+   */
+  | { kind: 'clear-posted'; ids: string[]; summary: string; verdict: PrReviewVerdict }
 
 /** Every draft main holds, and the revision they stand at. */
 export interface DraftsSnapshot {
@@ -38,6 +43,11 @@ export interface DraftOpResult {
 export function isEmptyDraft(draft: PrReviewDraft): boolean {
   const empty = emptyReviewDraft()
   return draft.comments.length === 0 && draft.summary === empty.summary && draft.verdict === empty.verdict
+}
+
+/** The op that clears `posted` — the draft as submitted — out of the stored one. */
+export function clearPostedOp(posted: PrReviewDraft): PrReviewDraftOp {
+  return { kind: 'clear-posted', ids: posted.comments.map((c) => c.id), summary: posted.summary, verdict: posted.verdict }
 }
 
 /** The same finding shouldn't stack up if ＋review is clicked twice. */
@@ -80,6 +90,16 @@ export function applyDraftOp(draft: PrReviewDraft | null, op: PrReviewDraftOp): 
       break
     case 'clear':
       return null
+    case 'clear-posted': {
+      const empty = emptyReviewDraft()
+      const posted = new Set(op.ids)
+      const comments = cur.comments.filter((c) => !posted.has(c.id))
+      const summary = cur.summary === op.summary ? empty.summary : cur.summary
+      const verdict = cur.verdict === op.verdict ? empty.verdict : cur.verdict
+      if (comments.length === cur.comments.length && summary === cur.summary && verdict === cur.verdict) return draft
+      next = { comments, summary, verdict }
+      break
+    }
   }
   return isEmptyDraft(next) ? null : next
 }
