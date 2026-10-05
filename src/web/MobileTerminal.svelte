@@ -23,6 +23,7 @@
   import { attachPty, type PtyAttachment } from '../renderer/lib/pty-attach'
   import { hasUserAttention } from '../renderer/lib/attention'
   import { keyBytes, type AccessoryKey } from './lib/keys'
+  import { createTouchScroller, scrollTarget } from './lib/touch-scroll'
   import type { RemoteConnection } from './api-shim'
   import type { PtyClientId } from '../shared/ipc-types'
 
@@ -77,6 +78,89 @@
     }
   }
 
+  /**
+   * Swipes scroll. xterm only scrolls on wheel events, so a step goes to the
+   * scrollback directly when there is one, and otherwise becomes a synthetic
+   * wheel event — xterm already turns those into exactly what the app asked
+   * for: an SGR/X10 wheel report under mouse tracking (Claude Code's
+   * fullscreen TUI, OpenCode), an arrow in the current cursor-key mode on a
+   * bare alternate screen.
+   *
+   * Only scrollback flings. A fling into an app would keep typing wheel
+   * reports or arrows into it after the finger has gone — into a TUI that may
+   * be a picker moving its selection — so there it scrolls only while the
+   * finger moves.
+   */
+  function bindTouchScroll(el: HTMLElement): { stop: () => void; dispose: () => void } {
+    // Wheel reports carry a cell. Where the swipe began is inside the
+    // terminal by definition; the finger may since have left it.
+    let point = { x: 0, y: 0 }
+
+    function cellHeight(): number {
+      const screen = term?.element?.querySelector<HTMLElement>('.xterm-screen')
+      return screen && term ? screen.clientHeight / term.rows : 0
+    }
+
+    function target(): 'scrollback' | 'app' | null {
+      return term ? scrollTarget(term.buffer.active.type, term.modes.mouseTrackingMode) : null
+    }
+
+    function scrollBy(lines: number): void {
+      if (!term?.element) return
+      if (target() === 'scrollback') {
+        term.scrollLines(lines)
+        return
+      }
+      for (let i = 0; i < Math.abs(lines); i++) {
+        term.element.dispatchEvent(new WheelEvent('wheel', {
+          deltaY: Math.sign(lines),
+          deltaMode: WheelEvent.DOM_DELTA_LINE,
+          clientX: point.x,
+          clientY: point.y,
+          bubbles: true,
+          cancelable: true,
+        }))
+      }
+    }
+
+    const scroller = createTouchScroller({
+      pxPerLine: cellHeight,
+      onLines: scrollBy,
+      momentum: () => target() === 'scrollback',
+    })
+
+    const onStart = (ev: TouchEvent): void => {
+      // A second finger is a pinch: it belongs to the browser's zoom.
+      if (ev.touches.length !== 1) { scroller.cancel(); return }
+      const t = ev.touches[0]
+      point = { x: t.clientX, y: t.clientY }
+      scroller.start(t.clientY)
+    }
+    const onMove = (ev: TouchEvent): void => {
+      if (ev.touches.length !== 1) return
+      scroller.move(ev.touches[0].clientY)
+      // `touch-action: pinch-zoom` already keeps a one-finger pan off the page;
+      // this is for the WebKit builds that honour it late or not at all.
+      ev.preventDefault()
+    }
+    const onEnd = (): void => { scroller.end() }
+
+    el.addEventListener('touchstart', onStart, { passive: true })
+    el.addEventListener('touchmove', onMove, { passive: false })
+    el.addEventListener('touchend', onEnd)
+    el.addEventListener('touchcancel', onEnd)
+    return {
+      stop: () => scroller.stop(),
+      dispose: () => {
+        scroller.stop()
+        el.removeEventListener('touchstart', onStart)
+        el.removeEventListener('touchmove', onMove)
+        el.removeEventListener('touchend', onEnd)
+        el.removeEventListener('touchcancel', onEnd)
+      },
+    }
+  }
+
   onMount(() => {
     const el = containerEl
     if (!el) return
@@ -103,10 +187,13 @@
       void window.api.invoke('pty:write', terminalId, data)
     })
 
+    const touch = bindTouchScroll(el)
+
     const attachment: PtyAttachment = attachPty(terminalId, {
       write: (data) => term?.write(data),
       onExit: (code) => {
         exitCode = code
+        touch.stop()
         // Main drops the owner entry on exit. Distinct from a RELEASE, which
         // resyncs geometry — there is nothing left here to size, and claiming
         // it would name this client the owner of a PTY main has none for.
@@ -164,6 +251,7 @@
     })
 
     return () => {
+      touch.dispose()
       offState()
       offIdentity()
       observer.disconnect()
@@ -178,7 +266,7 @@
 </script>
 
 <div class="relative h-full w-full overflow-hidden bg-zinc-950">
-  <div bind:this={containerEl} class="h-full w-full" data-testid="mobile-terminal"></div>
+  <div bind:this={containerEl} class="h-full w-full touch-pinch-zoom" data-testid="mobile-terminal"></div>
   {#if sizedElsewhere}
     <!-- Main sizes the PTY for whoever claimed it last. When that is not this
          client, this view is fitted to its own container and the terminal is
