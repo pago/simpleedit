@@ -27,7 +27,7 @@
     initiallyOpen?: SectionKey[]
     onref: (ref: OverviewRef) => void
     onreview: (item: OverviewLookIntoItem) => void
-    /** Absent where there is no agent to discuss with (the phone). */
+    /** Absent until there are models to discuss with. */
     ondiscuss?: (item: OverviewLookIntoItem) => void
   }
 

@@ -155,6 +155,50 @@ describe('session:create-request listener', () => {
     }
   })
 
+  it('starts the agent and model a Discuss request picked, under its fixed name', async () => {
+    config = { defaults: {}, submenuAllowlist: [], lastUsed: { provider: 'openai', model: 'gpt-5-codex' } }
+    const off = initSessionListeners()
+    try {
+      handlers.get('session:create-request')!({
+        correlationId: 'c1',
+        brief: 'You are helping me review a GitHub pull request.',
+        label: 'review acme/app#7',
+        labelFixed: true,
+        target: { provider: 'claude', model: { provider: 'anthropic', model: 'sonnet' } },
+      })
+      await flush()
+
+      const started = sessionsStore.sessions()[0]
+      // The pick wins over the remembered default.
+      expect(started.provider).toBe('claude')
+      expect(started.model).toEqual({ provider: 'anthropic', model: 'sonnet' })
+      expect(started.seedPrompt).toBe('You are helping me review a GitHub pull request.')
+      // A chosen name, as at the desk: the agent's title does not replace it.
+      sessionsStore.applySessionTitle(started.id, 'Something else')
+      expect(sessionsStore.get(started.id)?.label).toBe('review acme/app#7')
+      expect(outcomes()).toEqual([{ ok: true, terminalId: started.id, label: 'review acme/app#7' }])
+    } finally {
+      off()
+    }
+  })
+
+  it('starts a picked native agent', async () => {
+    const off = initSessionListeners()
+    try {
+      handlers.get('session:create-request')!({
+        correlationId: 'c1',
+        brief: 'review it',
+        target: { provider: 'codex', model: 'gpt-5.5' },
+      })
+      await flush()
+      const started = sessionsStore.sessions()[0]
+      expect(started.provider).toBe('codex')
+      expect(started.target).toEqual({ provider: 'codex', model: 'gpt-5.5' })
+    } finally {
+      off()
+    }
+  })
+
   it('lets the agent rename what the brief provisionally called it', async () => {
     const off = initSessionListeners()
     try {

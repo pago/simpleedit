@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   clearStack,
+  leaveWindow,
   decidePop,
   draftAtRisk,
   depthOf,
@@ -119,6 +120,56 @@ describe('a notification tap', () => {
     expect(topOf(state)?.id).toBe(a.id)
     expect(topOf(state)).toMatchObject({ fromNotification: true })
   })
+})
+
+describe('a session opened from a PR', () => {
+  const overPr = (): NavState => {
+    const onPrs = push(selectTab(initialNav(), 'prs'), { kind: 'pr', pr: PR }).state
+    return push(onPrs, session('a')).state
+  }
+
+  it('sits on the PR\'s stack, so Back returns to the PR', () => {
+    const state = overPr()
+    expect(stackOf(state, 'prs').map((e) => e.kind)).toEqual(['pr', 'session'])
+    expect(screenOf(state)).toMatchObject({ kind: 'session', terminalId: 'a' })
+    expect(topOf(pop(state))).toMatchObject({ kind: 'pr' })
+  })
+
+  it('treats the model picker as an overlay over the PR', () => {
+    const onPrs = push(selectTab(initialNav(), 'prs'), { kind: 'pr', pr: PR }).state
+    const picking = push(onPrs, { kind: 'discuss', url: PR.url }).state
+    expect(isOverlay(topOf(picking))).toBe(true)
+    expect(screenOf(picking)).toMatchObject({ kind: 'pr' })
+  })
+
+  it('is shown where it is when opened from Sessions, as the same entry', () => {
+    const withDiff = push(overPr(), { kind: 'changes-diff', terminalId: 'a' }).state
+    const id = stackOf(withDiff, 'prs')[1].id
+    const { state, entry } = push(selectTab(withDiff, 'sessions'), session('a'))
+    expect(entry.id).toBe(id)
+    expect(state.tab).toBe('prs')
+    expect(stackOf(state, 'prs').map((e) => e.kind)).toEqual(['pr', 'session'])
+    expect(stackOf(state, 'sessions')).toEqual([])
+  })
+
+  it('is brought to the front over its PR on a notification tap', () => {
+    const before = overPr()
+    const id = topOf(before)!.id
+    const state = openFromNotification(selectTab(before, 'sessions'), 'a')
+    expect(state.tab).toBe('prs')
+    expect(topOf(state)).toMatchObject({ id, kind: 'session', terminalId: 'a', fromNotification: true })
+    expect(stackOf(state, 'sessions')).toEqual([])
+  })
+})
+
+it('leaving a window drops its sessions from both tabs, and keeps the PRs', () => {
+  let state = build(session('a'))
+  state = push(selectTab(state, 'prs'), { kind: 'pr', pr: PR }).state
+  state = push(state, session('b')).state
+  state = push(state, { kind: 'changes-diff', terminalId: 'b' }).state
+  const next = leaveWindow(state)
+  expect(stackOf(next, 'sessions')).toEqual([])
+  expect(stackOf(next, 'prs').map((e) => e.kind)).toEqual(['pr'])
 })
 
 describe('a popstate', () => {

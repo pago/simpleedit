@@ -950,7 +950,7 @@ export function createSessionFromDefaults(
   config: ModelConfig | null,
   launchDir: string,
   worktreePath: string,
-  opts: { initialPrompt?: string; provisionalLabel?: string } = {},
+  opts: { initialPrompt?: string; label?: string; provisionalLabel?: string } = {},
 ): string {
   const lastUsed = config?.lastUsed
   const owner =
@@ -1010,15 +1010,27 @@ async function createSessionFromBrief(
       return
     }
 
-    // A config that cannot be read is not a reason to refuse: the fallback is
-    // the same plain Claude session an absent `lastUsed` would have produced.
-    const config = await window.api.invoke('models:config-get').catch(() => null)
-    const id = createSessionFromDefaults(config, root, wt.path, {
-      initialPrompt: data.brief,
-      // Provisional: the brief's first clause is a stand-in the agent replaces
-      // as soon as it names the conversation, exactly as at the desk.
-      ...(data.label ? { provisionalLabel: data.label } : {}),
-    })
+    const label = data.label
+      ? data.labelFixed
+        ? { label: data.label }
+        : // Provisional: the brief's first clause is a stand-in the agent
+          // replaces as soon as it names the conversation, exactly as at the desk.
+          { provisionalLabel: data.label }
+      : {}
+    let id: string
+    if (data.target) {
+      // The same call the desk's Discuss with Agent makes for a picked model.
+      id = sessionsStore.createAgent(data.target, root, wt.path, {
+        ...(data.target.provider === 'claude' && data.target.model ? { model: data.target.model } : {}),
+        initialPrompt: data.brief,
+        ...label,
+      })
+    } else {
+      // A config that cannot be read is not a reason to refuse: the fallback is
+      // the same plain Claude session an absent `lastUsed` would have produced.
+      const config = await window.api.invoke('models:config-get').catch(() => null)
+      id = createSessionFromDefaults(config, root, wt.path, { initialPrompt: data.brief, ...label })
+    }
     answer({ ok: true, terminalId: id, label: sessionsStore.get(id)?.label ?? id })
   } catch (err) {
     // Anything unforeseen still has to come back as an ANSWER. Main cannot see

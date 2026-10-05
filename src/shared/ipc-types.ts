@@ -715,10 +715,11 @@ export interface WindowSession extends WindowSessionInput {
 /**
  * Start a session from a brief, from a client that has no session of its own.
  *
- * One field, because a session needs no more: agents launch at the project
- * root and create their own worktrees, so there is no branch to name and no
- * directory to pick. Provider and model come from the same default a new
- * session gets at the desk.
+ * Agents launch at the project root and create their own worktrees, so there
+ * is no branch to name and no directory to pick. Provider and model come from
+ * the same default a new session gets at the desk unless `target` names them,
+ * as the phone's Discuss with Agent does. Main validates both optional fields:
+ * they arrive from a socket.
  */
 export interface SessionCreateRequest {
   /**
@@ -733,6 +734,10 @@ export interface SessionCreateRequest {
   requestId: string
   /** What the agent should do. Becomes its seed prompt. */
   brief: string
+  /** The agent and model to start. Absent: the desk's ⌘T default. */
+  target?: InteractiveTarget
+  /** The session's name, kept for good. Absent: a provisional one from the brief. */
+  label?: string
 }
 
 /**
@@ -753,6 +758,14 @@ export interface SessionCreateRequest {
  */
 export const DIFF_TRUNCATED_MARKER =
   '*** This diff is too large to send to a phone. Open it at the desk to see the rest. ***'
+
+/**
+ * What main says when a `requestId` it already holds arrives with a different
+ * request. Shared, like the unwitnessed answer, because a client acts on it: the
+ * user changed what they asked for, so it is a new intent.
+ */
+export const SESSION_CREATE_REUSED =
+  'That request id was already used to start a different session. Start it as a new request.'
 
 export const SESSION_CREATE_UNWITNESSED =
   'SimpleEdit did not confirm the new session in time. Check the list before starting it again.'
@@ -804,8 +817,12 @@ export interface SessionEventMap {
   'session:create-request': {
     correlationId: string
     brief: string
-    /** Derived from the brief by main, so one definition serves both ends. */
+    /** The request's own label, or one main derived from the brief (provisional). */
     label?: string
+    /** `label` is the request's own and is kept, not replaced by the agent's title. */
+    labelFixed?: boolean
+    /** Validated by main. Absent: the ⌘T default. */
+    target?: InteractiveTarget
   }
 }
 

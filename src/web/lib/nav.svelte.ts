@@ -30,6 +30,7 @@
  */
 import {
   clearStack,
+  leaveWindow,
   contains,
   decidePop,
   depthOf,
@@ -100,6 +101,12 @@ class Nav {
   /** Empty a tab's stack without asking its holds; the caller already has. */
   clearStack(tab: TabId): void {
     this.#state = clearStack(this.#state, tab)
+    this.#sync()
+  }
+
+  /** Drop what belongs to the window being left, without asking holds; the caller already has. */
+  leaveWindow(): void {
+    this.#state = leaveWindow(this.#state)
     this.#sync()
   }
 

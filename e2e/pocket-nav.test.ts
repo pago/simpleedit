@@ -271,6 +271,40 @@ test('switching tabs keeps the other tab\'s screen, and Back never switches tabs
   await page.close()
 })
 
+test('Discuss with Agent opens the new session over the PR, and Back returns to the PR', async ({ window, browser }) => {
+  const url = await phoneUrl(window)
+  const { page, socket } = await openPhone(browser, url)
+
+  deliverPr(socket())
+  await page.getByTestId('tab-prs-button').click()
+  await page.getByTestId('pr-card').click()
+  await expect(page.getByTestId('screen-title')).toHaveText('acme/widgets#7')
+
+  await page.getByTestId('discuss').click()
+  await expect(page.getByTestId('discuss-sheet')).toBeVisible()
+  // The fake Claude CLI answers the catalog, so a Claude model is on offer.
+  const claudeModel = page.locator('[data-testid="discuss-model"][data-model^="anthropic:"]').first()
+  await claudeModel.click({ timeout: 15_000 })
+  await page.getByTestId('discuss-start').click()
+
+  await expect(page.getByTestId('discuss-sheet')).toHaveCount(0, { timeout: 20_000 })
+  await expect(page.getByTestId('screen-title')).toHaveText('review acme/widgets#7', { timeout: 20_000 })
+  await expect(page.locator('[data-testid="session-screen"]:visible')).toHaveCount(1, { timeout: 20_000 })
+  // Still on the PRs tab: the session sits on the PR's stack.
+  await expect(page.getByTestId('tab-prs-button')).toHaveAttribute('aria-current', 'page')
+
+  // A session of the window, under the PR's name.
+  const sessions = (await window.evaluate(() =>
+    (window as unknown as { api: Api }).api.invoke('session:list'),
+  )) as { label: string }[]
+  expect(sessions.filter((s) => s.label === 'review acme/widgets#7')).toHaveLength(1)
+
+  await page.goBack()
+  await expect(page.getByTestId('screen-title')).toHaveText('acme/widgets#7')
+  await expect(page.getByTestId('pr-detail').locator('visible=true')).toHaveCount(1)
+  await page.close()
+})
+
 test('an org set on the phone is the desktop\'s org too', async ({ window, browser }) => {
   const url = await phoneUrl(window)
   const { page } = await openPhone(browser, url)

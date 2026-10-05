@@ -42,6 +42,7 @@
   import UnifiedDiffView from '../diff/UnifiedDiffView.svelte'
   import OverviewCard from './OverviewCard.svelte'
   import { resolveRefPath, type OverviewLookIntoItem, type OverviewRef } from '../../../shared/pr-overview'
+  import { buildPrBrief, prSessionLabel } from '../../../shared/pr-brief'
   import ReviewComposer from './ReviewComposer.svelte'
   import InlineCommentEditor from './InlineCommentEditor.svelte'
   import { SOURCE_CLASS } from './commentSource'
@@ -66,46 +67,14 @@
       null
   })
 
-  function buildBrief(focus?: OverviewLookIntoItem): string {
-    const lines = [
-      `You are helping me review a GitHub pull request. This is a REVIEW session — the PR is NOT ours to modify unless I explicitly ask. When I'm ready, you'll post the review to GitHub yourself with \`gh pr review\` (approve / comment / request-changes). Don't post anything until I tell you to.`,
-      ``,
-      `PR: ${context.url}`,
-      `${context.repo}#${context.number} — ${context.title}  (base ${context.baseRefName}, +${context.additions}/−${context.deletions}, ${context.changedFiles} files)`,
-    ]
-    if (context.base?.kind === 'polluted') {
-      lines.push('', `Careful: \`gh pr diff\` includes ${context.base.foreign} commit(s) from the lower stack layer. Review only this PR's own commits:`)
-      for (const c of context.base.own) lines.push(`- ${c.sha.slice(0, 8)} ${c.subject}`)
-    }
-    const triage = card?.findings ?? []
-    if (triage.length) {
-      lines.push('', 'Triage (diff-only) flagged:')
-      for (const f of triage) lines.push(`- [${f.label}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`)
-    }
-    if (overview?.text) {
-      lines.push('', 'The PR overview (what changed, why, impact, what to look into):', '', overview.text)
-    }
-    const dv = deep?.findings ?? []
-    if (dv.length) {
-      lines.push('', 'Deep review flagged:')
-      for (const f of dv) lines.push(`- [${f.severity}/${f.lens}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}: ${f.detail}`)
-    }
-    if (focus) lines.push('', `I want to dig into this question from the overview first:`, focus.markdown)
-    lines.push(
-      '',
-      `Start by running \`gh pr diff ${context.url}\` to see the change (and \`gh pr checkout\` if you want to run it), then help me decide whether it's ready.`
-    )
-    return lines.join('\n')
-  }
-
   function discuss(m: AgentModel, focus?: OverviewLookIntoItem): void {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
     if (!root || !wt) return
     const id = sessionsStore.createAgent(m.target, root, wt.path, {
       ...(m.target.provider === 'claude' && m.target.model ? { model: m.target.model } : {}),
-      initialPrompt: buildBrief(focus),
-      label: `review ${context.repo}#${context.number}`,
+      initialPrompt: buildPrBrief({ context, triage: card?.findings, overview: overview?.text, deep: deep?.findings, focus }),
+      label: prSessionLabel(context),
     })
     uiView.show('workspace')
     sessionsStore.requestTerminalFocus(id)

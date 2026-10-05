@@ -46,7 +46,7 @@
   import VoiceComposer from './VoiceComposer.svelte'
   import { briefNudge, labelFromBrief } from '../shared/brief'
   import { draftAtRisk } from './lib/nav'
-  import { SESSION_CREATE_UNWITNESSED } from '../shared/ipc-types'
+  import { SESSION_CREATE_REUSED, SESSION_CREATE_UNWITNESSED } from '../shared/ipc-types'
   import type { ConnectionState } from './api-shim'
   import type { SessionCreateResult } from '../shared/ipc-types'
 
@@ -139,6 +139,11 @@
     return error instanceof Error && error.message === SESSION_CREATE_UNWITNESSED
   }
 
+  /** The brief was edited since the intent was made, so main won't answer it with the old one. */
+  function reused(error: unknown): boolean {
+    return error instanceof Error && error.message === SESSION_CREATE_REUSED
+  }
+
   /**
    * Take the duplicate risk — but only after establishing there is one.
    *
@@ -149,8 +154,10 @@
    * main hands the cached session straight back, and this ends with one agent
    * instead of two.
    *
-   * Only when that re-ask comes back unwitnessed again is a fresh intent the
-   * user's deliberate choice rather than an accident of the transport.
+   * Only when that re-ask comes back unwitnessed again — or refused because
+   * the brief was edited since, which makes it a different request — is a
+   * fresh intent the user's deliberate choice rather than an accident of the
+   * transport.
    */
   async function startAnyway(): Promise<void> {
     if (starting || !hasBrief) return
@@ -159,7 +166,7 @@
       await start(brief.trim())
       return
     } catch (error) {
-      if (!unwitnessed(error)) {
+      if (!unwitnessed(error) && !reused(error)) {
         anywayError = error instanceof Error ? error.message : String(error)
         return
       }

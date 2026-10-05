@@ -760,3 +760,118 @@ describe('PR detail — base warning', () => {
     expect(screen.queryByTestId('base-warning')).toBeNull()
   })
 })
+
+describe('PR detail — Discuss with Agent', () => {
+  const TEXT = '## What changed\nTightens it.\n## Why\nB\n## Impact\nC\n## Look into\n1. Is the gate inverted? `src/gate.ts:11`'
+  let created: unknown
+
+  beforeEach(() => {
+    localStorage.clear()
+    screenPrsStore._onOverviewStatus(URL_, 'idle')
+    created = { terminalId: 'agent-claude-1', label: 'review acme/widgets#7' }
+    const base = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'models:claude') {
+        return [
+          { provider: 'anthropic', model: 'opus', displayName: 'Opus' },
+          { provider: 'anthropic', model: 'sonnet', displayName: 'Sonnet' },
+        ]
+      }
+      if (channel === 'models:codex') return [{ model: 'gpt-5.5', displayName: 'GPT-5.5' }]
+      if (channel === 'models:installed') return []
+      if (channel === 'session:create') return created
+      return base(channel, ...args)
+    })
+  })
+
+  function createCalls(): { requestId: string; brief: string; target?: unknown; label?: string }[] {
+    return invoke.mock.calls.filter(([ch]) => ch === 'session:create').map(([, req]) => req)
+  }
+
+  it('starts a review session on the picked model, named for the PR', async () => {
+    const onstarted = vi.fn()
+    render(PrDetail, { pr: CARD, connected: true, onstarted })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    const sheet = await screen.findByTestId('discuss-sheet')
+    // Sonnet, as at the desk, until another is picked.
+    await waitFor(() => expect(within(sheet).getByTestId('discuss-start')).toHaveTextContent('Sonnet'))
+    await fireEvent.click(within(sheet).getAllByTestId('discuss-model').find((el) => el.dataset.model === 'openai:gpt-5.5')!)
+    await fireEvent.click(within(sheet).getByTestId('discuss-start'))
+
+    await waitFor(() => expect(onstarted).toHaveBeenCalledWith(created))
+    const [request] = createCalls()
+    expect(request.target).toEqual({ provider: 'codex', model: 'gpt-5.5' })
+    expect(request.label).toBe('review acme/widgets#7')
+    expect(request.brief).toContain('This is a REVIEW session')
+    expect(request.brief).toContain(`PR: ${URL_}`)
+    expect(screen.queryByTestId('discuss-sheet')).toBeNull()
+    expect(nav.stack()).toEqual([])
+  })
+
+  it('starts from a Look-into question, carrying it in the brief', async () => {
+    screenPrsStore._onOverviewResult(URL_, 'sha1', TEXT, { draft: false, changeset: 'no' })
+    screenPrsStore._onOverviewStatus(URL_, 'done')
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(within(screen.getByTestId('overview-section-lookInto')).getByRole('button'))
+    await fireEvent.click(await screen.findByTestId('overview-discuss'))
+    expect(await screen.findByTestId('discuss-focus')).toHaveTextContent('Is the gate inverted?')
+    await waitFor(() => expect(screen.getByTestId('discuss-start')).toBeEnabled())
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0].brief).toContain('dig into this question from the overview first:\nIs the gate inverted?')
+    expect(createCalls()[0].target).toEqual({ provider: 'claude', model: { provider: 'anthropic', model: 'sonnet' } })
+  })
+
+  it('retries the same intent after a failure, so it can only ever make one session', async () => {
+    let fail = true
+    const base = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'session:create' && fail) throw new Error('That SimpleEdit window has no repo open yet.')
+      return base(channel, ...args)
+    })
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() => expect(screen.getByTestId('discuss-start')).toBeEnabled())
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    expect(await screen.findByTestId('discuss-error')).toHaveTextContent('no repo open')
+
+    fail = false
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await waitFor(() => expect(createCalls()).toHaveLength(2))
+    expect(createCalls()[1].requestId).toBe(createCalls()[0].requestId)
+  })
+
+  it('resends an intent unchanged, and makes a new one when another model is picked', async () => {
+    let fail = true
+    const base = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'session:create' && fail) throw new Error('That SimpleEdit window has no repo open yet.')
+      return base(channel, ...args)
+    })
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() => expect(screen.getByTestId('discuss-start')).toBeEnabled())
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await screen.findByTestId('discuss-error')
+
+    // A deep review landing between attempts does not change the request being retried.
+    screenPrsStore._onDeepResult(URL_, [{ severity: 'note', lens: 'soundness', file: 'b.ts', title: 'Late', detail: 'x' }], 'sha1')
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await waitFor(() => expect(createCalls()).toHaveLength(2))
+    expect(createCalls()[1]).toEqual(createCalls()[0])
+
+    await fireEvent.click(screen.getAllByTestId('discuss-model').find((el) => el.dataset.model === 'anthropic:opus')!)
+    fail = false
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await waitFor(() => expect(createCalls()).toHaveLength(3))
+    expect(createCalls()[2].requestId).not.toBe(createCalls()[0].requestId)
+    expect(createCalls()[2].brief).toContain('Late')
+  })
+
+  it('waits for the connection before starting', async () => {
+    render(PrDetail, { pr: CARD, connected: false, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    expect(await screen.findByTestId('discuss-offline')).toBeInTheDocument()
+    expect(screen.getByTestId('discuss-start')).toBeDisabled()
+  })
+})
