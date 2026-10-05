@@ -83,6 +83,7 @@ import { inheritShellPath } from './shell-path'
 import { listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent, resetPrompt, revealTarget } from './prompts/overrides'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
+import { broadcastToWindows, liveWindowContents } from './window-broadcast'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
@@ -276,21 +277,15 @@ function remoteAttachTarget(): ClientHub | null {
  * connecting) arrive on a different one entirely.
  */
 function broadcastRemoteStatus(status: RemoteAccessStatus): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('remote:status-changed', status)
-  }
+  broadcastToWindows('remote:status-changed', status)
 }
 
 function broadcastPushStatus(status: PushStatus): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('push:status-changed', status)
-  }
+  broadcastToWindows('push:status-changed', status)
 }
 
 function broadcastServeStatus(status: TailscaleServeStatus): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('remote:serve-changed', status)
-  }
+  broadcastToWindows('remote:serve-changed', status)
 }
 
 /**
@@ -300,8 +295,8 @@ function broadcastServeStatus(status: TailscaleServeStatus): void {
  */
 function broadcastToAllClients<K extends keyof EventMap>(channel: K, data: EventMap[K]): void {
   for (const hub of clientHubs.values()) hub.send(channel, data)
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed() && !clientHubs.has(win.webContents.id)) win.webContents.send(channel, data)
+  for (const wc of liveWindowContents()) {
+    if (!clientHubs.has(wc.id)) wc.send(channel, data)
   }
 }
 

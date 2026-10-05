@@ -623,12 +623,14 @@ export function stopRemoteServer(): RemoteAccessStatus {
  */
 export function closeSocketsForHub(hubId: number): void {
   if (!running) return
+  let closed = 0
   for (const transport of [...running.sockets]) {
     if (transport.id !== hubId) continue
     transport.close()
     running.sockets.delete(transport)
+    closed++
   }
-  emitStatus(running)
+  if (closed > 0) emitStatus(running)
 }
 
 /** Exported for tests: the token currently in the URL, or null when stopped. */

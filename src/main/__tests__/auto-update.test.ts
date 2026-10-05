@@ -31,7 +31,10 @@ vi.mock('electron', () => ({
   shell: { openPath },
   autoUpdater: squirrel,
   BrowserWindow: {
-    getAllWindows: () => [{ webContents: { send: (channel: string, data: unknown) => sent.push({ channel, data }) } }]
+    getAllWindows: () => [{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send: (channel: string, data: unknown) => sent.push({ channel, data }) }
+    }]
   },
   ipcMain: {
     handle: (channel: string, fn: (...args: unknown[]) => unknown) => handlers.set(channel, fn)

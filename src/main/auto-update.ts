@@ -1,4 +1,5 @@
-import { app, autoUpdater as squirrel, BrowserWindow, shell } from 'electron'
+import { app, autoUpdater as squirrel, shell } from 'electron'
+import { broadcastToWindows } from './window-broadcast'
 import { handleInvoke } from './ipc-registry'
 import { autoUpdater } from 'electron-updater'
 import {
@@ -31,12 +32,6 @@ let pending: UpdateInfo | null = null
 let stagingTimer: NodeJS.Timeout | undefined
 let homebrewManaged = false
 
-function broadcastToAllWindows(channel: string, data: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(channel, data)
-  }
-}
-
 function toUpdateInfo(info: { version: string; releaseNotes?: unknown }): UpdateInfo {
   return {
     version: info.version,
@@ -48,7 +43,7 @@ function toUpdateInfo(info: { version: string; releaseNotes?: unknown }): Update
 function reportError(message: string, phase: UpdateErrorPhase): void {
   clearTimeout(stagingTimer)
   console.error(`[AutoUpdate] ${phase} failed:`, message)
-  broadcastToAllWindows('update:error', { message, phase })
+  broadcastToWindows('update:error', { message, phase })
 }
 
 export function initAutoUpdater(): void {
@@ -64,14 +59,14 @@ export function initAutoUpdater(): void {
     clearTimeout(stagingTimer)
     staged = !isMac
     pending = toUpdateInfo(info)
-    broadcastToAllWindows('update:available', pending)
+    broadcastToWindows('update:available', pending)
   })
 
   autoUpdater.on('update-downloaded', (info) => {
     clearTimeout(stagingTimer)
     pending = toUpdateInfo(info)
     if (staged) {
-      broadcastToAllWindows('update:downloaded', pending)
+      broadcastToWindows('update:downloaded', pending)
       return
     }
     stagingTimer = setTimeout(() => {
@@ -89,7 +84,7 @@ export function initAutoUpdater(): void {
     squirrel.on('update-downloaded', () => {
       staged = true
       clearTimeout(stagingTimer)
-      if (pending) broadcastToAllWindows('update:downloaded', pending)
+      if (pending) broadcastToWindows('update:downloaded', pending)
     })
   }
 
@@ -153,7 +148,7 @@ function reportFailedBackgroundUpgrade(): void {
   if (!result || result.ok) return
 
   console.error('[AutoUpdate] Homebrew upgrade failed:', result.stage, result.detail)
-  broadcastToAllWindows('update:homebrew-failed', {
+  broadcastToWindows('update:homebrew-failed', {
     version: result.version,
     message: result.detail || 'The Homebrew update did not complete.'
   })
