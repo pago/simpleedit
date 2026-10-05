@@ -36,6 +36,7 @@ import { powerSaveBlocker } from 'electron'
 import type { ClientHub, RemoteClient } from '../client-hub'
 import { dispatchInvoke, dispatchSend } from '../ipc-registry'
 import { parseClientFrame, type ServerFrame } from '../../shared/remote-protocol'
+import { parseAttachRequest, type AttachRequest } from './attach-target'
 import type { PtyClientId, RemoteAccessStatus } from '../../shared/ipc-types'
 
 export interface RemoteServerOptions {
@@ -46,9 +47,10 @@ export interface RemoteServerOptions {
   webRoot: string
   /**
    * The client identity a new socket joins, chosen by the caller (it owns the
-   * window list). `null` refuses the connection — there is nothing to join.
+   * window list) from what the socket asked for, if anything. `null` refuses
+   * the connection — there is nothing to join.
    */
-  attachTarget: () => ClientHub | null
+  attachTarget: (request: AttachRequest | null) => ClientHub | null
   /** Called whenever the reported status changes, so the UI can follow. */
   onStatusChange?: (status: RemoteAccessStatus) => void
   /**
@@ -329,8 +331,8 @@ function knownOrigin(server: RunningServer, req: IncomingMessage): boolean {
   return server.origins.has(origin)
 }
 
-function attachSocket(ws: WebSocket, server: RunningServer): void {
-  const hub = server.options.attachTarget()
+function attachSocket(ws: WebSocket, server: RunningServer, request: AttachRequest | null): void {
+  const hub = server.options.attachTarget(request)
   if (!hub) {
     ws.close(1011, 'No window to attach to')
     return
@@ -529,7 +531,7 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
       // gone. A synchronous throw here is inside neither a promise nor a try,
       // so it would be fatal to the whole process.
       try {
-        attachSocket(ws, state)
+        attachSocket(ws, state, parseAttachRequest(req.url))
       } catch (error) {
         console.error('[Remote] Refusing socket:', error)
         ws.close(1011, 'No window to attach to')

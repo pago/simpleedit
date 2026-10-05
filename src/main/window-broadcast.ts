@@ -21,3 +21,22 @@ export function liveWindowContents(): WebContents[] {
 export function broadcastToWindows(channel: string, data: unknown): void {
   for (const wc of liveWindowContents()) wc.send(channel, data)
 }
+
+/**
+ * Every live window as a phone may attach to it, with its repo.
+ *
+ * Built from `liveWindowContents`, not from `getAllWindows()` alone: a window
+ * mid-teardown is still listed, and a phone reconnecting at that moment would
+ * join a hub whose `closeSocketsForHub` has already run — a socket outliving
+ * its window, which is exactly what that close exists to prevent.
+ */
+export function liveWindowCandidates(
+  repoOf: (webContentsId: number) => string | null,
+): { windowId: number; repoPath: string | null; focused: boolean }[] {
+  const focused = BrowserWindow.getFocusedWindow()
+  return liveWindowContents().map((wc) => ({
+    windowId: wc.id,
+    repoPath: repoOf(wc.id),
+    focused: focused !== null && !focused.isDestroyed() && focused.webContents === wc,
+  }))
+}

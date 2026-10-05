@@ -561,3 +561,77 @@ describe('originOf', () => {
     expect(isLoopbackPeer(undefined)).toBe(false)
   })
 })
+
+describe('choosing the window a socket joins', () => {
+  async function connectTo(url: string, token: string, query: string): Promise<{ ws: WebSocket; hello: ServerFrame }> {
+    const ws = new WebSocket(`${url.replace('http', 'ws')}/${token}/ws${query}`, { origin: url })
+    const frames: ServerFrame[] = []
+    ws.on('message', (raw: Buffer) => { frames.push(JSON.parse(raw.toString('utf8')) as ServerFrame) })
+    await new Promise<void>((res, rej) => {
+      ws.once('open', () => res())
+      ws.once('error', rej)
+    })
+    await waitFor(() => frames.length > 0)
+    return { ws, hello: frames[0] }
+  }
+
+  it('hands the caller what the socket URL asked for', async () => {
+    const asked: unknown[] = []
+    const status = await startRemoteServer({
+      host: HOST,
+      port: 0,
+      webRoot: '/nonexistent-web-root',
+      attachTarget: (request) => {
+        asked.push(request)
+        return hub
+      },
+    })
+    const url = `http://${HOST}:${status.port}`
+    const token = currentRemoteToken()!
+
+    const plain = await connectTo(url, token, '')
+    const named = await connectTo(url, token, `?window=7&repo=${encodeURIComponent('/p/b.git')}`)
+    const junk = await connectTo(url, token, '?window=-1&repo=')
+
+    expect(asked).toEqual([null, { windowId: 7, repoPath: '/p/b.git' }, null])
+    plain.ws.close()
+    named.ws.close()
+    junk.ws.close()
+  })
+
+  // A project switch is a reconnect naming the other window. The window left
+  // behind must lose the socket and any size claim it made, exactly as for a
+  // dropped connection — a hub still holding it would keep feeding it, and a
+  // claim held by a socket that is gone freezes the desktop's terminal size.
+  it('leaves nothing on the old window when a phone switches', async () => {
+    const other = new ClientHub(7, { id: 7, send: () => {}, isDestroyed: () => false })
+    const gone: string[] = []
+    const status = await startRemoteServer({
+      host: HOST,
+      port: 0,
+      webRoot: '/nonexistent-web-root',
+      attachTarget: (request) => (request?.windowId === 7 ? other : hub),
+      onClientGone: (key) => { gone.push(key) },
+    })
+    const url = `http://${HOST}:${status.port}`
+    const token = currentRemoteToken()!
+
+    const first = await connectTo(url, token, '')
+    const firstKey = (first.hello as { clientKey: string }).clientKey
+    expect(hub.transportCount).toBe(2)
+
+    first.ws.close()
+    const second = await connectTo(url, token, '?window=7&repo=%2Fp%2Fb.git')
+
+    await waitFor(() => hub.transportCount === 1 && gone.length === 1)
+    expect(gone).toEqual([firstKey])
+    expect(second.hello).toEqual({ kind: 'hello', windowId: 7, clientKey: expect.stringMatching(/^w7\./) })
+    expect(other.transportCount).toBe(2)
+    expect(getRemoteStatus().clients).toBe(1)
+
+    // And the old window's teardown no longer reaches it.
+    closeSocketsForHub(42)
+    expect(other.transportCount).toBe(2)
+    second.ws.close()
+  })
+})
