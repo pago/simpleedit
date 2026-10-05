@@ -47,6 +47,8 @@
   import ProjectSheet from './ProjectSheet.svelte'
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
   import { AttachSequence, attachNotice, loadRememberedProject, rememberProject, type RememberedProject } from './lib/project'
+  import PairScreen from './PairScreen.svelte'
+  import { storeKey } from './lib/remote-key'
   import { onOpenSession } from './lib/push-client'
   import { sessionFromUrl } from './lib/push-payload'
   import { visualViewport } from './lib/visual-viewport.svelte'
@@ -70,7 +72,20 @@
   type SessionEntry = Extract<NavEntry, { kind: 'session' }>
   type PrEntry = Extract<NavEntry, { kind: 'pr' }>
 
-  let connState = $state<ConnectionState>('connecting')
+  // Read, not assumed: with no key the shim is already `unpaired` before mount.
+  let connState = $state<ConnectionState>(untrack(() => connection.state()))
+  /**
+   * Shown from the moment the key is refused until a socket opens on a new one
+   * — not merely while the state says `stale`, which a fresh attempt passes
+   * through `connecting` to leave.
+   */
+  let pairing = $state(untrack(() => connection.state() === 'stale' || connection.state() === 'unpaired'))
+  const legacyLink = new URLSearchParams(window.location.search).get('from') === 'legacy'
+
+  function adoptKey(key: string): void {
+    storeKey(key)
+    connection.setKey(key)
+  }
   /**
    * The latest thing known about every session a screen may be showing. The
    * stack holds only terminal ids, so a status change or a rename reaches an
@@ -149,7 +164,13 @@
   // history on top of a walk already in flight.
   $effect(() => untrack(() => nav.attach(window)))
 
-  $effect(() => connection.onStateChange((next) => { connState = next }))
+  $effect(() =>
+    connection.onStateChange((next) => {
+      connState = next
+      if (next === 'stale' || next === 'unpaired') pairing = true
+      else if (next === 'open') pairing = false
+    }),
+  )
 
   /**
    * Every session a list has shown. A screen whose session is missing from the
@@ -619,5 +640,8 @@
         </button>
       {/each}
     </nav>
+  {/if}
+  {#if pairing}
+    <PairScreen {connState} legacy={legacyLink} onKey={adoptKey} />
   {/if}
 </div>

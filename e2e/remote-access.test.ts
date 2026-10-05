@@ -21,12 +21,13 @@ import type { RemoteAccessStatus } from '../src/shared/ipc-types'
  * The remote surface, proved from an ordinary browser — no phone, no Tailscale.
  *
  * `http://localhost` is a secure context, so verifying here is not a weaker
- * substitute for the real thing: it exercises the same server, the same token
+ * substitute for the real thing: it exercises the same server, the same key
  * gate, the same hub registration and the same `window.api` shim the phone
  * will use. Only the TLS in front of it differs.
  */
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
+const CONFIG_PATH = path.join(os.tmpdir(), `simpleedit-remote-${process.pid}.json`)
 
 type Fixtures = {
   repo: TempRepo
@@ -47,7 +48,7 @@ const test = base.extend<Fixtures>({
       env: launchEnv({
         SIMPLEEDIT_REPO: repo.bareRepoPath,
         // Keep the toggle out of the dev build's real userData.
-        SIMPLEEDIT_E2E_REMOTE_CONFIG: path.join(os.tmpdir(), `simpleedit-remote-${process.pid}.json`),
+        SIMPLEEDIT_E2E_REMOTE_CONFIG: CONFIG_PATH,
       }),
     })
     await use(app)
@@ -88,24 +89,112 @@ async function enableRemote(window: Page): Promise<RemoteAccessStatus> {
 
 test.afterEach(async ({ window }) => {
   await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:set-enabled', false))
+  // `restartOnSamePort` pins a port; the next test must get an ephemeral one.
+  writeFileSync(CONFIG_PATH, JSON.stringify({ enabled: false, host: '127.0.0.1', port: 0 }))
 })
 
-test('serves the web bundle only under its token, and holds a power assertion', async ({ window }) => {
+test('serves the shell without the key, the socket only with it, and holds a power assertion', async ({ window }) => {
   const status = await enableRemote(window)
 
   expect(status.running).toBe(true)
   expect(status.host).toBe('127.0.0.1')
-  expect(status.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{64}\/$/)
+  expect(status.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/app\/\?k=[0-9a-f]{64}$/)
   // Without this the Mac sleeps and the agents stop, silently.
   expect(status.powerSaveBlocked).toBe(true)
 
   const origin = new URL(status.url!).origin
-  expect((await fetch(`${origin}/`)).status).toBe(404)
-  expect((await fetch(`${origin}/${'a'.repeat(64)}/`)).status).toBe(404)
+  const key = new URL(status.url!).searchParams.get('k')!
+  // The shell is public and holds no data…
+  const shell = await fetch(`${origin}/app/`)
+  expect(shell.status).toBe(200)
+  expect(await shell.text()).toContain('SimpleEdit')
+  // …and the one question it can ask without the key has a one-bit answer.
+  expect((await fetch(`${origin}/app/auth?k=${key}`)).status).toBe(204)
+  expect((await fetch(`${origin}/app/auth?k=${'0'.repeat(64)}`)).status).toBe(401)
+  expect((await fetch(`${origin}/${key}/`, { redirect: 'manual' })).headers.get('location')).toBe('/app/?from=legacy')
+})
 
-  const served = await fetch(status.url!)
-  expect(served.status).toBe(200)
-  expect(await served.text()).toContain('SimpleEdit')
+/** Open a socket from a real browser page and report whether it got a `hello`. */
+async function socketOpens(page: Page, url: string): Promise<boolean> {
+  return await page.evaluate(
+    (target) =>
+      new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(target)
+        ws.onmessage = () => { ws.close(); resolve(true) }
+        ws.onerror = () => resolve(false)
+        ws.onclose = () => resolve(false)
+      }),
+    url,
+  )
+}
+
+test('no data or IPC is reachable from the shell without the key', async ({ window, browser }) => {
+  const status = await enableRemote(window)
+  const url = new URL(byName(status.url!))
+  const key = url.searchParams.get('k')!
+  const ws = `ws://${url.host}/app/ws`
+
+  const page = await browser.newPage()
+  await page.goto(`${url.origin}/app/`)
+  expect(await socketOpens(page, ws)).toBe(false)
+  expect(await socketOpens(page, `${ws}?k=${'0'.repeat(64)}`)).toBe(false)
+  expect(await socketOpens(page, `ws://${url.host}/${key}/ws`)).toBe(false)
+  expect(await socketOpens(page, `${ws}?k=${key}`)).toBe(true)
+  await page.close()
+})
+
+/** Restart remote access on the SAME port, so the page's origin survives — as it does behind Serve. */
+async function restartOnSamePort(window: Page, port: number): Promise<RemoteAccessStatus> {
+  await window.evaluate(() => (window as unknown as { api: Api }).api.invoke('remote:set-enabled', false))
+  writeFileSync(CONFIG_PATH, JSON.stringify({ enabled: false, host: '127.0.0.1', port }))
+  return await enableRemote(window)
+}
+
+// The whole of #190 from a browser: a key goes stale, the app says so instead
+// of 404ing, and a new link brings it back IN PLACE — same page, same
+// storage — and a reload afterwards still prefers the new key over the stale
+// one its URL keeps carrying, as an installed app's start URL does.
+test('a stale key shows the stale page, and a new link reconnects without navigating', async ({ window, browser }) => {
+  const first = await enableRemote(window)
+  const firstUrl = byName(first.url!)
+
+  const page = await browser.newPage()
+  await page.goto(firstUrl)
+  await expect(page.getByTestId('connection-dot')).toHaveAttribute('data-state', 'open', { timeout: 15_000 })
+
+  const second = await restartOnSamePort(window, first.port!)
+  expect(second.port).toBe(first.port)
+  const secondUrl = byName(second.url!)
+  expect(secondUrl).not.toBe(firstUrl)
+
+  await expect(page.getByTestId('pair-screen')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByTestId('pair-title')).toHaveText('This link is out of date')
+
+  await page.evaluate(() => { (window as unknown as { marker: string }).marker = 'same page' })
+  await page.getByTestId('pair-link').fill(secondUrl)
+  await page.getByTestId('pair-connect').click()
+  await expect(page.getByTestId('pair-screen')).toBeHidden({ timeout: 15_000 })
+  await expect(page.getByTestId('connection-dot')).toHaveAttribute('data-state', 'open')
+  expect(await page.evaluate(() => (window as unknown as { marker?: string }).marker)).toBe('same page')
+  expect(page.url()).toBe(firstUrl)
+
+  // Relaunch on the stale start URL: the stored key wins.
+  await page.goto(firstUrl)
+  await expect(page.getByTestId('connection-dot')).toHaveAttribute('data-state', 'open', { timeout: 15_000 })
+  await expect(page.getByTestId('pair-screen')).toBeHidden()
+  await page.close()
+})
+
+test('an old /<key>/ link lands on the stale-key page', async ({ window, browser }) => {
+  const status = await enableRemote(window)
+  const origin = new URL(byName(status.url!)).origin
+
+  const page = await browser.newPage()
+  await page.goto(`${origin}/${'e'.repeat(64)}/`)
+  expect(new URL(page.url()).pathname).toBe('/app/')
+  await expect(page.getByTestId('pair-title')).toHaveText('This link is out of date', { timeout: 15_000 })
+  await expect(page.getByTestId('pair-legacy')).toBeVisible()
+  await page.close()
 })
 
 test('lists the window\'s sessions and opens one on the real PTY', async ({ window, browser }) => {
