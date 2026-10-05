@@ -4,6 +4,7 @@ import { createRawSnippet, tick } from 'svelte'
 import UnifiedDiffView from '../UnifiedDiffView.svelte'
 import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../../../../shared/parseDiff'
 import { REVEAL_FLASH_MS } from '../../../lib/diffReveal'
+import '../../../app.css'
 
 const DIFF = [
   'diff --git a/src/a.ts b/src/a.ts',
@@ -35,6 +36,15 @@ describe('UnifiedDiffView', () => {
     const { container } = render(UnifiedDiffView, { files: parseUnifiedDiff(DIFF) })
     await tick()
     expect(container.querySelector('.overflow-x-auto')).not.toBeNull()
+  })
+
+  // An overlay scrollbar takes no space of its own, so without room beneath
+  // the last row it sits on top of that row's ＋.
+  it('leaves room under the last row for an overlay scrollbar', async () => {
+    const { container } = render(UnifiedDiffView, { files: parseUnifiedDiff(DIFF) })
+    await tick()
+    const scroller = container.querySelector<HTMLElement>('.overflow-x-auto')!
+    expect(parseFloat(getComputedStyle(scroller).paddingBottom)).toBeGreaterThanOrEqual(12)
   })
 
   it('shows the empty label when there is nothing to diff', async () => {

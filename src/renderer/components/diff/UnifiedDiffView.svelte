@@ -139,7 +139,9 @@
       {#if f.binary}
         <div class="px-3 py-2 font-mono text-[11px] text-zinc-500">Binary file not shown</div>
       {:else}
-        <div class="overflow-x-auto bg-zinc-950 font-mono text-[11.5px] leading-[1.5]">
+        <!-- pb-3: macOS draws an overlay scrollbar over the content, which
+             would cover the last row and its ＋. -->
+        <div class="overflow-x-auto bg-zinc-950 pb-3 font-mono text-[11.5px] leading-[1.5]">
           {#each f.rows as row, i (i)}
             {#if row.kind === 'hunk'}
               <div class="bg-zinc-900/60 px-3 py-0.5 text-[10.5px] text-zinc-500">⋯ {row.text}</div>
