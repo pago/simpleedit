@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { pairingTarget, isPhoneReachable } from '../remote-pairing'
+import { pairingTarget, isPhoneReachable, appLink, withoutKey } from '../remote-pairing'
 
-const TOKEN_PATH = '/9f3c0a7e5b1d4826aa11cc22dd33ee44ff5566778899aabbccddeeff00112233/'
+const TOKEN_PATH = '/app/?k=9f3c0a7e5b1d4826aa11cc22dd33ee44ff5566778899aabbccddeeff00112233'
 
 describe('isPhoneReachable', () => {
   it('rejects every spelling of this machine', () => {
@@ -104,5 +104,20 @@ describe('pairingTarget', () => {
       serveUrl: null,
     }).note
     expect(overTailnet).toMatch(/switch the bind to .This Mac only. and turn on Tailscale Serve/)
+  })
+})
+
+describe('appLink / withoutKey', () => {
+  const KEY = 'c'.repeat(64)
+
+  it('puts the key in the query of the fixed shell path', () => {
+    expect(appLink('https://mac.tailnet.ts.net', KEY)).toBe(`https://mac.tailnet.ts.net/app/?k=${KEY}`)
+  })
+
+  // Where a notification tap lands: the installed app holds its own key, and
+  // a notification is stored by the OS long after this start's key is dead.
+  it('takes the key out of a link and keeps everything else', () => {
+    expect(withoutKey(appLink('https://mac.tailnet.ts.net', KEY))).toBe('https://mac.tailnet.ts.net/app/')
+    expect(withoutKey(`http://100.1.2.3:5173/app/?k=${KEY}&x=1`)).toBe('http://100.1.2.3:5173/app/?x=1')
   })
 })

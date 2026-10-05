@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <!-- The page URL carries the access token; never hand it to another site. -->
+    <!-- The page URL can carry the access key; never hand it to another site. -->
     <meta name="referrer" content="no-referrer" />
     <!--
-      Relative, and deliberately so: `start_url` and `scope` resolve against
-      this manifest's own URL, which is `/<token>/`. That is what puts the
-      access token inside the installed app — the only way an installed PWA
-      can reach a server that gates every request on it.
+      The server rewrites this href to carry the page's own `?k=`, so the
+      manifest it links names a start URL with the key in it — what an iOS
+      install saves. The scope (`/app/`) has no key, so it survives a restart.
+      Keep the attribute exactly as written: `server.ts` matches it.
     -->
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./icon.svg" />

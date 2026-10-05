@@ -28,7 +28,8 @@ const connection: RemoteConnection = {
   reconnect: () => {},
   identity: () => ({ windowId: 1, clientKey: 'w1.1' }),
   onStateChange: () => () => {},
-  onIdentity: (fn) => {
+  setKey: () => {},
+    onIdentity: (fn) => {
     fn({ windowId: 1, clientKey: 'w1.1' })
     return () => {}
   },

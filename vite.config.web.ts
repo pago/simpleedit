@@ -11,8 +11,8 @@ const here = (path: string): string => fileURLToPath(new URL(path, import.meta.u
  *
  * Two things differ from `electron.vite.config.ts`:
  *
- *  - `base: './'`. The bundle is served under `/<token>/`, and the token is
- *    minted per launch, so every asset URL has to be relative.
+ *  - `base: './'`. Every asset URL is relative to where the server mounts
+ *    the shell (`/app/`), so that path is decided in one place.
  *  - Monaco is excluded. It is the single largest thing the desktop renderer
  *    pulls in and a phone has no use for it; the `external` entry makes an
  *    accidental import fail the build instead of quietly shipping megabytes.

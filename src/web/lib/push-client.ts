@@ -105,9 +105,9 @@ export function decodeVapidKey(base64url: string): Uint8Array {
  * Register (or re-register) the worker for THIS page's scope, dropping any
  * registration left under another one.
  *
- * The access token is the first path segment and is minted per server launch,
- * so yesterday's worker sits at a scope that no longer resolves — while still
- * holding a live subscription that would buzz alongside the new one. Clearing
+ * The scope is `/app/` and stays put across restarts. Before #190 the key was
+ * the first path segment, so a phone can still hold a worker at `/<old key>/`
+ * — with a live subscription that would buzz alongside the new one. Clearing
  * it is what keeps one block from producing two notifications.
  */
 export async function registerWorker(

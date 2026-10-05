@@ -351,12 +351,12 @@ export interface PushPayload {
   body: string
   terminalId: string
   /**
-   * Where a tap lands, token included.
+   * Where a tap lands. Never carries the access key: the app holds its own,
+   * and a notification is stored and shown by the OS.
    *
    * Carried per message rather than assumed from the service worker's own
-   * scope: the access token is minted fresh on every server start, so a
-   * worker registered before a restart has a scope that no longer resolves.
-   * The URL is only ever as fresh as the message that carried it.
+   * scope, because the scope says nothing about which address — Serve's
+   * HTTPS name or the tailnet IP — is the one reachable now.
    */
   url: string
   /**

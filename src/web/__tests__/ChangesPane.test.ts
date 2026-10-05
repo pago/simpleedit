@@ -62,7 +62,8 @@ const connection: RemoteConnection = {
     stateWatchers.push(fn)
     return () => { stateWatchers = stateWatchers.filter((w) => w !== fn) }
   },
-  onIdentity: () => () => {},
+  setKey: () => {},
+    onIdentity: () => () => {},
 }
 
 /** Drive the shim's state the way a dropped-then-restored socket does. */
