@@ -49,6 +49,7 @@
   import { AttachSequence, attachNotice, loadRememberedProject, rememberProject, type RememberedProject } from './lib/project'
   import { onOpenSession } from './lib/push-client'
   import { sessionFromUrl } from './lib/push-payload'
+  import { visualViewport } from './lib/visual-viewport.svelte'
   import { nav } from './lib/nav.svelte'
   import { isOverlay, type NavEntry, type TabId } from './lib/nav'
   import type { ConnectionState, RemoteConnection } from './api-shim'
@@ -367,7 +368,8 @@
     const below = stack.slice(0, Math.max(0, at)).findLast((e) => e.kind === 'session' || e.kind === 'pr')
     return titleOf(below ?? null)
   })
-  const showTabBar = $derived(!isOverlay(top))
+  // The keyboard leaves room for little; tabs are not what anyone typing needs.
+  const showTabBar = $derived(!isOverlay(top) && !visualViewport.keyboardOpen)
 
   const dot = $derived(
     connState === 'open' ? 'bg-emerald-400' : connState === 'connecting' ? 'bg-amber-400' : 'bg-red-500',
