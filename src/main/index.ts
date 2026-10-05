@@ -64,6 +64,7 @@ import {
   removeSubscription,
 } from './remote/push'
 import { isPresentNow, startPresenceTracking, stopPresenceTracking } from './remote/presence'
+import { chooseAttachWindow, projectsOf, type AttachRequest, type WindowCandidate } from './remote/attach-target'
 import { onAgentStatus } from './agent-status'
 import { listRemoteInterfaces, isAllowedBindHost, isLoopbackHost } from './remote/interfaces'
 import { saveDroppedBlob } from './dropped-files'
@@ -83,7 +84,7 @@ import { inheritShellPath } from './shell-path'
 import { listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent, resetPrompt, revealTarget } from './prompts/overrides'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
-import { broadcastToWindows, liveWindowContents } from './window-broadcast'
+import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
@@ -250,25 +251,35 @@ function remoteWebRoot(): string {
   return join(__dirname, '../web')
 }
 
+function windowCandidates(): WindowCandidate[] {
+  return liveWindowCandidates((id) => windowRepoMap.get(id) ?? null)
+}
+
 /**
- * The window a new socket attaches to: the focused one if it has a repo, else
- * the first window that does, else the first window at all.
+ * The window a new socket attaches to: the one the phone asked for if it
+ * still has that repo, else the focused one if it has a repo, else the first
+ * window that does, else the first window at all (`chooseAttachWindow`).
  *
  * Deliberately not "a window of its own". Everything main knows about a
  * session — its repo, its worktrees, its MCP bridge, its watchers — is keyed
- * by a window id, so the phone has to borrow one.
+ * by a window id, so the phone has to borrow one. Switching project is
+ * therefore a reconnect naming another window, which runs the same detach and
+ * attach as any other connection.
  */
-function remoteAttachTarget(): ClientHub | null {
-  const withRepo = BrowserWindow.getAllWindows().filter(
-    (w) => !w.isDestroyed() && windowRepoMap.has(w.webContents.id),
-  )
-  const focused = BrowserWindow.getFocusedWindow()
-  const chosen =
-    (focused && withRepo.includes(focused) ? focused : undefined) ??
-    withRepo[0] ??
-    BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-  if (!chosen) return null
-  return hubFor(chosen.webContents)
+function remoteAttachTarget(request: AttachRequest | null): ClientHub | null {
+  const windowId = chooseAttachWindow(windowCandidates(), request)
+  if (windowId === null) return null
+  const chosen = liveWindowContents().find((wc) => wc.id === windowId)
+  return chosen ? hubFor(chosen) : null
+}
+
+/**
+ * Called wherever a window gains a repo, goes, or gains or loses focus, so a
+ * phone's picker follows. Through the hubs, not `broadcastToWindows`: the
+ * phones are what listen, and they are reachable only through a hub.
+ */
+function broadcastProjects(): void {
+  broadcastToAllClients('remote:projects-changed', projectsOf(windowCandidates()))
 }
 
 /**
@@ -467,6 +478,7 @@ function createWindow(repoPath?: string): BrowserWindow {
     startBridge(webContentsId, hub).catch((err) => {
       console.error('[SimpleEdit] Failed to start MCP bridge:', err)
     })
+    broadcastProjects()
   }
 
   win.on('closed', () => {
@@ -480,6 +492,7 @@ function createWindow(repoPath?: string): BrowserWindow {
     windowRepoMap.delete(webContentsId)
     windowReposMap.delete(webContentsId)
     clientHubs.delete(webContentsId)
+    broadcastProjects()
   })
 
   win.on('ready-to-show', () => {
@@ -581,6 +594,7 @@ function registerAllHandlers(): void {
     startBridge(event.sender.id, hubFor(event.sender)).catch((err) => {
       console.error('[SimpleEdit] Failed to start MCP bridge:', err)
     })
+    broadcastProjects()
   })
 
   handleInvoke('app:pick-repo', async (event) => {
@@ -640,6 +654,7 @@ function registerAllHandlers(): void {
   handleInvoke('remote:status', () => getRemoteStatus())
   handleInvoke('remote:config', () => getRemoteConfig())
   handleInvoke('remote:interfaces', () => listRemoteInterfaces())
+  handleInvoke('remote:projects', () => projectsOf(windowCandidates()))
   handleInvoke('tailscale:status', () => getTailscaleStatus())
   handleInvoke('tailscale:serve-status', () => getServeStatus())
 
@@ -1178,6 +1193,11 @@ app.whenReady().then(() => {
     app.setActivationPolicy('accessory')
     app.dock?.hide()
   }
+
+  // The project list marks the focused window, and a sheet open on the phone
+  // should not keep naming the one that was focused when it opened.
+  app.on('browser-window-focus', () => broadcastProjects())
+  app.on('browser-window-blur', () => broadcastProjects())
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

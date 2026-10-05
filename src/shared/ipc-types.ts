@@ -1118,6 +1118,19 @@ export interface RemoteAccessStatus {
   error: string | null
 }
 
+/**
+ * One window a phone can attach to. A phone borrows a window's identity, so
+ * this is what "a project" means to it.
+ */
+export interface RemoteProject {
+  windowId: number
+  /** The bare repo. What a phone remembers: window ids do not survive a restart. */
+  repoPath: string
+  name: string
+  /** The window has focus on the Mac. */
+  focused: boolean
+}
+
 export interface RemoteInvokeMap {
   'remote:status': { args: []; result: RemoteAccessStatus }
   'remote:config': { args: []; result: RemoteAccessConfig }
@@ -1132,6 +1145,8 @@ export interface RemoteInvokeMap {
    * the running server's current port.
    */
   'remote:set-serve-enabled': { args: [enabled: boolean]; result: TailscaleServeStatus }
+  /** The windows with a repo — the projects a phone can attach to. */
+  'remote:projects': { args: []; result: RemoteProject[] }
   /** Probe the Tailscale CLI. Spawns a subprocess, so it is called on demand. */
   'tailscale:status': { args: []; result: TailscaleStatus }
   'tailscale:serve-status': { args: []; result: TailscaleServeStatus }
@@ -1205,6 +1220,8 @@ export interface RemoteInterface {
 export interface RemoteEventMap {
   'remote:status-changed': RemoteAccessStatus
   'remote:serve-changed': TailscaleServeStatus
+  /** A window with a repo opened or closed, or a window picked its repo. */
+  'remote:projects-changed': RemoteProject[]
   'push:status-changed': PushStatus
 }
 
