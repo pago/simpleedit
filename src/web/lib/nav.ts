@@ -24,6 +24,8 @@ export type NavLayer =
   | { kind: 'pr'; pr: PrRef }
   | { kind: 'compose'; url: string }
   | { kind: 'confirm-submit'; url: string }
+  /** Which of the Mac's projects (windows) the phone is attached to. */
+  | { kind: 'projects' }
 
 export type NavEntry = NavLayer & {
   id: number
@@ -56,7 +58,13 @@ export function topOf(state: NavState, tab: TabId = state.tab): NavEntry | null 
 
 /** Sheets and modals: layers that cover a screen rather than replace it. */
 export function isOverlay(entry: NavEntry | null): boolean {
-  return entry !== null && (entry.kind === 'new-session' || entry.kind === 'compose' || entry.kind === 'confirm-submit')
+  return (
+    entry !== null &&
+    (entry.kind === 'new-session' ||
+      entry.kind === 'compose' ||
+      entry.kind === 'confirm-submit' ||
+      entry.kind === 'projects')
+  )
 }
 
 /** The screen a tab is showing under any overlays, or null for its list. */
@@ -103,6 +111,14 @@ export function removeWhere(state: NavState, doomed: (entry: NavEntry) => boolea
     if (kept.length !== stack.length) next = withStack(next, tab, kept)
   }
   return next
+}
+
+/**
+ * Empty one tab's stack, holds unasked. For when what it showed is gone — the
+ * phone attached to another project, whose sessions are another window's.
+ */
+export function clearStack(state: NavState, tab: TabId): NavState {
+  return state.stacks[tab].length === 0 ? state : withStack(state, tab, [])
 }
 
 export function contains(state: NavState, id: number): boolean {

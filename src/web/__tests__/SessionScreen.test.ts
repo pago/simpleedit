@@ -28,6 +28,7 @@ const session: WindowSession = {
 
 const connection: RemoteConnection = {
   state: () => 'open',
+  reconnect: () => {},
   identity: () => ({ windowId: 1, clientKey: 'w1.1' }),
   onStateChange: () => () => {},
   onIdentity: (fn) => {

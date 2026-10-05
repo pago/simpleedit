@@ -189,6 +189,20 @@ guard exactly that.
   arrive over IPC (the phone too) and become paths, so `promptDefinition`
   rejects anything unregistered.
 
+### Phone companion: which window it borrows
+A phone's socket joins one window's `ClientHub` (`remote/server.ts`), because
+everything main knows about sessions is keyed by window id. Which window is
+decided per connection by `remote/attach-target.ts`: the socket URL may name a
+`window` + `repo` (the project the phone remembers, `web/lib/project.ts`), and
+main honours the id only while that window still has that repo, then any window
+with the repo, then the old focus rule. **Switching project is a reconnect**
+(`RemoteConnection.reconnect`), never an in-place move of a live socket. The
+close runs the same detach as a dropped connection: the hub unregisters it and
+its PTY size claims are released. So no second teardown path exists to drift
+from the first. The phone empties its Sessions tab whenever a `hello` names a
+different window. It keeps the PRs tab, since Screen PRs and review drafts are
+not per window.
+
 ### Diff review flow
 GitLog (in the session workspace) → click commit → `openDiffTab`
 (`diffReview.svelte.ts`) → the session's `SessionWorkspace` opens a **diff tab**

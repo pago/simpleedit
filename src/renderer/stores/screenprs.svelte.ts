@@ -265,6 +265,36 @@ export const screenPrsStore = {
     return out
   },
 
+  /**
+   * A screening, deep review, overview or review post is still running. Its
+   * progress and its answer arrive as events on the window that started it,
+   * so a phone that attached elsewhere meanwhile would show it running forever.
+   */
+  busy: (): boolean =>
+    _status === 'running' ||
+    _submitting.size > 0 ||
+    [..._deep.values()].some((d) => d.status === 'running') ||
+    [..._overview.values()].some((o) => o.status === 'running'),
+
+  /**
+   * Settle every run as interrupted. For a phone that has been moved to another
+   * window: what the old window was running reports there, so nothing will ever
+   * end these here, and a run left `running` would block the picker for good.
+   * A review post is left alone — its invoke settles it, with an answer or a
+   * lost connection.
+   */
+  abandonRuns(reason: string): void {
+    if (_status === 'running') {
+      _status = 'error'
+      _error = reason
+      _triaging = new Set()
+    }
+    for (const [url, deep] of _deep) if (deep.status === 'running') setDeep(url, { status: 'error', error: reason })
+    for (const [url, overview] of _overview) {
+      if (overview.status === 'running') setOverview(url, { status: 'error', error: reason })
+    }
+  },
+
   attentionCount: (): number => [..._entries.values()].filter((e) => e.card?.bucket === 'attention').length,
 
   selectedCard(): ScreenPrCard | undefined {

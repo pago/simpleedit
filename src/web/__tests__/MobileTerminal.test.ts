@@ -24,6 +24,7 @@ function emit(channel: string, data: unknown): void {
 
 const connection: RemoteConnection = {
   state: () => 'open',
+  reconnect: () => {},
   identity: () => ({ windowId: 1, clientKey: 'w1.1' }),
   onStateChange: () => () => {},
   onIdentity: (fn) => {

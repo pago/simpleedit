@@ -186,6 +186,15 @@
     return true
   }
 
+  /**
+   * What leaving would cost, without raising the confirm: a start in flight
+   * (which nothing here can cancel), a brief to lose, or nothing.
+   */
+  export function atRisk(): 'starting' | 'draft' | null {
+    if (starting) return 'starting'
+    return draftAtRisk(brief, composer?.dictating() ?? false) ? 'draft' : null
+  }
+
   /** Leaving discards the brief, so anything worth losing is asked about. */
   function requestClose(): void {
     if (!holdForDraft()) onclose()

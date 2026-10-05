@@ -70,20 +70,38 @@ export interface RemoteConnection {
   onStateChange: (fn: (state: ConnectionState) => void) => () => void
   /** Called on every `hello`, including a reconnect's. */
   onIdentity: (fn: (identity: RemoteIdentity) => void) => () => void
+  /**
+   * Drop this socket and connect again at once, with no backoff.
+   *
+   * How the phone switches project: the new socket's URL names the other
+   * window, so main runs exactly the detach and attach any connection gets —
+   * the old window's hub loses the socket, and its size claims go with it.
+   * Calls in flight fail as for any lost connection.
+   */
+  reconnect: () => void
 }
 
 const RECONNECT_MIN_MS = 500
 const RECONNECT_MAX_MS = 10_000
 
-export function socketUrl(): string {
+export function socketUrl(params: Record<string, string> = {}): string {
   // `location.pathname` is `/<token>/`, so a relative 'ws' lands on the
   // token-gated endpoint without this file ever handling the token itself.
   const url = new URL('ws', window.location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
   return url.toString()
 }
 
-export function installRemoteApi(): RemoteConnection {
+export interface RemoteApiOptions {
+  /**
+   * Query parameters for each new socket, read at every connect — which is
+   * how a reconnect asks for the project the phone remembers.
+   */
+  attachParams?: () => Record<string, string>
+}
+
+export function installRemoteApi(options: RemoteApiOptions = {}): RemoteConnection {
   let ws: WebSocket | null = null
   let state: ConnectionState = 'connecting'
   let nextId = 1
@@ -144,9 +162,13 @@ export function installRemoteApi(): RemoteConnection {
     else waiting.reject(new Error(frame.error))
   }
 
+  /** A `reconnect()` is waiting for this socket's close; skip the backoff. */
+  let immediate = false
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+
   function connect(): void {
     setState('connecting')
-    const socket = new WebSocket(socketUrl())
+    const socket = new WebSocket(socketUrl(options.attachParams?.()))
     ws = socket
 
     socket.addEventListener('open', () => {
@@ -187,7 +209,15 @@ export function installRemoteApi(): RemoteConnection {
         )
       }
       pending.clear()
-      setTimeout(connect, backoff)
+      if (immediate) {
+        immediate = false
+        connect()
+        return
+      }
+      retryTimer = setTimeout(() => {
+        retryTimer = null
+        connect()
+      }, backoff)
       backoff = Math.min(backoff * 2, RECONNECT_MAX_MS)
     })
 
@@ -255,6 +285,18 @@ export function installRemoteApi(): RemoteConnection {
       identityWatchers.add(fn)
       if (identity) fn(identity)
       return () => { identityWatchers.delete(fn) }
+    },
+    reconnect() {
+      // During a backoff there is no socket to close; bring the retry forward.
+      // Its timer has to go, or it would open a second socket later.
+      if (!ws) {
+        if (retryTimer !== null) clearTimeout(retryTimer)
+        retryTimer = null
+        connect()
+        return
+      }
+      immediate = true
+      ws.close()
     },
   }
 }

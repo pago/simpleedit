@@ -72,6 +72,11 @@
     return true
   }
 
+  /** The same question as `holdForRecording`, without raising the confirm. */
+  export function isRecording(): boolean {
+    return composer?.dictating() ?? false
+  }
+
   let caps = $state<AgentCapabilities | null>(null)
   let composer = $state<VoiceComposer | undefined>()
 

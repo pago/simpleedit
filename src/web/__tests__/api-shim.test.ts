@@ -196,3 +196,46 @@ describe('api-shim outbox', () => {
     await expect(call).resolves.toEqual([])
   })
 })
+
+describe('api-shim reconnect', () => {
+  it('names the remembered project on every socket it opens', () => {
+    let params: Record<string, string> = { repo: '/p/a.git', window: '1' }
+    const connection = installRemoteApi({ attachParams: () => params })
+    const first = FakeSocket.instances[0]
+    expect(new URL(first.url).searchParams.get('repo')).toBe('/p/a.git')
+    expect(new URL(first.url).searchParams.get('window')).toBe('1')
+    first.open()
+
+    params = { repo: '/p/b.git', window: '2' }
+    connection.reconnect()
+    const second = FakeSocket.instances[1]
+    expect(first.readyState).toBe(3)
+    expect(new URL(second.url).searchParams.get('repo')).toBe('/p/b.git')
+  })
+
+  it('connects again at once, not after the backoff', () => {
+    const connection = installRemoteApi()
+    FakeSocket.instances[0].open()
+    connection.reconnect()
+    expect(FakeSocket.instances).toHaveLength(2)
+  })
+
+  // A reconnect during a backoff brings the retry forward. Leaving its timer
+  // armed would open a second socket later, attached to a window of its own.
+  it('opens exactly one socket when asked during a backoff', () => {
+    const connection = installRemoteApi()
+    FakeSocket.instances[0].close()
+    connection.reconnect()
+    expect(FakeSocket.instances).toHaveLength(2)
+    vi.advanceTimersByTime(60_000)
+    expect(FakeSocket.instances).toHaveLength(2)
+  })
+
+  it('fails the calls the old socket carried, as for any lost connection', async () => {
+    const connection = installRemoteApi()
+    FakeSocket.instances[0].open()
+    const call = (globalThis as unknown as { api: { invoke: (c: string) => Promise<unknown> } }).api.invoke('session:list')
+    connection.reconnect()
+    await expect(call).rejects.toThrow('Connection lost')
+  })
+})
