@@ -70,6 +70,24 @@ const qr = (): HTMLElement | null => screen.queryByTestId('pairing-qr')
 /** The pane fetches six channels on mount; nothing it renders is real until they land. */
 const loaded = (): Promise<HTMLElement> => screen.findByText('Command line')
 
+describe('section order', () => {
+  // The bind and Serve decide what URL the code encodes, so they come before
+  // it: set up the route, then scan.
+  it('follows the setup flow: route to this Mac, pair, then the rest', async () => {
+    render(RemoteAccessPane)
+    await loaded()
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent?.trim())
+    expect(headings).toEqual([
+      'How the phone reaches this Mac',
+      'Pair a phone',
+      'Connection',
+      'Notifications',
+      'Dictation',
+      'Sleep',
+    ])
+  })
+})
+
 describe('pairing a phone', () => {
   it('shows no code for a loopback bind, and says why', async () => {
     render(RemoteAccessPane)

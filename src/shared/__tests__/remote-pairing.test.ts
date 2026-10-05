@@ -94,7 +94,7 @@ describe('pairingTarget', () => {
       boundToTailscale: false,
       serveUrl: null,
     }).note
-    expect(loopback).toMatch(/Turn on Tailscale Serve below/)
+    expect(loopback).toMatch(/Turn on Tailscale Serve above/)
     expect(loopback).toMatch(/without Serve, pick the Tailscale address/)
 
     const overTailnet = pairingTarget({

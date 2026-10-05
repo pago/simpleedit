@@ -196,30 +196,146 @@
     {/if}
   </section>
 
-  {#if enabled && status?.running}
-    <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-      <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Connection</h2>
-      <div class="mt-2 flex items-center gap-2">
-        <code class="min-w-0 flex-1 truncate rounded-md bg-zinc-950 px-2.5 py-2 text-xs text-zinc-200">{status.url}</code>
-        <button
-          type="button"
-          onclick={() => void copyUrl()}
-          class="flex-none rounded-md bg-zinc-800 px-2.5 py-2 text-xs text-zinc-200 hover:bg-zinc-700"
-        >{copied ? 'Copied' : 'Copy'}</button>
-      </div>
+  <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+    <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">How the phone reaches this Mac</h2>
+    <div class="mt-3">
+      <h3 class="text-[13px] font-medium text-zinc-100">Network interface</h3>
       <p class="mt-2 text-xs leading-relaxed text-zinc-500">
-        The random path segment is the access token. It is regenerated every time the server
-        starts, so an old link stops working — share the current one, and never through a
-        service that stores it.
+        Only two kinds of address are offered, and the list is a filter rather than a warning:
+        loopback reaches this machine alone, and a Tailscale address reaches your own devices and
+        nothing else. Your LAN is deliberately absent — remote access must never answer on a network
+        you do not control, and there is no “all interfaces” option at all.
       </p>
-      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-        <dt class="text-zinc-500">Bound to</dt>
-        <dd class="text-zinc-300">{status.host}:{status.port}</dd>
-        <dt class="text-zinc-500">Connected clients</dt>
-        <dd class="text-zinc-300">{status.clients}</dd>
-      </dl>
-    </section>
+      {#if hostError}
+        <p class="mt-2 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{hostError}</p>
+      {/if}
+      <div class="mt-3 space-y-1.5">
+        {#each interfaces as iface (iface.name + iface.address)}
+          {@const selected = config?.host === iface.address}
+          <button
+            type="button"
+            disabled={busy}
+            onclick={() => void setHost(iface.address)}
+            class="flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left text-[13px] transition-colors
+              {selected
+                ? 'border-blue-800 bg-blue-950/50 text-blue-300'
+                : 'border-zinc-800 text-zinc-300 hover:bg-zinc-800'}"
+          >
+            <code class="flex-none">{iface.address}</code>
+            <span class="min-w-0 flex-1 truncate text-xs text-zinc-500">{iface.name}</span>
+            {#if iface.isTailscale}
+              <span class="flex-none rounded bg-emerald-950 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400">Tailscale</span>
+            {:else}
+              <span class="flex-none rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-400">This Mac only</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
 
+      {#if !tailscale}
+        <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+          No Tailscale interface found. Without one, a phone can only reach this over plain HTTP on
+          the LAN — which is not a secure context, so the microphone will never open there.
+        </p>
+      {:else if boundToLoopback}
+        <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+          Bound to loopback, so only a browser on this Mac can connect. Pick the Tailscale address
+          to reach a phone.
+        </p>
+      {/if}
+    </div>
+
+    <div class="mt-4 border-t border-zinc-800 pt-4">
+      <h3 class="text-[13px] font-medium text-zinc-100">Tailscale</h3>
+      {#if ts}
+        <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+          <dt class="text-zinc-500">Command line</dt>
+          <dd class="min-w-0 break-all {ts.cliUsable ? 'text-zinc-300' : 'text-amber-400'}">{ts.cli ?? 'not found'}</dd>
+          <dt class="text-zinc-500">Connection</dt>
+          <dd class={ts.backendState === 'Running' ? 'text-emerald-400' : 'text-amber-400'}>
+            {ts.backendState ?? 'no answer'}
+          </dd>
+          <dt class="text-zinc-500">This node</dt>
+          <dd class="min-w-0 break-all text-zinc-300">{ts.dnsName ?? '—'}</dd>
+          <dt class="text-zinc-500">HTTPS certificate</dt>
+          <dd class={ts.httpsReady ? 'text-emerald-400' : 'text-amber-400'}>
+            {ts.httpsReady ? 'issued for this node' : 'not issued'}
+          </dd>
+        </dl>
+        {#if ts.hint}
+          <p class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300">
+            {ts.hint}
+          </p>
+        {/if}
+      {/if}
+
+      <div class="mt-4 flex items-center justify-between gap-4 border-t border-zinc-800 pt-4">
+        <div class="min-w-0">
+          <p class="text-[13.5px] font-medium text-zinc-100">Publish over Tailscale Serve</p>
+          <p class="mt-0.5 text-xs leading-relaxed text-zinc-500">
+            Puts SimpleEdit on a real HTTPS address on your tailnet, which is the only kind of
+            origin a browser will open a microphone on. It also makes this reachable from every
+            device on the tailnet, so it is a separate decision from turning remote access on —
+            never implied by it.
+          </p>
+        </div>
+        <Toggle
+          checked={serveOn}
+          disabled={busy || serve?.busy || config === null || !ts?.cliUsable}
+          label="Publish over Tailscale Serve"
+          onchange={(v) => void setServeEnabled(v)}
+        />
+      </div>
+
+      {#if serveError}
+        <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{serveError}</p>
+      {/if}
+
+      <!--
+        The failure text is shown whatever it says, and the enable link is an
+        addition to it rather than a replacement. Branching the other way meant a
+        misclassified failure — one that merely mentioned a URL — replaced its own
+        message with a link to the wrong place, so over-firing hid the error.
+      -->
+      {#if serve?.error}
+        <div class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">
+          <p>{serve.error}</p>
+          {#if serve.enableUrl}
+            {@const enableUrl = serve.enableUrl}
+            <p class="mt-2">
+              Serve is an admin-console setting for the whole tailnet, so it cannot be turned on
+              from here — and this link names your node, so it cannot be guessed either.
+            </p>
+            <button
+              type="button"
+              onclick={() => openExternal(enableUrl)}
+              class="mt-2 break-all text-left text-blue-400 underline hover:text-blue-300"
+            >{enableUrl} ↗</button>
+          {/if}
+        </div>
+      {/if}
+
+      {#if serveOn && !status?.running}
+        <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+          Remote access is off, so nothing is published yet. Serve starts and stops with it, and
+          the mapping never outlives the server it points at.
+        </p>
+      {:else if serveOn && !boundToLoopback}
+        <p class="mt-3 text-xs leading-relaxed text-amber-400">
+          Serve proxies to this Mac over loopback, so it stays idle while remote access is bound to
+          {status?.host}. Choose “This Mac only” above to publish again.
+        </p>
+      {:else if serve?.active && serve.port}
+        <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+          Serving port {serve.port}. The mapping is removed when remote access stops, when
+          SimpleEdit quits, and at the next launch if it ever crashes — it proxies the server root,
+          so the token is still required on every request.
+        </p>
+      {/if}
+    </div>
+  </section>
+
+  {#if enabled && status?.running}
     <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
       <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Pair a phone</h2>
       {#if pairing.url}
@@ -248,168 +364,28 @@
     </section>
 
     <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-      <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Sleep</h2>
-      <p class="mt-2 text-[13px] text-zinc-300">
-        {#if status.powerSaveBlocked}
-          Holding a power assertion — this Mac will not fall asleep on its own while remote access
-          is on.
-        {:else}
-          <span class="text-amber-400">No power assertion is held.</span>
-          This Mac can sleep, and your agents stop with it.
-        {/if}
-      </p>
-      <p class="mt-1.5 text-xs leading-relaxed text-zinc-500">
-        Sleeping stops the agents, not just the notifications — and it does so silently, which is
-        why this is stated rather than assumed. The display is still allowed to sleep.
-      </p>
-      <!--
-        Said plainly because the notification depends on it, and because
-        "will not sleep" is the sentence a user would otherwise carry away.
-        The assertion covers IDLE sleep only; nothing an app can hold stops
-        macOS sleeping when the lid closes.
-      -->
-      <p class="mt-1.5 text-xs leading-relaxed text-zinc-500">
-        What it does not cover: closing the lid. A MacBook asleep in a bag runs no agents and sends
-        no notifications, whatever assertion is held. Leave it open, or attach a display.
-      </p>
-    </section>
-  {/if}
-
-  <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-    <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Network interface</h2>
-    <p class="mt-2 text-xs leading-relaxed text-zinc-500">
-      Only two kinds of address are offered, and the list is a filter rather than a warning:
-      loopback reaches this machine alone, and a Tailscale address reaches your own devices and
-      nothing else. Your LAN is deliberately absent — remote access must never answer on a network
-      you do not control, and there is no “all interfaces” option at all.
-    </p>
-    {#if hostError}
-      <p class="mt-2 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{hostError}</p>
-    {/if}
-    <div class="mt-3 space-y-1.5">
-      {#each interfaces as iface (iface.name + iface.address)}
-        {@const selected = config?.host === iface.address}
+      <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Connection</h2>
+      <div class="mt-2 flex items-center gap-2">
+        <code class="min-w-0 flex-1 truncate rounded-md bg-zinc-950 px-2.5 py-2 text-xs text-zinc-200">{status.url}</code>
         <button
           type="button"
-          disabled={busy}
-          onclick={() => void setHost(iface.address)}
-          class="flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left text-[13px] transition-colors
-            {selected
-              ? 'border-blue-800 bg-blue-950/50 text-blue-300'
-              : 'border-zinc-800 text-zinc-300 hover:bg-zinc-800'}"
-        >
-          <code class="flex-none">{iface.address}</code>
-          <span class="min-w-0 flex-1 truncate text-xs text-zinc-500">{iface.name}</span>
-          {#if iface.isTailscale}
-            <span class="flex-none rounded bg-emerald-950 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400">Tailscale</span>
-          {:else}
-            <span class="flex-none rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-400">This Mac only</span>
-          {/if}
-        </button>
-      {/each}
-    </div>
-
-    {#if !tailscale}
-      <p class="mt-3 text-xs leading-relaxed text-zinc-500">
-        No Tailscale interface found. Without one, a phone can only reach this over plain HTTP on
-        the LAN — which is not a secure context, so the microphone will never open there.
+          onclick={() => void copyUrl()}
+          class="flex-none rounded-md bg-zinc-800 px-2.5 py-2 text-xs text-zinc-200 hover:bg-zinc-700"
+        >{copied ? 'Copied' : 'Copy'}</button>
+      </div>
+      <p class="mt-2 text-xs leading-relaxed text-zinc-500">
+        The random path segment is the access token. It is regenerated every time the server
+        starts, so an old link stops working — share the current one, and never through a
+        service that stores it.
       </p>
-    {:else if boundToLoopback}
-      <p class="mt-3 text-xs leading-relaxed text-zinc-500">
-        Bound to loopback, so only a browser on this Mac can connect. Pick the Tailscale address
-        to reach a phone.
-      </p>
-    {/if}
-  </section>
-
-  <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-    <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Tailscale</h2>
-    {#if ts}
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-        <dt class="text-zinc-500">Command line</dt>
-        <dd class="min-w-0 break-all {ts.cliUsable ? 'text-zinc-300' : 'text-amber-400'}">{ts.cli ?? 'not found'}</dd>
-        <dt class="text-zinc-500">Connection</dt>
-        <dd class={ts.backendState === 'Running' ? 'text-emerald-400' : 'text-amber-400'}>
-          {ts.backendState ?? 'no answer'}
-        </dd>
-        <dt class="text-zinc-500">This node</dt>
-        <dd class="min-w-0 break-all text-zinc-300">{ts.dnsName ?? '—'}</dd>
-        <dt class="text-zinc-500">HTTPS certificate</dt>
-        <dd class={ts.httpsReady ? 'text-emerald-400' : 'text-amber-400'}>
-          {ts.httpsReady ? 'issued for this node' : 'not issued'}
-        </dd>
+        <dt class="text-zinc-500">Bound to</dt>
+        <dd class="text-zinc-300">{status.host}:{status.port}</dd>
+        <dt class="text-zinc-500">Connected clients</dt>
+        <dd class="text-zinc-300">{status.clients}</dd>
       </dl>
-      {#if ts.hint}
-        <p class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-relaxed text-amber-300">
-          {ts.hint}
-        </p>
-      {/if}
-    {/if}
-
-    <div class="mt-4 flex items-center justify-between gap-4 border-t border-zinc-800 pt-4">
-      <div class="min-w-0">
-        <p class="text-[13.5px] font-medium text-zinc-100">Publish over Tailscale Serve</p>
-        <p class="mt-0.5 text-xs leading-relaxed text-zinc-500">
-          Puts SimpleEdit on a real HTTPS address on your tailnet, which is the only kind of
-          origin a browser will open a microphone on. It also makes this reachable from every
-          device on the tailnet, so it is a separate decision from turning remote access on —
-          never implied by it.
-        </p>
-      </div>
-      <Toggle
-        checked={serveOn}
-        disabled={busy || serve?.busy || config === null || !ts?.cliUsable}
-        label="Publish over Tailscale Serve"
-        onchange={(v) => void setServeEnabled(v)}
-      />
-    </div>
-
-    {#if serveError}
-      <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{serveError}</p>
-    {/if}
-
-    <!--
-      The failure text is shown whatever it says, and the enable link is an
-      addition to it rather than a replacement. Branching the other way meant a
-      misclassified failure — one that merely mentioned a URL — replaced its own
-      message with a link to the wrong place, so over-firing hid the error.
-    -->
-    {#if serve?.error}
-      <div class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">
-        <p>{serve.error}</p>
-        {#if serve.enableUrl}
-          {@const enableUrl = serve.enableUrl}
-          <p class="mt-2">
-            Serve is an admin-console setting for the whole tailnet, so it cannot be turned on
-            from here — and this link names your node, so it cannot be guessed either.
-          </p>
-          <button
-            type="button"
-            onclick={() => openExternal(enableUrl)}
-            class="mt-2 break-all text-left text-blue-400 underline hover:text-blue-300"
-          >{enableUrl} ↗</button>
-        {/if}
-      </div>
-    {/if}
-
-    {#if serveOn && !status?.running}
-      <p class="mt-3 text-xs leading-relaxed text-zinc-500">
-        Remote access is off, so nothing is published yet. Serve starts and stops with it, and
-        the mapping never outlives the server it points at.
-      </p>
-    {:else if serveOn && !boundToLoopback}
-      <p class="mt-3 text-xs leading-relaxed text-amber-400">
-        Serve proxies to this Mac over loopback, so it stays idle while remote access is bound to
-        {status?.host}. Choose “This Mac only” above to publish again.
-      </p>
-    {:else if serve?.active && serve.port}
-      <p class="mt-3 text-xs leading-relaxed text-zinc-500">
-        Serving port {serve.port}. The mapping is removed when remote access stops, when
-        SimpleEdit quits, and at the next launch if it ever crashes — it proxies the server root,
-        so the token is still required on every request.
-      </p>
-    {/if}
-  </section>
+    </section>
+  {/if}
 
   <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
     <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Notifications</h2>
@@ -570,4 +546,33 @@
       </div>
     {/if}
   </section>
+
+  {#if enabled && status?.running}
+    <section class="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+      <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500">Sleep</h2>
+      <p class="mt-2 text-[13px] text-zinc-300">
+        {#if status.powerSaveBlocked}
+          Holding a power assertion — this Mac will not fall asleep on its own while remote access
+          is on.
+        {:else}
+          <span class="text-amber-400">No power assertion is held.</span>
+          This Mac can sleep, and your agents stop with it.
+        {/if}
+      </p>
+      <p class="mt-1.5 text-xs leading-relaxed text-zinc-500">
+        Sleeping stops the agents, not just the notifications — and it does so silently, which is
+        why this is stated rather than assumed. The display is still allowed to sleep.
+      </p>
+      <!--
+        Said plainly because the notification depends on it, and because
+        "will not sleep" is the sentence a user would otherwise carry away.
+        The assertion covers IDLE sleep only; nothing an app can hold stops
+        macOS sleeping when the lid closes.
+      -->
+      <p class="mt-1.5 text-xs leading-relaxed text-zinc-500">
+        What it does not cover: closing the lid. A MacBook asleep in a bag runs no agents and sends
+        no notifications, whatever assertion is held. Leave it open, or attach a display.
+      </p>
+    </section>
+  {/if}
 </div>

@@ -75,6 +75,6 @@ export function pairingTarget(input: PairingInput): PairingTarget {
     secure: false,
     note: input.boundToTailscale
       ? 'There is no address a phone can reach yet.'
-      : 'Remote access is bound to this Mac only, so there is nothing for a phone to scan yet. Turn on Tailscale Serve below to publish it at an HTTPS address — Serve proxies from this Mac, so this is the bind it wants. To reach a phone without Serve, pick the Tailscale address below instead; that link is plain HTTP, so dictation will not work over it.',
+      : 'Remote access is bound to this Mac only, so there is nothing for a phone to scan yet. Turn on Tailscale Serve above to publish it at an HTTPS address — Serve proxies from this Mac, so this is the bind it wants. To reach a phone without Serve, pick the Tailscale address above instead; that link is plain HTTP, so dictation will not work over it.',
   }
 }
