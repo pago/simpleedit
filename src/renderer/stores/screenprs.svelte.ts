@@ -4,7 +4,7 @@
  * lands), and derives the bucketed, sorted queue. Bucketing/sorting is the
  * shared pure logic (screenprs.ts), so this store never re-implements the rules.
  */
-import type { ScreenPrsFilters, ScreenPrsRunStatus, SubmitReviewResult } from '../../shared/ipc-types'
+import type { ScreenPrsRunStatus, SubmitReviewResult } from '../../shared/ipc-types'
 import type {
   PrRef,
   PrContext,
@@ -22,6 +22,7 @@ import type {
 import { BUCKET_ORDER, compareInBucket, emptyReviewDraft, reviewSubmitError } from '../../shared/screenprs'
 import { applyDraftOp, type DraftOpResult, type PrReviewCommentPatch, type PrReviewDraftOp } from '../../shared/review-drafts'
 import type { OverviewFacts, OverviewStatus } from '../../shared/pr-overview'
+import { DEFAULT_FILTER_PREFS, screeningFilters, type ScreenPrsFilterPrefs, type ScreenPrsFilterSnapshot } from '../../shared/screenprs-filter'
 
 export interface DeepState {
   status: DeepReviewStatus
@@ -76,10 +77,25 @@ let _status = $state<ScreenStatus>('idle')
 let _error = $state<string | undefined>(undefined)
 let _total = $state<number | undefined>(undefined)
 let _selected = $state<string | null>(null)
-let _filters = $state<ScreenPrsFilters>({}) // no org scope by default — all orgs where you're a reviewer
 let _triaging = $state<Set<string>>(new Set()) // urls the model is actively judging
 let _deep = $state<Map<string, DeepState>>(new Map())
 let _overview = $state<Map<string, OverviewState>>(new Map())
+
+// ── filter mirror ──
+// Main owns the saved filter (main/screenprs-filter.ts). A local change shows
+// at once; while it is unanswered, server states are held rather than applied,
+// since they predate it and would briefly undo it.
+let _filter = $state<ScreenPrsFilterPrefs>(DEFAULT_FILTER_PREFS)
+let _filterServer: ScreenPrsFilterSnapshot | null = null
+let _filterInFlight = 0
+/** The newest save; settles false if main refused it. */
+let _filterSaved: Promise<boolean> = Promise.resolve(true)
+
+function receiveFilter(snapshot: ScreenPrsFilterSnapshot): void {
+  if (_filterServer && snapshot.rev < _filterServer.rev) return
+  _filterServer = snapshot
+  if (_filterInFlight === 0) _filter = snapshot.filter
+}
 
 // ── review composer ──
 /** Confirmation that a review was posted to GitHub (keyed by PR url). GitHub
@@ -243,7 +259,8 @@ export const screenPrsStore = {
   status: (): ScreenStatus => _status,
   error: (): string | undefined => _error,
   total: (): number | undefined => _total,
-  filters: (): ScreenPrsFilters => _filters,
+  /** The saved org + cutoff, as this client last heard it (or is about to save it). */
+  filter: (): ScreenPrsFilterPrefs => _filter,
   selectedKey: (): string | null => _selected,
 
   entries: (): Entry[] => [..._entries.values()],
@@ -308,21 +325,58 @@ export const screenPrsStore = {
     _selected = key
   },
 
-  setFilters(f: ScreenPrsFilters): void {
-    _filters = f
+  /**
+   * Save the filter for every client. Rejects with main's reason when it
+   * refuses (an org name GitHub can't have), after putting back what main holds.
+   */
+  async setFilter(next: ScreenPrsFilterPrefs): Promise<void> {
+    const prior = _filter
+    _filter = next
+    _filterInFlight++
+    const saving = window.api
+      .invoke('screenprs:filter-set', { owner: next.owner, cutoffDays: next.cutoffDays })
+      .then(receiveFilter)
+      .finally(() => {
+        _filterInFlight--
+        if (_filterInFlight === 0) _filter = _filterServer?.filter ?? prior
+      })
+    _filterSaved = saving.then(
+      () => true,
+      () => false,
+    )
+    await saving
+  },
+  /**
+   * Whether the newest save landed. A field saves as it loses focus, which is
+   * also how a tap on Screen begins, so a screen has to wait for that save
+   * rather than run with an org main is about to refuse.
+   */
+  filterSaved: (): Promise<boolean> => _filterSaved,
+  async loadFilter(): Promise<void> {
+    try {
+      receiveFilter(await window.api.invoke('screenprs:filter-get'))
+    } catch (err: unknown) {
+      console.warn('[screenprs] loading the filter failed:', err)
+    }
   },
 
-  async start(filters?: ScreenPrsFilters): Promise<void> {
-    if (filters) _filters = filters
+  /** Screen with the saved filter; `force` bypasses the triage cache. */
+  async start(opts: { force?: boolean } = {}): Promise<void> {
+    if (_filterInFlight > 0 && !(await _filterSaved)) return
+    const filters = { ...screeningFilters(_filter), ...(opts.force ? { force: true } : {}) }
     _entries = new Map()
     _triaging = new Set()
     _selected = null
     _error = undefined
     _total = undefined
     _status = 'running'
-    // $state.snapshot: strip the reactive proxy — Electron IPC structured-clone
-    // can't serialize a Svelte proxy ("An object could not be cloned").
-    await window.api.invoke('screenprs:start', $state.snapshot(_filters))
+    try {
+      await window.api.invoke('screenprs:start', filters)
+    } catch (err: unknown) {
+      // Refused before it began, so no status event will ever settle the run.
+      _status = 'error'
+      _error = err instanceof Error ? err.message : String(err)
+    }
   },
 
   async cancel(): Promise<void> {
@@ -541,8 +595,11 @@ export function initScreenPrsListeners(): () => void {
   const unsubDraftChanged = window.api.on('screenprs:draft-changed', (d) =>
     screenPrsStore._onDraftChanged(d.url, { draft: d.draft, rev: d.rev })
   )
+  const unsubFilterChanged = window.api.on('screenprs:filter-changed', (d) => receiveFilter(d))
   void screenPrsStore.loadDrafts()
+  void screenPrsStore.loadFilter()
   return () => {
+    unsubFilterChanged()
     unsubQueued()
     unsubScreening()
     unsubTriaging()

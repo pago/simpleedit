@@ -37,6 +37,8 @@ import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor } from './screenprs'
 import { loadDrafts, applyOp as applyDraftOp } from './screenprs-drafts'
+import { loadFilter, setFilter } from './screenprs-filter'
+import { parseScreeningFilters } from '../shared/screenprs-filter'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
 import { parseDraftOpRequest } from '../shared/review-drafts'
 import { startDeepReview, cancelDeepReview, cancelAllDeepReviews } from './deep-review'
@@ -85,7 +87,7 @@ import { listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { initAutoUpdater } from './auto-update'
 import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, ScreenPrsFilters, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { createSessionOnce, resolveSessionCreate } from './session-create'
@@ -969,8 +971,8 @@ function registerAllHandlers(): void {
   })
 
   // ── Screen PRs ─────────────────────────────────────────
-  handleInvoke('screenprs:start', (event, filters: ScreenPrsFilters) => {
-    return startScreening(filters, hubFor(event.sender))
+  handleInvoke('screenprs:start', (event, filters: unknown) => {
+    return startScreening(parseScreeningFilters(filters), hubFor(event.sender))
   })
 
   handleInvoke('screenprs:cancel', (event) => {
@@ -1006,6 +1008,14 @@ function registerAllHandlers(): void {
   handleInvoke('screenprs:draft-op', (_event, request: unknown) => {
     const { url, op } = parseDraftOpRequest(request)
     return applyAndBroadcastDraftOp(url, op)
+  })
+
+  handleInvoke('screenprs:filter-get', () => loadFilter())
+
+  handleInvoke('screenprs:filter-set', (_event, filter: unknown) => {
+    const { changed, ...snapshot } = setFilter(filter)
+    if (changed) broadcastToAllClients('screenprs:filter-changed', snapshot)
+    return snapshot
   })
 
   // ── Tour ───────────────────────────────────────────────

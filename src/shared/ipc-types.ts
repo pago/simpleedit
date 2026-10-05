@@ -8,6 +8,7 @@ import type { Spec } from './gen-ui-catalog'
 import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus, PrReviewDraft, ReviewFolds } from './screenprs'
 import type { DraftOpResult, DraftsSnapshot, PrReviewDraftOp } from './review-drafts'
 import type { OverviewFacts, OverviewStatus } from './pr-overview'
+import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-filter'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -474,6 +475,10 @@ export interface ScreenPrsInvokeMap {
   'screenprs:drafts-load': { args: []; result: DraftsSnapshot }
   /** Change one PR's draft. Main applies it, persists, and broadcasts `screenprs:draft-changed`. */
   'screenprs:draft-op': { args: [request: { url: string; op: PrReviewDraftOp }]; result: DraftOpResult }
+  /** The saved org + cutoff every client screens with. */
+  'screenprs:filter-get': { args: []; result: ScreenPrsFilterSnapshot }
+  /** Replace the saved filter. Main validates, persists, and broadcasts `screenprs:filter-changed`. */
+  'screenprs:filter-set': { args: [filter: ScreenPrsFilterPrefs]; result: ScreenPrsFilterSnapshot }
 }
 
 /** Identify the PR + the composed review to post. */
@@ -541,6 +546,8 @@ export interface ScreenPrsEventMap {
   'screenprs:overview-status': { url: string; status: OverviewStatus; error?: string }
   /** A PR's draft changed, from any client — sent to every window and phone. `null`: it is gone. */
   'screenprs:draft-changed': { url: string } & DraftOpResult
+  /** The saved filter changed, from any client — sent to every window and phone. */
+  'screenprs:filter-changed': ScreenPrsFilterSnapshot
 }
 
 export interface TourEventMap {

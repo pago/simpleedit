@@ -1,3 +1,9 @@
+<script lang="ts" module>
+  // Plain, not reactive: it only grows from inside the derived below, which
+  // re-runs on the entries it reads.
+  const seenOwners = new Set<string>()
+</script>
+
 <script lang="ts">
   /**
    * The board: every PR waiting on you, in the order the buckets put them.
@@ -15,6 +21,7 @@
   import { BUCKET_ORDER, groupStacks } from '../shared/screenprs'
   import type { ScreenPrBucket, ScreenPrCard, PrRef } from '../shared/screenprs'
   import PrCard from './PrCard.svelte'
+  import { CUTOFF_DAYS, isCutoffDays, type ScreenPrsFilterPrefs } from '../shared/screenprs-filter'
 
   interface Props {
     onopen: (pr: PrRef) => void
@@ -29,8 +36,46 @@
     fyi: { label: 'Already approved — FYI', sub: 'covered by others', head: 'text-zinc-400' },
   }
 
-  /** How far back to look. Days, because a phone should not type a date. */
-  let days = $state(30)
+  // The filter is the one saved in main and shared with the desk: setting the
+  // org here sets it there, and the other way round.
+  let saved = $derived(screenPrsStore.filter())
+  let owner = $state(screenPrsStore.filter().owner)
+  /** Typed in since it last matched the saved org; only then does leaving it save. */
+  let ownerEdited = $state(false)
+  let filterError = $state<string | null>(null)
+  $effect(() => {
+    const next = saved.owner
+    if (!ownerEdited) owner = next
+  })
+  /**
+   * Every org any screen on this page has shown, offered so the org is a pick
+   * rather than typed. Accumulated, because a screen scoped to one org shows
+   * only that one, and the picker exists to switch away from it.
+   */
+  let knownOwners = $derived.by(() => {
+    for (const e of screenPrsStore.entries()) if (e.ref.owner) seenOwners.add(e.ref.owner)
+    if (saved.owner) seenOwners.add(saved.owner)
+    return [...seenOwners].sort((a, b) => a.localeCompare(b))
+  })
+
+  async function saveFilter(next: ScreenPrsFilterPrefs): Promise<void> {
+    filterError = null
+    try {
+      await screenPrsStore.setFilter(next)
+    } catch (e) {
+      filterError = e instanceof Error ? e.message : String(e)
+      owner = screenPrsStore.filter().owner
+    }
+  }
+  function commitOwner(): void {
+    if (!ownerEdited) return
+    ownerEdited = false
+    if (owner.trim() !== saved.owner) void saveFilter({ ...saved, owner: owner.trim() })
+  }
+  function setCutoff(value: string): void {
+    const days = Number(value)
+    if (isCutoffDays(days)) void saveFilter({ ...saved, cutoffDays: days })
+  }
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
@@ -38,12 +83,9 @@
   let error = $derived(screenPrsStore.error())
   let done = $derived(BUCKET_ORDER.reduce((n, b) => n + byBucket[b].length, 0))
 
-  function screen(): void {
-    const since = new Date()
-    since.setDate(since.getDate() - days)
-    // No org scope: the default is every org where you're a reviewer, which is
-    // the whole point of screening from away.
-    void screenPrsStore.start({ updatedSince: since.toISOString().slice(0, 10) })
+  async function screen(): Promise<void> {
+    commitOwner()
+    await screenPrsStore.start()
   }
 
   function open(card: ScreenPrCard): void {
@@ -55,7 +97,7 @@
   <div class="mb-4 flex items-center gap-2">
     <button
       type="button"
-      onclick={screen}
+      onclick={() => void screen()}
       disabled={status === 'running'}
       data-testid="screen-prs"
       class="min-h-10 flex-1 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white active:bg-blue-500
@@ -70,16 +112,57 @@
       >Stop</button>
     {:else}
       <select
-        bind:value={days}
+        value={String(saved.cutoffDays)}
+        onchange={(e) => setCutoff(e.currentTarget.value)}
         aria-label="Look back"
-        class="min-h-10 flex-none rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-300"
+        data-testid="filter-cutoff"
+        class="min-h-10 flex-none rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-base text-zinc-300"
       >
-        <option value={7}>7d</option>
-        <option value={30}>30d</option>
-        <option value={90}>90d</option>
+        {#each CUTOFF_DAYS as d (d)}<option value={String(d)}>{d}d</option>{/each}
       </select>
     {/if}
   </div>
+
+  <label class="mb-4 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3">
+    <span class="flex-none text-[11px] uppercase tracking-wider text-zinc-500">Org</span>
+    <!-- 16px: iOS zooms the page on focusing anything smaller. -->
+    <input
+      bind:value={owner}
+      oninput={() => (ownerEdited = true)}
+      onblur={commitOwner}
+      onkeydown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+      }}
+      list="pr-board-owners"
+      placeholder="all orgs"
+      autocapitalize="none"
+      autocomplete="off"
+      spellcheck="false"
+      enterkeyhint="done"
+      aria-label="Org"
+      data-testid="filter-owner"
+      class="min-h-10 min-w-0 flex-1 bg-transparent text-base text-zinc-200 outline-none placeholder:text-zinc-600"
+    />
+    {#if owner}
+      <button
+        type="button"
+        onclick={() => {
+          owner = ''
+          ownerEdited = false
+          void saveFilter({ ...saved, owner: '' })
+        }}
+        aria-label="All orgs"
+        data-testid="filter-owner-clear"
+        class="min-h-9 flex-none px-1 text-zinc-500"
+      >✕</button>
+    {/if}
+    <datalist id="pr-board-owners">
+      {#each knownOwners as o (o)}<option value={o}></option>{/each}
+    </datalist>
+  </label>
+  {#if filterError}
+    <p class="-mt-2 mb-3 px-1 text-xs text-red-300" data-testid="filter-error">{filterError}</p>
+  {/if}
 
   {#if error}
     <p class="mb-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{error}</p>
