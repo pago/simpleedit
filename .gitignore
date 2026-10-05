@@ -5,3 +5,5 @@ dist/
 test-results/
 playwright-report/
 .DS_Store
+__screenshots__/
+.vitest-attachments/

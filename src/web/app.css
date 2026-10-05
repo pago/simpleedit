@@ -3,3 +3,14 @@
 /* The build root is src/web, so the one renderer component the phone renders
    has to be named for its classes to be generated. */
 @source "../renderer/components/screenprs/OverviewCard.svelte";
+
+/* iOS Safari zooms the page into any focused field whose text is under 16px,
+   pushing the composer's Send off-screen. Unlayered so it outranks Tailwind's
+   text-* utilities on every field, including ones added later. Not done with
+   `maximum-scale` in the viewport meta: that also blocks the user's own
+   pinch-zoom. */
+input,
+textarea,
+select {
+  font-size: 16px;
+}
