@@ -247,6 +247,34 @@ caches the answer on the PR's screening entry.
   `PrDiff`. Models shorten paths, so a citation resolves to the one diff path that
   ends with it (`resolveRefPath`).
 
+### Screen PRs: review drafts and posting
+The review composer's draft (line comments + summary + verdict) is the user's
+typed work, so it is **owned by main** (`screenprs-drafts.ts`, one JSON file
+under `userData/config`), not by a client. Desktop windows and phones mirror it
+(`stores/screenprs.svelte.ts`) and change it only through ops
+(`shared/review-drafts.ts`); main applies, persists and broadcasts
+`screenprs:draft-changed` to every window and remote client.
+- **Ops, never whole-draft writes**, and comments are addressed by a stable
+  `id`. That is what lets two clients edit one draft without clobbering.
+- **Main validates every op** (`parseDraftOpRequest`) — the phone is a remote
+  client and the result is written to disk. `undefined` counts as absent:
+  Electron's structured clone keeps `undefined` keys, JSON drops them.
+- **Removed ids are tombstoned** per draft (`removed`, newest 500, kept even once
+  the draft empties). A phone resends unacknowledged ops on reconnect; without
+  tombstones a replayed add resurrects a posted or deleted comment.
+- **A post clears only what it posted** (`clear-posted`: those ids, and the
+  summary/verdict only if unchanged), and only when the caller passes
+  `clearDraft`. Absent means keep — quick approve posts a separate review.
+
+Posting (`github/review.ts`) pins the review to the head the user read
+(`commit_id`) and checks **each** anchor against GitHub's PR diff at that head
+(`commentableLines`, `resolveAnchor`): one unplaceable comment folds into the
+body alone, keeping file:line and its snippet. Comments stamped with another
+head fold too (`anchorsForHead`). LEFT anchors fold on an isolated stacked diff,
+whose old side is a different base than GitHub's. The 422 all-fold retry keeps
+`commit_id`; if GitHub refuses that, nothing is posted — an unpinned APPROVE
+would approve code the reviewer never saw.
+
 ### Layout
 The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
 that session's `SessionWorkspace` (all others stay mounted but hidden). A
