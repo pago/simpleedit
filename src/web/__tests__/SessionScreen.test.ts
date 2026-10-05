@@ -36,11 +36,20 @@ const connection: RemoteConnection = {
   },
 }
 
+let writes: string[] = []
+let failEnter = false
+
 beforeEach(() => {
+  writes = []
+  failEnter = false
   vi.stubGlobal('api', {
     on: () => () => {},
-    invoke: (channel: string) => {
+    invoke: (channel: string, ...args: unknown[]) => {
       switch (channel) {
+        case 'pty:write':
+          if (failEnter && args[1] === '\r') return Promise.reject(new Error('socket closed'))
+          writes.push(String(args[1]))
+          return Promise.resolve(undefined)
         case 'pty:backlog':
           return Promise.resolve({ data: 'hello from the pty', start: 0, end: 18 })
         case 'agent:capabilities':
@@ -66,6 +75,34 @@ describe('SessionScreen', () => {
     expect(screen.getByTestId('pane-terminal').getAttribute('aria-selected')).toBe('true')
     expect(screen.getByTestId('mobile-terminal')).toBeTruthy()
     expect(screen.getByTestId('composer-text')).toBeTruthy()
+  })
+
+  it('submits an agent reply in one bracketed-paste write', async () => {
+    render(SessionScreen, { props: { session, connection } })
+    await fireEvent.input(screen.getByTestId('composer-text'), { target: { value: 'ship it\nthen tag it' } })
+    await fireEvent.click(screen.getByTestId('composer-send'))
+    await waitFor(() => expect(writes).toEqual(['\x1b[200~ship it\nthen tag it\x1b[201~\r']))
+  })
+
+  it('sends a plain terminal its text, then Enter as a write of its own', async () => {
+    const shell: WindowSession = { ...session, kind: 'terminal', provider: undefined }
+    render(SessionScreen, { props: { session: shell, connection } })
+    await fireEvent.input(screen.getByTestId('composer-text'), { target: { value: 'make test' } })
+    await fireEvent.click(screen.getByTestId('composer-send'))
+    await waitFor(() => expect(writes).toEqual(['make test', '\r']))
+  })
+
+  // Resending would type the text a second time.
+  it('clears the field when the text arrived but Enter did not', async () => {
+    failEnter = true
+    const shell: WindowSession = { ...session, kind: 'terminal', provider: undefined }
+    render(SessionScreen, { props: { session: shell, connection } })
+    const field = screen.getByTestId('composer-text') as HTMLTextAreaElement
+    await fireEvent.input(field, { target: { value: 'make test' } })
+    await fireEvent.click(screen.getByTestId('composer-send'))
+    await waitFor(() => expect(screen.getByTestId('composer-error').textContent).toMatch(/Enter did not get through/))
+    expect(writes).toEqual(['make test'])
+    expect(field.value).toBe('')
   })
 
   it('shows the changes pane without tearing the terminal down', async () => {

@@ -184,7 +184,9 @@
       return id
     }
     sessionsStore.select(terminalId)
-    void window.api.invoke('pty:write', terminalId, message + '\r')
+    // Staged, not submitted: the reviewer collects several notes in the
+    // agent's prompt and submits them together.
+    void window.api.invoke('pty:write', terminalId, message)
     return terminalId
   }
 
