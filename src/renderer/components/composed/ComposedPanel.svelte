@@ -7,6 +7,7 @@
   import type { AgentContext } from '../../lib/agent-message'
   import { stampBlockIds, describeBlock } from './block-context'
   import { focusBlock } from './focus-block'
+  import { agentSubmitWrite } from '../../../shared/agent-submit'
 
   interface Props {
     spec: Spec
@@ -61,7 +62,7 @@
       )
       return
     }
-    await window.api.invoke('pty:write', terminalId, text + '\r')
+    await window.api.invoke('pty:write', terminalId, agentSubmitWrite(text))
   }
 
   /**

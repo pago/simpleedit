@@ -394,7 +394,7 @@ export const catalog = defineCatalog(schema, {
     send_to_agent: {
       params: z.object({ text: z.string() }),
       description:
-        "Write text + '\\r' to the source terminal's PTY. Rate-limited.",
+        "Submit text to the source terminal's agent, as if the user typed it and pressed Enter. Rate-limited.",
     },
     open_file: {
       params: z.object({
