@@ -29,19 +29,30 @@
    * does NOT hide while a field has focus — the tap on Send is what blurs the
    * field, so the bar reappearing would move Send out from under the finger
    * mid-tap.
+   *
+   * The phone is attached to ONE Mac window — a project — at a time, and the
+   * Sessions tab is that window's. Whenever a `hello` names a different window
+   * (the user picked another project, or the attached window closed and main
+   * fell back), the Sessions tab is emptied: its screens address terminals and
+   * worktrees of a window the phone has left. The PRs tab is kept. Screen PRs
+   * is the user's review queue on GitHub, not a project's, and review drafts
+   * are main's, shared by every window.
    */
-  import { untrack } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import SessionsScreen from './SessionsScreen.svelte'
   import SessionScreen from './SessionScreen.svelte'
   import NewSessionSheet from './NewSessionSheet.svelte'
   import PrBoard from './PrBoard.svelte'
   import PrDetail from './PrDetail.svelte'
+  import ProjectSheet from './ProjectSheet.svelte'
+  import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
+  import { AttachSequence, attachNotice, loadRememberedProject, rememberProject, type RememberedProject } from './lib/project'
   import { onOpenSession } from './lib/push-client'
   import { sessionFromUrl } from './lib/push-payload'
   import { nav } from './lib/nav.svelte'
   import { isOverlay, type NavEntry, type TabId } from './lib/nav'
   import type { ConnectionState, RemoteConnection } from './api-shim'
-  import type { SessionCreateResult, WindowSession } from '../shared/ipc-types'
+  import type { RemoteProject, SessionCreateResult, WindowSession } from '../shared/ipc-types'
 
   interface Props {
     connection: RemoteConnection
@@ -104,6 +115,17 @@
    */
   let startedNote = $state<SessionCreateResult | null>(null)
 
+  /** The window the current socket joined, from its `hello`. */
+  let attachedWindow = $state<number | null>(null)
+  let projects = $state<RemoteProject[]>([])
+  const currentProject = $derived(projects.find((p) => p.windowId === attachedWindow) ?? null)
+  /** Said whenever the project changed without the user picking it. */
+  let projectNotice = $state<string | null>(null)
+  /** What this page last showed — the notice's "was", and its memory when storage is unavailable. */
+  let lastShown: RememberedProject | null = null
+  const attaches = new AttachSequence()
+  let projectSheet = $state<ProjectSheet | undefined>()
+
   function initialPending(): { terminalId: string; windowId: number | null } | null {
     const terminalId = sessionFromUrl(window.location.href)
     return terminalId ? { terminalId, windowId: null } : null
@@ -127,6 +149,97 @@
   $effect(() => untrack(() => nav.attach(window)))
 
   $effect(() => connection.onStateChange((next) => { connState = next }))
+
+  // Untracked: `onIdentity` answers at once when a socket is already up, and
+  // what `attached` reads must not re-subscribe this and run it again.
+  $effect(() => untrack(() => connection.onIdentity(({ windowId }) => void attached(windowId))))
+
+  $effect(() => window.api.on('remote:projects-changed', (next) => { projects = next }))
+
+  /**
+   * Everything the Sessions tab shows belongs to the window being left. Forced:
+   * when the user switched, the discards were confirmed first; when main moved
+   * the phone, the window those screens addressed is gone.
+   */
+  function leaveWindow(): void {
+    nav.clearStack('sessions')
+    screenPrsStore.abandonRuns('Interrupted: this phone moved to another project, and the result goes to the window that started it. Run it again here.')
+    known = {}
+    pendingSession = null
+    startedNote = null
+    deepLinkProblem = null
+  }
+
+  async function attached(windowId: number): Promise<void> {
+    const token = attaches.begin()
+    const previous = attachedWindow
+    attachedWindow = windowId
+    if (previous !== null && previous !== windowId) leaveWindow()
+    let list: RemoteProject[]
+    try {
+      list = await window.api.invoke('remote:projects')
+    } catch {
+      return
+    }
+    const judged = attaches.settle(token)
+    if (!judged) return
+    const { chosen } = judged
+    projects = list
+    const landed = list.find((p) => p.windowId === windowId) ?? null
+    const remembered = loadRememberedProject()
+    projectNotice = attachNotice({ expected: remembered ?? (chosen ? null : lastShown), previous: lastShown, landed, chosen })
+    if (landed) {
+      // The first project a device lands on is remembered, so from then on the
+      // Mac's focus no longer decides; a reopened window is a new id for the
+      // same repo, so the id is refreshed when the repo matches.
+      if (!remembered || (remembered.repoPath === landed.repoPath && remembered.windowId !== landed.windowId)) {
+        rememberProject(landed)
+      }
+      lastShown = { repoPath: landed.repoPath, windowId: landed.windowId, name: landed.name }
+    }
+  }
+
+  /** What would block a switch outright: work that cannot be dropped or followed. */
+  function switchBlocker(): string | null {
+    if (newSessionEntry && newSheet?.atRisk() === 'starting') {
+      return 'A new session is still starting. Switch once it has.'
+    }
+    if (screenPrsStore.busy()) {
+      return 'Screen PRs is still working, and its results go to the window that started it. Switch once it finishes, or cancel it.'
+    }
+    return null
+  }
+
+  /** What a switch would throw away, for the confirm. */
+  function switchDiscards(): string[] {
+    const out: string[] = []
+    for (const entry of nav.stack('sessions')) {
+      if (entry.kind === 'session' && sessionScreens[entry.id]?.isRecording()) {
+        out.push(`the recording for ${known[entry.terminalId]?.label ?? 'a session'}`)
+      }
+      if (entry.kind === 'new-session' && newSheet?.atRisk() === 'draft') out.push('the new session’s brief')
+    }
+    return out
+  }
+
+  function openProjects(): void {
+    void window.api.invoke('remote:projects').then((list) => { projects = list }).catch(() => {})
+    nav.push({ kind: 'projects' }, () => projectSheet?.holdForConfirm() ?? false)
+  }
+
+  async function switchTo(project: RemoteProject): Promise<void> {
+    const sheet = nav.stack().find((e) => e.kind === 'projects')
+    if (sheet) nav.close(sheet.id)
+    rememberProject(project)
+    projectNotice = null
+    attaches.expectPick()
+    leaveWindow()
+    // Let the screens that just came off unmount first, so whatever they
+    // release on the way out (watchers, a terminal's size claim) goes over
+    // this socket, to the window that holds it.
+    await tick()
+    connection.reconnect()
+  }
 
   function remember(session: WindowSession): void {
     known = { ...known, [session.terminalId]: session }
@@ -204,8 +317,9 @@
     }
     const elsewhere =
       pending.windowId !== null && pending.windowId !== connection.identity()?.windowId
+    const where = elsewhere ? projects.find((p) => p.windowId === pending.windowId) : undefined
     deepLinkProblem = elsewhere
-      ? 'That session is on a different SimpleEdit window, which this phone is not connected to. Reconnect from that window to reach it.'
+      ? `That session is in ${where ? where.name : 'another SimpleEdit window'}, and this phone is showing ${currentProject?.name ?? 'a different one'}. Switch project to reach it.`
       : 'That session is no longer running.'
   }
 
@@ -223,6 +337,10 @@
 
   const tab = $derived(nav.tab)
   const top = $derived(nav.top())
+  // Live while the sheet is up: a screening that finishes or a recording that
+  // stops changes the answer under the user's finger.
+  const sheetBlocked = $derived(top?.kind === 'projects' ? switchBlocker() : null)
+  const sheetDiscards = $derived(top?.kind === 'projects' ? switchDiscards() : [])
   const screen = $derived(nav.screen())
   const sessionEntries = $derived(
     nav.stack('sessions').filter((e): e is SessionEntry => e.kind === 'session'),
@@ -268,7 +386,18 @@
         class="-ml-1 flex min-h-9 max-w-[40%] items-center gap-1 rounded-md px-2 text-sm text-zinc-400 active:bg-zinc-800"
       >‹ <span class="truncate">{backLabel}</span></button>
     {/if}
-    <h1 class="min-w-0 flex-1 truncate text-[15px] font-semibold" data-testid="screen-title">{title}</h1>
+    <div class="flex min-w-0 flex-1 flex-col">
+      <h1 class="truncate text-[15px] font-semibold" data-testid="screen-title">{title}</h1>
+      <!-- Top-level screens only: a detail screen is already inside the project. -->
+      {#if !screen && top?.kind !== 'changes-diff'}
+        <button
+          type="button"
+          onclick={openProjects}
+          data-testid="project-switcher"
+          class="-ml-0.5 flex min-w-0 max-w-full items-center gap-1 self-start rounded px-0.5 text-left text-[11px] text-zinc-400 active:bg-zinc-800"
+        ><span class="truncate">{currentProject?.name ?? (attachedWindow === null ? 'Connecting…' : 'No project')}</span><span aria-hidden="true">▾</span></button>
+      {/if}
+    </div>
     <!-- The one trailing action a top-level screen is allowed. -->
     {#if !screen && tab === 'sessions'}
       <button
@@ -287,6 +416,22 @@
       data-state={connState}
     ></span>
   </header>
+
+  {#if projectNotice}
+    <div class="flex-none px-3 pt-3" data-testid="project-notice">
+      <div
+        class="flex items-start gap-2 rounded-md border border-sky-900/60 bg-sky-950/30 px-3 py-2 text-xs leading-relaxed text-sky-300"
+      >
+        <span class="min-w-0 flex-1">{projectNotice}</span>
+        <button
+          type="button"
+          onclick={() => { projectNotice = null }}
+          aria-label="Dismiss"
+          class="flex-none px-1 text-sky-400/70"
+        >✕</button>
+      </div>
+    </div>
+  {/if}
 
   <main class="flex min-h-0 flex-1 flex-col">
     <!-- Both tabs stay mounted; see the note at the top of this file. -->
@@ -332,7 +477,10 @@
             </div>
           </div>
         {/if}
-        <SessionsScreen connected={connState === 'open'} onopen={openSession} />
+        <!-- Remounted per window, so the list just left is never on screen to tap. -->
+        {#key attachedWindow}
+          <SessionsScreen connected={connState === 'open'} onopen={openSession} />
+        {/key}
       </div>
 
       {#each sessionEntries as entry (entry.id)}
@@ -377,6 +525,20 @@
       {/each}
     </div>
   </main>
+
+  {#if top?.kind === 'projects'}
+    {@const sheetId = top.id}
+    <ProjectSheet
+      bind:this={projectSheet}
+      {projects}
+      currentWindowId={attachedWindow}
+      connected={connState === 'open'}
+      blocked={sheetBlocked}
+      discards={sheetDiscards}
+      onpick={(project) => void switchTo(project)}
+      onclose={() => nav.close(sheetId)}
+    />
+  {/if}
 
   {#if showTabBar}
     <nav

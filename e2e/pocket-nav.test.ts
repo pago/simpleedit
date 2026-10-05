@@ -87,7 +87,7 @@ const CARD: ScreenPrCard = {
 async function openPhone(browser: Browser, url: string): Promise<{ page: Page; socket: () => WebSocketRoute }> {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
   let route: WebSocketRoute | null = null
-  await page.routeWebSocket(/\/ws$/, (ws) => {
+  await page.routeWebSocket(/\/ws(\?|$)/, (ws) => {
     ws.connectToServer()
     route = ws
   })

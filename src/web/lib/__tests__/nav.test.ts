@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
+  clearStack,
   decidePop,
   draftAtRisk,
   depthOf,
@@ -72,6 +73,24 @@ describe('the stack', () => {
     const state = build(session('a'), { kind: 'changes-diff', terminalId: 'a' }, session('b'))
     const next = removeWhere(state, (e) => 'terminalId' in e && e.terminalId === 'a')
     expect(stackOf(next).map((e) => e.kind === 'session' && e.terminalId)).toEqual(['b'])
+  })
+})
+
+describe('a project switch', () => {
+  it('empties one tab and leaves the other alone', () => {
+    let state = initialNav()
+    state = push(state, { kind: 'session', terminalId: 't1', fromNotification: false }).state
+    state = selectTab(state, 'prs')
+    state = push(state, { kind: 'pr', pr: { owner: 'o', repo: 'o/r', number: 1, url: 'u' } as never }).state
+    const next = clearStack(state, 'sessions')
+    expect(stackOf(next, 'sessions')).toEqual([])
+    expect(stackOf(next, 'prs')).toHaveLength(1)
+    expect(clearStack(next, 'sessions')).toBe(next)
+  })
+
+  it('treats the project sheet as an overlay, so the tab bar hides', () => {
+    const { entry } = push(initialNav(), { kind: 'projects' })
+    expect(isOverlay(entry)).toBe(true)
   })
 })
 

@@ -29,6 +29,7 @@
  * behaves identically.
  */
 import {
+  clearStack,
   contains,
   decidePop,
   depthOf,
@@ -93,6 +94,12 @@ class Nav {
 
   removeWhere(doomed: (entry: NavEntry) => boolean): void {
     this.#state = removeWhere(this.#state, doomed)
+    this.#sync()
+  }
+
+  /** Empty a tab's stack without asking its holds; the caller already has. */
+  clearStack(tab: TabId): void {
+    this.#state = clearStack(this.#state, tab)
     this.#sync()
   }
 

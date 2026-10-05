@@ -142,6 +142,23 @@ describe('screenPrsStore ingestion', () => {
     expect(window.api.invoke).toHaveBeenCalledWith('screenprs:overview-cancel', 'u4')
   })
 
+  // A phone moved to another window never hears these runs end: their events
+  // go to the window that started them. Left running, they block its picker.
+  it('settles every run as interrupted when its window is left', async () => {
+    await screenPrsStore.startOverview(ctx({ number: 5, url: 'u5' }))
+    await screenPrsStore.startDeep(ctx({ number: 6, url: 'u6' }))
+    expect(screenPrsStore.status()).toBe('running')
+    expect(screenPrsStore.busy()).toBe(true)
+
+    screenPrsStore.abandonRuns('moved')
+
+    expect(screenPrsStore.busy()).toBe(false)
+    expect(screenPrsStore.status()).toBe('error')
+    expect(screenPrsStore.error()).toBe('moved')
+    expect(screenPrsStore.overviewFor('u5')).toMatchObject({ status: 'error', error: 'moved' })
+    expect(screenPrsStore.deepFor('u6')).toMatchObject({ status: 'error', error: 'moved' })
+  })
+
   it('unsubscribes cleanly', () => {
     dispose()
     expect(handlers['screenprs:card']).toBeUndefined()
