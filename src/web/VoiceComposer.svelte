@@ -43,10 +43,11 @@
   import { blobToWavBase64 } from './lib/audio'
   import { driveRecorder, DEFAULT_MAX_RECORDING_MS, type RecorderHandle } from './lib/recorder'
   import type { SttStatus } from '../shared/ipc-types'
+  import type { SendOutcome } from './lib/send-outcome'
 
   interface Props {
     /** Resolves when the text has been delivered. Throwing surfaces here. */
-    onsend: (text: string) => Promise<void>
+    onsend: (text: string) => Promise<SendOutcome>
     placeholder?: string
     /** What the send button says. A new session is Started, not Sent. */
     sendLabel?: string
@@ -259,8 +260,9 @@
     sending = true
     error = null
     try {
-      await onsend(body)
+      const outcome = await onsend(body)
       text = ''
+      if (outcome) error = outcome.warning
     } catch (err) {
       // The text stays in the field: a send that failed must not eat the reply.
       error = err instanceof Error ? err.message : String(err)

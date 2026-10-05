@@ -38,6 +38,8 @@
   import { nav } from './lib/nav.svelte'
   import type { RemoteConnection } from './api-shim'
   import type { AccessoryKey } from './lib/keys'
+  import type { SendOutcome } from './lib/send-outcome'
+  import { agentSubmitWrite } from '../shared/agent-submit'
   import type { AgentCapabilities, WindowSession } from '../shared/ipc-types'
 
   interface Props {
@@ -112,6 +114,8 @@
       .catch(() => { /* fall back to the safe encoding below */ })
   })
 
+  const SUBMIT_GAP_MS = 50
+
   function writeKey(key: AccessoryKey): void {
     terminal?.pressKey(key)
   }
@@ -132,8 +136,28 @@
       : lines.map((line) => line.trim()).filter(Boolean).join(' ')
   }
 
-  async function send(text: string): Promise<void> {
-    await window.api.invoke('pty:write', session.terminalId, `${encode(text)}\r`)
+  /**
+   * An agent gets the reply and Enter in one write (see `agentSubmitWrite`), so
+   * there is no point at which half of it has arrived.
+   *
+   * A plain terminal may not honour bracketed paste, so it gets the text and
+   * then Enter as two writes a beat apart (two writes with no pause can still
+   * be read as one). If the text arrived but Enter did not, the field is
+   * cleared anyway: the text is already at the prompt, and a resend would type
+   * it twice.
+   */
+  async function send(text: string): Promise<SendOutcome> {
+    if (session.kind === 'agent') {
+      await window.api.invoke('pty:write', session.terminalId, agentSubmitWrite(text))
+      return
+    }
+    await window.api.invoke('pty:write', session.terminalId, encode(text))
+    try {
+      await new Promise((resolve) => setTimeout(resolve, SUBMIT_GAP_MS))
+      await window.api.invoke('pty:write', session.terminalId, '\r')
+    } catch {
+      return { warning: 'The text is at the prompt, but Enter did not get through. Press ⏎ to run it.' }
+    }
   }
 </script>
 
