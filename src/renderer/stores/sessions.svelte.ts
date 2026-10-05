@@ -1348,9 +1348,10 @@ function windowSessionSnapshot(): WindowSessionInput[] {
  */
 export function initSessionListeners(): () => void {
   // Graceful exit (code 0: `exit`, `/exit`) auto-closes the session — no
-  // "exited" state lingers in the inbox (PLAN.md design decision). A NON-zero
-  // exit means spawn failure or crash: keep the entry with the terminal
-  // buffer intact so the failure is readable instead of silently vanishing.
+  // "exited" state lingers in the inbox, which is for sessions that need you.
+  // A NON-zero exit means spawn failure or crash: keep the entry with the
+  // terminal buffer intact so the failure is readable instead of silently
+  // vanishing.
   const offExit = window.api.on('pty:exit', ({ id, exitCode }) => {
     const session = sessionsStore.get(id)
     if (!session) return
