@@ -21,6 +21,7 @@ import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToke
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
 import type { ServerFrame } from '../../../shared/remote-protocol'
+import type { RemoteAccessStatus } from '../../../shared/ipc-types'
 
 const HOST = '127.0.0.1'
 let hub: ClientHub
@@ -445,6 +446,28 @@ describe('remote server', () => {
     await closed
     await waitFor(() => hub.transportCount === 1)
     expect(getRemoteStatus().clients).toBe(0)
+  })
+
+  it('emits status only when closing a hub actually closed a socket', async () => {
+    const statuses: RemoteAccessStatus[] = []
+    const status = await startRemoteServer({
+      host: HOST,
+      port: 0,
+      webRoot: '/nonexistent-web-root',
+      attachTarget: () => hub,
+      onStatusChange: (s) => statuses.push(s),
+    })
+    const url = `http://${HOST}:${status.port}`
+    const { ws } = await connect(url, currentRemoteToken()!)
+    const closed = new Promise<void>((res) => ws.once('close', () => res()))
+    statuses.length = 0
+
+    closeSocketsForHub(999)
+    expect(statuses).toEqual([])
+
+    closeSocketsForHub(42)
+    expect(statuses.at(-1)?.clients).toBe(0)
+    await closed
   })
 
   it('leaves other hubs alone when one window goes', async () => {
