@@ -451,3 +451,20 @@ describe('screenPrsStore draft mirror', () => {
     expect(screenPrsStore.draftNoticeFor('d13')).toBeUndefined()
   })
 })
+
+describe('screening with the saved filter', () => {
+  it('waits for a save in flight, and does not screen when main refuses it', async () => {
+    let refuse!: (err: Error) => void
+    const invoke = vi.fn((channel: string) => {
+      if (channel === 'screenprs:filter-set') return new Promise((_, reject) => { refuse = reject })
+      return Promise.resolve(undefined)
+    })
+    vi.stubGlobal('api', { invoke, on: () => () => {} })
+    const saving = screenPrsStore.setFilter({ owner: 'bad', cutoffDays: 30 }).catch(() => {})
+    const started = screenPrsStore.start()
+    refuse(new Error('refused'))
+    await saving
+    await started
+    expect(invoke).not.toHaveBeenCalledWith('screenprs:start', expect.anything())
+  })
+})

@@ -15,9 +15,12 @@ const connection = installRemoteApi({ attachParams: () => attachParams(loadRemem
 // minutes, and a board that only listened while you were looking at it would
 // lose whatever landed while you were reading a session.
 initScreenPrsListeners()
-// Review drafts are edited from the desktop too, and a broadcast sent while
+// Review drafts and the filter are edited from the desktop too, and a broadcast sent while
 // the socket was down never arrives — so every (re)connect reloads them.
-connection.onIdentity(() => void screenPrsStore.loadDrafts())
+connection.onIdentity(() => {
+  void screenPrsStore.loadDrafts()
+  void screenPrsStore.loadFilter()
+})
 
 trackVisualViewport()
 

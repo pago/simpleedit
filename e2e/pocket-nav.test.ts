@@ -36,6 +36,7 @@ const test = base.extend<Fixtures>({
       env: launchEnv({
         SIMPLEEDIT_REPO: repo.bareRepoPath,
         SIMPLEEDIT_E2E_REMOTE_CONFIG: path.join(os.tmpdir(), `simpleedit-pocket-nav-${process.pid}.json`),
+        SIMPLEEDIT_E2E_SCREENPRS_FILTER: path.join(repo.root, 'screenprs-filter.json'),
       }),
     })
     await use(app)
@@ -267,5 +268,32 @@ test('switching tabs keeps the other tab\'s screen, and Back never switches tabs
   await page.getByTestId('tab-sessions-button').click()
   await expect(visibleSession(page, terminalId)).toBeVisible()
 
+  await page.close()
+})
+
+test('an org set on the phone is the desktop\'s org too', async ({ window, browser }) => {
+  const url = await phoneUrl(window)
+  const { page } = await openPhone(browser, url)
+  await page.getByTestId('tab-prs-button').click()
+
+  const field = page.getByTestId('filter-owner')
+  await field.fill('acme')
+  await field.press('Enter')
+
+  await expect
+    .poll(async () =>
+      window.evaluate(async () => {
+        const api = (window as unknown as { api: Api }).api
+        const { filter } = (await api.invoke('screenprs:filter-get')) as { filter: { owner: string } }
+        return filter.owner
+      }),
+    )
+    .toBe('acme')
+
+  // An org GitHub can't have is refused by main, not just by the field.
+  await field.fill('not an org')
+  await field.press('Enter')
+  await expect(page.getByTestId('filter-error')).toContainText("isn't a GitHub org")
+  await expect(field).toHaveValue('acme')
   await page.close()
 })

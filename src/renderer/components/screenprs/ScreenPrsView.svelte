@@ -6,6 +6,7 @@
   import PrDetail from './PrDetail.svelte'
   import MagnifierIcon from './MagnifierIcon.svelte'
   import ConfirmReviewModal from './ConfirmReviewModal.svelte'
+  import { CUTOFF_DAYS, isCutoffDays, type ScreenPrsFilterPrefs } from '../../../shared/screenprs-filter'
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
@@ -28,10 +29,36 @@
     fyi: { label: 'Already approved — FYI', sub: 'covered by others', stripe: 'bg-zinc-600', head: 'text-zinc-400' },
   }
 
-  // Org/cutoff seeded once from the store's current filter (not reactive — these
-  // are editable inputs).
-  let owner = $state(screenPrsStore.filters().owner ?? '')
-  let cutoff = $state('30')
+  // The org field is a draft of the saved filter: it follows the saved value
+  // (another window or the phone may change it) except while it is being typed in.
+  let saved = $derived(screenPrsStore.filter())
+  let owner = $state(screenPrsStore.filter().owner)
+  /** Typed in since it last matched the saved org; only then does leaving it save. */
+  let ownerEdited = $state(false)
+  let filterError = $state<string | null>(null)
+  $effect(() => {
+    const next = saved.owner
+    if (!ownerEdited) owner = next
+  })
+
+  async function saveFilter(next: ScreenPrsFilterPrefs): Promise<void> {
+    filterError = null
+    try {
+      await screenPrsStore.setFilter(next)
+    } catch (e) {
+      filterError = e instanceof Error ? e.message : String(e)
+      owner = screenPrsStore.filter().owner
+    }
+  }
+  function commitOwner(): void {
+    if (!ownerEdited) return
+    ownerEdited = false
+    if (owner.trim() !== saved.owner) void saveFilter({ ...saved, owner: owner.trim() })
+  }
+  function setCutoff(value: string): void {
+    const days = Number(value)
+    if (isCutoffDays(days)) void saveFilter({ ...saved, cutoffDays: days })
+  }
 
   // Read-only preview of which model triage/deep review will run on. Refetched on
   // mount and whenever screening starts, so a Settings change is reflected.
@@ -53,14 +80,10 @@
   }
   onMount(refreshTriageModel)
 
-  function isoCutoff(days: string): string {
-    const d = new Date()
-    d.setDate(d.getDate() - Number(days))
-    return d.toISOString().slice(0, 10)
-  }
-  function screen(force = false): void {
+  async function screen(force = false): Promise<void> {
     void refreshTriageModel()
-    void screenPrsStore.start({ owner: owner.trim() || undefined, updatedSince: isoCutoff(cutoff), force })
+    commitOwner()
+    await screenPrsStore.start({ force })
   }
 
   const ciClass: Record<PrCiStatus, string> = {
@@ -171,7 +194,7 @@
         <button
           class="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700"
           title={done > 0 ? 'Re-screen (⌥-click to ignore cache and re-run all)' : 'Screen your review queue'}
-          onclick={(e) => screen(e.altKey)}
+          onclick={(e) => void screen(e.altKey)}
         >
           <MagnifierIcon class="h-3.5 w-3.5" />
           {done > 0 ? 'Re-screen' : 'Screen'}
@@ -181,16 +204,32 @@
     <div class="mt-2.5 flex items-center gap-2 text-[11px]">
       <label class="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1">
         <span class="uppercase tracking-wider text-zinc-500">Org</span>
-        <input class="w-24 bg-transparent text-zinc-200 outline-none placeholder:text-zinc-600" placeholder="all mine" bind:value={owner} />
+        <input
+          class="w-24 bg-transparent text-zinc-200 outline-none placeholder:text-zinc-600"
+          placeholder="all mine"
+          aria-label="Org"
+          data-testid="filter-owner"
+          bind:value={owner}
+          oninput={() => (ownerEdited = true)}
+          onblur={commitOwner}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') commitOwner()
+          }}
+        />
       </label>
       <label class="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1">
         <span class="uppercase tracking-wider text-zinc-500">Active since</span>
-        <select class="bg-transparent text-zinc-200 outline-none" bind:value={cutoff}>
-          <option value="30">30 days</option>
-          <option value="7">7 days</option>
-          <option value="90">90 days</option>
+        <select
+          class="bg-transparent text-zinc-200 outline-none"
+          aria-label="Active since"
+          data-testid="filter-cutoff"
+          value={String(saved.cutoffDays)}
+          onchange={(e) => setCutoff(e.currentTarget.value)}
+        >
+          {#each CUTOFF_DAYS as d (d)}<option value={String(d)}>{d} days</option>{/each}
         </select>
       </label>
+      {#if filterError}<span class="text-[10.5px] text-red-400" data-testid="filter-error">{filterError}</span>{/if}
       <span class="ml-auto text-[10.5px] text-zinc-600">triage · <span class="text-zinc-500">{triageModel}</span></span>
     </div>
   </div>
