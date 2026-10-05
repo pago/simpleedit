@@ -8,6 +8,12 @@
  * name that actually appears in the list.
  */
 
+/**
+ * Longest brief main will start a session from. It arrives from a socket, so
+ * it is bounded; the room is for a PR brief carrying its overview and findings.
+ */
+export const SESSION_BRIEF_MAX = 32_000
+
 /** Longest label we will mint. Past this the sidebar truncates anyway. */
 const LABEL_MAX = 42
 

@@ -151,6 +151,16 @@
 
   $effect(() => connection.onStateChange((next) => { connState = next }))
 
+  /**
+   * Every session a list has shown. A screen whose session is missing from the
+   * latest list is closed only if it was listed before: one this phone just
+   * started is pushed before main's list has caught up with it.
+   */
+  const everListed = new Set<string>()
+  const STARTED_GRACE_MS = 30_000
+  /** Names of sessions this phone started, for the screen shown until they are listed. */
+  let startedLabels = $state<Record<string, string>>({})
+
   // Untracked: `onIdentity` answers at once when a socket is already up, and
   // what `attached` reads must not re-subscribe this and run it again.
   $effect(() => untrack(() => connection.onIdentity(({ windowId }) => void attached(windowId))))
@@ -163,7 +173,9 @@
    * the phone, the window those screens addressed is gone.
    */
   function leaveWindow(): void {
-    nav.clearStack('sessions')
+    nav.leaveWindow()
+    everListed.clear()
+    startedLabels = {}
     screenPrsStore.abandonRuns('Interrupted: this phone moved to another project, and the result goes to the window that started it. Run it again here.')
     known = {}
     pendingSession = null
@@ -205,6 +217,9 @@
     if (newSessionEntry && newSheet?.atRisk() === 'starting') {
       return 'A new session is still starting. Switch once it has.'
     }
+    if (nav.stack('prs').some((e) => e.kind === 'discuss')) {
+      return 'Discuss with Agent is open, and its session would start in the window being left. Close it first.'
+    }
     if (screenPrsStore.busy()) {
       return 'Screen PRs is still working, and its results go to the window that started it. Switch once it finishes, or cancel it.'
     }
@@ -214,7 +229,7 @@
   /** What a switch would throw away, for the confirm. */
   function switchDiscards(): string[] {
     const out: string[] = []
-    for (const entry of nav.stack('sessions')) {
+    for (const entry of [...nav.stack('sessions'), ...nav.stack('prs')]) {
       if (entry.kind === 'session' && sessionScreens[entry.id]?.isRecording()) {
         out.push(`the recording for ${known[entry.terminalId]?.label ?? 'a session'}`)
       }
@@ -243,6 +258,7 @@
   }
 
   function remember(session: WindowSession): void {
+    everListed.add(session.terminalId)
     known = { ...known, [session.terminalId]: session }
   }
 
@@ -269,10 +285,13 @@
   $effect(() =>
     window.api.on('session:list-changed', (sessions) => {
       resolvePending(sessions)
+      for (const s of sessions) everListed.add(s.terminalId)
       known = Object.fromEntries(sessions.map((s) => [s.terminalId, s]))
       nav.removeWhere(
         (entry) =>
-          (entry.kind === 'session' || entry.kind === 'changes-diff') && !(entry.terminalId in known),
+          (entry.kind === 'session' || entry.kind === 'changes-diff') &&
+          everListed.has(entry.terminalId) &&
+          !(entry.terminalId in known),
       )
     }),
   )
@@ -332,6 +351,32 @@
     )
   }
 
+  /**
+   * A Discuss with Agent session: opened over the PR it discusses, on the PRs
+   * tab's stack, so Back returns to the PR.
+   */
+  function openStartedFromPr(created: SessionCreateResult): void {
+    const { terminalId } = created
+    startedLabels = { ...startedLabels, [terminalId]: created.label }
+    const entry: NavEntry = nav.push(
+      { kind: 'session', terminalId, fromNotification: false },
+      () => holdSession(entry),
+    )
+    // A broadcast lost while the socket was down would leave "Starting…" up
+    // for good, so after a while the list is asked once and decides.
+    setTimeout(() => {
+      if (everListed.has(terminalId)) return
+      void window.api
+        .invoke('session:list')
+        .then((sessions) => {
+          const match = sessions.find((s) => s.terminalId === terminalId)
+          if (match) remember(match)
+          else nav.close(entry.id)
+        })
+        .catch(() => {})
+    }, STARTED_GRACE_MS)
+  }
+
   function openNewSession(): void {
     nav.push({ kind: 'new-session' }, () => newSheet?.holdForDraft() ?? false)
   }
@@ -347,6 +392,9 @@
     nav.stack('sessions').filter((e): e is SessionEntry => e.kind === 'session'),
   )
   const prEntries = $derived(nav.stack('prs').filter((e): e is PrEntry => e.kind === 'pr'))
+  const prSessionEntries = $derived(
+    nav.stack('prs').filter((e): e is SessionEntry => e.kind === 'session'),
+  )
   const newSessionEntry = $derived(nav.stack('sessions').find((e) => e.kind === 'new-session') ?? null)
   const sessionScreen = $derived(nav.screen('sessions'))
   const prScreen = $derived(nav.screen('prs'))
@@ -354,7 +402,7 @@
   const tabLabel = $derived(TABS.find((t) => t.id === tab)?.label ?? '')
 
   function titleOf(entry: NavEntry | null): string {
-    if (entry?.kind === 'session') return known[entry.terminalId]?.label ?? 'Session'
+    if (entry?.kind === 'session') return known[entry.terminalId]?.label ?? startedLabels[entry.terminalId] ?? 'Session'
     if (entry?.kind === 'pr') return `${entry.pr.repo}#${entry.pr.number}`
     return tabLabel
   }
@@ -375,6 +423,26 @@
     connState === 'open' ? 'bg-emerald-400' : connState === 'connecting' ? 'bg-amber-400' : 'bg-red-500',
   )
 </script>
+
+{#snippet sessionView(entry: SessionEntry, on: TabId, shown: NavEntry | null)}
+  {@const session = known[entry.terminalId]}
+  {#if session}
+    <div class={shown?.id === entry.id ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+      <SessionScreen
+        bind:this={sessionScreens[entry.id]}
+        onleave={() => nav.close(entry.id)}
+        {session}
+        {connection}
+        focusComposer={entry.fromNotification}
+        visible={tab === on && shown?.id === entry.id && top?.kind !== 'new-session'}
+      />
+    </div>
+  {:else if shown?.id === entry.id && startedLabels[entry.terminalId]}
+    <p class="p-4 text-sm text-zinc-500" data-testid="session-starting">
+      Starting “{startedLabels[entry.terminalId]}”…
+    </p>
+  {/if}
+{/snippet}
 
 <div class="flex h-full min-h-0 flex-col bg-zinc-950 text-zinc-100">
   <header
@@ -486,20 +554,7 @@
       </div>
 
       {#each sessionEntries as entry (entry.id)}
-        {@const session = known[entry.terminalId]}
-        {@const showing = tab === 'sessions' && sessionScreen?.id === entry.id}
-        {#if session}
-          <div class={sessionScreen?.id === entry.id ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <SessionScreen
-              bind:this={sessionScreens[entry.id]}
-              onleave={() => nav.close(entry.id)}
-              {session}
-              {connection}
-              focusComposer={entry.fromNotification}
-              visible={showing && top?.kind !== 'new-session'}
-            />
-          </div>
-        {/if}
+        {@render sessionView(entry, 'sessions', sessionScreen)}
       {/each}
 
       {#if newSessionEntry}
@@ -522,8 +577,11 @@
       </div>
       {#each prEntries as entry (entry.id)}
         <div class={prScreen?.id === entry.id ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          <PrDetail pr={entry.pr} connected={connState === 'open'} />
+          <PrDetail pr={entry.pr} connected={connState === 'open'} onstarted={openStartedFromPr} />
         </div>
+      {/each}
+      {#each prSessionEntries as entry (entry.id)}
+        {@render sessionView(entry, 'prs', prScreen)}
       {/each}
     </div>
   </main>

@@ -289,6 +289,32 @@ whose old side is a different base than GitHub's. The 422 all-fold retry keeps
 `commit_id`; if GitHub refuses that, nothing is posted — an unpinned APPROVE
 would approve code the reviewer never saw.
 
+### Screen PRs: the saved filter and Discuss with Agent
+The org + activity cutoff is **one saved filter owned by main**
+(`screenprs-filter.ts`, `userData/config/screenprs-filter.json`), the same
+shape as the drafts: `screenprs:filter-get`/`-set`, a revisioned snapshot, and a
+`screenprs:filter-changed` broadcast to every window and phone. The store
+mirrors it (`screenPrsStore.filter()`), and `start()` always screens with it.
+Main validates every set (`parseFilterPrefs`) and every `screenprs:start`
+(`parseScreeningFilters`: an object, a GitHub-legal owner, a real date): both
+reach `gh` as arguments, and the phone is a remote client.
+
+Discuss with Agent sends one brief from both clients (`shared/pr-brief.ts`). The
+phone starts it through `session:create` with an explicit `target` and fixed
+`label`, which main validates (`parseCreateTarget`, `parseCreateLabel`; a Claude
+model never carries an Ollama endpoint from a socket) under the same
+exactly-once `requestId` rule as the `+` sheet. A named model must be one the
+picker offers (`unknownModelReason` against main's own catalogs), so a bad id
+is refused where the phone sees why rather than dying at launch. A remembered
+`requestId` that comes back with a different request (fingerprint of brief,
+target, label) is refused (`SESSION_CREATE_REUSED`), so a client resends an
+intent unchanged. On a project switch the phone drops the old window's
+sessions from both tabs (`nav.ts` `leaveWindow`). The new session is pushed onto
+the **PRs tab's** stack, so Back returns to the PR. A session's screen lives on
+one stack at a time: asked for from the other tab or a notification, it is
+shown where it already is, as the same entry (`nav.ts` `bringToFront`), so its
+screen stays mounted and two terminals never attach to one PTY.
+
 ### Layout
 The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
 that session's `SessionWorkspace` (all others stay mounted but hidden). A
@@ -338,6 +364,7 @@ src/
     github/stack-base.ts ← Stacked-PR base analysis + the review diff
     screenprs.ts, screenprs-cache.ts ← Screen-PRs data + cache
     screenprs-drafts.ts ← Persisted review drafts (main owns them; desktop + phone mirror via ops)
+    screenprs-filter.ts ← Persisted Screen PRs org + cutoff (main owns it; desktop + phone mirror it)
     review.ts, deep-review.ts, tour.ts ← Review/tour features
     pr-overview.ts     ← PR overview run + cache (screen-PRs)
     tasks/, agent-tasks/ ← Bounded agent-task orchestration (gate, runner)

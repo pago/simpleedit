@@ -90,7 +90,7 @@ import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
-import { createSessionOnce, resolveSessionCreate } from './session-create'
+import { createSessionOnce, resolveSessionCreate, type ModelCatalog } from './session-create'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
@@ -306,6 +306,13 @@ function broadcastServeStatus(status: TailscaleServeStatus): void {
  * the hub of the window it joined, so each hub fans out to its own transports
  * and a window that has no hub yet is sent to directly — each client once.
  */
+/** What a phone's Discuss picker is built from (`loadAgentModels`), so main refuses whatever it doesn't offer. */
+const MODEL_CATALOG: ModelCatalog = {
+  claude: async () => (await listClaudeModels()).map((m) => m.model),
+  codex: async () => (await listCodexModels()).map((m) => m.model),
+  ollama: async () => (await listInstalledModels()).filter((m) => m.toolCapable).map((m) => m.name),
+}
+
 function broadcastToAllClients<K extends keyof EventMap>(channel: K, data: EventMap[K]): void {
   for (const hub of clientHubs.values()) hub.send(channel, data)
   for (const wc of liveWindowContents()) {
@@ -1165,7 +1172,7 @@ function registerAllHandlers(): void {
   handleInvoke('session:create', (event, request: SessionCreateRequest) => {
     const window = getWindowForContents(event.sender.id)
     if (!window) throw new Error('That SimpleEdit window is gone.')
-    return createSessionOnce(request, window.webContents)
+    return createSessionOnce(request, window.webContents, MODEL_CATALOG)
   })
 
   // Only the renderer that was asked may answer. Same rule as `session:sync`:

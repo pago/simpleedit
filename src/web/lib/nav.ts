@@ -26,6 +26,8 @@ export type NavLayer =
   | { kind: 'confirm-submit'; url: string }
   /** Which of the Mac's projects (windows) the phone is attached to. */
   | { kind: 'projects' }
+  /** Discuss with Agent's model picker, over the PR it discusses. */
+  | { kind: 'discuss'; url: string }
 
 export type NavEntry = NavLayer & {
   id: number
@@ -63,7 +65,8 @@ export function isOverlay(entry: NavEntry | null): boolean {
     (entry.kind === 'new-session' ||
       entry.kind === 'compose' ||
       entry.kind === 'confirm-submit' ||
-      entry.kind === 'projects')
+      entry.kind === 'projects' ||
+      entry.kind === 'discuss')
   )
 }
 
@@ -81,12 +84,37 @@ function withStack(state: NavState, tab: TabId, stack: readonly NavEntry[]): Nav
   return { ...state, stacks: { ...state.stacks, [tab]: stack } }
 }
 
+const otherTab = (tab: TabId): TabId => (tab === 'sessions' ? 'prs' : 'sessions')
+
+const sessionOn = (state: NavState, tab: TabId, terminalId: string): NavEntry | undefined =>
+  state.stacks[tab].find((e) => e.kind === 'session' && e.terminalId === terminalId)
+
+/**
+ * Show `tab` with this session's entry on top: the SAME entry, so its screen
+ * stays mounted — its terminal is not attached twice and its composer keeps
+ * what was typed — minus any diff it had open.
+ */
+function bringToFront(state: NavState, tab: TabId, existing: NavEntry, patch: Partial<NavLayer> = {}): NavState {
+  const terminalId = existing.kind === 'session' ? existing.terminalId : ''
+  const mine = (e: NavEntry): boolean =>
+    (e.kind === 'session' || e.kind === 'changes-diff') && e.terminalId === terminalId
+  const front = { ...existing, ...patch } as NavEntry
+  return withStack(selectTab(state, tab), tab, [...state.stacks[tab].filter((e) => !mine(e)), front])
+}
+
 /** Always onto the active tab: nothing can be opened on a tab nobody is looking at. */
 export function push(
   state: NavState,
   layer: NavLayer,
   hold?: () => boolean,
 ): { state: NavState; entry: NavEntry } {
+  // A session's screen lives on one stack at a time. One opened from a PR sits
+  // on the PR's stack so Back returns to the PR; asked for again from the
+  // other tab, that tab is where it is shown.
+  if (layer.kind === 'session') {
+    const elsewhere = sessionOn(state, otherTab(state.tab), layer.terminalId)
+    if (elsewhere) return { state: bringToFront(state, otherTab(state.tab), elsewhere), entry: elsewhere }
+  }
   const entry: NavEntry = hold ? { ...layer, id: state.nextId, hold } : { ...layer, id: state.nextId }
   const next = withStack({ ...state, nextId: state.nextId + 1 }, state.tab, [...stackOf(state), entry])
   return { state: next, entry }
@@ -121,6 +149,15 @@ export function clearStack(state: NavState, tab: TabId): NavState {
   return state.stacks[tab].length === 0 ? state : withStack(state, tab, [])
 }
 
+/**
+ * Everything that belongs to the window a phone is leaving: the Sessions tab,
+ * and any session opened over a PR, which sits on the PRs tab but is still a
+ * session of that window. The PRs themselves are not a window's and stay.
+ */
+export function leaveWindow(state: NavState): NavState {
+  return removeWhere(clearStack(state, 'sessions'), (e) => e.kind === 'session' || e.kind === 'changes-diff')
+}
+
 export function contains(state: NavState, id: number): boolean {
   return state.stacks.sessions.some((e) => e.id === id) || state.stacks.prs.some((e) => e.id === id)
 }
@@ -129,28 +166,23 @@ export function contains(state: NavState, id: number): boolean {
  * A notification tap: land on the session, on top of whatever was open.
  *
  * Pushed, never replaced, so Back returns to what the user was doing and every
- * draft underneath survives. A session that is already somewhere in the stack
- * is brought to the front as the SAME entry — its screen stays mounted, so its
- * terminal is not attached twice and its composer keeps what was typed — minus
- * any diff it had open, because the tap is about the terminal.
+ * draft underneath survives. A session already open is brought to the front
+ * as the SAME entry (`bringToFront`), minus any diff it had open, because the
+ * tap is about the terminal — on the PRs tab when it was opened over a PR.
  */
 export function openFromNotification(
   state: NavState,
   terminalId: string,
   hold?: (entry: NavEntry) => boolean,
 ): NavState {
+  const overPr = sessionOn(state, 'prs', terminalId)
+  if (overPr) return bringToFront(state, 'prs', overPr, { fromNotification: true })
   const onSessions = selectTab(state, 'sessions')
-  const stack = stackOf(onSessions)
-  const existing = stack.find((e) => e.kind === 'session' && e.terminalId === terminalId)
-  if (!existing) {
-    const id = onSessions.nextId
-    const layer: NavLayer = { kind: 'session', terminalId, fromNotification: true }
-    return push(onSessions, layer, hold && (() => hold({ ...layer, id }))).state
-  }
-  const mine = (e: NavEntry): boolean =>
-    (e.kind === 'session' || e.kind === 'changes-diff') && e.terminalId === terminalId
-  const front: NavEntry = { ...existing, fromNotification: true } as NavEntry
-  return withStack(onSessions, 'sessions', [...stack.filter((e) => !mine(e)), front])
+  const existing = sessionOn(onSessions, 'sessions', terminalId)
+  if (existing) return bringToFront(onSessions, 'sessions', existing, { fromNotification: true })
+  const id = onSessions.nextId
+  const layer: NavLayer = { kind: 'session', terminalId, fromNotification: true }
+  return push(onSessions, layer, hold && (() => hold({ ...layer, id }))).state
 }
 
 /**

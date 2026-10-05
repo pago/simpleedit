@@ -34,13 +34,19 @@
   import ComposeSheet from './ComposeSheet.svelte'
   import PrReviewSheet from './PrReviewSheet.svelte'
   import { nav } from './lib/nav.svelte'
+  import DiscussSheet from './DiscussSheet.svelte'
+  import { buildPrBrief, prSessionLabel } from '../shared/pr-brief'
+  import { SESSION_BRIEF_MAX } from '../shared/brief'
+  import type { SessionCreateResult } from '../shared/ipc-types'
 
   interface Props {
     pr: PrRef
     connected: boolean
+    /** A Discuss with Agent session started; the host opens it over this PR. */
+    onstarted?: (created: SessionCreateResult) => void
   }
 
-  let { pr, connected }: Props = $props()
+  let { pr, connected, onstarted = () => {} }: Props = $props()
 
   let url = $derived(pr.url)
   // Read straight out of the queue rather than through the store's `select`:
@@ -228,6 +234,24 @@
     })
   }
 
+  // ── Discuss with Agent ──
+  let discussId = $state<number | null>(null)
+  let discussFocus = $state<OverviewLookIntoItem | undefined>(undefined)
+  let discussSheet = $state<DiscussSheet | undefined>()
+
+  function openDiscuss(focus?: OverviewLookIntoItem): void {
+    if (!context) return
+    discussFocus = focus
+    discussId = nav.push({ kind: 'discuss', url }, () => discussSheet?.holdForDraft() ?? false).id
+  }
+  function discussBrief(): string {
+    if (!context) return ''
+    return buildPrBrief(
+      { context, triage: card?.findings, overview: overview?.text, deep: deep?.findings, focus: discussFocus },
+      SESSION_BRIEF_MAX,
+    )
+  }
+
   const LABEL_CLASS: Record<TriageFinding['label'], string> = {
     issue: 'bg-red-500/15 text-red-300',
     suggestion: 'bg-blue-500/15 text-blue-300',
@@ -326,6 +350,13 @@
               : '⚡ Deep review'}
         </button>
       </div>
+      <button
+        type="button"
+        onclick={() => openDiscuss()}
+        disabled={!context}
+        data-testid="discuss"
+        class="min-h-10 rounded-lg border border-zinc-700 bg-zinc-800 px-3 text-[12px] font-medium text-zinc-200 disabled:opacity-50"
+      >✦ Discuss with Agent</button>
       {#if deep?.status === 'running'}
         <p class="-mt-1.5 text-[11px] leading-relaxed text-zinc-500">
           Takes a few minutes. You can leave this screen — the findings land here when they’re ready.
@@ -333,7 +364,7 @@
       {/if}
 
       {#if context && overview && overview.status !== 'idle'}
-        <OverviewCard {context} {overview} initiallyOpen={['what']} onref={showRef} onreview={addOverview} />
+        <OverviewCard {context} {overview} initiallyOpen={['what']} onref={showRef} onreview={addOverview} ondiscuss={openDiscuss} />
       {/if}
 
       {#if context?.body?.trim()}
@@ -439,6 +470,22 @@
 
   <PrReviewSheet {pr} {draft} {rawDraft} {headSha} {isolatedBase} {diff} {anchors} {connected} />
 </div>
+
+{#if context && nav.has(discussId)}
+  <DiscussSheet
+    bind:this={discussSheet}
+    prLabel="{pr.repo}#{pr.number}"
+    label={prSessionLabel(context)}
+    focus={discussFocus?.markdown}
+    {connected}
+    brief={discussBrief}
+    oncreated={(created) => {
+      nav.close(discussId)
+      onstarted(created)
+    }}
+    onclose={() => nav.close(discussId)}
+  />
+{/if}
 
 {#if target && nav.has(composeId)}
   <ComposeSheet
