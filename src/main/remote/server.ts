@@ -1,34 +1,46 @@
 /**
  * The remote-access server: one per app (not per window), off by default.
  *
- * It serves the web bundle and upgrades `/<token>/ws`, over which a browser's
- * `window.api` shim speaks the same IPC channels the renderer does. A socket
- * does NOT mint a new client identity — it registers as an additional
- * transport on an existing window's `ClientHub`, because main keys the repo
- * maps, the watchers and the MCP bridge by `webContents.id`. A fresh id would
- * resolve to no repo, no bridge and no subscriptions.
+ * It serves the web bundle under `/app/` and upgrades `/app/ws?k=<key>`, over
+ * which a browser's `window.api` shim speaks the same IPC channels the
+ * renderer does. A socket does NOT mint a new client identity — it registers
+ * as an additional transport on an existing window's `ClientHub`, because main
+ * keys the repo maps, the watchers and the MCP bridge by `webContents.id`. A
+ * fresh id would resolve to no repo, no bridge and no subscriptions.
  *
  * ── Security ──────────────────────────────────────────────────────────────
  * This surface reaches `pty:spawn`, `pty:write`, `fs:write`, `fs:delete`,
- * `worktree:remove` and every git operation. Whoever holds the token has the
+ * `worktree:remove` and every git operation. Whoever holds the key has the
  * machine. So:
  *
  *  - Off unless a person turns it on, and it stops with the app.
- *  - A 32-byte random token is the FIRST path segment of every request,
- *    compared in constant time. No token, no route — not even the index.
+ *  - A 32-byte random key is minted on every start and never persisted.
+ *  - **The key gates the socket, and the socket is the only way in.** The
+ *    upgrade carries it as `?k=`, compared in constant time; without it there
+ *    is no socket, and without a socket no IPC channel, no event and no byte
+ *    of data. `/app/auth` answers one bit — is this key current — so the page
+ *    can tell "out of date" from "unreachable", which a refused upgrade cannot.
+ *  - **The shell is public, and only the shell.** The files of the built web
+ *    bundle under `/app/` are served without the key: they are the same for
+ *    every user and every start, and hold no data. That is what lets an
+ *    installed app keep a stable scope across restarts and recover from a
+ *    rotated key by rescanning (#190). Nothing else is served without it — a
+ *    file outside the bundle, a directory listing or any dynamic content is a
+ *    404. The two shell responses that vary echo a well-formed key the
+ *    REQUEST carried (the manifest's start URL, so an install carries it); they
+ *    never read the real one.
  *  - The bind host is always explicit and defaults to loopback. Nothing here
  *    ever passes `0.0.0.0`; reaching the phone is Tailscale's job, and putting
  *    a shell on every interface must stay a deliberate act.
  *  - Cross-origin requests are refused outright, and the WebSocket upgrade
- *    additionally requires the `Origin` to be the server's own — a token in a
- *    URL is a bearer credential, and the browser must not lend it to a page
- *    that guessed the port.
+ *    additionally requires an `Origin` naming the host it was sent to — see
+ *    `sameOrigin` for what that does and does not stop.
  *  - Only channels registered in `ipc-registry` dispatch; an unknown one is an
  *    error, never a silent success.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { randomBytes, timingSafeEqual } from 'crypto'
-import { createReadStream, existsSync, statSync } from 'fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'fs'
 import { extname, join, normalize, resolve, sep } from 'path'
 import type { Socket } from 'net'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -38,6 +50,7 @@ import { dispatchInvoke, dispatchSend } from '../ipc-registry'
 import { parseClientFrame, type ServerFrame } from '../../shared/remote-protocol'
 import { parseAttachRequest, type AttachRequest } from './attach-target'
 import type { PtyClientId, RemoteAccessStatus } from '../../shared/ipc-types'
+import { APP_PATH, appLink } from '../../shared/remote-pairing'
 
 export interface RemoteServerOptions {
   host: string
@@ -70,8 +83,6 @@ interface RunningServer {
   options: RemoteServerOptions
   sockets: Set<SocketTransport>
   powerSaveBlockerId: number | null
-  /** Origins of pages this server has served — see `learnOrigin`. */
-  origins: Set<string>
 }
 
 let running: RunningServer | null = null
@@ -161,7 +172,7 @@ class SocketTransport implements RemoteClient {
   }
 }
 
-/** Constant-time compare of an untrusted path segment against the token. */
+/** Constant-time compare of an untrusted key against the server's. */
 function tokenMatches(candidate: string, token: string): boolean {
   const a = Buffer.from(candidate)
   const b = Buffer.from(token)
@@ -175,15 +186,31 @@ function tokenMatches(candidate: string, token: string): boolean {
   return timingSafeEqual(a, b)
 }
 
-/** Split `/token/rest` into its two halves; null when the token is wrong. */
-function routeOf(url: string | undefined, token: string): string | null {
-  if (!url) return null
-  const path = url.split('?')[0]
-  if (!path.startsWith('/')) return null
-  const slash = path.indexOf('/', 1)
-  const candidate = slash === -1 ? path.slice(1) : path.slice(1, slash)
-  if (!tokenMatches(candidate, token)) return null
-  return slash === -1 ? '/' : path.slice(slash)
+/** The shape of a key — and therefore of the first path segment of a pre-#190 link. */
+const KEY_SHAPE = /^[0-9a-f]{64}$/
+
+/** The `k` query parameter, if it has the shape of a key. Says nothing about whether it is current. */
+function keyParam(url: string | undefined): string | null {
+  const query = (url ?? '').split('?')[1]?.split('#')[0]
+  if (query === undefined) return null
+  const value = new URLSearchParams(query).get('k')
+  return value !== null && KEY_SHAPE.test(value) ? value : null
+}
+
+function pathOf(url: string | undefined): string {
+  return (url ?? '').split('?')[0].split('#')[0]
+}
+
+function notFound(res: ServerResponse): void {
+  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+  res.end('Not found')
+}
+
+function redirect(res: ServerResponse, location: string): void {
+  // 302, not 301: a permanent redirect is cached, and these answers depend on
+  // what this server is doing now.
+  res.writeHead(302, { location, 'cache-control': 'no-store' })
+  res.end()
 }
 
 const MIME: Record<string, string> = {
@@ -205,8 +232,8 @@ const MIME: Record<string, string> = {
 /**
  * Resolve `route` inside `webRoot`, or null if it escapes or will not decode.
  *
- * The token gates the door, but a caller past it must still not be able to
- * read the whole disk through `../`. `decodeURIComponent` throws on a lone
+ * This runs WITHOUT the key, so it is the whole of what an unauthenticated
+ * caller can reach: the built bundle, and nothing outside it through `../`. `decodeURIComponent` throws on a lone
  * `%` — a truncated pasted link is enough — and an uncaught throw inside the
  * request listener takes the whole main process down with it, which means
  * `before-quit` never runs and every agent PTY is orphaned.
@@ -226,7 +253,48 @@ function resolveStatic(webRoot: string, route: string): string | null {
   return statSync(full).isDirectory() ? resolveStatic(webRoot, join(relative, 'index.html')) : full
 }
 
-function serveStatic(res: ServerResponse, webRoot: string, route: string): void {
+const SHELL_HEADERS = {
+  // The URL can carry the key; nothing about it should be cached by an
+  // intermediary, and the referrer must not carry it off-origin.
+  'cache-control': 'no-store',
+  'referrer-policy': 'no-referrer',
+  'x-content-type-options': 'nosniff',
+} as const
+
+/**
+ * The manifest link in `index.html`, exactly as Vite emits it. Pinned by a test
+ * against the source file, so a reformat fails loudly rather than shipping an
+ * install that forgets its key.
+ */
+export const MANIFEST_LINK = 'href="./manifest.webmanifest"'
+
+/**
+ * The two shell files that differ per request, both only by echoing `key` —
+ * the request's own, shape-checked, never the server's.
+ *
+ * iOS saves the start URL once, at install, from the manifest the page links.
+ * A static `start_url` cannot carry a per-start key, so the page served at
+ * `/app/?k=K` links `manifest.webmanifest?k=K`, and that manifest's start URL
+ * is `/app/?k=K`. The installed app then launches with the key it was
+ * installed with; a later in-app rescan supersedes it (`lib/remote-key.ts`).
+ */
+function personalise(file: string, body: string, key: string): string {
+  if (file.endsWith('index.html')) {
+    return body.replace(MANIFEST_LINK, `href="./manifest.webmanifest?k=${key}"`)
+  }
+  if (file.endsWith('.webmanifest')) {
+    try {
+      const manifest = JSON.parse(body) as Record<string, unknown>
+      manifest.start_url = `./?k=${key}`
+      return JSON.stringify(manifest)
+    } catch {
+      return body
+    }
+  }
+  return body
+}
+
+function serveStatic(res: ServerResponse, webRoot: string, route: string, key: string | null): void {
   const file = resolveStatic(webRoot, route === '/' ? '/index.html' : route)
   if (!file) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
@@ -237,37 +305,15 @@ function serveStatic(res: ServerResponse, webRoot: string, route: string): void 
     )
     return
   }
-  res.writeHead(200, {
-    'content-type': MIME[extname(file)] ?? 'application/octet-stream',
-    // A bearer token lives in this URL; nothing about it should be cached by
-    // an intermediary, and the referrer must not carry it off-origin.
-    'cache-control': 'no-store',
-    'referrer-policy': 'no-referrer',
-    'x-content-type-options': 'nosniff',
-  })
+  const headers = { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', ...SHELL_HEADERS }
+  if (key && (file.endsWith('index.html') || file.endsWith('.webmanifest'))) {
+    res.writeHead(200, headers)
+    res.end(personalise(file, readFileSync(file, 'utf8'), key))
+    return
+  }
+  res.writeHead(200, headers)
   createReadStream(file).pipe(res)
 }
-
-/**
- * Origins that a page WE SERVED is running under.
- *
- * The test is not "does this hostname look like us" — string equality against
- * the bound IP rejects `localhost` and every MagicDNS name, which is the phone
- * path this feature exists for, and resolving the hostname instead is exactly
- * what DNS rebinding defeats (a rebound `evil.com` resolves to the bound
- * address by construction). Neither answers the real question.
- *
- * So the server records it. A top-level navigation carries no `Origin` and
- * does carry the token, so serving one is proof that a token holder reached us
- * under that `Host` — and the origin of the page we just returned is exactly
- * `scheme://<that Host>`. Subresources and the WebSocket upgrade, which DO
- * carry `Origin`, are then matched against what was recorded.
- *
- * An attacker cannot register an origin without the token, and with the token
- * they could simply open the page. Bounded so a token holder cannot grow it
- * without limit.
- */
-const MAX_LEARNED_ORIGINS = 16
 
 /** A header that may arrive as a list — `x-forwarded-proto: https,http`. */
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {
@@ -285,7 +331,7 @@ export function isLoopbackPeer(remoteAddress: string | undefined): boolean {
  *
  * `tailscale serve` is the documented way to get HTTPS on a `*.ts.net` name,
  * and it TERMINATES TLS and reverse-proxies to a local HTTP server. So the
- * browser loads `https://mac.tailnet.ts.net/<token>/` and sends
+ * browser loads `https://mac.tailnet.ts.net/app/` and sends
  * `Origin: https://mac.tailnet.ts.net` on every module script, stylesheet and
  * the WebSocket upgrade — while the request reaching us is plain HTTP.
  * Assuming `http://` records an origin no browser will ever send, and every
@@ -312,23 +358,27 @@ export function originOf(
   return `${forwardedProto === 'https' ? 'https' : 'http'}://${host}`
 }
 
-/** Remember the origin of a page we are about to serve. Token already checked. */
-function learnOrigin(server: RunningServer, req: IncomingMessage): void {
-  const origin = originOf(req.headers, req.socket.remoteAddress)
-  if (!origin) return
-  if (server.origins.has(origin)) return
-  if (server.origins.size >= MAX_LEARNED_ORIGINS) return
-  server.origins.add(origin)
-}
-
 /**
  * True when the request carries no `Origin` (a navigation, or a non-browser
- * client), or one belonging to a page this server served.
+ * client), or one naming the very host the request was addressed to.
+ *
+ * Stateless on purpose. This used to accept only origins learned from a
+ * navigation that carried the key in its path, but the shell no longer needs
+ * the key, so a navigation proves nothing — and an installed app relaunched
+ * after a restart has nothing in its URL that is current.
+ *
+ * What it stops: a page on another site opening a socket to this port with a
+ * key it somehow holds (the browser sends that site's `Origin`, not ours).
+ * What it does NOT stop: a DNS-rebound name, whose `Origin` and `Host` agree
+ * by construction. That page can read the public shell, which is published
+ * source; it cannot open the socket without the key, and with the key it
+ * could simply open the real page. The key is the boundary; this is the
+ * belt to its braces.
  */
-function knownOrigin(server: RunningServer, req: IncomingMessage): boolean {
+function sameOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin
   if (!origin) return true
-  return server.origins.has(origin)
+  return origin === originOf(req.headers, req.socket.remoteAddress)
 }
 
 function attachSocket(ws: WebSocket, server: RunningServer, request: AttachRequest | null): void {
@@ -408,7 +458,7 @@ export function getRemoteStatus(): RemoteAccessStatus {
     host: running.host,
     port: running.port,
     // IPv4 only — `listRemoteInterfaces` offers nothing else, so no bracketing.
-    url: `http://${running.host}:${running.port}/${running.token}/`,
+    url: appLink(`http://${running.host}:${running.port}`, running.token),
     clients: running.sockets.size,
     powerSaveBlocked:
       running.powerSaveBlockerId !== null && powerSaveBlocker.isStarted(running.powerSaveBlockerId),
@@ -469,8 +519,7 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
   const http = createServer((req, res) => handleRequest(req, res))
 
-  // Built before `listen` so the request handlers have somewhere to record
-  // learned origins, and so a stop arriving mid-start has something to tear
+  // Built before `listen` so a stop arriving mid-start has something to tear
   // down. Published to `running` only once it is actually listening.
   const state: RunningServer = {
     http,
@@ -481,44 +530,48 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
     options,
     sockets: new Set(),
     powerSaveBlockerId: null,
-    origins: new Set(),
   }
 
   function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    // Token FIRST: an origin is only worth learning from a request that
-    // already proved it holds the token.
-    const route = routeOf(req.url, token)
-    if (route === null || req.method !== 'GET') {
-      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end('Not found')
-      return
-    }
-    if (!knownOrigin(state, req)) {
+    if (req.method !== 'GET') return notFound(res)
+    if (!sameOrigin(req)) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Cross-origin request refused')
       return
     }
-    // No `Origin` means a top-level navigation (or a non-browser client), so
-    // the page we are about to return will run under this `Host`.
-    if (!req.headers.origin) learnOrigin(state, req)
-    // `/<token>` without the trailing slash serves index.html, but every
-    // relative asset and the socket URL then resolve one level up, WITHOUT the
-    // token — a blank page and a silently reconnecting socket, on exactly the
-    // link someone retypes onto a phone. Redirect rather than serve.
-    if (route === '/' && !(req.url ?? '').split('?')[0].endsWith('/')) {
-      res.writeHead(301, { location: `/${token}/`, 'cache-control': 'no-store' })
+    const path = pathOf(req.url)
+    const query = (req.url ?? '').includes('?') ? `?${(req.url ?? '').split('?')[1]}` : ''
+
+    if (path === '/app/auth') {
+      const key = keyParam(req.url)
+      res.writeHead(key !== null && tokenMatches(key, token) ? 204 : 401, SHELL_HEADERS)
       res.end()
       return
     }
-    serveStatic(res, options.webRoot, route)
+    // Without the trailing slash every relative asset and the socket URL
+    // resolve one level up — a blank page on exactly the link someone retypes.
+    if (path === '/' || path === '/app') return redirect(res, `${APP_PATH}${query}`)
+    // A pre-#190 link, `/<key>/…`: the key moved out of the path, and whatever
+    // key this one carried is from an earlier start. The stale-key page says
+    // what to do. Nothing from the old path is forwarded.
+    const first = path.split('/')[1] ?? ''
+    if (KEY_SHAPE.test(first)) return redirect(res, `${APP_PATH}?from=legacy`)
+    if (!path.startsWith(APP_PATH)) return notFound(res)
+    serveStatic(res, options.webRoot, path.slice(APP_PATH.length - 1), keyParam(req.url))
   }
 
   http.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
     // A browser always sends `Origin` on a WebSocket handshake, and it must
-    // name a page this server served. An upgrade with none is a non-browser
-    // client and is refused: nothing we ship connects that way.
-    const route = routeOf(req.url, token)
-    if (route !== '/ws' || !req.headers.origin || !knownOrigin(state, req)) {
+    // name the host the page was loaded from. An upgrade with none is a
+    // non-browser client and is refused: nothing we ship connects that way.
+    const key = keyParam(req.url)
+    if (
+      pathOf(req.url) !== `${APP_PATH}ws` ||
+      key === null ||
+      !tokenMatches(key, token) ||
+      !req.headers.origin ||
+      !sameOrigin(req)
+    ) {
       socket.destroy()
       return
     }
@@ -562,9 +615,6 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
   }
 
   state.port = port
-  // The address we bound is an origin by definition; everything else is
-  // learned from a navigation that carried the token.
-  state.origins.add(`http://${options.host}:${port}`)
 
   // A stop that arrived while `listen` was pending found no `running` to act
   // on. Honour it here instead of publishing a server nobody asked for.
@@ -597,7 +647,6 @@ function teardown(state: RunningServer): void {
   // how this app has hung on exit before (the codex-discovery hang, #176).
   state.http.closeAllConnections()
   state.sockets.clear()
-  state.origins.clear()
   console.log('[Remote] Stopped')
 }
 
@@ -635,7 +684,7 @@ export function closeSocketsForHub(hubId: number): void {
   if (closed > 0) emitStatus(running)
 }
 
-/** Exported for tests: the token currently in the URL, or null when stopped. */
+/** The key of the running server, or null when stopped. */
 export function currentRemoteToken(): string | null {
   return running?.token ?? null
 }

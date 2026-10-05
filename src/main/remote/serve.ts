@@ -23,17 +23,19 @@
  * toggle-off landing in it queues behind the in-flight command and tears the
  * mapping down as soon as it exists, rather than finding nothing and no-oping.
  *
- * ── The root, never the token path ────────────────────────────────────────
- * `buildServeArgs` refuses to hand the access token to tailscaled. Mounting
- * `/<token>/` at `/` would serve the app with no token in the URL — the app's
- * own auth layer gone, leaving only Tailscale device auth. It is the shortcut
- * a person reaches for when running this by hand, it reads as a convenience,
- * and it is a downgrade. So it is a check, not a comment.
+ * ── The root, and never the key ───────────────────────────────────────────
+ * `buildServeArgs` refuses to hand the access key to tailscaled. A serve
+ * config that carried it — a handler injecting `?k=`, say — would open the
+ * socket to anything that can reach the node, leaving only Tailscale device
+ * auth. It is the shortcut a person reaches for when running this by hand, it
+ * reads as a convenience, and it is a downgrade. So it is a check, not a
+ * comment.
  */
 import { execFileSync } from 'child_process'
 import { getRemoteConfig, setRemoteConfig } from './config'
 import { findTailscaleCli, findTailscaleCliSync, getTailscaleStatus, runTailscale } from './tailscale'
 import type { TailscaleServeStatus } from '../../shared/ipc-types'
+import { appLink } from '../../shared/remote-pairing'
 
 /** Serve talks to tailscaled over a local socket; slow here means wedged. */
 const SERVE_TIMEOUT_MS = 20_000
@@ -100,7 +102,7 @@ export function getServeStatus(): TailscaleServeStatus {
  * The argv for the serve command, with the one argument it must never contain
  * checked for real.
  *
- * The target is the server's ROOT. Everything below it still needs the token,
+ * The target is the server's ROOT. The socket below it still needs the key,
  * which is the app's only authorisation boundary.
  */
 export function buildServeArgs(port: number, token: string): readonly string[] {
@@ -297,7 +299,7 @@ async function installMapping(port: number, token: string): Promise<void> {
   }
   lastError = null
   enableUrl = null
-  publishedUrl = `https://${status.dnsName}/${token}/`
+  publishedUrl = appLink(`https://${status.dnsName}`, token)
 }
 
 /**

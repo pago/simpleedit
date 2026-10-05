@@ -5,7 +5,7 @@
  * it is misleading in a way that costs the user a walk to their desk. Two
  * properties are ENFORCED here rather than promised in the pane's copy:
  *
- *  - **Never loopback.** `http://127.0.0.1:<port>/<token>/` scans perfectly
+ *  - **Never loopback.** `http://127.0.0.1:<port>/app/?k=<key>` scans perfectly
  *    and resolves, on the phone, to the phone. The check is on the URL's own
  *    host, not on a flag the caller passed, because the flag is the thing most
  *    likely to be wrong.
@@ -15,14 +15,34 @@
  * secure context, so dictation only exists on that URL.
  */
 
+/** Where the shell lives. Fixed, so an installed app's scope survives a restart. */
+export const APP_PATH = '/app/'
+
+/** The link a phone scans, and the start URL an install keeps. */
+export function appLink(origin: string, key: string): string {
+  return `${origin}${APP_PATH}?k=${key}`
+}
+
+/**
+ * The same link with the key taken out — where a notification tap lands.
+ *
+ * The installed app already holds its key, and a push is shown, stored and
+ * listed by the OS; the bearer credential has no business riding along in it.
+ */
+export function withoutKey(url: string): string {
+  const parsed = new URL(url)
+  parsed.searchParams.delete('k')
+  return parsed.toString()
+}
+
 export interface PairingInput {
   /** Is the server listening right now? */
   running: boolean
-  /** The URL the server is bound to, token included. Null when stopped. */
+  /** The URL the server is bound to, key included. Null when stopped. */
   directUrl: string | null
   /** True when the bound address belongs to the Tailscale interface. */
   boundToTailscale: boolean
-  /** The HTTPS URL `tailscale serve` publishes, token included, when active. */
+  /** The HTTPS URL `tailscale serve` publishes, key included, when active. */
   serveUrl: string | null
 }
 

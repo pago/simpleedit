@@ -8,10 +8,10 @@
  *
  * Three things this worker does NOT do, each on purpose:
  *
- *  - **It caches nothing.** The page is served from a token-gated origin whose
- *    token is minted per launch, so a cached shell would be a stale one behind
- *    a URL that no longer resolves. Offline is not a use case: without the Mac
- *    there is nothing to show.
+ *  - **It caches nothing.** A cached shell would outlive the main process it
+ *    was built against and talk to a newer one over channels that changed, and
+ *    offline is not a use case: without the Mac there is nothing to show, and
+ *    no key to check a rescan against.
  *  - **It never touches the microphone.** iOS requires a user gesture, and a
  *    hot mic on wake would be wrong even where it is permitted.
  *  - **It never navigates an existing tab.** That reloads it, throwing away

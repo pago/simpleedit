@@ -54,7 +54,7 @@ import { capDiffForRemote } from './remote/payload-cap'
 import { getTailscaleStatus } from './remote/tailscale'
 import { applyServe, getServeStatus, reclaimAbandonedServe, stopServeSync } from './remote/serve'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
-import { pairingTarget } from '../shared/remote-pairing'
+import { pairingTarget, withoutKey } from '../shared/remote-pairing'
 import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepAbandonedAudio } from './remote/stt'
 import {
   addSubscription,
@@ -369,17 +369,19 @@ function syncServe(): Promise<TailscaleServeStatus> {
  * loopback URL (it resolves, on the phone, to the phone), HTTPS-over-Serve
  * first, and nothing at all when the server is down. A notification whose tap
  * opens a dead page is worse than no notification, so this returning null is
- * what makes `handleAgentStatus` stay quiet.
+ * what makes `handleAgentStatus` stay quiet. The key is stripped: the
+ * installed app has its own, and a push outlives the start that minted it.
  */
 function pushTargetUrl(): string | null {
   const status = getRemoteStatus()
   const serve = getServeStatus()
-  return pairingTarget({
+  const { url } = pairingTarget({
     running: status.running,
     directUrl: status.url,
     boundToTailscale: listRemoteInterfaces().some((i) => i.isTailscale && i.address === status.host),
     serveUrl: serve.url,
-  }).url
+  })
+  return url === null ? null : withoutKey(url)
 }
 
 configurePush({

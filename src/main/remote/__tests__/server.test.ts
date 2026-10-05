@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocket } from 'ws'
 import { request, createServer } from 'http'
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const blockers = new Set<number>()
 let nextBlockerId = 1
@@ -17,7 +20,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer } from '../server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer, MANIFEST_LINK } from '../server'
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
 import type { ServerFrame } from '../../../shared/remote-protocol'
@@ -31,11 +34,24 @@ handleInvoke('test:remote-who', (event) => event.sender.clientKey ?? String(even
 handleInvoke('test:remote-boom', () => { throw new Error('handler exploded') })
 handleInvoke('test:remote-is-window', (event) => event.sender.clientKey === undefined)
 
-async function start(): Promise<{ url: string; token: string }> {
+/** A stand-in for the built bundle: the shell files, and a secret outside it. */
+const WEB_ROOT = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'remote-web-'))
+  const root = join(dir, 'web')
+  mkdirSync(join(root, 'assets'), { recursive: true })
+  writeFileSync(join(root, 'index.html'), `<html><head><link rel="manifest" ${MANIFEST_LINK} /></head><body>SimpleEdit</body></html>`)
+  writeFileSync(join(root, 'manifest.webmanifest'), JSON.stringify({ id: '/app/', start_url: './', scope: './' }))
+  writeFileSync(join(root, 'sw.js'), 'self.addEventListener("push", () => {})')
+  writeFileSync(join(root, 'assets', 'app.js'), 'console.log(1)')
+  writeFileSync(join(dir, 'secret.txt'), 'outside the bundle')
+  return root
+})()
+
+async function start(webRoot = WEB_ROOT): Promise<{ url: string; token: string }> {
   const status = await startRemoteServer({
     host: HOST,
     port: 0,
-    webRoot: '/nonexistent-web-root',
+    webRoot,
     attachTarget: () => hub,
   })
   if (!status.running || !status.port) throw new Error(status.error ?? 'server did not start')
@@ -45,7 +61,7 @@ async function start(): Promise<{ url: string; token: string }> {
 
 /** Connect, and resolve once the `hello` frame has landed. */
 async function connect(url: string, token: string): Promise<{ ws: WebSocket; frames: ServerFrame[]; hello: ServerFrame }> {
-  const ws = new WebSocket(`${url.replace('http', 'ws')}/${token}/ws`, { origin: url })
+  const ws = new WebSocket(`${url.replace('http', 'ws')}/app/ws?k=${token}`, { origin: url })
   const frames: ServerFrame[] = []
   ws.on('message', (raw: Buffer) => { frames.push(JSON.parse(raw.toString('utf8')) as ServerFrame) })
   await new Promise<void>((res, rej) => {
@@ -85,6 +101,15 @@ function bindable(port: number): Promise<boolean> {
     const probe = createServer()
     probe.once('error', () => res(false))
     probe.listen(port, HOST, () => probe.close(() => res(true)))
+  })
+}
+
+/** A WebSocket that either opens or is refused; resolves to which. */
+function tryOpen(target: string, origin?: string): Promise<'opened' | 'refused'> {
+  return new Promise((res) => {
+    const ws = new WebSocket(target, origin ? { origin } : {})
+    ws.once('open', () => { ws.close(); res('opened') })
+    ws.once('error', () => res('refused'))
   })
 }
 
@@ -128,148 +153,218 @@ describe('remote server', () => {
     expect(blockers.size).toBe(0)
   })
 
-  it('serves nothing without the token', async () => {
+  it('hands out its link at the shell path, with the key in the query', async () => {
     const { url, token } = await start()
-    expect((await fetch(`${url}/`)).status).toBe(404)
-    expect((await fetch(`${url}/${'0'.repeat(token.length)}/`)).status).toBe(404)
-    // With the right token the route resolves — the bundle just isn't built here.
-    const ok = await fetch(`${url}/${token}/`)
-    expect(ok.status).toBe(404)
-    expect(await ok.text()).toContain('pnpm build:web')
+    expect(getRemoteStatus().url).toBe(`${url}/app/?k=${token}`)
+  })
+
+  // The boundary #190 moved: the shell is public, the socket is not. Every
+  // route a caller WITHOUT the key can reach is listed here.
+  it('serves the shell without the key, and nothing else', async () => {
+    const { url } = await start()
+    const shell = await fetch(`${url}/app/`)
+    expect(shell.status).toBe(200)
+    expect(shell.headers.get('cache-control')).toBe('no-store')
+    expect(shell.headers.get('referrer-policy')).toBe('no-referrer')
+    expect((await fetch(`${url}/app/assets/app.js`)).status).toBe(200)
+    expect((await fetch(`${url}/app/sw.js`)).status).toBe(200)
+
+    // Outside the bundle, by any spelling, is not reachable.
+    expect((await fetch(`${url}/app/../secret.txt`)).status).toBe(404)
+    expect((await fetch(`${url}/app/%2e%2e/secret.txt`)).status).toBe(404)
+    expect((await fetch(`${url}/secret.txt`)).status).toBe(404)
+    expect((await fetch(`${url}/app/nope.js`)).status).toBe(404)
+    // And nothing but GET.
+    expect((await fetch(`${url}/app/`, { method: 'POST', body: '{}' })).status).toBe(404)
+  })
+
+  it('refuses the socket without the current key', async () => {
+    const { url, token } = await start()
+    const ws = url.replace('http', 'ws')
+    for (const target of [
+      `${ws}/app/ws`,
+      `${ws}/app/ws?k=`,
+      `${ws}/app/ws?k=${'0'.repeat(64)}`,
+      `${ws}/app/ws?k=${token.slice(0, 63)}`,
+      `${ws}/app/ws?k=${token}0`,
+      `${ws}/app/ws?k=${token.toUpperCase()}`,
+      // The pre-#190 socket URL, key in the path.
+      `${ws}/${token}/ws`,
+      `${ws}/app/nope?k=${token}`,
+    ]) {
+      expect(await tryOpen(target, url), target).toBe('refused')
+    }
+    expect(await tryOpen(`${ws}/app/ws?k=${token}`, url)).toBe('opened')
+  })
+
+  it('reaches no IPC handler without the key', async () => {
+    const { url } = await start()
+    const seen: string[] = []
+    handleInvoke('test:remote-canary', () => { seen.push('called'); return 'leaked' })
+    const ws = new WebSocket(`${url.replace('http', 'ws')}/app/ws?k=${'1'.repeat(64)}`, { origin: url })
+    const outcome = await new Promise<string>((res) => {
+      ws.once('open', () => {
+        invoke(ws, 1, 'test:remote-canary')
+        res('opened')
+      })
+      ws.once('error', () => res('refused'))
+    })
+    expect(outcome).toBe('refused')
+    // An HTTP request naming a channel is just a path that does not exist.
+    expect((await fetch(`${url}/app/test:remote-canary`)).status).toBe(404)
+    expect(seen).toEqual([])
+  })
+
+  it('answers whether a key is current, and nothing more', async () => {
+    const { url, token } = await start()
+    const current = await fetch(`${url}/app/auth?k=${token}`)
+    expect(current.status).toBe(204)
+    expect(await current.text()).toBe('')
+    expect((await fetch(`${url}/app/auth?k=${'0'.repeat(64)}`)).status).toBe(401)
+    expect((await fetch(`${url}/app/auth`)).status).toBe(401)
+  })
+
+  it('keeps a key from a previous start out', async () => {
+    const first = await start()
+    stopRemoteServer()
+    const second = await start()
+    expect(second.token).not.toBe(first.token)
+    const ws = second.url.replace('http', 'ws')
+    expect(await tryOpen(`${ws}/app/ws?k=${first.token}`, second.url)).toBe('refused')
+    expect((await fetch(`${second.url}/app/auth?k=${first.token}`)).status).toBe(401)
+  })
+
+  // The old installed app and every saved link open `/<key>/`. They must land
+  // on the page that says what happened, not a bare 404 — and must not be
+  // forwarded anything from the path they came with.
+  it('sends a pre-#190 link to the stale-key page', async () => {
+    const { url, token } = await start()
+    for (const old of [`/${'f'.repeat(64)}/`, `/${'f'.repeat(64)}`, `/${token}/`, `/${'f'.repeat(64)}/index.html`]) {
+      const res = await fetch(`${url}${old}`, { redirect: 'manual' })
+      expect(res.status, old).toBe(302)
+      expect(res.headers.get('location'), old).toBe('/app/?from=legacy')
+    }
+  })
+
+  it('redirects the root and the slashless shell path to the shell, keeping the query', async () => {
+    const { url, token } = await start()
+    const root = await fetch(`${url}/`, { redirect: 'manual' })
+    expect(root.status).toBe(302)
+    expect(root.headers.get('location')).toBe('/app/')
+    const bare = await fetch(`${url}/app?k=${token}`, { redirect: 'manual' })
+    expect(bare.headers.get('location')).toBe(`/app/?k=${token}`)
+  })
+
+  // iOS saves the manifest's start URL at install. It has to carry the key the
+  // page was opened with — echoed from the request, never read from the server.
+  it('carries the page\'s own key into the manifest an install reads', async () => {
+    const { url, token } = await start()
+    const page = await (await fetch(`${url}/app/?k=${token}`)).text()
+    expect(page).toContain(`href="./manifest.webmanifest?k=${token}"`)
+    const manifest = (await (await fetch(`${url}/app/manifest.webmanifest?k=${token}`)).json()) as Record<string, string>
+    expect(manifest.start_url).toBe(`./?k=${token}`)
+    expect(manifest.scope).toBe('./')
+    expect(manifest.id).toBe('/app/')
+
+    // Without a key, or with something that is not shaped like one, the files
+    // are served as built — so no request can make them say anything else.
+    expect(await (await fetch(`${url}/app/`)).text()).not.toContain('?k=')
+    const odd = await (await fetch(`${url}/app/?k=%22%3E%3Cscript%3E`)).text()
+    expect(odd).not.toContain('<script>')
+    const plain = (await (await fetch(`${url}/app/manifest.webmanifest`)).json()) as Record<string, string>
+    expect(plain.start_url).toBe('./')
+  })
+
+  it('pins the manifest link the server rewrites to the real index.html', () => {
+    const source = readFileSync(join(__dirname, '../../../web/index.html'), 'utf8')
+    expect(source).toContain(MANIFEST_LINK)
   })
 
   it('refuses a cross-origin request', async () => {
-    const { url, token } = await start()
-    const res = await fetch(`${url}/${token}/`, { headers: { origin: 'http://evil.example' } })
+    const { url } = await start()
+    const res = await fetch(`${url}/app/`, { headers: { origin: 'http://evil.example' } })
     expect(res.status).toBe(403)
   })
 
-  // A DNS-rebound page sends an Origin and a Host that agree with each OTHER
-  // while naming a hostname that resolves to us. Self-consistency proves
-  // nothing, and neither does resolving the hostname — rebinding makes it
-  // resolve to the bound address by construction. `fetch` refuses to forge
-  // Host, so this goes out over a raw request.
-  it('refuses an origin belonging to no page it ever served', async () => {
-    const { url, token } = await start()
-    const { port } = new URL(url)
-    const status = await rawGet(Number(port), `/${token}/`, {
-      host: `rebound.example:${port}`,
-      origin: `http://rebound.example:${port}`,
-    })
-    expect(status).toBe(403)
-  })
-
-  // The blocker: string-comparing the Origin against the bound IP rejects
-  // `localhost` and every MagicDNS name. Module scripts and stylesheets are
-  // fetched in CORS mode, so they carry Origin — the page loads and then every
-  // asset 403s, which is a blank screen with no error, on the phone path this
-  // whole feature exists for.
+  // The blocker that shaped this check: string-comparing the Origin against the
+  // bound IP rejects `localhost` and every MagicDNS name. Module scripts and
+  // stylesheets are fetched in CORS mode, so they carry Origin — the page loads
+  // and then every asset 403s, a blank screen with no error.
   it('serves assets to a page reached by a name, not just the bound IP', async () => {
-    const { url, token } = await start()
+    const { url } = await start()
     const { port } = new URL(url)
-    const asName = { host: `localhost:${port}`, origin: `http://localhost:${port}` }
-
-    // Before any navigation under that name, the origin is unknown.
-    expect(await rawGet(Number(port), `/${token}/`, asName)).toBe(403)
-
-    // The navigation itself carries the token and no Origin — which is what
-    // makes it proof that a token holder reached us under this name.
-    expect(await rawGet(Number(port), `/${token}/`, { host: `localhost:${port}` })).toBe(404)
-
-    // Now the page's subresources are recognised as ours. (404 rather than 200
-    // only because the bundle is not built in this suite.)
-    expect(await rawGet(Number(port), `/${token}/assets/app.js`, asName)).toBe(404)
+    expect(
+      await rawGet(Number(port), '/app/assets/app.js', { host: `localhost:${port}`, origin: `http://localhost:${port}` }),
+    ).toBe(200)
+    // An Origin naming some other host than the one addressed is cross-origin.
+    expect(
+      await rawGet(Number(port), '/app/assets/app.js', { host: `localhost:${port}`, origin: `http://evil.example:${port}` }),
+    ).toBe(403)
   })
 
   // `tailscale serve` terminates TLS and reverse-proxies to a local HTTP
   // server, so the browser's Origin is `https://<name>.ts.net` while the
-  // request reaching us is plain HTTP. Recording `http://` there means every
-  // module script and stylesheet 403s — a blank page, on the deployment phase
-  // 4 requires, since getUserMedia needs a secure context.
+  // request reaching us is plain HTTP.
   it('recognises a page served through a TLS-terminating proxy', async () => {
     const { url, token } = await start()
     const { port } = new URL(url)
     const NAME = 'mac.tailnet.ts.net'
-
-    // The navigation, as the proxy forwards it: plain HTTP, no Origin, with
-    // the real scheme and name in the forwarded headers.
-    expect(
-      await rawGet(Number(port), `/${token}/`, {
-        host: `127.0.0.1:${port}`,
-        'x-forwarded-proto': 'https',
-        'x-forwarded-host': NAME,
-      }),
-    ).toBe(404)
-
-    // The assets the browser then fetches, carrying the origin it really has.
-    expect(
-      await rawGet(Number(port), `/${token}/assets/app.js`, {
-        host: `127.0.0.1:${port}`,
-        origin: `https://${NAME}`,
-        'x-forwarded-proto': 'https',
-        'x-forwarded-host': NAME,
-      }),
-    ).toBe(404)
-
+    const proxied = { host: `127.0.0.1:${port}`, 'x-forwarded-proto': 'https', 'x-forwarded-host': NAME }
+    expect(await rawGet(Number(port), '/app/assets/app.js', { ...proxied, origin: `https://${NAME}` })).toBe(200)
     // And not some other name the proxy never mentioned.
-    expect(
-      await rawGet(Number(port), `/${token}/assets/app.js`, {
-        host: `127.0.0.1:${port}`,
-        origin: 'https://elsewhere.ts.net',
-      }),
-    ).toBe(403)
+    expect(await rawGet(Number(port), '/app/assets/app.js', { ...proxied, origin: 'https://elsewhere.ts.net' })).toBe(403)
+
+    const opened = await new Promise<string>((res) => {
+      const ws = new WebSocket(`${url.replace('http', 'ws')}/app/ws?k=${token}`, {
+        origin: `https://${NAME}`,
+        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': NAME },
+      })
+      ws.once('open', () => { ws.close(); res('opened') })
+      ws.once('error', () => res('refused'))
+    })
+    expect(opened).toBe('opened')
   })
 
-  it('will not learn an origin from a request without the token', async () => {
-    const { url, token } = await start()
+  // A DNS-rebound page sends an Origin and a Host that agree with each other.
+  // It can read the public shell; what it must not reach is the socket, and
+  // the key is what stops it there.
+  it('lets a rebound name read only the shell', async () => {
+    const { url } = await start()
     const { port } = new URL(url)
-    // A navigation with the WRONG token must not register its Host, or an
-    // attacker could enrol their own origin without holding the credential.
-    expect(await rawGet(Number(port), `/wrong-token/`, { host: `evil.example:${port}` })).toBe(404)
-    expect(
-      await rawGet(Number(port), `/${token}/`, {
-        host: `evil.example:${port}`,
-        origin: `http://evil.example:${port}`,
-      }),
-    ).toBe(403)
+    const rebound = { host: `rebound.example:${port}`, origin: `http://rebound.example:${port}` }
+    expect(await rawGet(Number(port), '/app/', rebound)).toBe(200)
+    expect(await rawGet(Number(port), `/app/auth?k=${'0'.repeat(64)}`, rebound)).toBe(401)
+    const opened = await new Promise<string>((res) => {
+      const ws = new WebSocket(`ws://${HOST}:${port}/app/ws?k=${'0'.repeat(64)}`, {
+        origin: `http://rebound.example:${port}`,
+        headers: { host: `rebound.example:${port}` },
+      })
+      ws.once('open', () => res('opened'))
+      ws.once('error', () => res('refused'))
+    })
+    expect(opened).toBe('refused')
   })
 
   it('survives a URL that will not percent-decode', async () => {
-    const { url, token } = await start()
+    const { url } = await start()
     // A truncated pasted link. An uncaught URIError here would take the whole
     // main process with it, orphaning every agent PTY.
-    expect((await fetch(`${url}/${token}/%`)).status).toBe(404)
+    expect((await fetch(`${url}/app/%`)).status).toBe(404)
     expect(getRemoteStatus().running).toBe(true)
   })
 
-  it('redirects the token path without a trailing slash', async () => {
-    const { url, token } = await start()
-    const res = await fetch(`${url}/${token}`, { redirect: 'manual' })
-    // Serving index.html here would resolve every asset and the socket URL one
-    // level up, without the token: a blank page and a silent reconnect loop.
-    expect(res.status).toBe(301)
-    expect(res.headers.get('location')).toBe(`/${token}/`)
+  it('says the bundle is missing rather than serving nothing quietly', async () => {
+    const { url } = await start('/nonexistent-web-root')
+    const res = await fetch(`${url}/app/`)
+    expect(res.status).toBe(404)
+    expect(await res.text()).toContain('pnpm build:web')
   })
 
-  it('refuses a socket on the wrong path or a foreign origin', async () => {
+  it('refuses a socket with the key but a foreign origin, or no origin', async () => {
     const { url, token } = await start()
-    const wsUrl = url.replace('http', 'ws')
-    for (const target of [`${wsUrl}/${token}/nope`, `${wsUrl}/wrong-token/ws`]) {
-      await expect(
-        new Promise((res, rej) => {
-          const ws = new WebSocket(target, { origin: url })
-          ws.once('open', () => res('opened'))
-          ws.once('error', rej)
-        }),
-      ).rejects.toBeTruthy()
-    }
-    await expect(
-      new Promise((res, rej) => {
-        const ws = new WebSocket(`${wsUrl}/${token}/ws`, { origin: 'http://evil.example' })
-        ws.once('open', () => res('opened'))
-        ws.once('error', rej)
-      }),
-    ).rejects.toBeTruthy()
+    const target = `${url.replace('http', 'ws')}/app/ws?k=${token}`
+    expect(await tryOpen(target, 'http://evil.example')).toBe('refused')
+    expect(await tryOpen(target)).toBe('refused')
   })
 
   it('joins the existing hub rather than minting an identity', async () => {

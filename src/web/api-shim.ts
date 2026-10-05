@@ -6,8 +6,11 @@
  * through those four methods, so a faithful shim is what lets the mobile
  * surfaces of later phases reuse them instead of reimplementing them.
  *
- * The page is served from `/<token>/`, so the socket URL is derived from
- * `location` and the token is never written down here.
+ * The socket needs the access key; the page that loads this does not. So the
+ * key is handed in (`lib/remote-key.ts` decides which one), and a socket the
+ * server refuses is followed by asking `/app/auth` whether that key is still
+ * current — a refused upgrade looks the same to a browser as an unreachable
+ * Mac, and only one of them is fixed by rescanning.
  */
 import type { InvokeMap, EventMap, SendMap } from '../shared/ipc-types'
 import type { ServerFrame } from '../shared/remote-protocol'
@@ -53,7 +56,15 @@ export interface RemoteIdentity {
   clientKey: string
 }
 
-export type ConnectionState = 'connecting' | 'open' | 'closed'
+/**
+ * `stale`: the Mac answered and does not know this key — it restarted, or
+ * remote access went off and on. Retrying cannot fix that, so the shim stops
+ * until it is given a new key. `unpaired`: there was no key to try at all.
+ */
+export type ConnectionState = 'connecting' | 'open' | 'closed' | 'stale' | 'unpaired'
+
+/** What `/app/auth` said. `unknown` covers every way of not getting an answer. */
+export type KeyVerdict = 'current' | 'stale' | 'unknown'
 
 export interface RemoteConnection {
   readonly state: () => ConnectionState
@@ -71,6 +82,12 @@ export interface RemoteConnection {
   /** Called on every `hello`, including a reconnect's. */
   onIdentity: (fn: (identity: RemoteIdentity) => void) => () => void
   /**
+   * Reconnect with a new key, without navigating. A navigation would end the
+   * standalone app's camera, its socket and every screen's state; the push
+   * subscription belongs to the worker and is untouched either way.
+   */
+  setKey: (key: string) => void
+  /**
    * Drop this socket and connect again at once, with no backoff.
    *
    * How the phone switches project: the new socket's URL names the other
@@ -81,31 +98,61 @@ export interface RemoteConnection {
   reconnect: () => void
 }
 
-const RECONNECT_MIN_MS = 500
-const RECONNECT_MAX_MS = 10_000
-
-export function socketUrl(params: Record<string, string> = {}): string {
-  // `location.pathname` is `/<token>/`, so a relative 'ws' lands on the
-  // token-gated endpoint without this file ever handling the token itself.
-  const url = new URL('ws', window.location.href)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
-  return url.toString()
-}
-
 export interface RemoteApiOptions {
+  key: string | null
   /**
    * Query parameters for each new socket, read at every connect — which is
    * how a reconnect asks for the project the phone remembers.
    */
   attachParams?: () => Record<string, string>
+  /** Injected by tests; the default asks the server. */
+  checkKey?: (key: string) => Promise<KeyVerdict>
 }
 
-export function installRemoteApi(options: RemoteApiOptions = {}): RemoteConnection {
+const RECONNECT_MIN_MS = 500
+const RECONNECT_MAX_MS = 10_000
+
+/** Relative to the page, so it follows wherever the server mounts the shell. */
+function keyedUrl(name: string, key: string): URL {
+  const url = new URL(name, window.location.href)
+  url.search = `?k=${encodeURIComponent(key)}`
+  url.hash = ''
+  return url
+}
+
+export function socketUrl(key: string, params: Record<string, string> = {}): string {
+  const url = keyedUrl('ws', key)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  for (const [name, value] of Object.entries(params)) {
+    // The key is never something an attach parameter can replace.
+    if (name !== 'k') url.searchParams.set(name, value)
+  }
+  return url.toString()
+}
+
+export async function checkKeyWithServer(key: string): Promise<KeyVerdict> {
+  try {
+    const res = await fetch(keyedUrl('auth', key), { cache: 'no-store' })
+    if (res.status === 204) return 'current'
+    if (res.status === 401) return 'stale'
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+export function installRemoteApi(options: RemoteApiOptions): RemoteConnection {
+  const checkKey = options.checkKey ?? checkKeyWithServer
+  let key = options.key
   let ws: WebSocket | null = null
   let state: ConnectionState = 'connecting'
   let nextId = 1
   let backoff = RECONNECT_MIN_MS
+  let retry: ReturnType<typeof setTimeout> | null = null
+  /** Bumped by `setKey`, so a verdict about the previous key is not acted on. */
+  let generation = 0
+  /** A `reconnect()` is waiting for this socket's close; skip the backoff. */
+  let immediate = false
 
   const pending = new Map<number, Pending>()
   const listeners = new Map<string, Set<Listener>>()
@@ -140,6 +187,16 @@ export function installRemoteApi(options: RemoteApiOptions = {}): RemoteConnecti
    * still connecting, and again during a reconnect backoff.
    */
   function post(frame: object, id?: number): void {
+    // No socket is coming until a new key arrives, which may be never. Holding
+    // the frame would replay it minutes later — a keystroke typed at the stale
+    // page landing in an agent's PTY after the rescan.
+    if (state === 'stale' || state === 'unpaired') {
+      if (id !== undefined) {
+        pending.get(id)?.reject(new NotSentError('Not connected: this app needs a current key'))
+        pending.delete(id)
+      }
+      return
+    }
     const raw = JSON.stringify(frame)
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(raw)
     else outbox.push({ raw, id })
@@ -162,16 +219,62 @@ export function installRemoteApi(options: RemoteApiOptions = {}): RemoteConnecti
     else waiting.reject(new Error(frame.error))
   }
 
-  /** A `reconnect()` is waiting for this socket's close; skip the backoff. */
-  let immediate = false
-  let retryTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Fail everything the socket was carrying. The outbox goes with the socket it
+   * was filled for: anything still in it never left the device, which is a
+   * materially different thing to tell the caller than "sent, no answer" — so
+   * those calls are rejected apart.
+   */
+  function failInFlight(): void {
+    // The key belonged to THAT socket. Holding it would have the next
+    // `pty:owner-changed` compared against an identity that no longer exists.
+    identity = null
+    const neverSent = new Set(outbox.map((queued) => queued.id))
+    outbox.length = 0
+    // Every in-flight call dies with the socket. Leaving them pending would
+    // hang whatever awaited them for the rest of the page's life.
+    for (const [id, waiting] of pending) {
+      waiting.reject(
+        neverSent.has(id)
+          ? new NotSentError('The connection went before the call was sent')
+          : new ConnectionLostError('Connection lost'),
+      )
+    }
+    pending.clear()
+  }
+
+  function scheduleRetry(): void {
+    retry = setTimeout(connect, backoff)
+    backoff = Math.min(backoff * 2, RECONNECT_MAX_MS)
+  }
+
+  async function retryUnlessStale(attempt: number, tried: string): Promise<void> {
+    const verdict = await checkKey(tried).catch((): KeyVerdict => 'unknown')
+    if (attempt !== generation) return
+    if (verdict === 'stale') {
+      setState('stale')
+      failInFlight()
+      return
+    }
+    scheduleRetry()
+  }
 
   function connect(): void {
+    retry = null
+    if (!key) {
+      setState('unpaired')
+      failInFlight()
+      return
+    }
     setState('connecting')
-    const socket = new WebSocket(socketUrl(options.attachParams?.()))
+    const attempt = generation
+    const tried = key
+    let opened = false
+    const socket = new WebSocket(socketUrl(tried, options.attachParams?.()))
     ws = socket
 
     socket.addEventListener('open', () => {
+      opened = true
       backoff = RECONNECT_MIN_MS
       setState('open')
       for (const { raw } of outbox.splice(0)) socket.send(raw)
@@ -190,35 +293,18 @@ export function installRemoteApi(options: RemoteApiOptions = {}): RemoteConnecti
     socket.addEventListener('close', () => {
       if (ws !== socket) return
       ws = null
-      // The key belonged to THAT socket. Holding it would have the next
-      // `pty:owner-changed` compared against an identity that no longer exists.
-      identity = null
       setState('closed')
-      // The outbox goes with the socket it was filled for. Anything still in it
-      // never left the device, which is a materially different thing to tell the
-      // caller than "sent, no answer" — so those calls are rejected apart.
-      const neverSent = new Set(outbox.map((queued) => queued.id))
-      outbox.length = 0
-      // Every in-flight call dies with the socket. Leaving them pending would
-      // hang whatever awaited them for the rest of the page's life.
-      for (const [id, waiting] of pending) {
-        waiting.reject(
-          neverSent.has(id)
-            ? new NotSentError('The connection went before the call was sent')
-            : new ConnectionLostError('Connection lost'),
-        )
-      }
-      pending.clear()
+      failInFlight()
       if (immediate) {
         immediate = false
         connect()
         return
       }
-      retryTimer = setTimeout(() => {
-        retryTimer = null
-        connect()
-      }, backoff)
-      backoff = Math.min(backoff * 2, RECONNECT_MAX_MS)
+      // A socket that never opened may have been refused for its key. One that
+      // opened and then dropped had a good key a moment ago; its retry will ask
+      // if that has changed.
+      if (opened) scheduleRetry()
+      else void retryUnlessStale(attempt, tried)
     })
 
     // `error` is always followed by `close`, which owns the retry.
@@ -274,6 +360,20 @@ export function installRemoteApi(options: RemoteApiOptions = {}): RemoteConnecti
   connect()
   ;(globalThis as unknown as { api: typeof api }).api = api
 
+  function setKey(next: string): void {
+    key = next
+    generation++
+    if (retry !== null) clearTimeout(retry)
+    backoff = RECONNECT_MIN_MS
+    const previous = ws
+    ws = null
+    if (previous) {
+      failInFlight()
+      previous.close()
+    }
+    connect()
+  }
+
   return {
     state: () => state,
     identity: () => identity,
@@ -286,12 +386,18 @@ export function installRemoteApi(options: RemoteApiOptions = {}): RemoteConnecti
       if (identity) fn(identity)
       return () => { identityWatchers.delete(fn) }
     },
+    setKey,
     reconnect() {
+      // While stale or unpaired only a new key helps; a reconnect would just
+      // be refused again.
+      if (state === 'stale' || state === 'unpaired') return
       // During a backoff there is no socket to close; bring the retry forward.
       // Its timer has to go, or it would open a second socket later.
       if (!ws) {
-        if (retryTimer !== null) clearTimeout(retryTimer)
-        retryTimer = null
+        if (retry !== null) clearTimeout(retry)
+        // A key check may still be out for the socket that dropped; its answer
+        // would schedule a retry alongside this connect.
+        generation++
         connect()
         return
       }

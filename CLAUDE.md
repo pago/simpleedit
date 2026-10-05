@@ -315,6 +315,35 @@ one stack at a time: asked for from the other tab or a notification, it is
 shown where it already is, as the same entry (`nav.ts` `bringToFront`), so its
 screen stays mounted and two terminals never attach to one PTY.
 
+### Phone companion: remote access and the access key
+`src/web/` is the phone app, served by `remote/server.ts` and talking to main
+over one WebSocket that speaks the renderer's IPC channels (`api-shim.ts`).
+Its security rule, which `server.ts`'s header states in full:
+- **The key is per server start** (32 random bytes, never persisted) and it
+  gates the **WebSocket** (`/app/ws?k=<key>`, constant-time compare). The
+  socket is the only way to any IPC channel, event or data.
+- **Only the static shell is public**: the built bundle under `/app/`, served
+  without the key because it is the same for everyone and holds no data. That
+  is what gives an installed app a scope that survives a restart. The shell's
+  two varying responses (index.html's manifest link, the manifest's
+  `start_url`) only echo the request's own `?k=`, so an iOS install saves it.
+  `/app/auth?k=` answers one bit (204/401) so the app can tell a stale key from
+  an unreachable Mac. Anything outside the bundle is a 404; a pre-#190
+  `/<key>/` link redirects to `/app/?from=legacy`.
+- Origin: any `Origin` must name the host the request addressed (forwarded
+  headers trusted from loopback only, for `tailscale serve`); the upgrade must
+  carry one. Bind rules: explicit host, loopback by default, never `0.0.0.0`.
+- **Recovery is in-app.** On iOS the Camera opens Safari, whose storage is
+  separate from the Home Screen app's, and leaving the scope opens an in-app
+  browser — so the app keeps its key in its own `localStorage`
+  (`lib/remote-key.ts`: a rescanned key outranks the start URL iOS replays) and
+  `PairScreen` scans (BarcodeDetector, else jsQR) or takes a pasted link, then
+  `connection.setKey` reconnects without navigating. Only same-origin links are
+  accepted, so recovery needs a stable origin: Serve's HTTPS name, or a fixed
+  port.
+- **Push carries no key** (`withoutKey`): the subscription and the worker's
+  `/app/` scope don't depend on it, so push survives a key change.
+
 ### Layout
 The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
 that session's `SessionWorkspace` (all others stay mounted but hidden). A
@@ -372,6 +401,7 @@ src/
     prompts/           ← Overridable prompt-instruction registry + userData overrides
     config-dir.ts      ← `userData/config[/sub]` helper for persisted state
     lsp-manager.ts     ← Language-server management
+    remote/server.ts   ← Phone companion server: public shell under /app/, key-gated socket
     session-store.ts   ← Session persistence (durable sessions)
     recent-repos.ts    ← Recently opened repos (persisted JSON)
   preload/

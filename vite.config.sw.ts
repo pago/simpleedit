@@ -8,8 +8,8 @@ const here = (path: string): string => fileURLToPath(new URL(path, import.meta.u
  *
  * Separate from `vite.config.web.ts` for two reasons that both matter:
  *
- *  - **A fixed name.** The page registers `sw.js` relative to `/<token>/`, and
- *    a hashed filename would need the page to look it up first — one more
+ *  - **A fixed name.** The page registers `sw.js` relative to `/app/`, and a
+ *    hashed filename would need the page to look it up first — one more
  *    thing to be stale after a rebuild.
  *  - **A classic script, not a module.** `type: 'module'` service workers are
  *    the newest part of this API surface and the least evenly supported, and

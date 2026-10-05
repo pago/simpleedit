@@ -329,7 +329,7 @@
         <p class="mt-3 text-xs leading-relaxed text-zinc-500">
           Serving port {serve.port}. The mapping is removed when remote access stops, when
           SimpleEdit quits, and at the next launch if it ever crashes — it proxies the server root,
-          so the token is still required on every request.
+          so the access key is still required for every connection.
         </p>
       {/if}
     </div>
@@ -343,9 +343,18 @@
           <QrCode value={pairing.url} label="Pairing code for remote access" />
           <div class="min-w-0 flex-1 space-y-2">
             <p class="text-[13px] leading-relaxed text-zinc-300">
-              Point the phone's camera at this. The code carries the link and the access token
-              together, so a photo of it is a password — and it stops working the moment remote
-              access is turned off, because the token is minted fresh on every start.
+              Point the phone's camera at this. The code carries the access key, so a photo of it
+              is a password; it stops working when remote access stops, because the key is minted
+              fresh on every start.
+              {#if pairing.secure}
+                After a restart, open the Home Screen app and use
+                <span class="text-zinc-100">Scan QR code</span> in it — this address stays the same,
+                so the app and its notifications carry on.
+              {:else}
+                This address changes port on every start, so after a restart scan the new code with
+                the Camera again; a Home Screen copy cannot follow it. Tailscale Serve gives a
+                stable address.
+              {/if}
             </p>
             <code class="block break-all rounded-md bg-zinc-950 px-2.5 py-2 text-[11px] text-zinc-400">{pairing.url}</code>
             {#if pairing.secure}
@@ -374,7 +383,7 @@
         >{copied ? 'Copied' : 'Copy'}</button>
       </div>
       <p class="mt-2 text-xs leading-relaxed text-zinc-500">
-        The random path segment is the access token. It is regenerated every time the server
+        The <code>k=</code> part is the access key. It is regenerated every time the server
         starts, so an old link stops working — share the current one, and never through a
         service that stores it.
       </p>

@@ -10,7 +10,7 @@ import type { RemoteAccessStatus } from '../src/shared/ipc-types'
  *
  * Be clear about what this proves and what it does not.
  *
- * PROVED here: the service worker registers under the token-gated scope, a
+ * PROVED here: the service worker registers under the shell's scope, a
  * push event delivered to it produces exactly the notification the payload
  * asked for, and the manifest that makes an iOS install possible is served
  * with the right content type. The push is injected through CDP's
@@ -111,14 +111,23 @@ test('serves a manifest an iOS install can actually use', async ({ window }) => 
   // there is no standalone install, and so no permission to ask for.
   expect(response.headers.get('content-type')).toContain('application/manifest+json')
 
-  const manifest = (await response.json()) as { start_url: string; display: string; scope: string }
+  const manifest = (await response.json()) as { id: string; start_url: string; display: string; scope: string }
   expect(manifest.display).toBe('standalone')
-  // Relative, so `start_url` resolves under `/<token>/` — the only way an
-  // installed app can reach a server that gates every request on the token.
-  expect(manifest.start_url).toBe('.')
-  expect(manifest.scope).toBe('.')
+  // A scope without the key, so the installed app survives a restart, and an
+  // id that never changes, so a reinstall is the same app.
+  expect(manifest.scope).toBe('./')
+  expect(manifest.id).toBe('/app/')
+  expect(new URL(manifest.start_url, response.url).pathname).toBe('/app/')
 
-  // The worker itself is served, as a script, under the same token.
+  // The page an install is made from links a manifest whose start URL
+  // carries that page's key — what iOS saves.
+  const key = new URL(status.url!).searchParams.get('k')!
+  const page = await (await fetch(status.url!)).text()
+  expect(page).toContain(`manifest.webmanifest?k=${key}`)
+  const keyed = (await (await fetch(new URL(`manifest.webmanifest?k=${key}`, status.url!).toString())).json()) as { start_url: string }
+  expect(keyed.start_url).toBe(`./?k=${key}`)
+
+  // The worker itself is served, as a script, at the shell's scope.
   const worker = await fetch(new URL('sw.js', status.url!).toString())
   expect(worker.status).toBe(200)
   expect(worker.headers.get('content-type')).toContain('javascript')
@@ -131,6 +140,10 @@ test('a push reaches the worker and becomes the notification the payload asked f
   const terminalId = await spawnTerminalSession(window)
   const status = await enableRemote(window)
   const url = byName(status.url!)
+  // What main puts in a payload: the shell, never the key (`withoutKey`).
+  const shell = new URL(url)
+  shell.search = ''
+  const tapUrl = `${shell.toString()}#session=${terminalId}`
 
   const page = await context.newPage()
   await page.goto(url)
@@ -148,7 +161,7 @@ test('a push reaches the worker and becomes the notification the payload asked f
     await navigator.serviceWorker.ready
     return registration.scope
   })
-  expect(scope).toBe(url)
+  expect(scope).toBe(shell.toString())
 
   // CDP fires a real `push` event in the worker — no push service involved.
   const cdp = await context.newCDPSession(page)
@@ -170,7 +183,7 @@ test('a push reaches the worker and becomes the notification the payload asked f
       title: 'Fix the flaky test',
       body: 'Blocked on you — feat/push',
       terminalId,
-      url: `${url}#session=${terminalId}`,
+      url: tapUrl,
       windowId: 7,
     }),
   })
@@ -199,9 +212,9 @@ test('a push reaches the worker and becomes the notification the payload asked f
   expect(shown[0].body).toBe('Blocked on you — feat/push')
   // One notification per session, so a session cannot stack two entries.
   expect(shown[0].tag).toBe(`simpleedit-${terminalId}`)
-  // The tap target travels in the payload, not in the worker's scope: the
-  // token is minted per launch, so a worker outlives the scope it registered at.
-  expect(shown[0].data.url).toBe(`${url}#session=${terminalId}`)
+  // The tap target travels in the payload, and never carries the key: the app
+  // holds its own, and a notification outlives the start that minted it.
+  expect(shown[0].data.url).toBe(tapUrl)
   expect(shown[0].data.terminalId).toBe(terminalId)
   // A phone joins ONE window's hub, so a tap has to be able to say when the
   // session it names lives on another.

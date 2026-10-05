@@ -53,6 +53,9 @@ class FakeSocket {
   }
 }
 
+const KEY = 'a'.repeat(64)
+const OPTIONS = { key: KEY, checkKey: async () => 'unknown' as const }
+
 const RealWebSocket = globalThis.WebSocket
 
 beforeEach(() => {
@@ -75,7 +78,7 @@ function invokes(socket: FakeSocket): { channel: string; args: unknown[] }[] {
 
 describe('api-shim outbox', () => {
   it('flushes a call made before the first open', async () => {
-    installRemoteApi()
+    installRemoteApi(OPTIONS)
     const first = FakeSocket.instances[0]
 
     const call = window.api.invoke('session:list')
@@ -90,7 +93,7 @@ describe('api-shim outbox', () => {
   })
 
   it('does not replay a queued call whose promise it already rejected', async () => {
-    installRemoteApi()
+    installRemoteApi(OPTIONS)
     const first = FakeSocket.instances[0]
 
     // Queued while the socket is still connecting, then the connection fails.
@@ -134,7 +137,7 @@ describe('api-shim outbox', () => {
     // frame is buffered, the close then rejects its promise, and the next
     // socket would carry it. For `screenprs:submit-review` that is a review
     // posted after the user was told it might not have been.
-    installRemoteApi()
+    installRemoteApi(OPTIONS)
     const first = FakeSocket.instances[0]
     first.open()
 
@@ -160,7 +163,7 @@ describe('api-shim outbox', () => {
     // a call that was never sent had no effect, while one that was sent and
     // never answered may have had every effect it asked for. Only the first is
     // safe to retry without checking GitHub first.
-    installRemoteApi()
+    installRemoteApi(OPTIONS)
     const first = FakeSocket.instances[0]
     first.open()
 
@@ -178,7 +181,7 @@ describe('api-shim outbox', () => {
   })
 
   it('still delivers a call made while waiting for the reconnect', async () => {
-    installRemoteApi()
+    installRemoteApi(OPTIONS)
     const first = FakeSocket.instances[0]
     first.open()
     first.close()
@@ -200,7 +203,7 @@ describe('api-shim outbox', () => {
 describe('api-shim reconnect', () => {
   it('names the remembered project on every socket it opens', () => {
     let params: Record<string, string> = { repo: '/p/a.git', window: '1' }
-    const connection = installRemoteApi({ attachParams: () => params })
+    const connection = installRemoteApi({ ...OPTIONS, attachParams: () => params })
     const first = FakeSocket.instances[0]
     expect(new URL(first.url).searchParams.get('repo')).toBe('/p/a.git')
     expect(new URL(first.url).searchParams.get('window')).toBe('1')
@@ -211,10 +214,42 @@ describe('api-shim reconnect', () => {
     const second = FakeSocket.instances[1]
     expect(first.readyState).toBe(3)
     expect(new URL(second.url).searchParams.get('repo')).toBe('/p/b.git')
+    // The project pick and the key travel side by side; neither replaces the other.
+    expect(new URL(second.url).searchParams.get('k')).toBe(KEY)
+  })
+
+  it('never lets an attach parameter stand in for the key', () => {
+    installRemoteApi({ ...OPTIONS, attachParams: () => ({ k: 'f'.repeat(64), window: '3' }) })
+    const url = new URL(FakeSocket.instances[0].url)
+    expect(url.searchParams.getAll('k')).toEqual([KEY])
+    expect(url.searchParams.get('window')).toBe('3')
+  })
+
+  // The refused socket's key check is still in flight when the reconnect
+  // opens a new one; its answer must not schedule a second socket.
+  it('drops the key check of a socket a reconnect replaced', async () => {
+    let answer: (verdict: 'unknown') => void = () => {}
+    const connection = installRemoteApi({ key: KEY, checkKey: () => new Promise((resolve) => { answer = resolve }) })
+    FakeSocket.instances[0].close()
+    connection.reconnect()
+    expect(FakeSocket.instances).toHaveLength(2)
+    answer('unknown')
+    await Promise.resolve()
+    await Promise.resolve()
+    vi.advanceTimersByTime(60_000)
+    expect(FakeSocket.instances).toHaveLength(2)
+  })
+
+  it('does nothing while the key is out of date — only a new key helps', async () => {
+    const connection = installRemoteApi({ key: KEY, checkKey: async () => 'stale' })
+    FakeSocket.instances[0].close()
+    await vi.waitFor(() => expect(connection.state()).toBe('stale'))
+    connection.reconnect()
+    expect(FakeSocket.instances).toHaveLength(1)
   })
 
   it('connects again at once, not after the backoff', () => {
-    const connection = installRemoteApi()
+    const connection = installRemoteApi(OPTIONS)
     FakeSocket.instances[0].open()
     connection.reconnect()
     expect(FakeSocket.instances).toHaveLength(2)
@@ -223,7 +258,7 @@ describe('api-shim reconnect', () => {
   // A reconnect during a backoff brings the retry forward. Leaving its timer
   // armed would open a second socket later, attached to a window of its own.
   it('opens exactly one socket when asked during a backoff', () => {
-    const connection = installRemoteApi()
+    const connection = installRemoteApi(OPTIONS)
     FakeSocket.instances[0].close()
     connection.reconnect()
     expect(FakeSocket.instances).toHaveLength(2)
@@ -232,10 +267,109 @@ describe('api-shim reconnect', () => {
   })
 
   it('fails the calls the old socket carried, as for any lost connection', async () => {
-    const connection = installRemoteApi()
+    const connection = installRemoteApi(OPTIONS)
     FakeSocket.instances[0].open()
     const call = (globalThis as unknown as { api: { invoke: (c: string) => Promise<unknown> } }).api.invoke('session:list')
     connection.reconnect()
     await expect(call).rejects.toThrow('Connection lost')
+  })
+})
+
+describe('api-shim key', () => {
+  it('carries the key on the socket URL, not in the page path', () => {
+    installRemoteApi(OPTIONS)
+    const url = new URL(FakeSocket.instances[0].url)
+    expect(url.pathname.endsWith('/ws')).toBe(true)
+    expect(url.searchParams.get('k')).toBe(KEY)
+  })
+
+  it('does not try to connect with no key at all', () => {
+    const connection = installRemoteApi({ key: null, checkKey: async () => 'unknown' })
+    expect(FakeSocket.instances).toHaveLength(0)
+    expect(connection.state()).toBe('unpaired')
+  })
+
+  // A refused upgrade and an unreachable Mac look identical to a browser.
+  // Only the server can say which, and only one of them is fixed by a rescan.
+  it('stops retrying once the server says the key is out of date', async () => {
+    const asked: string[] = []
+    const connection = installRemoteApi({ key: KEY, checkKey: async (k) => { asked.push(k); return 'stale' } })
+    FakeSocket.instances[0].close()
+    await vi.waitFor(() => expect(connection.state()).toBe('stale'))
+    expect(asked).toEqual([KEY])
+    vi.advanceTimersByTime(60_000)
+    expect(FakeSocket.instances).toHaveLength(1)
+  })
+
+  it('keeps retrying while the Mac is merely unreachable', async () => {
+    installRemoteApi({ key: KEY, checkKey: async () => 'unknown' })
+    FakeSocket.instances[0].close()
+    await Promise.resolve()
+    await Promise.resolve()
+    vi.advanceTimersByTime(1000)
+    expect(FakeSocket.instances).toHaveLength(2)
+  })
+
+  it('reconnects on a new key at once, without a reload', async () => {
+    const connection = installRemoteApi({ key: KEY, checkKey: async () => 'stale' })
+    FakeSocket.instances[0].close()
+    await vi.waitFor(() => expect(connection.state()).toBe('stale'))
+
+    const fresh = 'b'.repeat(64)
+    connection.setKey(fresh)
+    expect(FakeSocket.instances).toHaveLength(2)
+    expect(new URL(FakeSocket.instances[1].url).searchParams.get('k')).toBe(fresh)
+    FakeSocket.instances[1].open()
+    expect(connection.state()).toBe('open')
+  })
+
+  // The verdict about the OLD key can arrive after the user has already
+  // scanned a new one; acting on it would throw them back to the stale page.
+  it('ignores a verdict about a key it has since replaced', async () => {
+    let answer: (verdict: 'stale') => void = () => {}
+    const connection = installRemoteApi({
+      key: KEY,
+      checkKey: () => new Promise((resolve) => { answer = resolve }),
+    })
+    FakeSocket.instances[0].close()
+    connection.setKey('b'.repeat(64))
+    FakeSocket.instances[1].open()
+    answer('stale')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(connection.state()).toBe('open')
+  })
+
+  it('fails the calls of the socket a new key replaces', async () => {
+    const connection = installRemoteApi(OPTIONS)
+    FakeSocket.instances[0].open()
+    const call = window.api.invoke('session:list')
+    connection.setKey('b'.repeat(64))
+    await expect(call).rejects.toThrow('Connection lost')
+  })
+})
+
+describe('api-shim while out of date', () => {
+  // Held, these would be flushed onto the socket a rescan opens minutes later:
+  // a keystroke typed at the stale page arriving in an agent's PTY.
+  it('fails calls at once instead of holding them for a key that may never come', async () => {
+    const connection = installRemoteApi({ key: KEY, checkKey: async () => 'stale' })
+    const early = window.api.invoke('session:list')
+    FakeSocket.instances[0].close()
+    await expect(early).rejects.toBeInstanceOf(NotSentError)
+    await vi.waitFor(() => expect(connection.state()).toBe('stale'))
+
+    const late = window.api.invoke('session:list')
+    await expect(late).rejects.toBeInstanceOf(NotSentError)
+    window.api.send('lsp:send', {} as never)
+
+    connection.setKey('b'.repeat(64))
+    FakeSocket.instances[1].open()
+    expect(FakeSocket.instances[1].sent).toEqual([])
+  })
+
+  it('fails calls made with no key at all', async () => {
+    installRemoteApi({ key: null, checkKey: async () => 'unknown' })
+    await expect(window.api.invoke('session:list')).rejects.toBeInstanceOf(NotSentError)
   })
 })

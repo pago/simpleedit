@@ -189,7 +189,7 @@ describe('applyServe', () => {
   it('publishes an HTTPS URL and never puts the token on the command line', async () => {
     const status = await applyServe({ port: 52123, token: TOKEN })
     expect(status.active).toBe(true)
-    expect(status.url).toBe(`https://mac.tail050858.ts.net/${TOKEN}/`)
+    expect(status.url).toBe(`https://mac.tail050858.ts.net/app/?k=${TOKEN}`)
     expect(calls()).toContain('serve --bg http://127.0.0.1:52123')
     for (const call of calls()) expect(call).not.toContain(TOKEN)
   })
@@ -210,7 +210,7 @@ describe('applyServe', () => {
       'serve --https=443 off',
       'serve --bg http://127.0.0.1:61000',
     ])
-    expect(getServeStatus().url).toBe(`https://mac.tail050858.ts.net/${TOKEN}/`)
+    expect(getServeStatus().url).toBe(`https://mac.tail050858.ts.net/app/?k=${TOKEN}`)
     expect(config.servePort).toBe(61000)
   })
 
@@ -307,7 +307,7 @@ describe('applyServe', () => {
     await applyServe({ port: 52123, token: TOKEN })
     const next = 'b'.repeat(64)
     const status = await applyServe({ port: 52123, token: next })
-    expect(status.url).toBe(`https://mac.tail050858.ts.net/${next}/`)
+    expect(status.url).toBe(`https://mac.tail050858.ts.net/app/?k=${next}`)
   })
 
   it('leaves a mapping somebody repointed by hand alone', async () => {
