@@ -16,6 +16,7 @@ type Listener = (data: unknown) => void
 
 let listeners: Map<string, Listener[]>
 let writes: string[]
+let resizes: Array<[number, number]>
 let backlogData: string
 
 function emit(channel: string, data: unknown): void {
@@ -36,15 +37,17 @@ const connection: RemoteConnection = {
 beforeEach(() => {
   listeners = new Map()
   writes = []
+  resizes = []
   backlogData = ''
   vi.stubGlobal('api', {
     on: (channel: string, cb: Listener) => {
       listeners.set(channel, [...(listeners.get(channel) ?? []), cb])
       return () => listeners.set(channel, (listeners.get(channel) ?? []).filter((fn) => fn !== cb))
     },
-    invoke: async (channel: string, _id: string, arg?: unknown) => {
+    invoke: async (channel: string, _id: string, arg?: unknown, rows?: unknown) => {
       if (channel === 'pty:backlog') return { data: backlogData, start: 0, end: backlogData.length }
       if (channel === 'pty:write') writes.push(String(arg))
+      if (channel === 'pty:resize') resizes.push([Number(arg), Number(rows)])
       return undefined
     },
   })
@@ -307,5 +310,31 @@ describe('MobileTerminal touch scrolling', () => {
     fire('touchstart', [first, second], [second])
     fire('touchend', [second], [first])
     await expectStill()
+  })
+})
+
+describe('MobileTerminal resizing', () => {
+  const frame = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+
+  // The keyboard sliding in shrinks the container a little every frame. (Width
+  // here: without the app's stylesheet the terminal's height is its content's.)
+  it('resizes the PTY once the container settles, not on every frame', async () => {
+    const box = document.createElement('div')
+    box.style.cssText = 'width: 480px'
+    document.body.append(box)
+    try {
+      render(MobileTerminal, { target: box, props: { terminalId: 't1', connection } })
+      await sleep(300)
+      resizes.length = 0
+
+      for (let width = 460; width >= 240; width -= 20) {
+        box.style.width = `${width}px`
+        await frame()
+      }
+      await sleep(300)
+      expect(resizes).toHaveLength(1)
+    } finally {
+      box.remove()
+    }
   })
 })

@@ -19,7 +19,9 @@
     <title>SimpleEdit — Remote</title>
   </head>
   <body class="h-full overscroll-none bg-zinc-950 text-zinc-100">
-    <div id="app" class="h-full"></div>
+    <!-- Pinned to the visual viewport so the on-screen keyboard shrinks the
+         app instead of panning it: see lib/visual-viewport.svelte.ts. -->
+    <div id="app" class="fixed inset-x-0 top-(--vv-top,0px) h-(--vv-height,100%)"></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

@@ -44,6 +44,8 @@
     sizeOwner !== null && myClientKey !== '' && sizeOwner !== myClientKey,
   )
 
+  const RESIZE_SETTLE_MS = 100
+
   let term: Terminal | undefined
   let fitAddon: FitAddon | undefined
 
@@ -218,13 +220,20 @@
     // The container has no size until layout has run once.
     requestAnimationFrame(fitAndClaim)
 
+    // The keyboard animates in and out, and the container follows it frame by
+    // frame. Fitting every frame would send the PTY 10-20 resizes — each one a
+    // SIGWINCH and a full redraw by the TUI — so the fit waits for it to settle.
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
     const observer = new ResizeObserver(() => {
-      if (!term || !fitAddon || el.offsetWidth === 0 || el.offsetHeight === 0) return
-      fitAddon.fit()
-      // Unconditional. Main drops a non-owner's resize, so gating here would
-      // only duplicate that decision from stale local state — and get it wrong
-      // whenever the container reflowed while this client was not the owner.
-      void window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (!term || !fitAddon || el.offsetWidth === 0 || el.offsetHeight === 0) return
+        fitAddon.fit()
+        // Unconditional. Main drops a non-owner's resize, so gating here would
+        // only duplicate that decision from stale local state — and get it wrong
+        // whenever the container reflowed while this client was not the owner.
+        void window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
+      }, RESIZE_SETTLE_MS)
     })
     observer.observe(el)
 
@@ -255,6 +264,7 @@
       offState()
       offIdentity()
       observer.disconnect()
+      clearTimeout(resizeTimer)
       window.removeEventListener('focus', onAttention)
       document.removeEventListener('visibilitychange', onAttention)
       attachment.dispose()

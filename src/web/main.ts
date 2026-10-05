@@ -4,6 +4,7 @@ import { installRemoteApi } from './api-shim'
 import { attachParams, loadRememberedProject } from './lib/project'
 import { initScreenPrsListeners, screenPrsStore } from '../renderer/stores/screenprs.svelte'
 import PocketApp from './PocketApp.svelte'
+import { trackVisualViewport } from './lib/visual-viewport.svelte'
 
 // Installed before anything mounts, so a component can call `window.api` in
 // its initialiser exactly as it does in the desktop renderer. Every connect
@@ -17,6 +18,8 @@ initScreenPrsListeners()
 // Review drafts are edited from the desktop too, and a broadcast sent while
 // the socket was down never arrives — so every (re)connect reloads them.
 connection.onIdentity(() => void screenPrsStore.loadDrafts())
+
+trackVisualViewport()
 
 const app = mount(PocketApp, {
   target: document.getElementById('app')!,
