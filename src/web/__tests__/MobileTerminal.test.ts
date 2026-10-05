@@ -56,10 +56,15 @@ afterEach(() => {
 
 type Instance = { pressKey: (key: 'up' | 'down' | 'enter') => void }
 
+let unmountTerminal: () => void
+
 function mount(): Instance {
-  const { component } = render(MobileTerminal, { terminalId: 't1', connection })
+  const { component, unmount } = render(MobileTerminal, { terminalId: 't1', connection })
+  unmountTerminal = unmount
   return component as unknown as Instance
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Press until the write lands. xterm's parser drains asynchronously, so the
@@ -105,5 +110,202 @@ describe('MobileTerminal key encoding', () => {
     writes.length = 0
     terminal.pressKey('enter')
     expect(writes).toEqual(['\r'])
+  })
+})
+
+/**
+ * Swipes, through the real xterm, in each mode an agent's TUI actually uses:
+ * Codex and Claude Code's default renderer are inline on the normal buffer;
+ * Claude Code's `tui: fullscreen` and OpenCode take the alternate screen and
+ * turn on SGR mouse tracking.
+ */
+describe('MobileTerminal touch scrolling', () => {
+  function terminalEl(): HTMLElement {
+    return document.querySelector<HTMLElement>('[data-testid="mobile-terminal"]')!
+  }
+
+  function touchAt(id: number, x: number, y: number): Touch {
+    return new Touch({ identifier: id, target: terminalEl(), clientX: x, clientY: y })
+  }
+
+  function fire(type: string, touches: Touch[], changed: Touch[]): void {
+    terminalEl().dispatchEvent(new TouchEvent(type, {
+      touches, targetTouches: touches, changedTouches: changed, bubbles: true, cancelable: true,
+    }))
+  }
+
+  function origin(): { x: number; y: number } {
+    const box = terminalEl().getBoundingClientRect()
+    return { x: box.left + 20, y: box.top + box.height / 2 }
+  }
+
+  function swipe(dy: number): void {
+    const { x, y: y0 } = origin()
+    const at = (y: number): Touch => touchAt(1, x, y)
+    fire('touchstart', [at(y0)], [at(y0)])
+    const steps = 8
+    for (let i = 1; i <= steps; i++) fire('touchmove', [at(y0 + (dy * i) / steps)], [at(y0 + (dy * i) / steps)])
+    fire('touchend', [], [at(y0 + dy)])
+  }
+
+  /**
+   * A fast drag in real time, so the release carries velocity. Returns with
+   * the finger still down unless `lift` is set.
+   */
+  async function flick(dy: number, lift = true): Promise<void> {
+    const { x, y: y0 } = origin()
+    const at = (y: number): Touch => touchAt(1, x, y)
+    fire('touchstart', [at(y0)], [at(y0)])
+    const steps = 8
+    for (let i = 1; i <= steps; i++) {
+      await sleep(10)
+      fire('touchmove', [at(y0 + (dy * i) / steps)], [at(y0 + (dy * i) / steps)])
+    }
+    if (lift) fire('touchend', [], [at(y0 + dy)])
+  }
+
+  function visibleText(): string {
+    return document.querySelector('.xterm-rows')?.textContent ?? ''
+  }
+
+  const longBacklog = (): string => Array.from({ length: 400 }, (_, i) => `line ${i}`).join('\r\n')
+
+  /** The screen shows the same lines across `ms` — nothing is scrolling it. */
+  async function expectStill(ms = 300): Promise<void> {
+    await sleep(50)
+    const before = visibleText()
+    await sleep(ms)
+    expect(visibleText()).toBe(before)
+  }
+
+  it('scrolls back through the scrollback on the normal buffer, without typing', async () => {
+    backlogData = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\r\n')
+    mount()
+    await waitFor(() => expect(visibleText()).toContain('line 99'))
+
+    swipe(120)
+    await waitFor(() => expect(visibleText()).not.toContain('line 99'))
+    expect(writes).toEqual([])
+  })
+
+  it('sends SGR wheel reports to a TUI that tracks the mouse', async () => {
+    backlogData = '\x1b[?1049h\x1b[?1000h\x1b[?1006h'
+    mount()
+    await waitFor(() => {
+      writes.length = 0
+      swipe(-80)
+      expect(writes.length).toBeGreaterThan(0)
+    })
+    expect(writes.every((w) => /^\x1b\[<65;\d+;\d+M$/.test(w))).toBe(true)
+
+    await waitFor(() => {
+      writes.length = 0
+      swipe(80)
+      expect(writes.length).toBeGreaterThan(0)
+      expect(writes.every((w) => /^\x1b\[<64;\d+;\d+M$/.test(w))).toBe(true)
+    })
+  })
+
+  it('sends arrows in the cursor-key mode of a bare alternate screen', async () => {
+    backlogData = '\x1b[?1049h\x1b[?1h'
+    mount()
+    await waitFor(() => {
+      writes.length = 0
+      swipe(-80)
+      expect(writes.length).toBeGreaterThan(0)
+    })
+    expect(new Set(writes)).toEqual(new Set(['\x1bOB']))
+  })
+
+  // X10 reports presses only. Treated as wheel tracking, a swipe became a
+  // wheel event xterm then dropped, and nothing moved.
+  it('scrolls the scrollback under X10 mouse tracking', async () => {
+    backlogData = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\r\n') + '\x1b[?9h'
+    mount()
+    await waitFor(() => expect(visibleText()).toContain('line 99'))
+
+    swipe(120)
+    await waitFor(() => expect(visibleText()).not.toContain('line 99'))
+    expect(writes).toEqual([])
+  })
+
+  it('sends arrows under X10 mouse tracking on the alternate screen', async () => {
+    backlogData = '\x1b[?1049h\x1b[?9h'
+    mount()
+    await waitFor(() => {
+      writes.length = 0
+      swipe(-80)
+      expect(writes.length).toBeGreaterThan(0)
+    })
+    expect(new Set(writes)).toEqual(new Set(['\x1b[B']))
+  })
+
+  it('a flick keeps scrolling the scrollback after the finger lifts', async () => {
+    backlogData = longBacklog()
+    mount()
+    await waitFor(() => expect(visibleText()).toContain('line 399'))
+
+    await flick(240)
+    await sleep(50)
+    const atLift = visibleText()
+    await sleep(200)
+    expect(visibleText()).not.toBe(atLift)
+  })
+
+  // Momentum into a TUI would keep typing into it after the finger is gone.
+  it('a flick sends nothing more to a TUI once the finger lifts', async () => {
+    backlogData = '\x1b[?1049h\x1b[?1000h\x1b[?1006h'
+    mount()
+    await waitFor(() => {
+      writes.length = 0
+      swipe(-80)
+      expect(writes.length).toBeGreaterThan(0)
+    })
+
+    writes.length = 0
+    await flick(-240)
+    const sent = writes.length
+    expect(sent).toBeGreaterThan(0)
+    await sleep(300)
+    expect(writes.length).toBe(sent)
+  })
+
+  it('the process exiting stops a fling', async () => {
+    backlogData = longBacklog()
+    mount()
+    await waitFor(() => expect(visibleText()).toContain('line 399'))
+
+    await flick(240)
+    emit('pty:exit', { id: 't1', exitCode: 0 })
+    await expectStill()
+  })
+
+  it('unmounting stops a fling', async () => {
+    backlogData = longBacklog()
+    mount()
+    await waitFor(() => expect(visibleText()).toContain('line 399'))
+
+    await flick(240)
+    unmountTerminal()
+    await sleep(50)
+    const frames = vi.spyOn(window, 'requestAnimationFrame')
+    await sleep(200)
+    expect(frames).not.toHaveBeenCalled()
+  })
+
+  // A pinch starts as one finger. When the second lands and one lifts, the
+  // first finger's samples are stale and must not become a fling.
+  it('a second finger ends the swipe without a fling', async () => {
+    backlogData = longBacklog()
+    mount()
+    await waitFor(() => expect(visibleText()).toContain('line 399'))
+
+    await flick(240, false)
+    const { x, y } = origin()
+    const first = touchAt(1, x, y + 240)
+    const second = touchAt(2, x + 40, y + 240)
+    fire('touchstart', [first, second], [second])
+    fire('touchend', [second], [first])
+    await expectStill()
   })
 })
