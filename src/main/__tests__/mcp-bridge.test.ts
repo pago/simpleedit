@@ -5,7 +5,9 @@ import { join } from 'path'
 import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver, setRepoDiscoverer } from '../mcp-bridge'
 import { attachToTerminal, detachFromTerminal } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
-import { resetBus, resolveSpawn, syncPeers } from '../agent-bus'
+import { pendingCount, resetBus, resolveSpawn, syncPeers } from '../agent-bus'
+import { initAgentWake, noteStatus, noteUserInput, resetAgentWake } from '../agent-wake'
+import { clearAgentStatusWatchers } from '../agent-status'
 import type { WorktreeInfo } from '../../shared/ipc-types'
 
 function makeWebContents() {
@@ -563,15 +565,22 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
     }
   })
 
+  // The brief carries the spawner's address, so the new session can report
+  // back without polling (issue #197).
   it('spawn_session emits agent-session:spawn with the brief and caller terminal', async () => {
     const res = await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'fix the timeline reducer' } })
     expect(res.status).toBe(200)
     expect(res.body['ok']).toBe(true)
     expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({
       sourceTerminalId: 'term-1',
-      brief: 'fix the timeline reducer',
+      brief: expect.stringMatching(/^fix the timeline reducer\n[\s\S]*send_message\(to: "term-1"/),
       target: 'new-pane',
     }))
+  })
+
+  it('spawn_session leaves a replacing brief alone, since its spawner is closed', async () => {
+    await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'carry on', target: 'replace' } })
+    expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({ brief: 'carry on', target: 'replace' }))
   })
 
   it('spawn_session returns the session handle once the renderer reports it', async () => {
@@ -639,7 +648,7 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
     // `correlationId` so the spawn_session call can await the minted handle.
     expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({
       sourceTerminalId: 'term-1',
-      brief: 'continue in Codex',
+      brief: expect.stringMatching(/^continue in Codex\n/),
       provider: 'codex',
       model: 'gpt-5.6-sol',
       reasoningEffort: 'ultra',
@@ -976,7 +985,7 @@ describe.skipIf(!runIntegration)('MCP Server → Bridge integration', () => {
 
     expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({
       sourceTerminalId: 'spawn-test-term',
-      brief: 'rebase and land PR #42',
+      brief: expect.stringMatching(/^rebase and land PR #42\n/),
       label: 'rebase',
       target: 'new-pane',
     }))
@@ -1001,6 +1010,8 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
 
   afterEach(() => {
     resetBus()
+    resetAgentWake()
+    clearAgentStatusWatchers()
     unregisterTerminal('claude-b')
   })
 
@@ -1138,6 +1149,82 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
 
     const { body } = await callTool('check_inbox', {}, 'claude-a')
     expect(body['count']).toBe(0)
+  })
+
+  describe('waking idle sessions (#197)', () => {
+    let writes: Array<{ id: string; data: string }>
+
+    beforeEach(() => {
+      writes = []
+      initAgentWake((id, data) => writes.push({ id, data }))
+      registerSession('sess-b', 'claude-b')
+    })
+
+    it('leaves mail for the wake instead of a Stop block, and check_inbox hands it over', async () => {
+      noteStatus('claude-b', 'running', true)
+      await callTool('send_message', { to: 'beta', text: 'please rebase' }, 'claude-a')
+
+      const stop = await postHook({ session_id: 'sess-b', cwd: '/repo/b', hook_event_name: 'Stop', stop_hook_active: false })
+      expect(stop['decision']).toBeUndefined()
+
+      noteStatus('claude-b', 'idle', true)
+      await vi.waitFor(() => expect(writes).toHaveLength(1), { timeout: 3000 })
+      expect(writes[0].id).toBe('claude-b')
+      expect(writes[0].data).toContain('check_inbox')
+
+      const { body } = await callTool('check_inbox', {}, 'claude-b')
+      expect(body['count']).toBe(1)
+      expect(wc.send).toHaveBeenCalledWith('agent-message:delivered', expect.objectContaining({ terminalId: 'claude-b' }))
+    })
+
+    it('still delivers through the Stop block when the user has typed into the prompt', async () => {
+      noteStatus('claude-b', 'running', true)
+      noteUserInput('claude-b', 'draft prompt')
+      await callTool('send_message', { to: 'beta', text: 'please rebase' }, 'claude-a')
+
+      const stop = await postHook({ session_id: 'sess-b', cwd: '/repo/b', hook_event_name: 'Stop', stop_hook_active: false })
+      expect(stop['decision']).toBe('block')
+      expect(writes).toHaveLength(0)
+    })
+
+    it('tells the sender an idle recipient is being prompted, and a busy one is mid-turn', async () => {
+      noteStatus('claude-b', 'idle', true)
+      const idle = await callTool('send_message', { to: 'beta', text: 'one' }, 'claude-a')
+      expect(String(idle.body['note'])).toContain('prompting it to read its inbox')
+
+      noteStatus('claude-b', 'running', true)
+      const busy = await callTool('send_message', { to: 'beta', text: 'two' }, 'claude-a')
+      expect(String(busy.body['note'])).toContain('mid-turn')
+    })
+
+    it('wakes an idle sender when a reply lands in its inbox', async () => {
+      noteStatus('claude-a', 'idle', true)
+      const sent = await callTool('send_message', { to: 'beta', text: 'q' }, 'claude-a')
+      await callTool('reply', { to_message_id: String(sent.body['message_id']), text: 'a' }, 'claude-b')
+      await vi.waitFor(() => expect(writes.map((w) => w.id)).toContain('claude-a'), { timeout: 3000 })
+    })
+  })
+
+  // A sub-agent's stop is not the session's: blocking would hand the mail to
+  // the sub-agent, and its final text is not the session's answer.
+  it('neither delivers nor captures a reply on SubagentStop', async () => {
+    registerSession('sess-b', 'claude-b')
+    const pending = callTool('send_message', { to: 'beta', text: 'q', wait_for_reply: true, timeout_seconds: 10 }, 'claude-a')
+    await vi.waitFor(() => expect(pendingCount('claude-b')).toBe(1))
+
+    const stop = await postHook({
+      session_id: 'sess-b',
+      cwd: '/repo/b',
+      hook_event_name: 'SubagentStop',
+      stop_hook_active: false,
+      last_assistant_message: 'sub-agent chatter',
+    })
+    expect(stop['decision']).toBeUndefined()
+    expect(pendingCount('claude-b')).toBe(1)
+
+    await callTool('check_inbox', {}, 'claude-b')
+    await postHook({ session_id: 'sess-b', cwd: '/repo/b', hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'real answer' })
+    expect(((await pending).body['reply'] as Record<string, unknown>)['text']).toBe('real answer')
   })
 
   it('reply routes to the original sender using the message id', async () => {

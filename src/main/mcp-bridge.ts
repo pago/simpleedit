@@ -15,12 +15,15 @@ import {
   peekPending,
   commitDelivery,
   formatForDelivery,
+  getPeer,
   listPeers,
+  messageState,
   pendingCount,
   senderOf,
   waitForReply,
   type Message,
 } from './agent-bus'
+import { beginStop, canWake, endStop, noteBusy, requestWake, wakeOutlook } from './agent-wake'
 import { sendAgentStatus } from './agent-status'
 
 interface BridgeInstance {
@@ -110,6 +113,62 @@ const SPAWN_HANDLE_WAIT_MS = 1500
  * Mirror every message to the renderer so the exchange is visible to the user.
  * Two agents talking with no UI trace is the failure mode to avoid.
  */
+/**
+ * Every hand-over of mail goes through here, so the renderer's queued-mail
+ * badge clears and the log answers "did the recipient ever get message X?".
+ */
+function announceDelivered(webContents: RemoteClient, terminalId: string, messages: Message[], via: string): void {
+  if (messages.length === 0) return
+  console.log(`[AgentBus] Delivered to ${terminalId} via ${via}: ${messages.map((m) => m.id).join(', ')}`)
+  if (webContents.isDestroyed()) return
+  webContents.send('agent-message:delivered', { terminalId, messageIds: messages.map((m) => m.id) })
+}
+
+/** After a message is queued: wake its recipient if it's idle, or announce it if a waiter already took it. */
+function afterEnqueue(webContents: RemoteClient, message: Message): void {
+  notifyMessage(webContents, message)
+  if (message.state === 'delivered') announceDelivered(webContents, message.to, [message], 'waiting send_message')
+  else requestWake(message.to)
+}
+
+/** Tells the sender what will happen to its message, since "sent" alone hides an idle recipient. */
+function deliveryNote(messageId: string, recipient: string): string {
+  const state = messageState(messageId)
+  if (state === 'delivered') return 'The recipient has read your message.'
+  if (state === 'notified') return 'The recipient was idle and has been prompted to read its inbox.'
+  return outlookNote(recipient)
+}
+
+function timeoutNote(messageId: string, recipient: string): string {
+  const state = messageState(messageId)
+  if (state === 'delivered') return 'The recipient has read your message but has not answered yet.'
+  if (state === 'notified') return 'The recipient was prompted to read its inbox but has not done so yet.'
+  return `Your message is still queued. ${outlookNote(recipient)}`
+}
+
+function outlookNote(recipient: string): string {
+  switch (wakeOutlook(recipient)) {
+    case 'waking':
+      return 'The recipient is idle; SimpleEdit is prompting it to read its inbox.'
+    case 'busy':
+      return 'The recipient is mid-turn; it gets your message when that turn ends.'
+    case 'typing':
+      return 'The recipient is idle, but the user has unsent text in its prompt, so SimpleEdit will not interrupt. It gets your message when the user\'s next turn there ends.'
+    default:
+      return 'Queued; the recipient gets it when its current turn ends.'
+  }
+}
+
+/**
+ * Appended to a spawned session's brief so it can report back without
+ * polling: the spawner's id is otherwise nowhere in its context.
+ */
+function withSpawnerAddress(brief: string, spawnerId: string): string {
+  const label = getPeer(spawnerId)?.label
+  const who = label ? `session "${label}" (session id ${spawnerId})` : `session id ${spawnerId}`
+  return `${brief}\n\n---\nYou were started by SimpleEdit ${who}. To report back to it, use send_message(to: "${spawnerId}", text: "…").`
+}
+
 function notifyMessage(webContents: RemoteClient, message: Message): void {
   if (webContents.isDestroyed()) return
   webContents.send('agent-message:sent', {
@@ -397,7 +456,8 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     const correlationId = randomUUID()
     webContents.send('agent-session:spawn', {
       sourceTerminalId: terminalId,
-      brief,
+      // 'replace' disposes the spawner, so there is nobody to report back to.
+      brief: target === 'replace' ? brief : withSpawnerAddress(brief, terminalId),
       correlationId,
       ...(label ? { label } : {}),
       ...(model ? { model } : {}),
@@ -433,6 +493,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
           worktree: p.worktreePath,
           status: p.status,
           unread: p.unread,
+          ...(p.unread > 0 ? { mail: outlookNote(p.terminalId) } : {}),
         })),
       },
     }
@@ -447,10 +508,13 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     if ('error' in result) return { status: 400, body: { error: result.error } }
     const { message } = result
 
-    notifyMessage(webContents, message)
+    afterEnqueue(webContents, message)
 
     if (!message.expectsReply) {
-      return { status: 200, body: { ok: true, message_id: message.id, delivered_to: message.to } }
+      return {
+        status: 200,
+        body: { ok: true, message_id: message.id, delivered_to: message.to, status: message.state, note: deliveryNote(message.id, message.to) },
+      }
     }
 
     const requested = typeof args['timeout_seconds'] === 'number' ? args['timeout_seconds'] : DEFAULT_REPLY_WAIT_S
@@ -464,7 +528,8 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
           message_id: message.id,
           delivered_to: message.to,
           timed_out: true,
-          note: 'No reply yet. It will arrive as a message on your next turn — do not resend.',
+          status: messageState(message.id),
+          note: `No reply yet. ${timeoutNote(message.id, message.to)} The reply will arrive in your inbox — do not resend.`,
         },
       }
     }
@@ -486,12 +551,16 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
 
     const result = enqueue({ from: terminalId, to: origin, text, replyTo: toMessageId })
     if ('error' in result) return { status: 400, body: { error: result.error } }
-    notifyMessage(webContents, result.message)
-    return { status: 200, body: { ok: true, message_id: result.message.id, delivered_to: result.message.to } }
+    afterEnqueue(webContents, result.message)
+    return {
+      status: 200,
+      body: { ok: true, message_id: result.message.id, delivered_to: result.message.to, status: result.message.state },
+    }
   }
 
   if (tool === 'check_inbox') {
     const messages = drain(terminalId)
+    announceDelivered(webContents, terminalId, messages, 'check_inbox')
     return {
       status: 200,
       body: {
@@ -587,7 +656,22 @@ export async function applyAgentSignal(
   // HTTP hooks don't, so those route by session_id through the registry.
   const terminalId = signal.terminalId ?? terminalForSession(signal.sessionId)
   if (!terminalId) return {}
+  if (signal.eventName !== 'Stop') return applyRoutedSignal(signal, terminalId, webContents, opts)
 
+  beginStop(terminalId)
+  try {
+    return await applyRoutedSignal(signal, terminalId, webContents, opts)
+  } finally {
+    endStop(terminalId)
+  }
+}
+
+async function applyRoutedSignal(
+  signal: HookSignal,
+  terminalId: string,
+  webContents: RemoteClient,
+  opts: { ownsIdentityAndStatus?: boolean; deliver?: (text: string) => Promise<boolean> },
+): Promise<Record<string, unknown>> {
   const worktrees = await resolveWorktrees(webContents.id)
   const cwd = await locateWorktree(webContents.id, signal.cwd, worktrees)
   // Deriving identity and status from a hook's event name is Codex-specific.
@@ -647,12 +731,17 @@ export async function applyAgentSignal(
 }
 
 /**
- * `Stop`/`SubagentStop` is both halves of the messaging channel:
+ * `Stop` is both halves of the messaging channel:
  *
  *  - the turn's final assistant text is the implicit REPLY to whatever we
  *    delivered last, so a peer answers without needing to call any tool;
- *  - and if mail is queued, answering `{decision:'block'}` DELIVERS it, because
- *    both CLIs continue the turn with `reason` as input.
+ *  - and queued mail is either left for the wake that follows once the session
+ *    is idle (`agent-wake.ts`), or — when it can't be woken — DELIVERED by
+ *    answering `{decision:'block'}`, because both CLIs continue the turn with
+ *    `reason` as input.
+ *
+ * `SubagentStop` is neither: its text is a sub-agent's, and a block would hand
+ * the mail to the sub-agent instead of the session.
  *
  * Never block when `stop_hook_active` is set: that stop already belongs to a
  * turn a hook continued, and blocking again prevents the agent ever going idle.
@@ -663,15 +752,21 @@ async function handleTurnEnd(
   webContents: RemoteClient,
   deliver?: (text: string) => Promise<boolean>,
 ): Promise<Record<string, unknown>> {
-  if (signal.eventName !== 'Stop' && signal.eventName !== 'SubagentStop') return {}
+  if (signal.eventName !== 'Stop') return {}
 
   if (signal.lastAssistantMessage) {
     for (const reply of captureImplicitReplies(terminalId, signal.lastAssistantMessage)) {
-      notifyMessage(webContents, reply)
+      afterEnqueue(webContents, reply)
     }
   }
 
-  if (signal.stopHookActive || pendingCount(terminalId) === 0) return {}
+  if (pendingCount(terminalId) === 0) return {}
+  // The mail waits for this session's idle edge, which arrives right after
+  // this Stop; asking now covers a provider whose idle status landed first.
+  if (signal.stopHookActive || (!deliver && canWake(terminalId))) {
+    requestWake(terminalId)
+    return {}
+  }
 
   // A hook-driven provider receives mail as this function's return value, so
   // returning it IS delivery. A pushed provider can still fail after we let go
@@ -693,12 +788,9 @@ async function handleTurnEnd(
   }
   if (messages.length === 0) return {}
 
-  if (!webContents.isDestroyed()) {
-    webContents.send('agent-message:delivered', {
-      terminalId,
-      messageIds: messages.map((m) => m.id),
-    })
-  }
+  // The turn continues, so the idle status this Stop produced is already stale.
+  noteBusy(terminalId)
+  announceDelivered(webContents, terminalId, messages, deliver ? 'push' : 'stop-block')
   return { decision: 'block', reason: formatForDelivery(messages) }
 }
 
