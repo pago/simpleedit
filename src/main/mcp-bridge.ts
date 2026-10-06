@@ -155,6 +155,8 @@ function outlookNote(recipient: string): string {
       return 'The recipient is idle; SimpleEdit is prompting it to read its inbox.'
     case 'busy':
       return 'The recipient is mid-turn; it gets your message when that turn ends.'
+    case 'confirming':
+      return 'The recipient is idle (queued). SimpleEdit prompts it to read its inbox once Claude confirms it is waiting at its prompt, which takes up to about a minute after its turn ends.'
     case 'typing':
       return 'The user has been using the recipient\'s terminal since its last turn, so SimpleEdit will not interrupt. It gets your message when the next turn there ends.'
     case 'blocked':

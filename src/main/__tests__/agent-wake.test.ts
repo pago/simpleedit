@@ -36,6 +36,12 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+/** Claude's title reads idle, then its idle-prompt Notification confirms it. */
+function idleAtPrompt(id: string): void {
+  noteStatus(id, 'idle', true)
+  noteNotification(id, 'idle_prompt', 'Claude is waiting for your input')
+}
+
 function send(text = 'please rebase'): string {
   const result = enqueue({ from: 'claude-a', to: 'claude-b', text })
   if ('error' in result) throw new Error(result.error)
@@ -45,7 +51,7 @@ function send(text = 'please rebase'): string {
 
 describe('agent-wake', () => {
   it('prompts an idle recipient to read its inbox, submitted as a bracketed paste', () => {
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     const id = send()
     expect(writes).toHaveLength(0)
 
@@ -63,13 +69,13 @@ describe('agent-wake', () => {
     vi.advanceTimersByTime(WAKE_SETTLE_MS * 4)
     expect(writes).toHaveLength(0)
 
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
     expect(writes).toHaveLength(1)
   })
 
   it('does not write once the mail was read during the settle window', () => {
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     send()
     drain('claude-b')
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
@@ -78,7 +84,7 @@ describe('agent-wake', () => {
 
   it("never pastes into a prompt the user has typed into", () => {
     noteUserInput('claude-b', 'half a thought')
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     send()
     vi.advanceTimersByTime(WAKE_SETTLE_MS * 4)
     expect(writes).toHaveLength(0)
@@ -88,7 +94,7 @@ describe('agent-wake', () => {
     // Submitting their prompt clears it; the wake follows the next idle edge.
     noteUserInput('claude-b', '\r')
     noteStatus('claude-b', 'running', true)
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
     expect(writes).toHaveLength(1)
   })
@@ -97,23 +103,24 @@ describe('agent-wake', () => {
     for (const seq of ['\x1b[I', '\x1b[O', '\x1b]11;rgb:0000/0000/0000\x07', '\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[12;40R', '\x1b[0n']) {
       noteUserInput('claude-b', seq)
     }
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     expect(wakeOutlook('claude-b')).toBe('waking')
   })
 
   // Up-arrow recalls history, Esc-Esc opens the rewind picker, `/model` + Enter
   // leaves a picker up: the wake's Enter would act on any of them.
   it('treats any key since the last turn started as a reason not to wake', () => {
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     for (const keys of ['\x1b[A', '\x1b\x1b', '/model\r', '\x03']) {
       noteStatus('claude-b', 'running', true)
-      noteStatus('claude-b', 'idle', true)
+      idleAtPrompt('claude-b')
       noteUserInput('claude-b', keys)
       expect(wakeOutlook('claude-b')).toBe('typing')
     }
   })
 
   it('holds a wake while a Stop hook is being answered', () => {
+    syncPeers([peer('claude-a', 'alpha'), { ...peer('claude-b', 'beta'), provider: 'codex' }])
     noteStatus('claude-b', 'idle', true)
     beginStop('claude-b')
     send()
@@ -125,7 +132,7 @@ describe('agent-wake', () => {
   })
 
   it('does not retry a notice that never started a turn', () => {
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     send()
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
     vi.advanceTimersByTime(10 * 60_000)
@@ -170,7 +177,7 @@ describe('agent-wake', () => {
     noteStatus('claude-b', 'waiting', true)
     send()
     beginStop('claude-b')
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     endStop('claude-b')
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
     expect(writes).toHaveLength(1)
@@ -180,7 +187,7 @@ describe('agent-wake', () => {
     send()
     for (let i = 0; i < 2; i++) {
       noteStatus('claude-b', 'running', true)
-      noteStatus('claude-b', 'idle', true)
+      idleAtPrompt('claude-b')
       vi.advanceTimersByTime(WAKE_SETTLE_MS)
     }
     expect(canWake('claude-b')).toBe(false)
@@ -190,10 +197,50 @@ describe('agent-wake', () => {
     send()
     for (let i = 0; i < 4; i++) {
       noteStatus('claude-b', 'running', true)
-      noteStatus('claude-b', 'idle', true)
+      idleAtPrompt('claude-b')
       vi.advanceTimersByTime(WAKE_SETTLE_MS)
     }
     expect(writes).toHaveLength(2)
+  })
+
+  // Claude's title reads idle under a permission or question dialog too, so
+  // only its explicit idle-prompt Notification may lead to a wake.
+  it('never wakes a Claude session on its title alone', () => {
+    noteStatus('claude-b', 'idle', true)
+    send()
+    vi.advanceTimersByTime(10 * 60_000)
+    expect(writes).toHaveLength(0)
+    expect(wakeOutlook('claude-b')).toBe('confirming')
+
+    noteNotification('claude-b', 'idle_prompt', null)
+    vi.advanceTimersByTime(WAKE_SETTLE_MS)
+    expect(writes).toHaveLength(1)
+  })
+
+  it("leaves a Claude session's mail to the Stop block until it has sent an idle prompt", () => {
+    noteStatus('claude-b', 'running', true)
+    send()
+    expect(canWake('claude-b')).toBe(false)
+    idleAtPrompt('claude-b')
+    noteStatus('claude-b', 'running', true)
+    expect(canWake('claude-b')).toBe(true)
+  })
+
+  it('needs a fresh idle-prompt confirmation after every turn', () => {
+    idleAtPrompt('claude-b')
+    noteStatus('claude-b', 'running', true)
+    noteStatus('claude-b', 'idle', true)
+    send()
+    vi.advanceTimersByTime(WAKE_SETTLE_MS * 4)
+    expect(writes).toHaveLength(0)
+  })
+
+  it('wakes a provider with an explicit idle signal (Codex, OpenCode) on idle alone', () => {
+    syncPeers([peer('claude-a', 'alpha'), { ...peer('claude-b', 'beta'), provider: 'codex' }])
+    noteStatus('claude-b', 'idle', true)
+    send()
+    vi.advanceTimersByTime(WAKE_SETTLE_MS)
+    expect(writes).toHaveLength(1)
   })
 
   it('cannot wake a session whose status was never reported', () => {
@@ -211,7 +258,7 @@ describe('agent-wake', () => {
   })
 
   it('forgets an exited session', () => {
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     noteStatus('claude-b', 'exited', false)
     send()
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
@@ -221,7 +268,7 @@ describe('agent-wake', () => {
   // Issue #197, observation 2: several messages queued for an idle session must
   // all reach it, in order, through one wake.
   it('names every queued sender and hands over all queued mail', () => {
-    noteStatus('claude-b', 'idle', true)
+    idleAtPrompt('claude-b')
     const long = send('review: ' + 'finding. '.repeat(500))
     const short = send('one more thing')
     vi.advanceTimersByTime(WAKE_SETTLE_MS)

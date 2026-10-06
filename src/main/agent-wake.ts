@@ -35,6 +35,19 @@ interface Track {
   inputPending: boolean
   /** A `waiting` that isn't the idle-prompt reminder: a permission or question dialog is up. */
   blocked: boolean
+  /**
+   * Claude said, through its idle-prompt Notification, that it is at its
+   * prompt. Its title reads idle under a permission or question dialog too, so
+   * for Claude only this explicit signal makes a session wakeable — at the
+   * cost of up to a minute's wait after its turn ends.
+   */
+  idleConfirmed: boolean
+  /**
+   * This session has sent an idle-prompt Notification at least once, so one
+   * can be relied on to come. Until then its `Stop` delivers by block: a
+   * CLI that never sends one would otherwise leave mail queued for good.
+   */
+  idlePromptSeen: boolean
   /** Stop hooks being answered. A wake waits for them: the hook may still deliver by block. */
   stopsInFlight: number
   timer?: ReturnType<typeof setTimeout>
@@ -46,7 +59,7 @@ let write: (terminalId: string, data: string) => void = () => {}
 function track(terminalId: string): Track {
   let t = tracks.get(terminalId)
   if (!t) {
-    t = { precise: false, inputPending: false, blocked: false, stopsInFlight: 0 }
+    t = { precise: false, inputPending: false, blocked: false, idleConfirmed: false, idlePromptSeen: false, stopsInFlight: 0 }
     tracks.set(terminalId, t)
   }
   return t
@@ -74,8 +87,12 @@ export function noteStatus(terminalId: string, status: AgentStatus, precise: boo
     if (t.inputPending) resetChain(terminalId)
     t.inputPending = false
     t.blocked = false
+    t.idleConfirmed = false
   }
-  if (status === 'waiting') t.blocked = true
+  if (status === 'waiting') {
+    t.blocked = true
+    t.idleConfirmed = false
+  }
   if (status === 'idle') requestWake(terminalId)
 }
 
@@ -96,6 +113,8 @@ export function noteNotification(terminalId: string, notificationType: string | 
     return
   }
   t.blocked = false
+  t.idleConfirmed = true
+  t.idlePromptSeen = true
   t.status = 'idle'
   requestWake(terminalId)
 }
@@ -113,8 +132,19 @@ export function noteUserInput(terminalId: string, data: string): void {
   if (data.replace(TERMINAL_REPLY, '').length > 0) track(terminalId).inputPending = true
 }
 
-function wakeable(t: Track | undefined): boolean {
-  return t?.status === 'idle' && !t.inputPending && !t.blocked && t.stopsInFlight === 0
+/** Claude's idle comes from its title, which can't tell its prompt from a dialog. */
+function needsIdleConfirmation(terminalId: string): boolean {
+  return getPeer(terminalId)?.provider === 'claude'
+}
+
+function wakeable(terminalId: string, t: Track | undefined): t is Track {
+  return (
+    t?.status === 'idle' &&
+    !t.inputPending &&
+    !t.blocked &&
+    t.stopsInFlight === 0 &&
+    (t.idleConfirmed || !needsIdleConfirmation(terminalId))
+  )
 }
 
 /**
@@ -124,16 +154,24 @@ function wakeable(t: Track | undefined): boolean {
  */
 export function canWake(terminalId: string): boolean {
   const t = tracks.get(terminalId)
-  return !!getPeer(terminalId)?.provider && t?.status !== undefined && !t.inputPending && !t.blocked && hasWakeable(terminalId)
+  return (
+    !!getPeer(terminalId)?.provider &&
+    t?.status !== undefined &&
+    !t.inputPending &&
+    !t.blocked &&
+    (t.idlePromptSeen || !needsIdleConfirmation(terminalId)) &&
+    hasWakeable(terminalId)
+  )
 }
 
 /** What will happen to mail queued for this session now, for tool results. */
-export function wakeOutlook(terminalId: string): 'waking' | 'busy' | 'typing' | 'blocked' | 'unknown' {
+export function wakeOutlook(terminalId: string): 'waking' | 'confirming' | 'busy' | 'typing' | 'blocked' | 'unknown' {
   const t = tracks.get(terminalId)
   if (!t?.status || !getPeer(terminalId)?.provider) return 'unknown'
   if (t.blocked) return 'blocked'
   if (t.inputPending) return 'typing'
-  return t.status === 'idle' ? 'waking' : 'busy'
+  if (t.status !== 'idle') return 'busy'
+  return t.idleConfirmed || !needsIdleConfirmation(terminalId) ? 'waking' : 'confirming'
 }
 
 /**
@@ -145,6 +183,7 @@ export function beginStop(terminalId: string): void {
   const t = track(terminalId)
   t.stopsInFlight += 1
   t.blocked = false
+  t.idleConfirmed = false
 }
 
 export function endStop(terminalId: string): void {
@@ -162,22 +201,23 @@ export function noteBusy(terminalId: string): void {
 
 export function requestWake(terminalId: string): void {
   const t = tracks.get(terminalId)
-  if (!wakeable(t) || t!.timer || !hasWakeable(terminalId)) return
-  t!.timer = setTimeout(() => {
-    t!.timer = undefined
+  if (!wakeable(terminalId, t) || t.timer || !hasWakeable(terminalId)) return
+  t.timer = setTimeout(() => {
+    t.timer = undefined
     fire(terminalId)
   }, WAKE_SETTLE_MS)
 }
 
 function fire(terminalId: string): void {
   const t = tracks.get(terminalId)
-  if (!wakeable(t) || !getPeer(terminalId)?.provider) return
+  if (!wakeable(terminalId, t) || !getPeer(terminalId)?.provider) return
   const messages = takeWakeable(terminalId)
   if (messages.length === 0) return
   // Our own submit starts a turn; don't wake again until the next idle edge.
   // A notice the TUI swallowed is not retried: the mail stays queued, reported
   // as `notified`, until the session's next turn ends.
-  t!.status = 'running'
+  t.status = 'running'
+  t.idleConfirmed = false
   console.log(`[AgentWake] Waking ${terminalId} for ${messages.map((m) => m.id).join(', ')}`)
   write(terminalId, agentSubmitWrite(formatWakeNotice(messages)))
 }
