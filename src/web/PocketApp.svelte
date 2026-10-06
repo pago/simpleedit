@@ -197,7 +197,6 @@
     nav.leaveWindow()
     everListed.clear()
     startedLabels = {}
-    screenPrsStore.abandonRuns('Interrupted: this phone moved to another project, and the result goes to the window that started it. Run it again here.')
     known = {}
     pendingSession = null
     startedNote = null
@@ -241,8 +240,8 @@
     if (nav.stack('prs').some((e) => e.kind === 'discuss')) {
       return 'Discuss with Agent is open, and its session would start in the window being left. Close it first.'
     }
-    if (screenPrsStore.busy()) {
-      return 'Screen PRs is still working, and its results go to the window that started it. Switch once it finishes, or cancel it.'
+    if (screenPrsStore.posting()) {
+      return 'A review is still being posted, and its answer comes back over this connection. Switch once it has.'
     }
     return null
   }
@@ -404,7 +403,7 @@
 
   const tab = $derived(nav.tab)
   const top = $derived(nav.top())
-  // Live while the sheet is up: a screening that finishes or a recording that
+  // Live while the sheet is up: a review post that lands or a recording that
   // stops changes the answer under the user's finger.
   const sheetBlocked = $derived(top?.kind === 'projects' ? switchBlocker() : null)
   const sheetDiscards = $derived(top?.kind === 'projects' ? switchDiscards() : [])

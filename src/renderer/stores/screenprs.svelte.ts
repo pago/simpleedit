@@ -4,7 +4,7 @@
  * lands), and derives the bucketed, sorted queue. Bucketing/sorting is the
  * shared pure logic (screenprs.ts), so this store never re-implements the rules.
  */
-import type { ScreenPrsRunStatus, SubmitReviewResult } from '../../shared/ipc-types'
+import type { ScreenPrsRunEntry, ScreenPrsRunStatus, ScreenPrsStartResult, ScreenPrsState, SubmitReviewResult } from '../../shared/ipc-types'
 import type {
   PrRef,
   PrContext,
@@ -12,6 +12,7 @@ import type {
   ScreenPrBucket,
   DeepFinding,
   DeepLensId,
+  DeepReviewState,
   DeepReviewStatus,
   DeepLensStatus,
   PrReviewDraft,
@@ -21,43 +22,16 @@ import type {
 } from '../../shared/screenprs'
 import { BUCKET_ORDER, compareInBucket, emptyReviewDraft, reviewSubmitError } from '../../shared/screenprs'
 import { applyDraftOp, type DraftOpResult, type PrReviewCommentPatch, type PrReviewDraftOp } from '../../shared/review-drafts'
-import type { OverviewFacts, OverviewStatus } from '../../shared/pr-overview'
+import type { OverviewFacts, OverviewState, OverviewStatus } from '../../shared/pr-overview'
 import { DEFAULT_FILTER_PREFS, screeningFilters, type ScreenPrsFilterPrefs, type ScreenPrsFilterSnapshot } from '../../shared/screenprs-filter'
 
-export interface DeepState {
-  status: DeepReviewStatus
-  lenses: Partial<Record<DeepLensId, DeepLensStatus>>
-  findings: DeepFinding[]
-  /**
-   * The head these findings' line numbers were computed against.
-   *
-   * Carried because a finding outlives the card it came from — `_deep` survives
-   * the `_onQueued` that replaces the queue with bare refs — so a comment
-   * lifted from one cannot take its stamp from whatever the live head happens
-   * to be at the moment of the tap.
-   */
-  headSha?: string
-  error?: string
-}
-
-/** A PR's overview: the raw markdown (parsed on render) and the facts it came with. */
-export interface OverviewState {
-  status: OverviewStatus
-  text?: string
-  facts?: OverviewFacts
-  /** The head the overview's citations were read off. */
-  headSha?: string
-  error?: string
-}
+export type DeepState = DeepReviewState
+export type { OverviewState }
 
 export type ScreenStatus = 'idle' | ScreenPrsRunStatus
 
 /** A queue slot: always a `ref`; gains `context` when gathered, `card` when triaged. */
-export interface Entry {
-  ref: PrRef
-  context?: PrContext
-  card?: ScreenPrCard
-}
+export type Entry = ScreenPrsRunEntry
 
 /** A still-screening PR's phase: gathering its diff, queued for the model, or
  *  actively being judged right now. */
@@ -255,6 +229,38 @@ function setEntry(key: string, patch: Partial<Entry>): void {
   _entries = next
 }
 
+const INTERRUPTED = 'Interrupted: SimpleEdit restarted while this was running. Run it again.'
+
+function applyState(state: ScreenPrsState): void {
+  const { run } = state
+  if (run.status !== 'idle') {
+    _entries = new Map(run.entries.map((e) => [keyOf(e.ref), e]))
+    _triaging = new Set(run.triaging)
+    _status = run.status
+    _total = run.total
+    _error = run.error
+  } else if (_status === 'running') {
+    // Main has never screened this launch, so whatever this client saw running was lost with the last one.
+    _status = 'error'
+    _error = INTERRUPTED
+  }
+  const deep = new Map(Object.entries(state.deep))
+  for (const [url, d] of _deep) {
+    if (!deep.has(url)) deep.set(url, d.status === 'running' ? { ...d, status: 'error', error: INTERRUPTED } : d)
+  }
+  _deep = deep
+  const overviews = new Map(Object.entries(state.overviews))
+  for (const [url, o] of _overview) {
+    if (!overviews.has(url)) overviews.set(url, o.status === 'running' ? { ...o, status: 'error', error: INTERRUPTED } : o)
+  }
+  _overview = overviews
+}
+
+/** A start that joined a run already going missed its beginning, so it catches up. */
+async function followIfJoined(result: ScreenPrsStartResult | undefined): Promise<void> {
+  if (result?.joined) await screenPrsStore.loadState()
+}
+
 export const screenPrsStore = {
   status: (): ScreenStatus => _status,
   error: (): string | undefined => _error,
@@ -283,32 +289,22 @@ export const screenPrsStore = {
   },
 
   /**
-   * A screening, deep review, overview or review post is still running. Its
-   * progress and its answer arrive as events on the window that started it,
-   * so a phone that attached elsewhere meanwhile would show it running forever.
+   * A review post is in flight. Its answer comes back on the invoke, over this
+   * connection only, so a client that reconnects meanwhile never learns
+   * whether it landed. Screening, deep reviews and overviews report to every
+   * client instead (`loadState` catches a reconnected one up).
    */
-  busy: (): boolean =>
-    _status === 'running' ||
-    _submitting.size > 0 ||
-    [..._deep.values()].some((d) => d.status === 'running') ||
-    [..._overview.values()].some((o) => o.status === 'running'),
+  posting: (): boolean => _submitting.size > 0,
 
   /**
-   * Settle every run as interrupted. For a phone that has been moved to another
-   * window: what the old window was running reports there, so nothing will ever
-   * end these here, and a run left `running` would block the picker for good.
-   * A review post is left alone — its invoke settles it, with an answer or a
-   * lost connection.
+   * Replace this client's view of every run with main's: on start, and after a
+   * reconnect or a project switch, which miss whatever was sent meanwhile.
    */
-  abandonRuns(reason: string): void {
-    if (_status === 'running') {
-      _status = 'error'
-      _error = reason
-      _triaging = new Set()
-    }
-    for (const [url, deep] of _deep) if (deep.status === 'running') setDeep(url, { status: 'error', error: reason })
-    for (const [url, overview] of _overview) {
-      if (overview.status === 'running') setOverview(url, { status: 'error', error: reason })
+  async loadState(): Promise<void> {
+    try {
+      applyState(await window.api.invoke('screenprs:state'))
+    } catch (err: unknown) {
+      console.warn('[screenprs] loading the run state failed:', err)
     }
   },
 
@@ -371,7 +367,7 @@ export const screenPrsStore = {
     _total = undefined
     _status = 'running'
     try {
-      await window.api.invoke('screenprs:start', filters)
+      await followIfJoined(await window.api.invoke('screenprs:start', filters))
     } catch (err: unknown) {
       // Refused before it began, so no status event will ever settle the run.
       _status = 'error'
@@ -390,7 +386,7 @@ export const screenPrsStore = {
   async startDeep(context: PrContext): Promise<void> {
     setDeep(context.url, { status: 'running', lenses: {}, findings: [], headSha: context.headSha, error: undefined })
     // Snapshot: `context` is a $state proxy from the store — IPC can't clone it.
-    await window.api.invoke('screenprs:deep-start', $state.snapshot(context))
+    await followIfJoined(await window.api.invoke('screenprs:deep-start', $state.snapshot(context)))
   },
   async cancelDeep(url: string): Promise<void> {
     await window.api.invoke('screenprs:deep-cancel', url)
@@ -403,11 +399,9 @@ export const screenPrsStore = {
   async startOverview(context: PrContext): Promise<void> {
     setOverview(context.url, { status: 'running', text: undefined, facts: undefined, headSha: context.headSha, error: undefined })
     // Snapshot: `context` is a $state proxy from the store — IPC can't clone it.
-    await window.api.invoke('screenprs:overview-start', $state.snapshot(context))
+    await followIfJoined(await window.api.invoke('screenprs:overview-start', $state.snapshot(context)))
   },
-  /** Main sends nothing for a cancelled run, so the local state settles here. */
   async cancelOverview(url: string): Promise<void> {
-    setOverview(url, { status: 'idle' })
     await window.api.invoke('screenprs:overview-cancel', url)
   },
   _onOverviewResult(url: string, headSha: string, text: string, facts: OverviewFacts): void {
@@ -570,6 +564,12 @@ export const screenPrsStore = {
     }
   },
   _onStatus(status: ScreenPrsRunStatus, total?: number, error?: string): void {
+    // Another client started a screening: this board is the last run's.
+    if (status === 'running' && _status !== 'running') {
+      _entries = new Map()
+      _triaging = new Set()
+      _total = undefined
+    }
     _status = status
     if (total !== undefined) _total = total
     _error = error
@@ -598,6 +598,7 @@ export function initScreenPrsListeners(): () => void {
   const unsubFilterChanged = window.api.on('screenprs:filter-changed', (d) => receiveFilter(d))
   void screenPrsStore.loadDrafts()
   void screenPrsStore.loadFilter()
+  void screenPrsStore.loadState()
   return () => {
     unsubFilterChanged()
     unsubQueued()

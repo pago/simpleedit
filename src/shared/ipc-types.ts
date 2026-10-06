@@ -5,9 +5,9 @@
  */
 
 import type { Spec } from './gen-ui-catalog'
-import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepLensStatus, PrReviewDraft, ReviewFolds } from './screenprs'
+import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepReviewState, DeepLensStatus, PrReviewDraft, ReviewFolds } from './screenprs'
 import type { DraftOpResult, DraftsSnapshot, PrReviewDraftOp } from './review-drafts'
-import type { OverviewFacts, OverviewStatus } from './pr-overview'
+import type { OverviewFacts, OverviewState, OverviewStatus } from './pr-overview'
 import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-filter'
 
 // ── Worktree ──────────────────────────────────────────────
@@ -455,19 +455,60 @@ export interface ScreenPrsFilters {
   force?: boolean
 }
 
-export type ScreenPrsRunStatus = 'running' | 'done' | 'error'
+/** `cancelled`: a client stopped it. The cards that had landed stay. */
+export type ScreenPrsRunStatus = 'running' | 'done' | 'error' | 'cancelled'
+
+/** One PR of the screening run: always a ref, then its context, then its card. */
+export interface ScreenPrsRunEntry {
+  ref: PrRef
+  context?: PrContext
+  card?: ScreenPrCard
+}
+
+/**
+ * Everything main knows about Screen PRs runs, for a client that missed the
+ * events: a window opened mid-run, or a phone that reconnected or switched
+ * project. Runs belong to the app, so every client gets the same answer
+ * (a socket client's with the diffs emptied).
+ */
+export interface ScreenPrsState {
+  /** The current or most recent screening; `idle` until the first one this launch. */
+  run: {
+    status: 'idle' | ScreenPrsRunStatus
+    total?: number
+    error?: string
+    entries: ScreenPrsRunEntry[]
+    /** PRs the model is judging right now. */
+    triaging: string[]
+  }
+  /** Every deep review started this launch, by PR url. */
+  deep: Record<string, DeepReviewState>
+  /** Every overview started this launch, by PR url. */
+  overviews: Record<string, OverviewState>
+}
+
+/**
+ * `joined`: one was already running (the screening, or this PR's deep review
+ * or overview), so this call started nothing and the caller follows that run.
+ */
+export interface ScreenPrsStartResult {
+  joined: boolean
+}
 
 export interface ScreenPrsInvokeMap {
-  'screenprs:start': { args: [filters: ScreenPrsFilters]; result: void }
+  /** Settles once the run ends, or at once when it joined one already running. */
+  'screenprs:start': { args: [filters: ScreenPrsFilters]; result: ScreenPrsStartResult }
+  /** Stops the app's screening, whichever client started it. */
   'screenprs:cancel': { args: []; result: void }
+  'screenprs:state': { args: []; result: ScreenPrsState }
   /** One PR's unified diff, on demand — board cards reach a remote client with
    *  `diff` emptied, because a board is dozens of them. */
   'screenprs:pr-diff': { args: [pr: Pick<PrRef, 'url'> & { headSha?: string }]; result: string }
   /** Run a deep review on one PR (full context is passed — triage doesn't retain it). */
-  'screenprs:deep-start': { args: [context: PrContext]; result: void }
+  'screenprs:deep-start': { args: [context: PrContext]; result: ScreenPrsStartResult }
   'screenprs:deep-cancel': { args: [url: string]; result: void }
   /** Write the PR overview for one PR (full context, diff included, as for deep review). */
-  'screenprs:overview-start': { args: [context: PrContext]; result: void }
+  'screenprs:overview-start': { args: [context: PrContext]; result: ScreenPrsStartResult }
   'screenprs:overview-cancel': { args: [url: string]; result: void }
   /** Post a review to GitHub — the composer's write path (guarded by a confirm). */
   'screenprs:submit-review': { args: [request: SubmitReviewRequest]; result: SubmitReviewResult }

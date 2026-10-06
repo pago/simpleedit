@@ -351,6 +351,25 @@ whose old side is a different base than GitHub's. The 422 all-fold retry keeps
 `commit_id`; if GitHub refuses that, nothing is posted — an unpinned APPROVE
 would approve code the reviewer never saw.
 
+### Screen PRs: runs belong to the app
+A screening, and each PR's deep review and overview, is **one run for the whole
+app**, reported to every window and phone (`everyClient` in `client-hub.ts`,
+built over the hubs and `liveWindowContents`), never to the hub that started it.
+That is what lets a phone switch project mid-run.
+- **A second start joins** the run already going (`{ joined: true }`): one
+  screening app-wide, one deep review and one overview per PR url. The joining
+  client catches up with `screenprs:state`.
+- **Any client can stop it**, and main reports the stop (`cancelled` for a
+  screening, `idle` for a deep review or overview). Every send checks the run is
+  still current, so a stopped run's stragglers never mix into the next one.
+- **Main keeps the board** (`screeningSnapshot`, `deepReviewSnapshot`,
+  `overviewSnapshot`) for a client that missed the events: the desktop store
+  loads it at start, the phone on every (re)connect. A socket client's copy has
+  the diffs emptied, as its events do.
+- A review post is the exception: its answer comes back on the invoke, over one
+  connection, so the phone's picker still refuses a switch while one is in
+  flight.
+
 ### Screen PRs: the saved filter and Discuss with Agent
 The org + activity cutoff is **one saved filter owned by main**
 (`screenprs-filter.ts`, `userData/config/screenprs-filter.json`), the same

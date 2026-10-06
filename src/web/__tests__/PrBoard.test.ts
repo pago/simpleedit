@@ -162,3 +162,50 @@ describe('PrBoard — the shared filter', () => {
     expect(screen.getByTestId('filter-cutoff')).toHaveValue('30')
   })
 })
+
+/**
+ * Screening belongs to the app, so a phone that switches project mid-run keeps
+ * following it: the reconnect catches it up from main (`loadState`), and the
+ * run's later events reach it on the new window's hub.
+ */
+describe('PrBoard — a run that outlives a project switch', () => {
+  const pr = card({ number: 9, bucket: 'quick' })
+
+  beforeEach(() => {
+    screenPrsStore._onStatus('done', 0)
+    screenPrsStore._onStatus('running')
+  })
+
+  it('shows the run still going after the switch, then its result', async () => {
+    vi.stubGlobal('api', {
+      on: () => () => {},
+      invoke: vi.fn(async (channel: string) =>
+        channel === 'screenprs:state'
+          ? { run: { status: 'running', total: 1, entries: [{ ref: pr }], triaging: [] }, deep: {}, overviews: {} }
+          : undefined,
+      ),
+    })
+    render(PrBoard, { onopen: vi.fn() })
+    await screenPrsStore.loadState()
+
+    expect(await screen.findByTestId('screen-prs')).toHaveTextContent('Screening…')
+    expect(screen.getByTestId('cancel-screen')).toBeInTheDocument()
+
+    screenPrsStore._onCard(pr)
+    screenPrsStore._onStatus('done', 1)
+
+    await vi.waitFor(() => expect(screen.getByTestId('screen-prs')).toHaveTextContent('Re-screen'))
+    expect(screen.getAllByTestId('pr-card')).toHaveLength(1)
+  })
+
+  it('settles when another client stops it', async () => {
+    render(PrBoard, { onopen: vi.fn() })
+    expect(screen.getByTestId('cancel-screen')).toBeInTheDocument()
+
+    screenPrsStore._onStatus('cancelled')
+
+    await vi.waitFor(() => expect(screen.queryByTestId('cancel-screen')).not.toBeInTheDocument())
+    expect(screen.getByTestId('screen-prs')).toHaveTextContent('Re-screen')
+    expect(screen.getByTestId('pr-board')).toHaveTextContent('Screening was stopped')
+  })
+})

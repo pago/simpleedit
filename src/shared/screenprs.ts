@@ -196,6 +196,23 @@ export interface DeepFinding {
 export type DeepReviewStatus = 'idle' | 'running' | 'done' | 'error'
 export type DeepLensStatus = 'running' | 'done' | 'error'
 
+/** A PR's deep review as a client shows it, and as main holds it for a late joiner. */
+export interface DeepReviewState {
+  status: DeepReviewStatus
+  lenses: Partial<Record<DeepLensId, DeepLensStatus>>
+  findings: DeepFinding[]
+  /**
+   * The head these findings' line numbers were computed against.
+   *
+   * Carried because a finding outlives the card it came from — a client's deep
+   * state survives the re-screen that replaces the queue with bare refs — so a
+   * comment lifted from one cannot take its stamp from whatever the live head
+   * happens to be at the moment of the tap.
+   */
+  headSha?: string
+  error?: string
+}
+
 export const SEVERITY_RANK: Record<DeepSeverity, number> = { blocking: 0, concern: 1, note: 2 }
 
 /** Sort curated findings blocking-first, then by lens order, then file. */

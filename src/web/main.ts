@@ -23,11 +23,13 @@ if (keys.candidate) void settleUrlKey(keys.candidate, checkKeyWithServer, (key) 
 // minutes, and a board that only listened while you were looking at it would
 // lose whatever landed while you were reading a session.
 initScreenPrsListeners()
-// Review drafts and the filter are edited from the desktop too, and a broadcast sent while
-// the socket was down never arrives — so every (re)connect reloads them.
+// Review drafts, the filter and Screen PRs runs are shared with the desktop, and
+// a broadcast sent while the socket was down (or switching project) never
+// arrives — so every (re)connect reloads them.
 connection.onIdentity(() => {
   void screenPrsStore.loadDrafts()
   void screenPrsStore.loadFilter()
+  void screenPrsStore.loadState()
 })
 
 trackVisualViewport()

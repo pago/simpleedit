@@ -1,9 +1,8 @@
 /**
  * PR Overview orchestration: gather the context (`github/pr-overview-context`),
  * run the overview task once in text mode, cache the raw answer on the PR's
- * screening entry, and send it to whichever client asked. Mirrors
- * `deep-review.ts`: one run per PR url, plain `send`, so the phone gets the
- * same events as the desktop.
+ * screening entry, and send it to every client. Mirrors `deep-review.ts`: one
+ * run per PR url, app-wide; a second start joins it and any client can stop it.
  */
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
@@ -11,7 +10,8 @@ import { join } from 'path'
 import type { RemoteClient } from './client-hub'
 import type { ModelRef } from '../shared/ipc-types'
 import type { PrContext } from '../shared/screenprs'
-import type { OverviewStatus } from '../shared/pr-overview'
+import type { OverviewFacts, OverviewState, OverviewStatus } from '../shared/pr-overview'
+import type { ScreenPrsStartResult } from '../shared/ipc-types'
 import { getModelConfig } from './models/config'
 import { DEFAULT_OVERVIEW_MODEL } from './models/claude-catalog'
 import { createTaskExecution, targetFromModelRef } from './agent-tasks/registry'
@@ -25,10 +25,12 @@ import { gatherOverviewContext, overviewFacts } from './github/pr-overview-conte
 import { analysisFingerprint, getCachedFindings, getCachedOverview, putOverview } from './screenprs-cache'
 import { reviewDiffFor } from './screenprs'
 
-const activeOverviews = new Map<string, AbortController>()
+const activeOverviews = new Map<string, { controller: AbortController; out: RemoteClient }>()
+/** Each PR's latest overview this launch, for a client that missed the events. */
+const states = new Map<string, OverviewState>()
 
-function send(wc: RemoteClient, channel: string, data: unknown): void {
-  if (!wc.isDestroyed()) wc.send(channel, data)
+function setState(url: string, patch: Partial<OverviewState>): void {
+  states.set(url, { ...(states.get(url) ?? { status: 'idle' }), ...patch })
 }
 
 export function overviewModel(): ModelRef {
@@ -44,13 +46,25 @@ export function overviewFingerprint(model: ModelRef | undefined, instructions: s
   })
 }
 
-export async function startOverview(ctx: PrContext, webContents: RemoteClient): Promise<void> {
-  cancelOverview(ctx.url)
+/** Settles when the overview it started ends; a join settles at once. */
+export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<ScreenPrsStartResult> {
+  if (activeOverviews.has(ctx.url)) return { joined: true }
   const controller = new AbortController()
-  activeOverviews.set(ctx.url, controller)
-  const sendStatus = (status: OverviewStatus, error?: string): void =>
-    send(webContents, 'screenprs:overview-status', { url: ctx.url, status, error })
+  const mine = { controller, out }
+  activeOverviews.set(ctx.url, mine)
+  const live = (): boolean => activeOverviews.get(ctx.url) === mine && !controller.signal.aborted
+  const sendStatus = (status: OverviewStatus, error?: string): void => {
+    if (!live()) return
+    setState(ctx.url, { status, error })
+    out.send('screenprs:overview-status', { url: ctx.url, status, error })
+  }
+  const sendResult = (text: string, facts: OverviewFacts): void => {
+    if (!live()) return
+    setState(ctx.url, { text, facts, headSha: ctx.headSha })
+    out.send('screenprs:overview-result', { url: ctx.url, headSha: ctx.headSha, text, facts })
+  }
 
+  states.set(ctx.url, { status: 'idle', headSha: ctx.headSha })
   sendStatus('running')
   try {
     // Resolved once so the fingerprint and the model call see the same text.
@@ -59,9 +73,9 @@ export async function startOverview(ctx: PrContext, webContents: RemoteClient): 
     const fingerprint = overviewFingerprint(model, instructions)
     const cached = getCachedOverview(ctx.url, ctx.headSha, fingerprint)
     if (cached) {
-      send(webContents, 'screenprs:overview-result', { url: ctx.url, headSha: ctx.headSha, text: cached.text, facts: cached.facts })
+      sendResult(cached.text, cached.facts)
       sendStatus('done')
-      return
+      return { joined: false }
     }
 
     // A caller that didn't carry the diff (the phone before it opened Files)
@@ -73,7 +87,7 @@ export async function startOverview(ctx: PrContext, webContents: RemoteClient): 
       resolver: createBaseResolver(),
       ...getCachedFindings(ctx.url, ctx.headSha),
     })
-    if (controller.signal.aborted) return
+    if (!live()) return { joined: false }
 
     const analysisDir = mkdtempSync(join(tmpdir(), 'simpleedit-overview-'))
     let text: string | undefined
@@ -92,26 +106,38 @@ export async function startOverview(ctx: PrContext, webContents: RemoteClient): 
     } finally {
       rmSync(analysisDir, { recursive: true, force: true })
     }
-    if (controller.signal.aborted) return
+    if (!live()) return { joined: false }
     if (!text) throw new Error('The model returned no overview.')
 
     const facts = overviewFacts(context)
     putOverview(ctx.url, ctx.headSha, { text, facts, at: new Date().toISOString() }, fingerprint)
-    send(webContents, 'screenprs:overview-result', { url: ctx.url, headSha: ctx.headSha, text, facts })
+    sendResult(text, facts)
     sendStatus('done')
   } catch (err: unknown) {
-    if (!controller.signal.aborted) sendStatus('error', err instanceof Error ? err.message : String(err))
+    sendStatus('error', err instanceof Error ? err.message : String(err))
   } finally {
-    if (activeOverviews.get(ctx.url) === controller) activeOverviews.delete(ctx.url)
+    if (activeOverviews.get(ctx.url) === mine) activeOverviews.delete(ctx.url)
   }
+  return { joined: false }
 }
 
+/** Stop a PR's overview, whoever started it, and tell every client. */
 export function cancelOverview(url: string): void {
-  activeOverviews.get(url)?.abort()
+  const active = activeOverviews.get(url)
+  if (!active) return
+  active.controller.abort()
   activeOverviews.delete(url)
+  setState(url, { status: 'idle', error: undefined })
+  active.out.send('screenprs:overview-status', { url, status: 'idle' })
 }
 
+/** Abort at quit: nobody is left to tell. */
 export function cancelAllOverviews(): void {
-  for (const c of activeOverviews.values()) c.abort()
+  for (const { controller } of activeOverviews.values()) controller.abort()
   activeOverviews.clear()
+}
+
+/** Every PR's overview this launch, for a client that missed the events. */
+export function overviewSnapshot(): Record<string, OverviewState> {
+  return Object.fromEntries(states)
 }

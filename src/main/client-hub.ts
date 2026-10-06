@@ -96,3 +96,31 @@ export class ClientHub implements RemoteClient {
     return this.live().length
   }
 }
+
+/**
+ * Every window and every phone, as one `RemoteClient`, for state that belongs
+ * to the app rather than to a window.
+ *
+ * A phone's socket is reachable only through the hub of the window it joined,
+ * so each hub fans out to its own transports, and a window that has no hub yet
+ * is sent to directly: each client once. Both lists are read per send, so a
+ * client that attaches mid-run receives what follows. `windows` must already
+ * leave out a window whose `WebContents` is being destroyed (`liveWindowContents`).
+ */
+export function everyClient(hubs: () => Iterable<ClientHub>, windows: () => RemoteClient[]): RemoteClient {
+  const each = (deliver: (client: RemoteClient) => void): void => {
+    const reached = new Set<number>()
+    for (const hub of hubs()) {
+      reached.add(hub.id)
+      deliver(hub)
+    }
+    for (const wc of windows()) if (!reached.has(wc.id)) deliver(wc)
+  }
+  return {
+    id: -1,
+    send: (channel, data) => each((client) => client.send(channel, data)),
+    sendSplit: (channel, local, remote) =>
+      each((client) => (client.sendSplit ? client.sendSplit(channel, local, remote) : client.send(channel, local))),
+    isDestroyed: () => false,
+  }
+}

@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import type { RemoteClient } from './client-hub'
 import type { ModelRef } from '../shared/ipc-types'
-import type { PrContext, DeepFinding, DeepLensId, DeepReviewStatus, DeepLensStatus } from '../shared/screenprs'
+import type { PrContext, DeepFinding, DeepLensId, DeepReviewState, DeepReviewStatus, DeepLensStatus } from '../shared/screenprs'
+import type { ScreenPrsStartResult } from '../shared/ipc-types'
 import { DEEP_LENS_ORDER, compareDeepFindings } from '../shared/screenprs'
 import { getModelConfig } from './models/config'
 import { DEFAULT_TRIAGE_MODEL } from './models/claude-catalog'
@@ -23,10 +24,17 @@ import { makeLensTask, makeSynthesisTask, DEEP_REVIEW_PROMPT_VERSION } from './t
 import { resolveInstructions, instructionsHash } from './prompts/overrides'
 import { analysisFingerprint, getCachedDeep, putDeep } from './screenprs-cache'
 
-const activeDeep = new Map<string, AbortController>()
+/**
+ * One deep review per PR, app-wide, reported to every client (`out`): a second
+ * start for a PR already under review joins it, and any client can stop it.
+ * `states` keeps each PR's latest for a client that missed the events.
+ */
+const activeDeep = new Map<string, { controller: AbortController; out: RemoteClient }>()
+const states = new Map<string, DeepReviewState>()
 
-function send(wc: RemoteClient, channel: string, data: unknown): void {
-  if (!wc.isDestroyed()) wc.send(channel, data)
+function setState(url: string, patch: Partial<DeepReviewState>): void {
+  const cur = states.get(url) ?? { status: 'idle', lenses: {}, findings: [] }
+  states.set(url, { ...cur, ...patch })
 }
 
 function runnerFor(model: ModelRef | undefined, cwd = tmpdir()): Runner {
@@ -69,34 +77,48 @@ export function deepReviewFingerprint(
   })
 }
 
-export async function startDeepReview(ctx: PrContext, webContents: RemoteClient): Promise<void> {
-  cancelDeepReview(ctx.url)
+/** Settles when the review it started ends; a join settles at once. */
+export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promise<ScreenPrsStartResult> {
+  if (activeDeep.has(ctx.url)) return { joined: true }
   const controller = new AbortController()
-  activeDeep.set(ctx.url, controller)
-  const sendLens = (lens: DeepLensId, status: DeepLensStatus): void =>
-    send(webContents, 'screenprs:deep-lens', { url: ctx.url, lens, status })
-  const sendStatus = (status: DeepReviewStatus, error?: string): void =>
-    send(webContents, 'screenprs:deep-status', { url: ctx.url, status, error })
-
-  sendStatus('running')
-
-  // Cache hit at this head SHA → the diff hasn't changed, so the prior deep
-  // findings still hold. Serve them instantly, no model calls.
-  const lenses = enabledLenses()
-  const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
-  const synthInstructions = resolveInstructions('deep-review/synthesis').text
-  const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions)
-  const cached = getCachedDeep(ctx.url, ctx.headSha, deepFingerprint)
-  if (cached) {
-    send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: cached, headSha: ctx.headSha })
-    sendStatus('done')
-    activeDeep.delete(ctx.url)
-    return
+  const mine = { controller, out }
+  activeDeep.set(ctx.url, mine)
+  const live = (): boolean => activeDeep.get(ctx.url) === mine && !controller.signal.aborted
+  const sendLens = (lens: DeepLensId, status: DeepLensStatus): void => {
+    if (!live()) return
+    setState(ctx.url, { lenses: { ...states.get(ctx.url)?.lenses, [lens]: status } })
+    out.send('screenprs:deep-lens', { url: ctx.url, lens, status })
+  }
+  const sendStatus = (status: DeepReviewStatus, error?: string): void => {
+    if (!live()) return
+    setState(ctx.url, { status, error })
+    out.send('screenprs:deep-status', { url: ctx.url, status, error })
+  }
+  const sendResult = (findings: DeepFinding[]): void => {
+    if (!live()) return
+    setState(ctx.url, { findings, headSha: ctx.headSha })
+    out.send('screenprs:deep-result', { url: ctx.url, findings, headSha: ctx.headSha })
   }
 
-  for (const { lens } of lenses) sendLens(lens, 'running')
+  states.set(ctx.url, { status: 'idle', lenses: {}, findings: [], headSha: ctx.headSha })
+  sendStatus('running')
 
   try {
+    // Cache hit at this head SHA → the diff hasn't changed, so the prior deep
+    // findings still hold. Serve them instantly, no model calls.
+    const lenses = enabledLenses()
+    const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
+    const synthInstructions = resolveInstructions('deep-review/synthesis').text
+    const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions)
+    const cached = getCachedDeep(ctx.url, ctx.headSha, deepFingerprint)
+    if (cached) {
+      sendResult(cached)
+      sendStatus('done')
+      return { joined: false }
+    }
+
+    for (const { lens } of lenses) sendLens(lens, 'running')
+
     const analysisDir = mkdtempSync(join(tmpdir(), 'simpleedit-deep-review-'))
     try {
       // Fan out the lenses; the gate serializes local work and parallelizes cloud.
@@ -111,12 +133,12 @@ export async function startDeepReview(ctx: PrContext, webContents: RemoteClient)
             })
             .catch(() => {
               // One lens failing must not sink the whole review.
-              if (!controller.signal.aborted) sendLens(lens, 'error')
+              sendLens(lens, 'error')
               return [] as DeepFinding[]
             })
         )
       )
-      if (controller.signal.aborted) return
+      if (!live()) return { joined: false }
 
       const raw = perLens.flat()
 
@@ -133,28 +155,40 @@ export async function startDeepReview(ctx: PrContext, webContents: RemoteClient)
         }
         if (curated.length === 0 && !controller.signal.aborted) curated = raw
       }
-      if (controller.signal.aborted) return
+      if (!live()) return { joined: false }
 
       curated.sort(compareDeepFindings)
       putDeep(ctx.url, ctx.headSha, curated, deepFingerprint)
-      send(webContents, 'screenprs:deep-result', { url: ctx.url, findings: curated, headSha: ctx.headSha })
+      sendResult(curated)
       sendStatus('done')
     } finally {
       rmSync(analysisDir, { recursive: true, force: true })
     }
   } catch (err: unknown) {
-    if (!controller.signal.aborted) sendStatus('error', err instanceof Error ? err.message : String(err))
+    sendStatus('error', err instanceof Error ? err.message : String(err))
   } finally {
-    if (activeDeep.get(ctx.url) === controller) activeDeep.delete(ctx.url)
+    if (activeDeep.get(ctx.url) === mine) activeDeep.delete(ctx.url)
   }
+  return { joined: false }
 }
 
+/** Stop a PR's deep review, whoever started it, and tell every client. */
 export function cancelDeepReview(url: string): void {
-  activeDeep.get(url)?.abort()
+  const active = activeDeep.get(url)
+  if (!active) return
+  active.controller.abort()
   activeDeep.delete(url)
+  setState(url, { status: 'idle', error: undefined })
+  active.out.send('screenprs:deep-status', { url, status: 'idle' })
 }
 
+/** Abort at quit: nobody is left to tell. */
 export function cancelAllDeepReviews(): void {
-  for (const c of activeDeep.values()) c.abort()
+  for (const { controller } of activeDeep.values()) controller.abort()
   activeDeep.clear()
+}
+
+/** Every PR's deep review this launch, for a client that missed the events. */
+export function deepReviewSnapshot(): Record<string, DeepReviewState> {
+  return Object.fromEntries(states)
 }

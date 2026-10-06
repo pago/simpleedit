@@ -42,6 +42,16 @@ export interface OverviewFacts {
 
 export type OverviewStatus = 'idle' | 'running' | 'done' | 'error'
 
+/** A PR's overview: the raw markdown (parsed on render) and the facts it came with. */
+export interface OverviewState {
+  status: OverviewStatus
+  text?: string
+  facts?: OverviewFacts
+  /** The head the overview's citations were read off. */
+  headSha?: string
+  error?: string
+}
+
 export interface ParsedOverview {
   sections: OverviewSections
   raw: string
