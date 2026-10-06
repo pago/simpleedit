@@ -41,7 +41,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { randomBytes, timingSafeEqual } from 'crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'fs'
-import { extname, join, normalize, resolve, sep } from 'path'
+import { extname, join, resolve, sep } from 'path'
 import type { Socket } from 'net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { powerSaveBlocker } from 'electron'
@@ -176,9 +176,9 @@ class SocketTransport implements RemoteClient {
 function tokenMatches(candidate: string, token: string): boolean {
   const a = Buffer.from(candidate)
   const b = Buffer.from(token)
-  // timingSafeEqual throws on a length mismatch, which would itself leak the
-  // length — compare a fixed-size digest-shaped pair instead by padding to the
-  // longer of the two and folding the length difference into the result.
+  // `timingSafeEqual` throws on a length mismatch, so a wrong length returns
+  // early. That reveals only the length, which is public: every key is 64 hex
+  // characters, and the callers have already refused any other shape.
   if (a.length !== b.length) {
     timingSafeEqual(b, b)
     return false
@@ -233,24 +233,27 @@ const MIME: Record<string, string> = {
  * Resolve `route` inside `webRoot`, or null if it escapes or will not decode.
  *
  * This runs WITHOUT the key, so it is the whole of what an unauthenticated
- * caller can reach: the built bundle, and nothing outside it through `../`. `decodeURIComponent` throws on a lone
- * `%` — a truncated pasted link is enough — and an uncaught throw inside the
- * request listener takes the whole main process down with it, which means
- * `before-quit` never runs and every agent PTY is orphaned.
+ * caller can reach: the built bundle, and nothing outside it. Containment is
+ * one check on the fully resolved path, AFTER decoding — `%2e%2e%2f` is `../`
+ * only once decoded. `decodeURIComponent` throws on a lone `%` (a truncated
+ * pasted link is enough), and an uncaught throw inside the request listener
+ * takes the whole main process down with it, so `before-quit` never runs and
+ * every agent PTY is orphaned.
+ *
+ * Exported for tests.
  */
-function resolveStatic(webRoot: string, route: string): string | null {
+export function resolveStatic(webRoot: string, route: string): string | null {
   let decoded: string
   try {
     decoded = decodeURIComponent(route)
   } catch {
     return null
   }
-  const relative = normalize(decoded).replace(/^(\.\.[/\\])+/, '')
-  const full = resolve(join(webRoot, relative))
   const root = resolve(webRoot)
+  const full = resolve(root, `.${sep}${decoded}`)
   if (full !== root && !full.startsWith(root + sep)) return null
   if (!existsSync(full)) return null
-  return statSync(full).isDirectory() ? resolveStatic(webRoot, join(relative, 'index.html')) : full
+  return statSync(full).isDirectory() ? resolveStatic(webRoot, join(full.slice(root.length), 'index.html')) : full
 }
 
 const SHELL_HEADERS = {
@@ -259,6 +262,13 @@ const SHELL_HEADERS = {
   'cache-control': 'no-store',
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
+  // Public now, so any site could frame it or probe for it. Neither framing
+  // (clickjacking the scanner or a paste) nor a no-cors `<script src=sw.js>`
+  // from another origin — which would tell a page that SimpleEdit runs here —
+  // has a legitimate use.
+  'x-frame-options': 'DENY',
+  'content-security-policy': "frame-ancestors 'none'",
+  'cross-origin-resource-policy': 'same-origin',
 } as const
 
 /**
@@ -362,10 +372,8 @@ export function originOf(
  * True when the request carries no `Origin` (a navigation, or a non-browser
  * client), or one naming the very host the request was addressed to.
  *
- * Stateless on purpose. This used to accept only origins learned from a
- * navigation that carried the key in its path, but the shell no longer needs
- * the key, so a navigation proves nothing — and an installed app relaunched
- * after a restart has nothing in its URL that is current.
+ * Stateless on purpose: the shell is reached without the key, so no
+ * navigation proves anything worth remembering about its origin.
  *
  * What it stops: a page on another site opening a socket to this port with a
  * key it somehow holds (the browser sends that site's `Origin`, not ours).

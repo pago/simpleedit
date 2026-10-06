@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installRemoteApi, NotSentError } from '../api-shim'
+import { checkKeyWithServer, installRemoteApi, NotSentError } from '../api-shim'
 
 /**
  * The shim's queue, which is a correctness surface and not a convenience.
@@ -371,5 +371,32 @@ describe('api-shim while out of date', () => {
   it('fails calls made with no key at all', async () => {
     installRemoteApi({ key: null, checkKey: async () => 'unknown' })
     await expect(window.api.invoke('session:list')).rejects.toBeInstanceOf(NotSentError)
+  })
+})
+
+describe('checkKeyWithServer', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('reads 204 as current and 401 as stale', async () => {
+    vi.useRealTimers()
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    expect(await checkKeyWithServer(KEY)).toBe('current')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 401 }))
+    expect(await checkKeyWithServer(KEY)).toBe('stale')
+    expect(String(fetchMock.mock.calls[0][0])).toContain(`/auth?k=${KEY}`)
+  })
+
+  // On a dead tailnet path the fetch can hang for minutes, and the shim only
+  // schedules its next attempt once this answers.
+  it('gives up after its timeout and answers unknown', async () => {
+    vi.useRealTimers()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+        }),
+    )
+    expect(await checkKeyWithServer(KEY, 20)).toBe('unknown')
   })
 })

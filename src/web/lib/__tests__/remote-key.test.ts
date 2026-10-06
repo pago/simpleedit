@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { pairingProblem, parsePairingLink, resolveKey, storeKey } from '../remote-key'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { pairingProblem, parsePairingLink, resolveKey, settleUrlKey, storeKey } from '../remote-key'
 
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
@@ -24,14 +24,14 @@ beforeEach(() => { storage = memoryStorage() })
 
 describe('resolveKey', () => {
   it('has nothing to connect with before any pairing', () => {
-    expect(resolveKey('', storage)).toBeNull()
-    expect(resolveKey('?k=not-a-key', storage)).toBeNull()
+    expect(resolveKey('', storage)).toEqual({ key: null, candidate: null })
+    expect(resolveKey('?k=not-a-key', storage)).toEqual({ key: null, candidate: null })
   })
 
   it('adopts the key an install launches with, and keeps it', () => {
-    expect(resolveKey(`?k=${A}`, storage)).toBe(A)
+    expect(resolveKey(`?k=${A}`, storage)).toEqual({ key: A, candidate: null })
     // A later launch without it — a notification tap opens `/app/`.
-    expect(resolveKey('', storage)).toBe(A)
+    expect(resolveKey('', storage).key).toBe(A)
   })
 
   // The case the design turns on: iOS repeats the start URL from install on
@@ -39,25 +39,59 @@ describe('resolveKey', () => {
   it('lets an in-app rescan outrank the start URL that keeps replaying', () => {
     resolveKey(`?k=${A}`, storage)
     storeKey(B, storage)
-    expect(resolveKey(`?k=${A}`, storage)).toBe(B)
+    expect(resolveKey(`?k=${A}`, storage)).toEqual({ key: B, candidate: null })
     storeKey(C, storage)
-    expect(resolveKey(`?k=${A}`, storage)).toBe(C)
+    expect(resolveKey(`?k=${A}`, storage)).toEqual({ key: C, candidate: null })
   })
 
-  // In Safari, a newly scanned link opens a tab whose URL carries the NEW key.
-  it('takes a key from a link it has not seen before', () => {
+  // An old bookmark, or a link sent to knock this device off its working key,
+  // is only a CANDIDATE: it must not replace the stored key on its own say-so.
+  it('holds on to a stored key while a new URL key is unconfirmed', () => {
     resolveKey(`?k=${A}`, storage)
     storeKey(B, storage)
-    expect(resolveKey(`?k=${C}`, storage)).toBe(C)
-    expect(resolveKey('', storage)).toBe(C)
+    expect(resolveKey(`?k=${C}`, storage)).toEqual({ key: B, candidate: C })
+    expect(resolveKey('', storage).key).toBe(B)
+  })
+
+  it('does not offer the key it already holds as a candidate', () => {
+    storeKey(B, storage)
+    expect(resolveKey(`?k=${B}`, storage)).toEqual({ key: B, candidate: null })
   })
 
   it('still starts when storage refuses every call', () => {
     const broken = memoryStorage()
     broken.getItem = () => { throw new Error('denied') }
     broken.setItem = () => { throw new Error('denied') }
-    expect(resolveKey(`?k=${A}`, broken)).toBe(A)
-    expect(resolveKey('', broken)).toBeNull()
+    expect(resolveKey(`?k=${A}`, broken).key).toBe(A)
+    expect(resolveKey('', broken).key).toBeNull()
+  })
+})
+
+describe('settleUrlKey', () => {
+  it('adopts a URL key the Mac confirms, and reconnects with it', async () => {
+    storeKey(B, storage)
+    const onAdopt = vi.fn()
+    await settleUrlKey(C, async () => 'current', onAdopt, storage)
+    expect(onAdopt).toHaveBeenCalledWith(C)
+    expect(resolveKey('', storage).key).toBe(C)
+  })
+
+  it('keeps the working key when the URL key is refused, and stops asking', async () => {
+    resolveKey(`?k=${A}`, storage)
+    storeKey(B, storage)
+    const onAdopt = vi.fn()
+    const check = vi.fn(async () => 'stale' as const)
+    await settleUrlKey(C, check, onAdopt, storage)
+    expect(onAdopt).not.toHaveBeenCalled()
+    expect(resolveKey(`?k=${C}`, storage)).toEqual({ key: B, candidate: null })
+  })
+
+  it('changes nothing when the Mac cannot be asked, and asks again next time', async () => {
+    storeKey(B, storage)
+    const onAdopt = vi.fn()
+    await settleUrlKey(C, async () => { throw new Error('offline') }, onAdopt, storage)
+    expect(onAdopt).not.toHaveBeenCalled()
+    expect(resolveKey(`?k=${C}`, storage)).toEqual({ key: B, candidate: C })
   })
 })
 

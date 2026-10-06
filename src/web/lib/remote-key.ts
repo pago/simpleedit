@@ -1,8 +1,8 @@
 /**
  * The access key, as this device holds it.
  *
- * The key is minted per server start and is no longer part of the page's
- * path, so the app has to keep it itself — and keep it in ITS OWN storage. On
+ * The key is minted per server start and is not part of the page's path, so
+ * the app has to keep it itself — and keep it in ITS OWN storage. On
  * iOS a Home Screen app's storage is isolated from Safari's even on the same
  * origin, which is why a rescan has to happen inside the app (`PairScreen`)
  * rather than through the Camera, which opens Safari.
@@ -14,9 +14,12 @@
  *    every launch, long after that key went stale.
  *  - **A rescan inside the app**, which must beat that repeating start URL.
  *
- * A URL key is adopted only when it differs from the last URL key adopted. A
- * start URL replaying itself is the same key every time, so it is adopted once
- * and then ignored; a new link carries a new key and is taken.
+ * A URL key is considered only when it differs from the last URL key seen. A
+ * start URL replaying itself is the same key every time, so it is considered
+ * once and then ignored. And it replaces a key the device already holds only
+ * once the Mac confirms it is current (`settleUrlKey`): an old bookmark, or a
+ * link someone sent to knock this device off, must not overwrite a working
+ * key. With nothing stored there is nothing to lose, so it is taken at once.
  */
 import { APP_PATH } from '../../shared/remote-pairing'
 
@@ -46,17 +49,51 @@ function write(storage: Storage, name: string, value: string): void {
   }
 }
 
+export interface KeyChoice {
+  /** What to connect with now. */
+  key: string | null
+  /** A new URL key that may replace `key`, once the Mac says it is current. */
+  candidate: string | null
+}
+
 /** The key to connect with, after reconciling the page URL against storage. */
-export function resolveKey(search: string, storage: Storage = localStorage): string | null {
+export function resolveKey(search: string, storage: Storage = localStorage): KeyChoice {
   const fromUrl = new URLSearchParams(search).get('k')
-  if (isKey(fromUrl) && fromUrl !== read(storage, LAST_URL_KEY)) {
-    write(storage, LAST_URL_KEY, fromUrl)
-    write(storage, STORED, fromUrl)
-    return fromUrl
-  }
   const stored = read(storage, STORED)
-  if (isKey(stored)) return stored
-  return isKey(fromUrl) ? fromUrl : null
+  const held = isKey(stored) ? stored : null
+  const fresh = isKey(fromUrl) && fromUrl !== read(storage, LAST_URL_KEY) && fromUrl !== held ? fromUrl : null
+  if (fresh && !held) {
+    adoptUrlKey(fresh, storage)
+    return { key: fresh, candidate: null }
+  }
+  if (held) return { key: held, candidate: fresh }
+  // Storage refused us: the URL is all there is.
+  return { key: isKey(fromUrl) ? fromUrl : null, candidate: null }
+}
+
+function adoptUrlKey(key: string, storage: Storage): void {
+  write(storage, LAST_URL_KEY, key)
+  write(storage, STORED, key)
+}
+
+/**
+ * Decide a URL key that would replace a stored one. Current: it is adopted
+ * and `onAdopt` reconnects with it. Refused: it is remembered as seen, so the
+ * same link is not asked about again. No answer: left for the next launch.
+ */
+export async function settleUrlKey(
+  candidate: string,
+  check: (key: string) => Promise<'current' | 'stale' | 'unknown'>,
+  onAdopt: (key: string) => void,
+  storage: Storage = localStorage,
+): Promise<void> {
+  const verdict = await check(candidate).catch(() => 'unknown' as const)
+  if (verdict === 'current') {
+    adoptUrlKey(candidate, storage)
+    onAdopt(candidate)
+  } else if (verdict === 'stale') {
+    write(storage, LAST_URL_KEY, candidate)
+  }
 }
 
 /** A key from an in-app scan or paste. Outranks the start URL from here on. */
