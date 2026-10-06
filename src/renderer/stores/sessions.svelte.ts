@@ -98,11 +98,16 @@ export interface Session {
   seedPrompt?: string
   /**
    * The brain this session was launched against (cloud Claude or local Ollama).
-   * Absent = cloud default. Resume/fork re-applying this is a deferred follow-up.
+   * Absent = cloud default.
    */
   model?: ModelRef
   /** Restored-from-disk placeholder: no live PTY until the user clicks Resume. */
   pendingResume?: { sessionId: string }
+  /**
+   * Why the last Resume never reached main. Shown on the placeholder, which
+   * comes back so the user can retry; not persisted.
+   */
+  resumeError?: string
   /**
    * The PTY exited with a non-zero code (spawn failure or crash). The entry
    * stays in the inbox with the terminal buffer intact so the user can read
@@ -550,15 +555,39 @@ export const sessionsStore = {
   resumePlaceholder(id: string): void {
     const session = findSession(id)
     if (!session?.pendingResume) return
-    const resumeSessionId = session.pendingResume.sessionId
-    this.update(id, { pendingResume: undefined })
+    const pendingResume = { sessionId: session.pendingResume.sessionId }
+    // A restored target lives in the session array, so it is a $state proxy,
+    // which structured clone rejects on the way through IPC.
+    const target = $state.snapshot(
+      session.target ?? { provider: session.provider ?? 'claude' },
+    ) as InteractiveTarget
+    // Claude's launch reads its brain from the spawn's `model`, never from the
+    // target. Without it a resumed session starts on the default model, and a
+    // local one loses the endpoint it ran against.
+    const model = target.provider === 'claude' ? target.model : undefined
+    this.update(id, { pendingResume: undefined, resumeError: undefined })
     select(id)
-    void window.api.invoke('agent:spawn', {
-      id,
-      worktreePath: session.launchDir,
-      target: session.target ?? { provider: session.provider ?? 'claude' },
-      resumeSessionId,
-    })
+    // Main reports its own spawn failures into the terminal. Anything thrown
+    // here never got that far, so there is no terminal to show it in: put the
+    // placeholder back, or the workspace is left black with nothing behind it.
+    void (async () => {
+      try {
+        await window.api.invoke('agent:spawn', {
+          id,
+          worktreePath: session.launchDir,
+          target,
+          resumeSessionId: pendingResume.sessionId,
+          ...(model ? { model } : {}),
+        })
+      } catch (error) {
+        console.error(`Resume of ${id} failed:`, error)
+        if (!findSession(id)) return
+        sessionsStore.update(id, {
+          pendingResume,
+          resumeError: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })()
   },
 
   rename(id: string, label: string): void {
@@ -797,8 +826,7 @@ export const sessionsStore = {
     const newId = this.createAgent(source.target, source.launchDir, source.worktreePath, {
       resumeSessionId: source.providerSessionId,
       forkSession: true,
-      // Deliberately no `model`: the resumed session already carries its own,
-      // and re-applying it is a separate deferred concern (see Session.model).
+      // No `model`: `createAgent` takes it from the source's target.
       label: `${source.label} (fork)`,
       // Sit right after the source; adopt its group when it has one.
       target: { groupId: source.groupId, index: index + 1 },
@@ -855,6 +883,7 @@ export const sessionsStore = {
     }
     if (!input.sessionId) return null
     const id = `agent-${input.provider ?? 'claude'}-${crypto.randomUUID()}`
+    const restoredModel = input.target?.provider === 'claude' ? input.target.model : undefined
     _sessions = [
       ..._sessions,
       {
@@ -864,6 +893,8 @@ export const sessionsStore = {
         target: input.target ?? { provider: input.provider ?? 'claude' },
         label: input.label || defaultLabel('agent'),
         ...(input.customLabel ? { customLabel: true as const } : {}),
+        // As `createAgent` sets it, so a peer this session spawns inherits it.
+        ...(restoredModel ? { model: { ...restoredModel } } : {}),
         launchDir: input.launchDir,
         worktreePath: input.worktreePath,
         ...(input.repoPath ? { repoPath: input.repoPath } : {}),

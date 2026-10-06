@@ -529,6 +529,11 @@
           >
             Resume {session.label}
           </button>
+          {#if session.resumeError}
+            <p role="alert" class="max-w-md text-center text-xs text-red-300">
+              Could not resume: {session.resumeError}
+            </p>
+          {/if}
           <p class="text-[10px] text-zinc-600">session id {session.pendingResume.sessionId.slice(0, 8)}…</p>
         </div>
       {:else}
