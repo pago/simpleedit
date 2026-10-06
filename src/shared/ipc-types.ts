@@ -581,10 +581,12 @@ export interface ScreenPrsEventMap {
   /** The synthesized, curated deep-review findings for a PR, plus the head they
    *  were computed against — a finding's line number means nothing without it. */
   'screenprs:deep-result': { url: string; findings: DeepFinding[]; headSha: string }
-  'screenprs:deep-status': { url: string; status: DeepReviewStatus; error?: string }
+  /** `running` marks a fresh start (with its head): a client drops the PR's previous lenses and findings. */
+  'screenprs:deep-status': { url: string; status: DeepReviewStatus; error?: string; headSha?: string }
   /** The overview's raw markdown (parsed on render) and the facts code gathered with it. */
   'screenprs:overview-result': { url: string; headSha: string; text: string; facts: OverviewFacts }
-  'screenprs:overview-status': { url: string; status: OverviewStatus; error?: string }
+  /** `running` marks a fresh start (with its head): a client drops the PR's previous overview. */
+  'screenprs:overview-status': { url: string; status: OverviewStatus; error?: string; headSha?: string }
   /** A PR's draft changed, from any client — sent to every window and phone. `null`: it is gone. */
   'screenprs:draft-changed': { url: string } & DraftOpResult
   /** The saved filter changed, from any client — sent to every window and phone. */

@@ -25,11 +25,18 @@ import { resolveInstructions, instructionsHash } from './prompts/overrides'
 import { analysisFingerprint, getCachedDeep, putDeep } from './screenprs-cache'
 
 /**
- * One deep review per PR, app-wide, reported to every client (`out`): a second
- * start for a PR already under review joins it, and any client can stop it.
- * `states` keeps each PR's latest for a client that missed the events.
+ * One deep review per PR, app-wide, reported to every client (`out`). A second
+ * start for the same head and lens setup joins it; one for another head or
+ * setup replaces it. Any client can stop it. `states` keeps each PR's latest
+ * for a client that missed the events.
  */
-const activeDeep = new Map<string, { controller: AbortController; out: RemoteClient }>()
+interface ActiveDeep {
+  controller: AbortController
+  out: RemoteClient
+  headSha: string
+  fingerprint: string
+}
+const activeDeep = new Map<string, ActiveDeep>()
 const states = new Map<string, DeepReviewState>()
 
 function setState(url: string, patch: Partial<DeepReviewState>): void {
@@ -79,9 +86,17 @@ export function deepReviewFingerprint(
 
 /** Settles when the review it started ends; a join settles at once. */
 export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promise<ScreenPrsStartResult> {
-  if (activeDeep.has(ctx.url)) return { joined: true }
+  const lenses = enabledLenses()
+  const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
+  const synthInstructions = resolveInstructions('deep-review/synthesis').text
+  const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions)
+  const running = activeDeep.get(ctx.url)
+  if (running) {
+    if (running.headSha === ctx.headSha && running.fingerprint === deepFingerprint) return { joined: true }
+    cancelDeepReview(ctx.url)
+  }
   const controller = new AbortController()
-  const mine = { controller, out }
+  const mine: ActiveDeep = { controller, out, headSha: ctx.headSha, fingerprint: deepFingerprint }
   activeDeep.set(ctx.url, mine)
   const live = (): boolean => activeDeep.get(ctx.url) === mine && !controller.signal.aborted
   const sendLens = (lens: DeepLensId, status: DeepLensStatus): void => {
@@ -92,7 +107,7 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
   const sendStatus = (status: DeepReviewStatus, error?: string): void => {
     if (!live()) return
     setState(ctx.url, { status, error })
-    out.send('screenprs:deep-status', { url: ctx.url, status, error })
+    out.send('screenprs:deep-status', { url: ctx.url, status, error, ...(status === 'running' ? { headSha: ctx.headSha } : {}) })
   }
   const sendResult = (findings: DeepFinding[]): void => {
     if (!live()) return
@@ -106,10 +121,6 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
   try {
     // Cache hit at this head SHA → the diff hasn't changed, so the prior deep
     // findings still hold. Serve them instantly, no model calls.
-    const lenses = enabledLenses()
-    const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
-    const synthInstructions = resolveInstructions('deep-review/synthesis').text
-    const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions)
     const cached = getCachedDeep(ctx.url, ctx.headSha, deepFingerprint)
     if (cached) {
       sendResult(cached)
@@ -178,7 +189,7 @@ export function cancelDeepReview(url: string): void {
   if (!active) return
   active.controller.abort()
   activeDeep.delete(url)
-  setState(url, { status: 'idle', error: undefined })
+  setState(url, { status: 'idle', lenses: {}, error: undefined })
   active.out.send('screenprs:deep-status', { url, status: 'idle' })
 }
 

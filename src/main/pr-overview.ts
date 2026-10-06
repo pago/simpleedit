@@ -19,13 +19,19 @@ import { runTask } from './agent-tasks/orchestrator'
 import { withBackendGate } from './agent-tasks/gate'
 import { makeOverviewTask, OVERVIEW_PROMPT_VERSION } from './tasks/overview-task'
 import { resolveInstructions, instructionsHash } from './prompts/overrides'
-import { currentHandle } from './github/gh'
+import { currentHandle, withGhSignal } from './github/gh'
 import { createBaseResolver } from './github/stack-base'
 import { gatherOverviewContext, overviewFacts } from './github/pr-overview-context'
 import { analysisFingerprint, getCachedFindings, getCachedOverview, putOverview } from './screenprs-cache'
 import { reviewDiffFor } from './screenprs'
 
-const activeOverviews = new Map<string, { controller: AbortController; out: RemoteClient }>()
+interface ActiveOverview {
+  controller: AbortController
+  out: RemoteClient
+  headSha: string
+  fingerprint: string
+}
+const activeOverviews = new Map<string, ActiveOverview>()
 /** Each PR's latest overview this launch, for a client that missed the events. */
 const states = new Map<string, OverviewState>()
 
@@ -48,15 +54,23 @@ export function overviewFingerprint(model: ModelRef | undefined, instructions: s
 
 /** Settles when the overview it started ends; a join settles at once. */
 export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<ScreenPrsStartResult> {
-  if (activeOverviews.has(ctx.url)) return { joined: true }
+  // Resolved once so the fingerprint and the model call see the same text.
+  const instructions = resolveInstructions('overview').text
+  const model = overviewModel()
+  const fingerprint = overviewFingerprint(model, instructions)
+  const running = activeOverviews.get(ctx.url)
+  if (running) {
+    if (running.headSha === ctx.headSha && running.fingerprint === fingerprint) return { joined: true }
+    cancelOverview(ctx.url)
+  }
   const controller = new AbortController()
-  const mine = { controller, out }
+  const mine: ActiveOverview = { controller, out, headSha: ctx.headSha, fingerprint }
   activeOverviews.set(ctx.url, mine)
   const live = (): boolean => activeOverviews.get(ctx.url) === mine && !controller.signal.aborted
   const sendStatus = (status: OverviewStatus, error?: string): void => {
     if (!live()) return
     setState(ctx.url, { status, error })
-    out.send('screenprs:overview-status', { url: ctx.url, status, error })
+    out.send('screenprs:overview-status', { url: ctx.url, status, error, ...(status === 'running' ? { headSha: ctx.headSha } : {}) })
   }
   const sendResult = (text: string, facts: OverviewFacts): void => {
     if (!live()) return
@@ -67,10 +81,6 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
   states.set(ctx.url, { status: 'idle', headSha: ctx.headSha })
   sendStatus('running')
   try {
-    // Resolved once so the fingerprint and the model call see the same text.
-    const instructions = resolveInstructions('overview').text
-    const model = overviewModel()
-    const fingerprint = overviewFingerprint(model, instructions)
     const cached = getCachedOverview(ctx.url, ctx.headSha, fingerprint)
     if (cached) {
       sendResult(cached.text, cached.facts)
@@ -80,12 +90,14 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
 
     // A caller that didn't carry the diff (the phone before it opened Files)
     // still gets the review diff the board was screened from.
-    const pr = ctx.diff ? ctx : { ...ctx, diff: await reviewDiffFor(ctx) }
-    const handle = await currentHandle().catch(() => '')
-    const context = await gatherOverviewContext(pr, {
-      handle,
-      resolver: createBaseResolver(),
-      ...getCachedFindings(ctx.url, ctx.headSha),
+    const context = await withGhSignal(controller.signal, async () => {
+      const pr = ctx.diff ? ctx : { ...ctx, diff: await reviewDiffFor(ctx) }
+      const handle = await currentHandle().catch(() => '')
+      return gatherOverviewContext(pr, {
+        handle,
+        resolver: createBaseResolver(),
+        ...getCachedFindings(ctx.url, ctx.headSha),
+      })
     })
     if (!live()) return { joined: false }
 

@@ -40,6 +40,7 @@ vi.mock('../agent-tasks/orchestrator', () => ({
   },
 }))
 vi.mock('../github/gh', () => ({
+  withGhSignal: (_signal: AbortSignal, fn: () => Promise<unknown>) => fn(),
   currentHandle: async () => 'me',
   searchReviewRequestedPrs: async () => [REF],
   getPrMeta: async (ref: PrRef) => ({ ...ref, headSha: 'sha1', additions: 5, deletions: 3, changedFiles: 4, baseRefName: 'lower', baseRefOid: state.baseRefOid, headRefName: 'feat', ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '' }),

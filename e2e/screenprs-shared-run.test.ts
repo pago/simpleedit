@@ -13,7 +13,8 @@ import type { RemoteAccessStatus, ScreenPrsState } from '../src/shared/ipc-types
  *
  * `gh` is a stub on PATH whose search waits while a hold file exists, so the
  * test decides when the run ends. Its answer is an empty queue, which is all
- * a finished run needs; no model is ever called.
+ * a finished run needs; no model is ever called. Stop and quit must kill a
+ * search still waiting, or the stub would outlive them.
  */
 
 const SANDBOX_ARGS = process.env.CI ? ['--no-sandbox'] : []
@@ -59,15 +60,18 @@ const test = base.extend<Fixtures>({
       SIMPLEEDIT_REPO: repoA.bareRepoPath,
       SIMPLEEDIT_E2E_REMOTE_CONFIG: path.join(os.tmpdir(), `simpleedit-shared-run-${process.pid}.json`),
       SIMPLEEDIT_E2E_SCREENPRS_FILTER: path.join(repoA.root, 'screenprs-filter.json'),
+      // Kept to this spec, so a subscription or presence it writes can't reach another.
+      SIMPLEEDIT_E2E_PUSH_CONFIG: path.join(repoA.root, 'push.json'),
+      SIMPLEEDIT_E2E_PRESENCE_FILE: path.join(repoA.root, 'presence'),
       FAKE_GH_HOLD: hold,
     })
     env.PATH = `${bin}${path.delimiter}${env.PATH ?? ''}`
     const app = await electron.launch({ args: [MAIN, ...SANDBOX_ARGS], env })
     await use(app)
-    // Released first: a stopped run's `gh` stub is still polling it, and the
-    // app's close timed out in CI while it was.
-    fs.rmSync(hold, { force: true })
+    // The hold file is deliberately left in place: a `gh` still waiting on it
+    // must be killed by the app's own quit, or this close times out.
     await app.close()
+    fs.rmSync(hold, { force: true })
   },
   windowA: async ({ app }, use) => {
     const page = await app.firstWindow()
@@ -148,6 +152,11 @@ test('the phone switches project mid-screening, sees it finish, and any client c
   await expect(phone.getByTestId('cancel-screen')).toHaveCount(0, { timeout: 15_000 })
   await expect(phone.getByTestId('screen-prs')).toHaveText('Re-screen')
   await expect(phone.getByTestId('pr-board')).toContainText('Screening was stopped')
+
+  // A third run is left going: the fixture's close is a quit mid-run, which
+  // only finishes in time if quitting kills the `gh` it is waiting on.
+  await phone.getByTestId('screen-prs').click()
+  await expect(phone.getByTestId('screen-prs')).toHaveText('Screening…')
 
   await phone.close()
 })

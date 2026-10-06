@@ -9,6 +9,7 @@
  * live `gh`; `runGh` itself is the thin, untested shell seam.
  */
 import { spawn } from 'child_process'
+import { AsyncLocalStorage } from 'async_hooks'
 import type {
   PrRef,
   PrContext,
@@ -35,30 +36,60 @@ export class GhTimeoutError extends Error {}
 /** Long enough for a big diff on a slow link; short enough to not be forever. */
 export const GH_TIMEOUT_MS = 120_000
 
+/** A `gh` call killed because the run that made it was stopped. */
+export class GhAbortError extends Error {
+  override name = 'AbortError'
+}
+
+const ambientSignal = new AsyncLocalStorage<AbortSignal>()
+
+/**
+ * Run `fn` with every `gh` call it makes, however deep (`stack-base.ts`'s
+ * resolver included), killed when `signal` aborts. Ambient rather than a
+ * parameter on each helper: a run reaches `runGh` through a dozen of them, and
+ * one missed would leave a child that outlives Stop and holds up quit.
+ */
+export function withGhSignal<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  return ambientSignal.run(signal, fn)
+}
+
 export function runGh(
   args: string[],
-  opts: { allowFail?: boolean; input?: string; timeoutMs?: number } = {}
+  opts: { allowFail?: boolean; input?: string; timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<string> {
+  const signal = opts.signal ?? ambientSignal.getStore()
+  if (signal?.aborted) return Promise.reject(new GhAbortError(`gh ${args[0]} was stopped`))
   return new Promise((resolve, reject) => {
     const proc = spawn('gh', args, { env: process.env as Record<string, string> })
     let out = ''
     let err = ''
     let timedOut = false
+    let aborted = false
     // Unbounded, this hangs whatever awaited it for the life of the process —
     // and on the review screen that is a dialog with a write in flight.
     const timer = setTimeout(() => {
       timedOut = true
       proc.kill('SIGKILL')
     }, opts.timeoutMs ?? GH_TIMEOUT_MS)
+    const onAbort = (): void => {
+      aborted = true
+      proc.kill('SIGKILL')
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const settle = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
     proc.stdout.on('data', (c: Buffer) => (out += c.toString()))
     proc.stderr.on('data', (c: Buffer) => (err += c.toString()))
     proc.on('error', (e) => {
-      clearTimeout(timer)
+      settle()
       reject(e)
     })
     proc.on('close', (code) => {
-      clearTimeout(timer)
-      if (timedOut) reject(new GhTimeoutError(`gh ${args[0]} did not finish within ${opts.timeoutMs ?? GH_TIMEOUT_MS}ms`))
+      settle()
+      if (aborted) reject(new GhAbortError(`gh ${args[0]} was stopped`))
+      else if (timedOut) reject(new GhTimeoutError(`gh ${args[0]} did not finish within ${opts.timeoutMs ?? GH_TIMEOUT_MS}ms`))
       else if (code === 0 || opts.allowFail) resolve(out)
       else reject(new Error(`gh ${args[0]} exited ${code}: ${err.slice(0, 300)}`))
     })

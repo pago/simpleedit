@@ -6,7 +6,13 @@ import type { PrContext } from '../../shared/screenprs'
  * a stop from any client settles it for all of them, and main keeps its state
  * for a client that missed the events.
  */
-const lens = vi.hoisted(() => ({ release: (): void => {}, runs: 0 }))
+const lens = vi.hoisted(() => ({
+  runs: 0,
+  waiting: [] as (() => void)[],
+  release(): void {
+    for (const resolve of this.waiting.splice(0)) resolve()
+  },
+}))
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' } }))
 vi.mock('../models/config', () => ({
@@ -20,7 +26,7 @@ vi.mock('../agent-tasks/gate', () => ({ withBackendGate: (_m: unknown, fn: () =>
 vi.mock('../agent-tasks/orchestrator', () => ({
   runTask: async function* () {
     lens.runs++
-    await new Promise<void>((resolve) => (lens.release = resolve))
+    await new Promise<void>((resolve) => lens.waiting.push(resolve))
   },
 }))
 vi.mock('../tasks/deep-review-lenses', () => ({
@@ -64,5 +70,29 @@ describe('deep review runs', () => {
       ['screenprs:deep-status', 'idle'],
     ])
     expect(deepReviewSnapshot()[PR.url]).toMatchObject({ status: 'idle' })
+    expect(deepReviewSnapshot()[PR.url].lenses).toEqual({})
+  })
+
+  it('replaces the running review when the head moved, and tells every client it restarted', async () => {
+    const url = 'https://github.com/acme/ui/pull/8'
+    const { sent, wc } = client()
+    const old = startDeepReview({ ...PR, url, headSha: 'old' }, wc)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const fresh = startDeepReview({ ...PR, url, headSha: 'new' }, wc)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    lens.release()
+    await expect(old).resolves.toEqual({ joined: false })
+    await expect(fresh).resolves.toEqual({ joined: false })
+
+    const statuses = sent.filter(([c]) => c === 'screenprs:deep-status').map(([, d]) => d)
+    expect(statuses).toEqual([
+      { url, status: 'running', error: undefined, headSha: 'old' },
+      { url, status: 'idle' },
+      { url, status: 'running', error: undefined, headSha: 'new' },
+      { url, status: 'done', error: undefined },
+    ])
+    // A client that reconnects now agrees with one that watched it happen.
+    expect(deepReviewSnapshot()[url]).toMatchObject({ status: 'done', headSha: 'new', lenses: { soundness: 'done' } })
   })
 })

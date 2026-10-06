@@ -356,12 +356,20 @@ A screening, and each PR's deep review and overview, is **one run for the whole
 app**, reported to every window and phone (`everyClient` in `client-hub.ts`,
 built over the hubs and `liveWindowContents`), never to the hub that started it.
 That is what lets a phone switch project mid-run.
-- **A second start joins** the run already going (`{ joined: true }`): one
-  screening app-wide, one deep review and one overview per PR url. The joining
-  client catches up with `screenprs:state`.
+- **One screening app-wide, one deep review and one overview per PR url.** A
+  second start with identical parameters joins (`{ joined: true }`) and catches
+  up with `screenprs:state`. One that differs (screening filters or `force`; a
+  PR's head SHA or prompt/model fingerprint) replaces the run: main stops it and
+  starts the new one, and every client sees both. The filter is shared, so the
+  last start wins.
 - **Any client can stop it**, and main reports the stop (`cancelled` for a
   screening, `idle` for a deep review or overview). Every send checks the run is
-  still current, so a stopped run's stragglers never mix into the next one.
+  still current, so a stopped run's stragglers never mix into the next one. A
+  `running` status always means a fresh start, so clients drop that PR's old
+  lenses, findings or overview on it.
+- **Stop and quit kill the run's `gh` children.** `withGhSignal`
+  (`github/gh.ts`) hands the run's abort signal to every `runGh` beneath it;
+  a surviving `gh` would hold up quit.
 - **Main keeps the board** (`screeningSnapshot`, `deepReviewSnapshot`,
   `overviewSnapshot`) for a client that missed the events: the desktop store
   loads it at start, the phone on every (re)connect. A socket client's copy has

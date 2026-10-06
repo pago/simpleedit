@@ -9,8 +9,12 @@ import type { PrRef, TriageResult } from '../../shared/screenprs'
  * The search is held open by the test, so each case can act mid-run.
  */
 const gate = vi.hoisted(() => ({
-  searches: 0,
-  release: (): void => {},
+  searches: [] as { owner?: string }[],
+  waiting: [] as (() => void)[],
+  /** Let every search still waiting answer. */
+  release(): void {
+    for (const resolve of this.waiting.splice(0)) resolve()
+  },
 }))
 
 vi.mock('electron', () => ({ net: { fetch: vi.fn() } }))
@@ -21,10 +25,11 @@ vi.mock('../agent-tasks/registry', () => ({
 }))
 vi.mock('../agent-tasks/orchestrator', () => ({ runFanout: async function* () {} }))
 vi.mock('../github/gh', () => ({
+  withGhSignal: (_signal: AbortSignal, fn: () => Promise<unknown>) => fn(),
   currentHandle: async () => 'me',
-  searchReviewRequestedPrs: async () => {
-    gate.searches++
-    await new Promise<void>((resolve) => (gate.release = resolve))
+  searchReviewRequestedPrs: async (opts: { owner?: string }) => {
+    gate.searches.push(opts)
+    await new Promise<void>((resolve) => gate.waiting.push(resolve))
     return [REF]
   },
   getPrMeta: async (ref: PrRef) => ({ ...ref, headSha: 'sha1', additions: 1, deletions: 1, changedFiles: 1, baseRefName: 'main', baseRefOid: 'b', headRefName: 'feat', ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '' }),
@@ -79,7 +84,8 @@ let hubs: Map<number, ClientHub>
 let all: ReturnType<typeof everyClient>
 
 beforeEach(() => {
-  gate.searches = 0
+  gate.searches = []
+  gate.waiting = []
   windowA = transport(1)
   phoneOnA = transport(1, 'w1.1')
   windowB = transport(2)
@@ -126,17 +132,45 @@ describe('one screening for every client', () => {
     expect(screeningSnapshot(false).entries[0].card).toEqual(expect.objectContaining({ diff: DIFF }))
   })
 
-  it('joins the run already going instead of starting a second', async () => {
-    const first = startScreening({}, all)
+  it('joins the run already going when the filters are the same', async () => {
+    const first = startScreening({ owner: 'acme', updatedSince: '2026-09-01' }, all)
     await settle()
 
-    await expect(startScreening({ owner: 'other' }, all)).resolves.toEqual({ joined: true })
-    expect(gate.searches).toBe(1)
+    await expect(startScreening({ owner: 'acme', updatedSince: '2026-09-01' }, all)).resolves.toEqual({ joined: true })
+    expect(gate.searches).toHaveLength(1)
 
     gate.release()
     await expect(first).resolves.toEqual({ joined: false })
     expect(statuses(windowB)).toEqual(['running', 'done'])
     expect(cards(windowB)).toHaveLength(1)
+  })
+
+  // The filter is shared, so a start that differs is the newer intent.
+  it('replaces the run when the filters differ, and every client sees the restart', async () => {
+    const first = startScreening({ owner: 'acme' }, all)
+    await settle()
+
+    const second = startScreening({ owner: 'other' }, all)
+    await settle()
+    expect(gate.searches).toEqual([expect.objectContaining({ owner: 'acme' }), expect.objectContaining({ owner: 'other' })])
+    gate.release()
+    await expect(first).resolves.toEqual({ joined: false })
+    await expect(second).resolves.toEqual({ joined: false })
+
+    for (const t of [windowA, phoneOnA, windowB]) expect(statuses(t)).toEqual(['running', 'cancelled', 'running', 'done'])
+    // Only the run that replaced it reports a card.
+    expect(cards(windowB)).toHaveLength(1)
+  })
+
+  it('treats a forced re-screen as different filters', async () => {
+    const first = startScreening({}, all)
+    await settle()
+    const forced = startScreening({ force: true }, all)
+    await settle()
+    expect(gate.searches).toHaveLength(2)
+    gate.release()
+    await Promise.all([first, forced])
+    expect(statuses(windowA)).toEqual(['running', 'cancelled', 'running', 'done'])
   })
 
   it('stops from any client, tells them all, and sends nothing after', async () => {
@@ -154,13 +188,23 @@ describe('one screening for every client', () => {
     // Stopped means a fresh start is a new run, not a join.
     const again = startScreening({}, all)
     await settle()
-    expect(gate.searches).toBe(2)
+    expect(gate.searches).toHaveLength(2)
     gate.release()
     await expect(again).resolves.toEqual({ joined: false })
   })
 })
 
 describe('everyClient', () => {
+  // A closing window's hub still holds its WebContents transport, which says
+  // it is alive while `send` on it throws. The window list is what decides.
+  it('skips a hub whose window is no longer listed as live', () => {
+    const onlyB = everyClient(() => hubs.values(), () => [windowB])
+    onlyB.send('screenprs:status', { status: 'done' })
+    expect(windowA.send).not.toHaveBeenCalled()
+    expect(phoneOnA.send).not.toHaveBeenCalled()
+    expect(windowB.send).toHaveBeenCalledTimes(1)
+  })
+
   it('sends to each client once, a hub-backed window through its hub only', () => {
     all.send('screenprs:status', { status: 'done' })
     expect(windowA.send).toHaveBeenCalledTimes(1)
