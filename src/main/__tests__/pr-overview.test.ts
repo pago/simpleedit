@@ -37,7 +37,7 @@ vi.mock('../agent-tasks/registry', async (orig) => {
   }
 })
 
-import { startOverview } from '../pr-overview'
+import { startOverview, cancelOverview, overviewSnapshot } from '../pr-overview'
 
 const PR: PrContext = {
   owner: 'acme', repo: 'ui', number: 7, url: 'https://github.com/acme/ui/pull/7', title: 'Add widget', author: 'a',
@@ -99,5 +99,34 @@ describe('startOverview', () => {
     await startOverview(PR, wc)
     expect(cache.putOverview).not.toHaveBeenCalled()
     expect(sent.at(-1)).toEqual(['screenprs:overview-status', { url: PR.url, status: 'error', error: 'The model returned no overview.' }])
+  })
+
+  // One overview per PR for the whole app: whoever asks second follows the
+  // first, and whoever stops it stops it for everyone.
+  it('joins an overview already running for the PR, and stops for every client', async () => {
+    let release = (): void => {}
+    gather.mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve({ pr: PR }))))
+    const { sent, wc } = client()
+    const first = startOverview(PR, wc)
+
+    await expect(startOverview(PR, client().wc)).resolves.toEqual({ joined: true })
+    expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'running', headSha: 'sha1' })
+
+    cancelOverview(PR.url)
+    release()
+    await expect(first).resolves.toEqual({ joined: false })
+
+    expect(sent).toEqual([
+      ['screenprs:overview-status', { url: PR.url, status: 'running', error: undefined }],
+      ['screenprs:overview-status', { url: PR.url, status: 'idle' }],
+    ])
+    expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'idle' })
+    expect(answers.seen).toEqual([])
+  })
+
+  it('keeps each finished overview for a client that missed it', async () => {
+    answers.items = ['## What changed\nB']
+    await startOverview(PR, client().wc)
+    expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'done', text: '## What changed\nB', headSha: 'sha1' })
   })
 })

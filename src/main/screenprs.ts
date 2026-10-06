@@ -1,15 +1,14 @@
 /**
  * Screen PRs orchestration: fetch the review queue → gather each PR's context
  * over `gh` → `runFanout` the diff-only triage judgment → derive buckets → stream
- * cards to the renderer. Mirrors review.ts's per-window streaming shape, but
- * fanned out over PRs (plans/screen-prs.md §3.1).
+ * cards to every client (plans/screen-prs.md §3.1).
  */
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import type { RemoteClient } from './client-hub'
-import type { ModelRef, ScreenPrsFilters, ScreenPrsRunStatus } from '../shared/ipc-types'
-import type { PrContext, ScreenPrCard, TriageResult } from '../shared/screenprs'
+import type { ModelRef, ScreenPrsFilters, ScreenPrsRunEntry, ScreenPrsRunStatus, ScreenPrsStartResult, ScreenPrsState } from '../shared/ipc-types'
+import type { PrContext, PrRef, ScreenPrCard, TriageResult } from '../shared/screenprs'
 import { bucketOf } from '../shared/screenprs'
 import { getModelConfig } from './models/config'
 import { DEFAULT_TRIAGE_MODEL } from './models/claude-catalog'
@@ -23,17 +22,26 @@ import { baseKey, createBaseResolver, getReviewDiff, getReviewDiffByUrl, withRev
 import { analysisFingerprint, getCached, getCachedDiff, putTriage } from './screenprs-cache'
 
 /**
- * In-flight run per client identity, so a re-screen / window close can cancel
- * cleanly. The key is read off the `RemoteClient` that will receive the cards,
- * never passed alongside it — a `ClientHub` is one identity with several
- * transports, so a web client re-screening cancels and replaces the run whose
- * output it is already receiving instead of starting a second, competing one.
+ * The app's one screening: the current run, or the last one to end.
+ *
+ * Runs belong to the app, not to a window: the queue is the user's, the filter
+ * and the triage cache are shared, and every client shows the same board. So
+ * every event goes to every client (`out`, which `index.ts` makes reach them
+ * all), a second start while one runs joins it, and any client can stop it.
+ * The board is kept here so a client that missed the events (a window opened
+ * mid-run, a phone that reconnected or switched project) asks for it whole.
  */
-const activeRuns = new Map<number, AbortController>()
-
-function send(wc: RemoteClient, channel: string, data: unknown): void {
-  if (!wc.isDestroyed()) wc.send(channel, data)
+interface Run {
+  controller: AbortController
+  out: RemoteClient
+  status: ScreenPrsRunStatus
+  total?: number
+  error?: string
+  entries: Map<string, ScreenPrsRunEntry>
+  triaging: Set<string>
 }
+
+let run: Run | null = null
 
 /**
  * The same card/context, with the diff emptied — what a remote client gets.
@@ -49,14 +57,30 @@ function withoutDiff<T extends PrContext>(value: T): T {
   return { ...value, diff: '' }
 }
 
-/** Push `local` to the window's renderer and the diff-less `remote` to sockets. */
-function sendSplit(wc: RemoteClient, channel: string, local: unknown, remote: unknown): void {
-  if (wc.isDestroyed()) return
-  if (wc.sendSplit) wc.sendSplit(channel, local, remote)
-  else wc.send(channel, local)
+/** Whether `r` may still report: neither stopped nor replaced. */
+function live(r: Run): boolean {
+  return run === r && !r.controller.signal.aborted
 }
-function sendStatus(wc: RemoteClient, status: ScreenPrsRunStatus, extra: { error?: string; total?: number } = {}): void {
-  send(wc, 'screenprs:status', { status, ...extra })
+
+function setStatus(r: Run, status: ScreenPrsRunStatus, extra: { error?: string; total?: number } = {}): void {
+  r.status = status
+  if (extra.total !== undefined) r.total = extra.total
+  r.error = extra.error
+  r.out.send('screenprs:status', { status, ...extra })
+}
+
+/** `local` to each window's renderer, the diff-less `remote` to sockets. */
+function sendSplit(r: Run, channel: string, local: unknown, remote: unknown): void {
+  if (r.out.sendSplit) r.out.sendSplit(channel, local, remote)
+  else r.out.send(channel, local)
+}
+
+function entry(r: Run, ref: PrRef): ScreenPrsRunEntry {
+  const existing = r.entries.get(ref.url)
+  if (existing) return existing
+  const created: ScreenPrsRunEntry = { ref }
+  r.entries.set(ref.url, created)
+  return created
 }
 
 /**
@@ -100,36 +124,45 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out
 }
 
-export async function startScreening(filters: ScreenPrsFilters, webContents: RemoteClient): Promise<void> {
-  cancelScreening(webContents)
-  const controller = new AbortController()
-  activeRuns.set(webContents.id, controller)
-  sendStatus(webContents, 'running')
+/**
+ * Screen the review queue for every client, or join the run already going.
+ * Settles when the run it started ends; a join settles at once.
+ */
+export async function startScreening(filters: ScreenPrsFilters, out: RemoteClient): Promise<ScreenPrsStartResult> {
+  if (run?.status === 'running') return { joined: true }
+  const r: Run = { controller: new AbortController(), out, status: 'running', entries: new Map(), triaging: new Set() }
+  run = r
+  const { signal } = r.controller
+  setStatus(r, 'running')
 
   try {
     const handle = await currentHandle()
     const refs = await searchReviewRequestedPrs({ owner: filters.owner, updatedSince: filters.updatedSince })
-    if (controller.signal.aborted) return
+    if (!live(r)) return { joined: false }
     if (refs.length === 0) {
-      sendStatus(webContents, 'done', { total: 0 })
-      activeRuns.delete(webContents.id)
-      return
+      setStatus(r, 'done', { total: 0 })
+      return { joined: false }
     }
 
     // Seed the queue immediately (before the slower context gather) so the UI
     // shows a "Screening…" placeholder per PR the moment the search returns.
-    send(webContents, 'screenprs:queued', { refs })
+    for (const ref of refs) entry(r, ref)
+    r.total = refs.length
+    out.send('screenprs:queued', { refs })
 
     // Always refetch the cheap metadata (CI/reviews/size/head SHA) — even a cached
     // PR gets a fresh bucket. The diff + model run are what the cache saves.
     const metas = (await mapLimit(refs, 5, (ref) => getPrMeta(ref, handle))).filter(
       (m): m is PrMeta => m !== null
     )
-    if (controller.signal.aborted) return
+    if (!live(r)) return { joined: false }
 
     const emitCard = (ctx: PrContext, result: TriageResult): void => {
+      if (!live(r)) return
       const card: ScreenPrCard = { ...ctx, ...result, bucket: bucketOf({ ...ctx, ...result }) }
-      sendSplit(webContents, 'screenprs:card', { card }, { card: withoutDiff(card) })
+      Object.assign(entry(r, card), { context: card, card })
+      r.triaging.delete(card.url)
+      sendSplit(r, 'screenprs:card', { card }, { card: withoutDiff(card) })
     }
 
     // Cache hit (same head SHA and base) → reuse the diff + triage, no model
@@ -140,7 +173,7 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
     const resolver = createBaseResolver()
     const baseKeys = new Map<string, string>()
     await mapLimit(metas, 5, async (m) => baseKeys.set(m.url, await baseKey(m, resolver)))
-    if (controller.signal.aborted) return
+    if (!live(r)) return { joined: false }
     const toTriage: PrMeta[] = []
     for (const meta of metas) {
       const key = baseKeys.get(meta.url) ?? ''
@@ -154,13 +187,14 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
     const contexts = (
       await mapLimit(toTriage, 5, async (m) => {
         const ctx: PrContext = withReviewDiff(m, await getReviewDiff(m, resolver, metas))
-        if (!controller.signal.aborted) {
-          sendSplit(webContents, 'screenprs:screening', { context: ctx }, { context: withoutDiff(ctx) })
+        if (live(r)) {
+          entry(r, ctx).context = ctx
+          sendSplit(r, 'screenprs:screening', { context: ctx }, { context: withoutDiff(ctx) })
         }
         return ctx
       })
     ).filter((c): c is PrContext => c !== null)
-    if (controller.signal.aborted) return
+    if (!live(r)) return { joined: false }
 
     const analysisDir = mkdtempSync(join(tmpdir(), 'simpleedit-triage-'))
     const { runner, model, concurrency } = selectTriageRunner(analysisDir)
@@ -175,12 +209,15 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
         runner,
         model,
         concurrency,
-        signal: controller.signal,
+        signal,
         timeoutMs: TRIAGE_TIMEOUT_MS,
       })) {
         if (ev.kind === 'start') {
           // The model has picked this PR up — promote it from scheduled to running.
-          send(webContents, 'screenprs:triaging', { url: ev.input.url })
+          if (live(r)) {
+            r.triaging.add(ev.input.url)
+            out.send('screenprs:triaging', { url: ev.input.url })
+          }
         } else if (ev.kind === 'item') {
           results[ev.index] = ev.item ?? null
         } else if (ev.kind === 'done' || ev.kind === 'error') {
@@ -201,13 +238,27 @@ export async function startScreening(filters: ScreenPrsFilters, webContents: Rem
       rmSync(analysisDir, { recursive: true, force: true })
     }
 
-    if (!controller.signal.aborted) sendStatus(webContents, 'done', { total: metas.length })
+    if (live(r)) setStatus(r, 'done', { total: metas.length })
   } catch (err: unknown) {
-    if (!controller.signal.aborted) {
-      sendStatus(webContents, 'error', { error: err instanceof Error ? err.message : String(err) })
-    }
-  } finally {
-    if (activeRuns.get(webContents.id) === controller) activeRuns.delete(webContents.id)
+    if (live(r)) setStatus(r, 'error', { error: err instanceof Error ? err.message : String(err) })
+  }
+  return { joined: false }
+}
+
+/**
+ * The current or last screening as `remote` (a socket client, so no diffs) or
+ * a window's renderer sees it.
+ */
+export function screeningSnapshot(remote: boolean): ScreenPrsState['run'] {
+  if (!run) return { status: 'idle', entries: [], triaging: [] }
+  const strip = <T extends PrContext>(value: T | undefined): T | undefined =>
+    value && remote ? withoutDiff(value) : value
+  return {
+    status: run.status,
+    total: run.total,
+    error: run.error,
+    entries: [...run.entries.values()].map((e) => ({ ref: e.ref, context: strip(e.context), card: strip(e.card) })),
+    triaging: [...run.triaging],
   }
 }
 
@@ -221,12 +272,15 @@ export async function reviewDiffFor(pr: { url: string; headSha?: string }): Prom
   return cached ?? getReviewDiffByUrl(pr.url)
 }
 
-export function cancelScreening(webContents: RemoteClient): void {
-  activeRuns.get(webContents.id)?.abort()
-  activeRuns.delete(webContents.id)
+/** Stop the screening, whoever started it, and tell every client. */
+export function cancelScreening(): void {
+  if (run?.status !== 'running') return
+  run.controller.abort()
+  run.triaging.clear()
+  setStatus(run, 'cancelled')
 }
 
+/** Abort at quit: nobody is left to tell. */
 export function cancelAllScreening(): void {
-  for (const c of activeRuns.values()) c.abort()
-  activeRuns.clear()
+  run?.controller.abort()
 }

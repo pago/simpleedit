@@ -35,19 +35,19 @@ import {
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
-import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor } from './screenprs'
+import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot } from './screenprs'
 import { loadDrafts, applyOp as applyDraftOp } from './screenprs-drafts'
 import { loadFilter, setFilter } from './screenprs-filter'
 import { parseScreeningFilters } from '../shared/screenprs-filter'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
 import { parseDraftOpRequest } from '../shared/review-drafts'
-import { startDeepReview, cancelDeepReview, cancelAllDeepReviews } from './deep-review'
-import { startOverview, cancelOverview, cancelAllOverviews } from './pr-overview'
+import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnapshot } from './deep-review'
+import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
-import { ClientHub, type RemoteClient } from './client-hub'
+import { ClientHub, everyClient, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub, currentRemoteToken } from './remote/server'
 import { capDiffForRemote } from './remote/payload-cap'
@@ -302,11 +302,6 @@ function broadcastServeStatus(status: TailscaleServeStatus): void {
   broadcastToWindows('remote:serve-changed', status)
 }
 
-/**
- * To every window AND every phone. A phone's socket is reachable only through
- * the hub of the window it joined, so each hub fans out to its own transports
- * and a window that has no hub yet is sent to directly — each client once.
- */
 /** What a phone's Discuss picker is built from (`loadAgentModels`), so main refuses whatever it doesn't offer. */
 const MODEL_CATALOG: ModelCatalog = {
   claude: async () => (await listClaudeModels()).map((m) => m.model),
@@ -314,11 +309,11 @@ const MODEL_CATALOG: ModelCatalog = {
   ollama: async () => (await listInstalledModels()).filter((m) => m.toolCapable).map((m) => m.name),
 }
 
+/** Every window and every phone (`everyClient`). Screen PRs runs report here. */
+const allClients = everyClient(() => clientHubs.values(), liveWindowContents)
+
 function broadcastToAllClients<K extends keyof EventMap>(channel: K, data: EventMap[K]): void {
-  for (const hub of clientHubs.values()) hub.send(channel, data)
-  for (const wc of liveWindowContents()) {
-    if (!clientHubs.has(wc.id)) wc.send(channel, data)
-  }
+  allClients.send(channel, data)
 }
 
 function applyAndBroadcastDraftOp(url: string, op: PrReviewDraftOp): DraftOpResult {
@@ -985,28 +980,34 @@ function registerAllHandlers(): void {
   })
 
   // ── Screen PRs ─────────────────────────────────────────
-  handleInvoke('screenprs:start', (event, filters: unknown) => {
-    return startScreening(parseScreeningFilters(filters), hubFor(event.sender))
+  handleInvoke('screenprs:start', (_event, filters: unknown) => {
+    return startScreening(parseScreeningFilters(filters), allClients)
   })
 
-  handleInvoke('screenprs:cancel', (event) => {
-    cancelScreening(hubFor(event.sender))
+  handleInvoke('screenprs:cancel', () => {
+    cancelScreening()
   })
+
+  handleInvoke('screenprs:state', (event) => ({
+    run: screeningSnapshot(event.sender.clientKey !== undefined),
+    deep: deepReviewSnapshot(),
+    overviews: overviewSnapshot(),
+  }))
 
   handleInvoke('screenprs:pr-diff', (_event, pr: Pick<PrRef, 'url'> & { headSha?: string }) => {
     return reviewDiffFor(pr)
   })
 
-  handleInvoke('screenprs:deep-start', (event, context: PrContext) => {
-    return startDeepReview(context, hubFor(event.sender))
+  handleInvoke('screenprs:deep-start', (_event, context: PrContext) => {
+    return startDeepReview(context, allClients)
   })
 
   handleInvoke('screenprs:deep-cancel', (_event, url: string) => {
     cancelDeepReview(url)
   })
 
-  handleInvoke('screenprs:overview-start', (event, context: PrContext) => {
-    return startOverview(context, hubFor(event.sender))
+  handleInvoke('screenprs:overview-start', (_event, context: PrContext) => {
+    return startOverview(context, allClients)
   })
 
   handleInvoke('screenprs:overview-cancel', (_event, url: string) => {

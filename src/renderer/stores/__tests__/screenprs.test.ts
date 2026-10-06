@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screenPrsStore, initScreenPrsListeners } from '../screenprs.svelte'
-import type { EventMap } from '../../../shared/ipc-types'
+import type { EventMap, ScreenPrsState } from '../../../shared/ipc-types'
 import { bucketOf, emptyReviewDraft, type ScreenPrCard, type PrContext, type PrReviewDraft } from '../../../shared/screenprs'
 import { applyDraftOp, clearPostedOp, type DraftOpResult, type PrReviewDraftOp } from '../../../shared/review-drafts'
 
@@ -135,28 +135,86 @@ describe('screenPrsStore ingestion', () => {
     expect(screenPrsStore.overviewFor('other')).toBeUndefined()
   })
 
-  it('settles a cancelled overview locally, since main sends nothing for it', async () => {
+  it('settles a cancelled overview when main reports it, whoever stopped it', async () => {
     await screenPrsStore.startOverview(ctx({ number: 4, url: 'u4' }))
     await screenPrsStore.cancelOverview('u4')
-    expect(screenPrsStore.overviewFor('u4')?.status).toBe('idle')
     expect(window.api.invoke).toHaveBeenCalledWith('screenprs:overview-cancel', 'u4')
+    handlers['screenprs:overview-status']!({ url: 'u4', status: 'idle' })
+    expect(screenPrsStore.overviewFor('u4')?.status).toBe('idle')
   })
 
-  // A phone moved to another window never hears these runs end: their events
-  // go to the window that started them. Left running, they block its picker.
-  it('settles every run as interrupted when its window is left', async () => {
-    await screenPrsStore.startOverview(ctx({ number: 5, url: 'u5' }))
+  it('posting() is only a review post in flight, not a screening or a deep review', async () => {
     await screenPrsStore.startDeep(ctx({ number: 6, url: 'u6' }))
     expect(screenPrsStore.status()).toBe('running')
-    expect(screenPrsStore.busy()).toBe(true)
+    expect(screenPrsStore.posting()).toBe(false)
+  })
+})
 
-    screenPrsStore.abandonRuns('moved')
+describe('runs shared by every client', () => {
+  function state(over: Partial<ScreenPrsState> = {}): ScreenPrsState {
+    return { run: { status: 'idle', entries: [], triaging: [] }, deep: {}, overviews: {}, ...over }
+  }
+  function answer(replies: Record<string, unknown>): void {
+    ;(window.api.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (channel: string) => replies[channel])
+  }
 
-    expect(screenPrsStore.busy()).toBe(false)
+  it('clears the last board when another client starts a screening', () => {
+    const c = ctx({ number: 1, url: 'u1' })
+    handlers['screenprs:card']!({ card: card(c, 'low') })
+    handlers['screenprs:status']!({ status: 'done', total: 1 })
+    expect(screenPrsStore.entries()).toHaveLength(1)
+
+    handlers['screenprs:status']!({ status: 'running' })
+
+    expect(screenPrsStore.status()).toBe('running')
+    expect(screenPrsStore.entries()).toEqual([])
+  })
+
+  it('catches up from main when its start joined a screening already running', async () => {
+    const a = ctx({ number: 1, url: 'u1' })
+    const b = ctx({ number: 2, url: 'u2' })
+    answer({
+      'screenprs:start': { joined: true },
+      'screenprs:state': state({
+        run: { status: 'running', total: 2, entries: [{ ref: a, context: a, card: card(a, 'low') }, { ref: b, context: b }], triaging: ['u2'] },
+      }),
+    })
+
+    await screenPrsStore.start()
+
+    expect(screenPrsStore.status()).toBe('running')
+    expect(screenPrsStore.total()).toBe(2)
+    expect(screenPrsStore.byBucket().quick.map((x) => x.url)).toEqual(['u1'])
+    expect(screenPrsStore.pending()).toEqual([expect.objectContaining({ phase: 'running', ref: b })])
+  })
+
+  it('a client that missed the events gets the run, deep reviews and overviews whole', async () => {
+    const a = ctx({ number: 1, url: 'u1' })
+    answer({
+      'screenprs:state': state({
+        run: { status: 'done', total: 1, entries: [{ ref: a, context: a, card: card(a, 'high') }], triaging: [] },
+        deep: { u1: { status: 'running', lenses: { soundness: 'running' }, findings: [], headSha: 'sha1' } },
+        overviews: { u1: { status: 'done', text: '## What changed\nA', headSha: 'sha1' } },
+      }),
+    })
+
+    await screenPrsStore.loadState()
+
+    expect(screenPrsStore.status()).toBe('done')
+    expect(screenPrsStore.entries()).toHaveLength(1)
+    expect(screenPrsStore.deepFor('u1')).toMatchObject({ status: 'running', lenses: { soundness: 'running' } })
+    expect(screenPrsStore.overviewFor('u1')).toMatchObject({ status: 'done', text: '## What changed\nA' })
+  })
+
+  it('settles what it saw running as interrupted when main has no record of it', async () => {
+    await screenPrsStore.startDeep(ctx({ number: 6, url: 'u6' }))
+    answer({ 'screenprs:state': state() })
+
+    await screenPrsStore.loadState()
+
     expect(screenPrsStore.status()).toBe('error')
-    expect(screenPrsStore.error()).toBe('moved')
-    expect(screenPrsStore.overviewFor('u5')).toMatchObject({ status: 'error', error: 'moved' })
-    expect(screenPrsStore.deepFor('u6')).toMatchObject({ status: 'error', error: 'moved' })
+    expect(screenPrsStore.error()).toMatch(/Interrupted/)
+    expect(screenPrsStore.deepFor('u6')).toMatchObject({ status: 'error' })
   })
 
   it('unsubscribes cleanly', () => {

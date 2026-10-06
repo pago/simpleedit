@@ -210,7 +210,9 @@
     <p class="px-1 py-6 text-sm leading-relaxed text-zinc-500">
       {status === 'idle'
         ? 'Nothing screened yet. Tap Screen PRs to pull everything waiting on your review.'
-        : 'No pull requests are waiting on your review.'}
+        : status === 'cancelled'
+          ? 'Screening was stopped before any PR was done.'
+          : 'No pull requests are waiting on your review.'}
     </p>
   {/if}
 </div>
