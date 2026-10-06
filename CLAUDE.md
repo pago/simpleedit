@@ -154,11 +154,10 @@ calling `check_inbox`. Two things get it to call that:
   (`beginStop`/`endStop`), since that hook may yet deliver by block. The
   notice carries no mail, so delivery stays a tool result. Each message
   justifies at most two notices; after that the `Stop` block delivers it.
-- **`Stop` block, the fallback.** When a turn ends with mail queued and the
-  session can't be woken, `handleTurnEnd` answers `{decision:'block',
-  reason:<mail>}`, which both CLIs honour by continuing the turn. Claude Code
-  renders this as a Stop-hook "blocking error", which is why it's no longer
-  the default.
+- **`Stop` block.** When a turn ends with mail queued and the session can't
+  be woken (always for Claude, see below), `handleTurnEnd` answers
+  `{decision:'block', reason:<mail>}`, which both CLIs honour by continuing
+  the turn. Claude Code renders this as a Stop-hook "blocking error".
 
 Consequences worth knowing before touching this:
 - **When in doubt, don't wake.** Queued mail reported honestly is always
@@ -175,14 +174,18 @@ Consequences worth knowing before touching this:
     exact message "Claude is waiting for your input"); only that sets
     `idleConfirmed`, and every new turn or `Stop` clears it. So a Claude
     session is woken up to a minute after its turn ends, and senders are told
-    `confirming`. Until a session has sent one idle prompt (`idlePromptSeen`),
-    its `Stop` still delivers by block, so a CLI that never sends one can't
-    strand mail. Codex (idle from its `Stop` hook) and OpenCode (its server's
+    `confirming`. An `idle_prompt` that arrives once a turn is `running` is
+    stale and ignored.
+  - **A Claude `Stop` always delivers by block.** Its idle prompt needs a
+    minute without interaction, so a user active in that session would starve
+    mail left for a wake. The wake serves only mail that arrives after the
+    `Stop`. (`canWake`, which lets a `Stop` defer, is false for Claude.) Codex (idle from its `Stop` hook) and OpenCode (its server's
     `session.status`) report idle explicitly, so idle alone suffices for them.
   - `waiting` of any other kind (permission, question, unknown) blocks wakes
     until the turn moves on (`running` or a `Stop`).
-  - A notice the TUI swallowed is not retried; the mail stays `notified` until
-    the next turn ends.
+  - A notice the TUI swallowed is not retried (`noticeSent` until a turn
+    starts); the mail stays `notified` until the next turn ends, and senders
+    are told so.
   - Everything in the notice is stripped of control characters
     (`sanitizeLabel`; labels come from agents via `spawn_session`), and
     `agentSubmitWrite` strips paste markers until none are left.
@@ -214,7 +217,11 @@ Consequences worth knowing before touching this:
 - **Hops carry across `send_message` too.** A fresh message continues the hop
   count of the mail that started the sender's turn (`chainHops`), so two agents
   answering each other without `reply` still stop at `MAX_HOPS`. A turn the
-  user starts resets it.
+  user starts resets it. A reply that settles a sender's `wait_for_reply`
+  counts as received mail too (`settleWaiter`).
+- **The renderer syncs peers only once hydrated** (`markHydrated`): a
+  reloaded window's list is empty until its sessions are restored, and that
+  empty list would read as "all sessions gone" and drop their mail.
 - Exchanges are bounded: hop budget, per-sender rate limit, message size cap.
   `agent-message:sent` / `:delivered` / `:dropped` drive the sidebar's
   unread-mail badge (`stores/agent-mail.svelte.ts`), seeded from

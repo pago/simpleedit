@@ -294,6 +294,18 @@ describe('agent-bus — chains without reply (#197)', () => {
     expect(stopped).toBe(true)
   })
 
+  it('continues the chain from a reply that settled a waiting sender', async () => {
+    const sent = enqueue({ from: 'claude-a', to: 'beta', text: 'q', expectsReply: true })
+    const first = (sent as { message: { id: string; hops: number } }).message
+    drain('claude-b')
+    const waiting = waitForReply(first.id, 5000)
+    enqueue({ from: 'claude-b', to: 'alpha', text: 'a', replyTo: first.id })
+    await waiting
+
+    const next = enqueue({ from: 'claude-a', to: 'beta', text: 'and another' })
+    expect((next as { message: { hops: number } }).message.hops).toBe(first.hops + 2)
+  })
+
   it('starts a fresh chain once the user starts a turn', () => {
     enqueue({ from: 'claude-a', to: 'beta', text: 'x' })
     drain('claude-b')

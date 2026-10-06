@@ -479,6 +479,9 @@ function settleWaiter(messageId: string, reply: Message | null): boolean {
   const waiter = waiters.get(messageId)
   if (!waiter) return false
   waiters.delete(messageId)
+  // A reply returned as a tool result is still mail received: the sender's
+  // next fresh message continues its chain.
+  if (reply) noteReceived(reply.to, [reply])
   waiter(reply)
   return true
 }
