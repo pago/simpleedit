@@ -49,10 +49,7 @@ const test = base.extend<Fixtures>({
     removeTempRepo(repo)
   },
   hold: async ({ repoA }, use) => {
-    const hold = path.join(repoA.root, 'gh-hold')
-    await use(hold)
-    // Lets a search still waiting on it exit, so no stub outlives the test.
-    fs.rmSync(hold, { force: true })
+    await use(path.join(repoA.root, 'gh-hold'))
   },
   app: async ({ repoA, hold }, use) => {
     const bin = path.join(repoA.root, 'fake-gh-bin')
@@ -67,6 +64,9 @@ const test = base.extend<Fixtures>({
     env.PATH = `${bin}${path.delimiter}${env.PATH ?? ''}`
     const app = await electron.launch({ args: [MAIN, ...SANDBOX_ARGS], env })
     await use(app)
+    // Released first: a stopped run's `gh` stub is still polling it, and the
+    // app's close timed out in CI while it was.
+    fs.rmSync(hold, { force: true })
     await app.close()
   },
   windowA: async ({ app }, use) => {
