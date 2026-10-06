@@ -157,3 +157,35 @@ base.describe('session save/restore — file tab survives relaunch', () => {
     removeTempRepo(repo)
   })
 })
+
+base.describe('session save/restore — Resume starts the agent again', () => {
+  base('clicking Resume on a restored session brings up its terminal', async () => {
+    const repo = createTempRepo('simpleedit-resume-')
+
+    let { app, window } = await launch({ SIMPLEEDIT_REPO: repo.bareRepoPath })
+    await spawnClaudeSession(window)
+    await window.waitForTimeout(1_200) // let debounced save fire (500ms)
+    await app.close()
+
+    const second = await launch({ SIMPLEEDIT_REPO: repo.bareRepoPath })
+    app = second.app
+    window = second.window
+    const errors: string[] = []
+    window.on('pageerror', (error) => errors.push(error.message))
+
+    // The restored session is the active one, so its workspace shows the
+    // placeholder rather than a terminal.
+    const resume = window.getByRole('button', { name: /^Resume / }).filter({ visible: true })
+    await expect(resume).toBeVisible({ timeout: 10_000 })
+    await resume.click()
+
+    await expect(
+      window.locator('.xterm-rows').filter({ visible: true }).filter({ hasText: 'fake claude ready' })
+    ).toBeVisible({ timeout: 15_000 })
+    await expect(resume).toHaveCount(0)
+    expect(errors).toEqual([])
+
+    await app.close()
+    removeTempRepo(repo)
+  })
+})
