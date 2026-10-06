@@ -5,6 +5,7 @@
   import { sessionsStore, createSessionFromDefaults, type Session, type SessionGroup } from '../../stores/sessions.svelte'
   import type { AgentProviderId, InteractiveTarget, NativeModelAgentId } from '../../../shared/ipc-types'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
+  import { queuedMailCount } from '../../stores/agent-mail.svelte'
   import { capabilitiesFor, knownProviders, providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
@@ -620,6 +621,7 @@
 {#snippet sessionRow(session: Session)}
   {@const isActive = session.id === activeId}
   {@const isDragged = draggedId === session.id}
+  {@const mail = queuedMailCount(session.id)}
   {@const isGroupTarget =
     dropTargetId === session.id && (dropMode === 'group' || dropMode === 'intoGroup')}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -657,6 +659,15 @@
       </span>
       <span class="block truncate text-[10px] text-zinc-500">{worktreeBranch(session)}</span>
     </span>
+    {#if mail > 0}
+      <span
+        class="flex-none rounded bg-sky-500/20 px-1 text-[10px] text-sky-300"
+        title="{mail} agent message{mail === 1 ? '' : 's'} not yet read by this session"
+        data-testid="session-mail-badge"
+      >
+        ✉ {mail}
+      </span>
+    {/if}
     <button
       type="button"
       bind:this={
