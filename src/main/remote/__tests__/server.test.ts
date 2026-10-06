@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer, MANIFEST_LINK } from '../server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer, MANIFEST_LINK, resolveStatic } from '../server'
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
 import type { ServerFrame } from '../../../shared/remote-protocol'
@@ -44,6 +44,10 @@ const WEB_ROOT = (() => {
   writeFileSync(join(root, 'sw.js'), 'self.addEventListener("push", () => {})')
   writeFileSync(join(root, 'assets', 'app.js'), 'console.log(1)')
   writeFileSync(join(dir, 'secret.txt'), 'outside the bundle')
+  // A sibling whose name starts with the root's: a prefix test without the
+  // separator would let `../web-private/` through.
+  mkdirSync(join(dir, 'web-private'))
+  writeFileSync(join(dir, 'web-private', 'secret.txt'), 'outside the bundle')
   return root
 })()
 
@@ -113,6 +117,23 @@ function tryOpen(target: string, origin?: string): Promise<'opened' | 'refused'>
   })
 }
 
+/**
+ * A GET whose path goes out byte for byte. `fetch` normalises `..` and
+ * `%2e%2e` before sending, so traversal tests through it never reach the guard.
+ */
+function rawGetPath(port: number, path: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: HOST, port, path, method: 'GET' }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk: string) => { body += chunk })
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 /** A GET with headers `fetch` will not let us set (notably `Host`). */
 function rawGet(port: number, path: string, headers: Record<string, string>): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -166,16 +187,61 @@ describe('remote server', () => {
     expect(shell.status).toBe(200)
     expect(shell.headers.get('cache-control')).toBe('no-store')
     expect(shell.headers.get('referrer-policy')).toBe('no-referrer')
+    // Public, so not framable by another site and not loadable as a no-cors
+    // resource from one — either would let a page probe for SimpleEdit.
+    for (const path of ['/app/', '/app/sw.js', '/app/manifest.webmanifest', '/app/assets/app.js', '/app/auth']) {
+      const res = await fetch(`${url}${path}`)
+      expect(res.headers.get('x-frame-options'), path).toBe('DENY')
+      expect(res.headers.get('content-security-policy'), path).toBe("frame-ancestors 'none'")
+      expect(res.headers.get('cross-origin-resource-policy'), path).toBe('same-origin')
+    }
     expect((await fetch(`${url}/app/assets/app.js`)).status).toBe(200)
     expect((await fetch(`${url}/app/sw.js`)).status).toBe(200)
 
-    // Outside the bundle, by any spelling, is not reachable.
-    expect((await fetch(`${url}/app/../secret.txt`)).status).toBe(404)
-    expect((await fetch(`${url}/app/%2e%2e/secret.txt`)).status).toBe(404)
     expect((await fetch(`${url}/secret.txt`)).status).toBe(404)
     expect((await fetch(`${url}/app/nope.js`)).status).toBe(404)
     // And nothing but GET.
     expect((await fetch(`${url}/app/`, { method: 'POST', body: '{}' })).status).toBe(404)
+  })
+
+  // Sent verbatim, so each of these reaches `resolveStatic` as written.
+  it('serves nothing outside the bundle, however the path is spelled', async () => {
+    const { url } = await start()
+    const port = Number(new URL(url).port)
+    for (const path of [
+      '/app/../secret.txt',
+      '/app/%2e%2e/secret.txt',
+      '/app/..%2fsecret.txt',
+      '/app/%2e%2e%2fsecret.txt',
+      '/app/%2e%2e%2f%2e%2e%2fetc/passwd',
+      '/app/..%2f..%2f..%2f..%2f..%2f..%2f..%2f..%2fetc/passwd',
+      '/app/..%2fweb-private/secret.txt',
+      '/app/assets/..%2f..%2fsecret.txt',
+      '/app/%2fetc/passwd',
+      '/app/..%5csecret.txt',
+    ]) {
+      const res = await rawGetPath(port, path)
+      expect(res.status, path).toBe(404)
+      expect(res.body, path).not.toContain('outside the bundle')
+      expect(res.body, path).not.toContain('root:')
+    }
+    // The same request shape does reach a file inside, so the 404s above are
+    // the guard and not a broken request.
+    expect((await rawGetPath(port, '/app/assets/%2e%2e/sw.js')).status).toBe(200)
+  })
+
+  // The guard itself, without HTTP in front: each of these resolves to a file
+  // that EXISTS outside the root, so removing the containment check would
+  // hand it back.
+  it('contains every route inside the web root', () => {
+    expect(resolveStatic(WEB_ROOT, '/../secret.txt')).toBeNull()
+    expect(resolveStatic(WEB_ROOT, '/..%2fsecret.txt')).toBeNull()
+    expect(resolveStatic(WEB_ROOT, '/%2e%2e%2fsecret.txt')).toBeNull()
+    expect(resolveStatic(WEB_ROOT, '/../web-private/secret.txt')).toBeNull()
+    expect(resolveStatic(WEB_ROOT, '/assets/../../secret.txt')).toBeNull()
+    expect(resolveStatic(WEB_ROOT, '/%')).toBeNull()
+    expect(resolveStatic(WEB_ROOT, '/')).toBe(join(WEB_ROOT, 'index.html'))
+    expect(resolveStatic(WEB_ROOT, '/assets/app.js')).toBe(join(WEB_ROOT, 'assets', 'app.js'))
   })
 
   it('refuses the socket without the current key', async () => {
@@ -659,7 +725,7 @@ describe('originOf', () => {
 
 describe('choosing the window a socket joins', () => {
   async function connectTo(url: string, token: string, query: string): Promise<{ ws: WebSocket; hello: ServerFrame }> {
-    const ws = new WebSocket(`${url.replace('http', 'ws')}/${token}/ws${query}`, { origin: url })
+    const ws = new WebSocket(`${url.replace('http', 'ws')}/app/ws?k=${token}${query.replace('?', '&')}`, { origin: url })
     const frames: ServerFrame[] = []
     ws.on('message', (raw: Buffer) => { frames.push(JSON.parse(raw.toString('utf8')) as ServerFrame) })
     await new Promise<void>((res, rej) => {

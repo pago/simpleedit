@@ -130,9 +130,15 @@ export function socketUrl(key: string, params: Record<string, string> = {}): str
   return url.toString()
 }
 
-export async function checkKeyWithServer(key: string): Promise<KeyVerdict> {
+/**
+ * Bounded: on a dead tailnet path a fetch can hang for minutes, and the retry
+ * that follows this answer would never be scheduled. No answer is `unknown`.
+ */
+const KEY_CHECK_TIMEOUT_MS = 5_000
+
+export async function checkKeyWithServer(key: string, timeoutMs = KEY_CHECK_TIMEOUT_MS): Promise<KeyVerdict> {
   try {
-    const res = await fetch(keyedUrl('auth', key), { cache: 'no-store' })
+    const res = await fetch(keyedUrl('auth', key), { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) })
     if (res.status === 204) return 'current'
     if (res.status === 401) return 'stale'
     return 'unknown'

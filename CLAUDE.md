@@ -328,15 +328,20 @@ Its security rule, which `server.ts`'s header states in full:
   two varying responses (index.html's manifest link, the manifest's
   `start_url`) only echo the request's own `?k=`, so an iOS install saves it.
   `/app/auth?k=` answers one bit (204/401) so the app can tell a stale key from
-  an unreachable Mac. Anything outside the bundle is a 404; a pre-#190
-  `/<key>/` link redirects to `/app/?from=legacy`.
+  an unreachable Mac. Anything outside the bundle is a 404 (one containment
+  check on the decoded, resolved path); a pre-#190 `/<key>/` link redirects to
+  `/app/?from=legacy`. Shell responses forbid framing (`X-Frame-Options`,
+  `frame-ancestors`) and cross-origin no-cors loads (`CORP: same-origin`), so
+  another site can neither frame the scanner nor probe for SimpleEdit.
 - Origin: any `Origin` must name the host the request addressed (forwarded
   headers trusted from loopback only, for `tailscale serve`); the upgrade must
   carry one. Bind rules: explicit host, loopback by default, never `0.0.0.0`.
 - **Recovery is in-app.** On iOS the Camera opens Safari, whose storage is
   separate from the Home Screen app's, and leaving the scope opens an in-app
   browser — so the app keeps its key in its own `localStorage`
-  (`lib/remote-key.ts`: a rescanned key outranks the start URL iOS replays) and
+  (`lib/remote-key.ts`: a rescanned key outranks the start URL iOS replays,
+  and a new URL key replaces a stored one only once `/app/auth` confirms it,
+  so an old bookmark or a planted link can't knock a device off) and
   `PairScreen` scans (BarcodeDetector, else jsQR) or takes a pasted link, then
   `connection.setKey` reconnects without navigating. Only same-origin links are
   accepted, so recovery needs a stable origin: Serve's HTTPS name, or a fixed
