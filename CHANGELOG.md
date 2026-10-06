@@ -1,5 +1,200 @@
 # simpleedit
 
+## 0.23.0
+
+### Minor Changes
+
+- [#178](https://github.com/pago/simpleedit/pull/178) [`de83934`](https://github.com/pago/simpleedit/commit/de839340371f9288b2970f4935f3309c9024465e) Thanks [@pago](https://github.com/pago)! - The Claude model picker now lists the models your installed Claude Code CLI offers — the same list as its own `/model` menu, including aliases like `opus` that follow the newest release — instead of a list baked into SimpleEdit. If the CLI can't be asked, a short alias-based fallback is shown. Screen PRs triage now defaults to the `haiku` alias, and settings pinned to `claude-haiku-4-5-20251001` move to it.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`0b89f0c`](https://github.com/pago/simpleedit/commit/0b89f0ca54f62997dfbcd2e47bc51068c3100a81) Thanks [@pago](https://github.com/pago)! - Read what an agent has changed from the phone. A session's detail screen gains a
+  Terminal / Changes segmented control; Changes navigates repo → worktree →
+  commit, opening on uncommitted changes as the desktop does, and renders the diff
+  unified with long lines scrolling inside their own container. The pickers read
+  the session's own repo trail, which the session snapshot now carries so a second
+  client lists the same places the desktop sidebar does. Entirely read-only.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`4b11849`](https://github.com/pago/simpleedit/commit/4b11849cfbe6bbb2a7ba4c4a7fb5723263b6db36) Thanks [@pago](https://github.com/pago)! - Remote access gains its first real screens: a session list, the actual terminal, and a spoken reply.
+
+  Sessions are ordered by what is costing you throughput — blocked first, and a blocked session shows how long it has been blocked rather than how long it has been running, because that wait is a parallel slot doing nothing. The terminal is xterm over the real PTY through the same attachment the desktop uses, not a re-rendered interpretation of it, and an accessory bar supplies `↑ ↓ ⏎ Esc ⇥` — the keys a phone keyboard lacks and a TUI needs.
+
+  Replies can be dictated. Audio is captured in the browser and transcribed locally by whisper.cpp, which is detected rather than bundled: Settings names the Homebrew formula and the model file when either is missing. The transcript always lands in the composer for review before Send — dictation mangles branch names and file paths, and a wrong word in a live session is expensive — and typing works whether or not any of it is set up.
+
+  Also fixed: a client that disappeared kept its hold on a terminal's size forever, so the desktop window's resizes were dropped on behalf of a socket that no longer existed.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`c1e8dbe`](https://github.com/pago/simpleedit/commit/c1e8dbec4a877c5e6a6e763973a6015208faa378) Thanks [@pago](https://github.com/pago)! - Start a session from the phone. The Sessions screen gets a `+` that opens a
+  voice-seeded new-session sheet: one field, the brief, dictated through the same
+  composer the reply uses (transcript review included) or typed. Provider and
+  model come from the same default ⌘T uses — a phone is not where you
+  comparison-shop models — and the session's name is the brief's first clause
+  until the agent renames it.
+
+  A session is created exactly once per confirmed intent: the request carries an
+  intent id and main de-duplicates against it, so a double tap, a socket that
+  drops before the answer arrives, or a retried call all resolve to the one
+  session. The web `window.api` shim no longer replays a queued call whose
+  promise it already rejected, which was the other way one confirmation became
+  two.
+
+  The brief's provisional name is a stand-in, not a choice: the agent replaces it
+  with its own conversation title exactly as it does at the desk. The sheet traps
+  focus, leaves on Escape, and warns before the browser takes an unsent brief. If
+  a start times out, its outcome is genuinely unknown — so rather than silently
+  starting a second agent, there is an explicit "Start a new session anyway" that
+  keeps the brief and names the risk.
+
+- [#194](https://github.com/pago/simpleedit/pull/194) [`298f197`](https://github.com/pago/simpleedit/commit/298f197fda930c3f7baa02af77459f09d859944d) Thanks [@pago](https://github.com/pago)! - The phone companion can switch between the projects open on the Mac. Tap the project name under the title to pick another window's project. The phone remembers your pick and comes back to it on reconnect, so it no longer depends on which window had focus. If that window closes, the phone moves to another project and says which.
+
+- [#195](https://github.com/pago/simpleedit/pull/195) [`630fb70`](https://github.com/pago/simpleedit/commit/630fb707b34365ef21ebd2d4eae9976f6ea3dbe4) Thanks [@pago](https://github.com/pago)! - The phone app now recovers when SimpleEdit restarts. Instead of a bare "Not found", it says the link is out of date and lets you scan the new QR code (or paste the link) inside the installed app. It then reconnects in place and keeps notifications working. Home Screen apps installed before this update need to be added again once.
+
+- [#181](https://github.com/pago/simpleedit/pull/181) [`a420d46`](https://github.com/pago/simpleedit/commit/a420d4698bf06b244cb52b0b7f94a682354469f4) Thanks [@pago](https://github.com/pago)! - The phone app now has real navigation. The system Back — an iOS swipe-back, Android's Back button, a browser's Back — closes whatever is on top (a sheet, a commit's diff, a PR, a session) instead of leaving the app, and asks first when that would throw away a brief or a comment you have typed, or a recording still in progress. Tapping a notification opens its session on top of what you were doing, so Back returns there with your draft intact. Each tab keeps its own place: switching between Sessions and PRs no longer closes the screen you had open or loses the list's scroll, and the tab bar now stays available on detail screens. A PR's Conversation and Files panes each keep their scroll when you flip between them.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`001da3f`](https://github.com/pago/simpleedit/commit/001da3f56bf6afe7be32e47958784a1386cd3bc4) Thanks [@pago](https://github.com/pago)! - Push notifications when a session blocks on you.
+
+  A phone gets one notification when an agent stops and needs a reply, and
+  nothing else. Tapping it opens straight into that session with the composer
+  ready — never the microphone, which iOS requires a gesture for and which would
+  be wrong on wake regardless.
+
+  The trigger is deliberately narrow, because the feature's whole value is that a
+  buzz means something: only a status the agent reported itself, only the
+  transition into blocked, debounced per session, nothing while you are at the Mac,
+  and nothing at all while remote access is off. It covers every provider, which is
+  why it exists — Claude Code's own Remote Control notifies for Claude alone.
+
+  Claude sessions now launch with the `Notification` hook wired, which is the only
+  signal Claude Code emits meaning "I need you" — a tool awaiting permission, or a
+  prompt left unanswered. None of it reaches the terminal title, so nothing could
+  see it before; its text becomes the notification body.
+
+  Messages are Web Push with VAPID, encrypted end to end, so Apple relays them
+  without being able to read them. Subscriptions belong to the device that made
+  them and survive a restart; an endpoint the push service reports as gone is
+  dropped rather than retried forever.
+
+  Settings → Remote access explains the one step that cannot be automated: iOS
+  only allows notifications for a page added to the Home Screen. It also lists
+  registered devices, by push service rather than by address, and can forget them.
+
+  While a SimpleEdit window is focused and the machine has seen recent input,
+  SimpleEdit writes the marker file Claude Code reads through
+  `CLAUDE_CLIENT_PRESENCE_FILE`, so a Claude session does not buzz twice. Idle
+  time is part of that check on purpose: a window left focused while you are out
+  would otherwise look like you are at your desk forever.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`d736d88`](https://github.com/pago/simpleedit/commit/d736d88222d63c43edbb6a30d2243df8f6eba148) Thanks [@pago](https://github.com/pago)! - Pair a phone from the Remote access pane with a QR code, and drive `tailscale serve` from it.
+
+  Getting the remote URL onto a phone meant retyping a 64-hex-character token, and reaching it
+  at all meant hand-running `tailscale serve` and rediscovering the ephemeral port every time it
+  changed. The pane now shows a scannable code for the URL a phone can actually reach — never
+  for loopback, which would resolve to the phone itself — and can create and remove the serve
+  mapping for you.
+
+  SimpleEdit also detects Tailscale properly now, through its CLI rather than by pattern-matching
+  an interface name: it reports the node's MagicDNS name and whether HTTPS certificates exist,
+  and it says plainly when the installed copy is the sandboxed Mac App Store build, which ships
+  no CLI it can drive. When a tailnet has never had Serve switched on, the node-specific admin
+  link buried in the CLI's error is pulled out and rendered as a link instead of a dead end.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`0baac0a`](https://github.com/pago/simpleedit/commit/0baac0a4b2b8835ca0a953dfc163ea83139e1a69) Thanks [@pago](https://github.com/pago)! - Add **Remote access**: a Settings pane that serves SimpleEdit to a browser on
+  this machine or over Tailscale, so a session can be reached from another
+  device.
+
+  It is **off by default** and starts only when you turn it on. The link it
+  gives you carries a random access token that is regenerated on every start,
+  and it is bound to an interface you choose explicitly — loopback by default,
+  never all interfaces. Anyone holding the link can run terminals, edit files and
+  remove worktrees, so treat it as a password.
+
+  While remote access is on, SimpleEdit holds a power assertion so the Mac does
+  not sleep and stop your agents. The pane shows whether that assertion is
+  actually held.
+
+  Also: when another window or device takes over a terminal's size, every view of
+  that terminal is told — so the one that is no longer sizing it says so, instead
+  of quietly rendering at a width the terminal no longer uses.
+
+- [#187](https://github.com/pago/simpleedit/pull/187) [`21d48b1`](https://github.com/pago/simpleedit/commit/21d48b1b87b0d063589404b7c92840306a71a3d0) Thanks [@pago](https://github.com/pago)! - Screen PRs takes line comments from the desktop PR detail: comment on any diff line, on either side, or select a range of lines. Comments can be edited and removed on both the desktop and the phone, and the draft persists across restarts and is shared between the two, so a review started at the desk can be finished on the phone. Before posting, each comment is checked against GitHub's diff, and one that can't be placed on its line moves into the review summary on its own, with its file and line.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`d74d849`](https://github.com/pago/simpleedit/commit/d74d849a2881c2a2f99f3d575ef25547f34e6f73) Thanks [@pago](https://github.com/pago)! - Screen PRs is now a full review surface on the phone, not a read-only board.
+
+  Every PR opens the same way, whatever bucket it sits in. Buckets order the board — attention, quick, waiting, FYI, with stacks shown base-first — but they gate nothing: the anchoring problem that once argued for restricting approval to small PRs was already solved by `buildReviewPayload`, which anchors what it can to the diff's right-hand side and folds the rest into the review body so nothing is silently dropped. A PR opens onto two panes, Conversation and Files. Tapping any line in the diff opens a sheet to type or dictate a comment; triage and deep-review findings lift into the same draft carrying their own provenance. Deep review can be started from here and left running — its findings land whether or not you stayed on the screen.
+
+  Submitting is deliberate by construction. The verdict has to be tapped — approve is the shared default and must not become the outcome of not deciding — and submit opens a confirm naming the verdict, the anchored comment count and anything folded into the summary, computed by the same function that posts. Voice composes and never submits. A closed socket disables posting outright, and a connection that drops after the post is described as unknown rather than failed, because it is.
+
+  A comment keeps its place on a line only where that place can be shown to be right. GitHub's reviews API carries no commit id — it attaches whatever you post to whatever the branch head is at that moment — so a force-push between reading a line and posting a comment on it would put that comment on whatever had since taken the line, with no error and no warning. Every comment now records the commit its line was read off, and a line anchor survives to GitHub only when that commit is the one on screen. A comment written against an older commit, or one that simply cannot be checked because the branch is mid-refresh, goes into the review summary with its file instead — nothing is dropped, and both the draft and the confirm say which of the two reasons applied. A line number of 0, which GitHub always rejects and which costs every other comment in the review its placement when it does, is no longer treated as an anchor at all.
+
+  Submitting is more careful about what it claims. A review whose result never came back — because the connection went, or because the Mac gave up waiting on GitHub — latches: posting again takes an explicit "I checked GitHub", because reviews have no idempotency key and a second tap is how one review becomes two. A call that provably never left the device says so instead, and is safe to retry. The confirm dialog now takes focus and keeps it, Tab stays inside, and focus returns to where it came from; Escape always closes it, even mid-post, so a slow GitHub cannot leave you sealed in a box whose buttons do nothing. Calls to `gh` no longer run unbounded.
+
+  The board no longer ships every PR's full diff to a remote client. Screening spans every org where you are a reviewer, so that payload was megabytes for the sake of the one PR you open; the diff is now fetched when a PR is opened, cached per head commit.
+
+- [#185](https://github.com/pago/simpleedit/pull/185) [`5b31693`](https://github.com/pago/simpleedit/commit/5b31693ce9b888735783cef9ca51992756eef552) Thanks [@pago](https://github.com/pago)! - Screen PRs can write a PR overview: a reviewer's briefing covering what changed,
+  why, the impact, and a short list of questions to look into, each citing the
+  lines it is about. It reads more than the diff: commits, linked issues, the
+  discussion, the changeset, key files, and the repo's CLAUDE.md. It runs on
+  demand from the PR detail on the desktop and the phone, and a citation jumps to
+  its line in the diff. A question can go into the review as a comment. The
+  overview uses Sonnet by default. The model is set in Settings → Default Model
+  and the instructions in Settings → Prompts.
+
+- [#193](https://github.com/pago/simpleedit/pull/193) [`3d609a6`](https://github.com/pago/simpleedit/commit/3d609a6fa77939a4fcfa8ac2ac6b9afbf35387a9) Thanks [@pago](https://github.com/pago)! - Screen PRs on the phone catch up with the desk. The org and activity cutoff are now one saved filter shared by every window and the phone: set the org on either and it applies to both, and it survives a restart instead of having to be typed in again. The phone board gets an org picker. A phone PR also gets ✦ Discuss with Agent, from the PR or from any overview "Look into" question: pick the model, and the review session opens over the PR with the same brief the desk sends, so Back returns to the PR.
+
+- [#183](https://github.com/pago/simpleedit/pull/183) [`71127ca`](https://github.com/pago/simpleedit/commit/71127ca0cfbdaf3eb4c8e295f0fa609ddef4bc92) Thanks [@pago](https://github.com/pago)! - Screen PRs prompts are now yours to tune. Settings → Prompts lists the triage prompt, every deep-review lens and the synthesis step, and lets you customize, edit, compare with the default, reset or reveal each one. An override replaces only the instructions: SimpleEdit still adds the output format and the PR itself, so a custom prompt can't break parsing. Edits apply from the next run and ignore results cached for the old text. A prompt customized from an older default is marked outdated, and an empty or unreadable override falls back to the default.
+
+- [#184](https://github.com/pago/simpleedit/pull/184) [`f93bf64`](https://github.com/pago/simpleedit/commit/f93bf641009e9527c59a46352b232f3b4062d099) Thanks [@pago](https://github.com/pago)! - Screen PRs spots stacked PRs whose lower layer was rebased, where GitHub's diff
+  shows the whole stack. The PR detail on the desktop and the phone warns about it,
+  and where the PR's own commits can be separated, triage, deep review and the diff
+  view read only those commits. A rebased base now re-triages the PR even when its
+  head hasn't moved.
+
+### Patch Changes
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`cc52896`](https://github.com/pago/simpleedit/commit/cc528969a0a86685c626ea0050b6b65f2e457f35) Thanks [@pago](https://github.com/pago)! - The ✦ Agent button, ⌘T and the phone's `+` now start the same session. They had
+  drifted: two of them tested the remembered model for `provider === 'openai'`,
+  which sends every other native model to Claude, so the same configuration
+  started OpenCode from the sidebar and Claude from ⌘T in the same window.
+
+  Codex also never declared the model brand its descriptor owes, so "last model
+  used" was unwritable for a Codex session and no new-session gesture could
+  produce one.
+
+- [#196](https://github.com/pago/simpleedit/pull/196) [`b6f404e`](https://github.com/pago/simpleedit/commit/b6f404e6bb283f0d95c6ccd30370e75634cd1b21) Thanks [@pago](https://github.com/pago)! - The phone's terminal scrolls when you swipe it. On a plain shell, Codex or Claude Code's default view, a swipe moves through the scrollback and a flick keeps going; under a full-screen TUI that takes the mouse (Claude Code's `tui: fullscreen`, OpenCode) it scrolls the app the way a mouse wheel would. The page no longer rubber-bands or pulls to refresh under your finger, and with the keyboard open the session screen shrinks to the space left above it, so the terminal, the reply box and Send all stay on screen.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`4ae0d90`](https://github.com/pago/simpleedit/commit/4ae0d90067ab0244119077bb385fb50e70bd42e0) Thanks [@pago](https://github.com/pago)! - Groundwork for viewing one session from more than one place: the main process
+  now tracks which client owns each terminal's size, and applies a resize only
+  from that one.
+
+  Nothing changes for a single window today — a session's terminal has exactly
+  one viewer, so there is nothing to arbitrate. It matters once a second client
+  attaches to the same session, which **Remote access** now makes possible: your
+  phone and your desktop would otherwise each fit the terminal to their own
+  screen and reflow it out from under the other. Ownership follows your
+  attention — the session selected, the window focused, the tab made visible —
+  and never moves on a reconnect or a background layout reflow. The client that
+  is not sizing the terminal says so rather than rendering at a width the
+  terminal no longer uses.
+
+- [#192](https://github.com/pago/simpleedit/pull/192) [`6b39141`](https://github.com/pago/simpleedit/commit/6b39141e8ae32ea94f3fda4db72658954e51ebbf) Thanks [@pago](https://github.com/pago)! - Fixes from a round of phone and review testing:
+
+  - Closing Settings while remote access is on no longer shows "A JavaScript error occurred in the main process".
+  - Send on the phone now submits the reply to Claude Code and Codex, instead of leaving it in the agent's prompt for another Enter.
+  - Tapping a text field on the phone no longer zooms the page and pushes Send off-screen.
+  - A gen-UI panel's reply to the agent (a decision card's option, for example) is now submitted whatever its length; long ones used to stay in the prompt.
+  - A note sent to an agent from the desktop review is now always staged in its prompt, never submitted, so several notes can be collected and submitted together.
+  - Settings › Remote access follows the setup order: how the phone reaches this Mac (network interface and Tailscale), then the pairing code, then the rest.
+  - A diff's horizontal scrollbar no longer covers its last line and that line's comment button.
+
+- [#177](https://github.com/pago/simpleedit/pull/177) [`43536d6`](https://github.com/pago/simpleedit/commit/43536d679e64f409a78163f037e4fff82f006713) Thanks [@pago](https://github.com/pago)! - `show_panel` now rejects an element whose `visible` is not a condition json-render can evaluate, and names the element in the error, instead of handing the malformed condition to the renderer. Also fixes two renderer bugs a working typecheck surfaced: an LSP diagnostic sent as markdown no longer shows as `[object Object]`, and a Screen PRs triage model without a model id no longer labels itself `undefined`.
+
+- [#180](https://github.com/pago/simpleedit/pull/180) [`455e395`](https://github.com/pago/simpleedit/commit/455e3958137886590d5322aa43379775189dd227) Thanks [@pago](https://github.com/pago)! - Fixes on the paths a phone review runs through.
+
+  A call made over remote access in the moment a connection was going down could be reported as failed and then still be delivered, seconds later, on the reconnect — because the frame was buffered while the promise was rejected. For a review submit that meant it could post after you had been told it might not have, and post a second time if you retried. Buffered frames now live and die with the socket they were written for, and a call that provably never left the device says so, rather than leaving the outcome open.
+
+  The diff parser read `+++ ` and `--- ` as file headers anywhere in a diff, so an added line whose own text begins `++ ` — a nested markdown bullet, a note about C++ — was taken for a new file: the path changed and every line after it was numbered against the wrong hunk. Those two are file headers only before the first hunk.
+
+  Reads over remote access now retry when the connection returns, rather than sitting on the error the drop caused: the session list and a PR's diff both re-run once there is a socket again.
+
+  Internally, the check that guards which URLs reach `gh pr diff` now verifies the URL is actually a pull request rather than merely absolute — it accepted a repo, an issue, or a stranger's host before, while its name and documentation promised otherwise.
+
 ## 0.22.0
 
 ### Minor Changes
