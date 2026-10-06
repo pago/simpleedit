@@ -9,6 +9,7 @@
   import { initScreenPrsListeners } from './stores/screenprs.svelte'
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
+  import { initAgentMailListeners } from './stores/agent-mail.svelte'
   import { initAgentCapabilities } from './stores/agent-capabilities.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners, createSessionFromDefaults } from './stores/sessions.svelte'
@@ -33,6 +34,7 @@
   onMount(() => {
     if (isSettingsView) return
     const unsubStatus = initAgentStatusListeners()
+    const unsubMail = initAgentMailListeners()
     const unsubSessions = initSessionListeners()
     const unsubScreenPrs = initScreenPrsListeners()
     // Cache every provider's capabilities up front: the session store reads
@@ -42,6 +44,7 @@
     window.addEventListener('beforeunload', flushSessionSave)
     return () => {
       unsubStatus()
+      unsubMail()
       unsubSessions()
       unsubScreenPrs()
       window.removeEventListener('beforeunload', flushSessionSave)
