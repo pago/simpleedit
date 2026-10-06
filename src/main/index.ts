@@ -309,8 +309,18 @@ const MODEL_CATALOG: ModelCatalog = {
   ollama: async () => (await listInstalledModels()).filter((m) => m.toolCapable).map((m) => m.name),
 }
 
-/** Every window and every phone (`everyClient`). Screen PRs runs report here. */
-const allClients = everyClient(() => clientHubs.values(), liveWindowContents)
+/**
+ * Every window and every phone (`everyClient`). Screen PRs runs report here.
+ * Not Settings: it shows none of what goes here, and a board's cards carry
+ * whole diffs.
+ */
+const allClients = everyClient(
+  () => clientHubs.values(),
+  () => {
+    const settings = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow.webContents : null
+    return liveWindowContents().filter((wc) => wc !== settings)
+  },
+)
 
 function broadcastToAllClients<K extends keyof EventMap>(channel: K, data: EventMap[K]): void {
   allClients.send(channel, data)

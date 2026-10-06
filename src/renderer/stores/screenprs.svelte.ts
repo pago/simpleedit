@@ -407,8 +407,10 @@ export const screenPrsStore = {
   _onOverviewResult(url: string, headSha: string, text: string, facts: OverviewFacts): void {
     setOverview(url, { text, facts, headSha })
   },
-  _onOverviewStatus(url: string, status: OverviewStatus, error?: string): void {
-    setOverview(url, { status, error })
+  _onOverviewStatus(url: string, status: OverviewStatus, error?: string, headSha?: string): void {
+    // Main says `running` only for a fresh start, whichever client asked for it.
+    if (status === 'running') setOverview(url, { status, error, text: undefined, facts: undefined, headSha })
+    else setOverview(url, { status, error })
   },
 
   // ── review composer (the GitHub write path) ──
@@ -533,8 +535,12 @@ export const screenPrsStore = {
   _onDeepResult(url: string, findings: DeepFinding[], headSha: string): void {
     setDeep(url, { findings, headSha })
   },
-  _onDeepStatus(url: string, status: DeepReviewStatus, error?: string): void {
-    setDeep(url, { status, error })
+  _onDeepStatus(url: string, status: DeepReviewStatus, error?: string, headSha?: string): void {
+    // Main says `running` only for a fresh start, whichever client asked for
+    // it, and `idle` only for a stop: either way the old lenses are over.
+    if (status === 'running') setDeep(url, { status, error, lenses: {}, findings: [], headSha })
+    else if (status === 'idle') setDeep(url, { status, error, lenses: {} })
+    else setDeep(url, { status, error })
   },
 
   // ── event ingestion (wired by initScreenPrsListeners) ──
@@ -585,12 +591,12 @@ export function initScreenPrsListeners(): () => void {
   const unsubStatus = window.api.on('screenprs:status', (d) => screenPrsStore._onStatus(d.status, d.total, d.error))
   const unsubDeepLens = window.api.on('screenprs:deep-lens', (d) => screenPrsStore._onDeepLens(d.url, d.lens, d.status))
   const unsubDeepResult = window.api.on('screenprs:deep-result', (d) => screenPrsStore._onDeepResult(d.url, d.findings, d.headSha))
-  const unsubDeepStatus = window.api.on('screenprs:deep-status', (d) => screenPrsStore._onDeepStatus(d.url, d.status, d.error))
+  const unsubDeepStatus = window.api.on('screenprs:deep-status', (d) => screenPrsStore._onDeepStatus(d.url, d.status, d.error, d.headSha))
   const unsubOverviewResult = window.api.on('screenprs:overview-result', (d) =>
     screenPrsStore._onOverviewResult(d.url, d.headSha, d.text, d.facts)
   )
   const unsubOverviewStatus = window.api.on('screenprs:overview-status', (d) =>
-    screenPrsStore._onOverviewStatus(d.url, d.status, d.error)
+    screenPrsStore._onOverviewStatus(d.url, d.status, d.error, d.headSha)
   )
   const unsubDraftChanged = window.api.on('screenprs:draft-changed', (d) =>
     screenPrsStore._onDraftChanged(d.url, { draft: d.draft, rev: d.rev })

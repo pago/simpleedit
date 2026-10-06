@@ -104,17 +104,24 @@ export class ClientHub implements RemoteClient {
  * A phone's socket is reachable only through the hub of the window it joined,
  * so each hub fans out to its own transports, and a window that has no hub yet
  * is sent to directly: each client once. Both lists are read per send, so a
- * client that attaches mid-run receives what follows. `windows` must already
- * leave out a window whose `WebContents` is being destroyed (`liveWindowContents`).
+ * client that attaches mid-run receives what follows.
+ *
+ * `windows` is the source of truth for who may receive: it must leave out a
+ * window whose `WebContents` is being destroyed (`liveWindowContents`), and a
+ * hub whose window it doesn't list is skipped too. During that teardown the
+ * hub's window transport still reports itself alive, but `send` on it throws.
  */
 export function everyClient(hubs: () => Iterable<ClientHub>, windows: () => RemoteClient[]): RemoteClient {
   const each = (deliver: (client: RemoteClient) => void): void => {
+    const listed = windows()
+    const ids = new Set(listed.map((wc) => wc.id))
     const reached = new Set<number>()
     for (const hub of hubs()) {
+      if (!ids.has(hub.id)) continue
       reached.add(hub.id)
       deliver(hub)
     }
-    for (const wc of windows()) if (!reached.has(wc.id)) deliver(wc)
+    for (const wc of listed) if (!reached.has(wc.id)) deliver(wc)
   }
   return {
     id: -1,

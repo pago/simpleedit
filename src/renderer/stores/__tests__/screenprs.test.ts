@@ -206,6 +206,30 @@ describe('runs shared by every client', () => {
     expect(screenPrsStore.overviewFor('u1')).toMatchObject({ status: 'done', text: '## What changed\nA' })
   })
 
+  it('drops a PR\'s old deep findings when anyone restarts its review, and its lenses when anyone stops it', () => {
+    const url = 'u-restart'
+    handlers['screenprs:deep-lens']!({ url, lens: 'soundness', status: 'done' })
+    handlers['screenprs:deep-result']!({ url, findings: [{ lens: 'soundness', severity: 'note', file: 'a.ts', title: 't', detail: 'd' }], headSha: 'old' })
+    handlers['screenprs:deep-status']!({ url, status: 'done' })
+
+    handlers['screenprs:deep-status']!({ url, status: 'running', headSha: 'new' })
+    expect(screenPrsStore.deepFor(url)).toMatchObject({ status: 'running', lenses: {}, findings: [], headSha: 'new' })
+
+    handlers['screenprs:deep-lens']!({ url, lens: 'soundness', status: 'running' })
+    handlers['screenprs:deep-status']!({ url, status: 'idle' })
+    expect(screenPrsStore.deepFor(url)).toMatchObject({ status: 'idle', lenses: {} })
+  })
+
+  it('drops a PR\'s old overview when anyone restarts it', () => {
+    const url = 'u-overview-restart'
+    handlers['screenprs:overview-result']!({ url, headSha: 'old', text: 'old text', facts: { draft: false, changeset: 'no' } })
+    handlers['screenprs:overview-status']!({ url, status: 'done' })
+
+    handlers['screenprs:overview-status']!({ url, status: 'running', headSha: 'new' })
+
+    expect(screenPrsStore.overviewFor(url)).toMatchObject({ status: 'running', text: undefined, facts: undefined, headSha: 'new' })
+  })
+
   it('settles what it saw running as interrupted when main has no record of it', async () => {
     await screenPrsStore.startDeep(ctx({ number: 6, url: 'u6' }))
     answer({ 'screenprs:state': state() })

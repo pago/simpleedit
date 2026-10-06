@@ -15,7 +15,10 @@ const answers = vi.hoisted(() => ({ items: [] as string[], seen: [] as { output?
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' } }))
 vi.mock('../screenprs-cache', () => cache)
 vi.mock('../screenprs', () => ({ reviewDiffFor }))
-vi.mock('../github/gh', () => ({ currentHandle: async () => 'pago' }))
+vi.mock('../github/gh', () => ({
+  currentHandle: async () => 'pago',
+  withGhSignal: (_signal: AbortSignal, fn: () => Promise<unknown>) => fn(),
+}))
 vi.mock('../prompts/overrides', () => ({ resolveInstructions: () => ({ text: 'instructions' }), instructionsHash: (t: string) => t }))
 vi.mock('../models/config', () => ({ getModelConfig: () => ({ defaults: {} }) }))
 vi.mock('../github/pr-overview-context', async (orig) => ({
@@ -67,7 +70,7 @@ describe('startOverview', () => {
     const { sent, wc } = client()
     await startOverview(PR, wc)
     expect(sent).toEqual([
-      ['screenprs:overview-status', { url: PR.url, status: 'running', error: undefined }],
+      ['screenprs:overview-status', { url: PR.url, status: 'running', error: undefined, headSha: 'sha1' }],
       ['screenprs:overview-result', { url: PR.url, headSha: 'sha1', text: 'cached', facts: { draft: false, changeset: 'no' } }],
       ['screenprs:overview-status', { url: PR.url, status: 'done', error: undefined }],
     ])
@@ -117,11 +120,32 @@ describe('startOverview', () => {
     await expect(first).resolves.toEqual({ joined: false })
 
     expect(sent).toEqual([
-      ['screenprs:overview-status', { url: PR.url, status: 'running', error: undefined }],
+      ['screenprs:overview-status', { url: PR.url, status: 'running', error: undefined, headSha: 'sha1' }],
       ['screenprs:overview-status', { url: PR.url, status: 'idle' }],
     ])
     expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'idle' })
     expect(answers.seen).toEqual([])
+  })
+
+  it('replaces a running overview when the head moved', async () => {
+    const releases: (() => void)[] = []
+    const full = gather.getMockImplementation()!
+    gather.mockImplementation((pr: PrContext) => new Promise((resolve) => releases.push(() => resolve(full(pr)))))
+    answers.items = ['x']
+    const { sent, wc } = client()
+    const old = startOverview({ ...PR, headSha: 'old' }, wc)
+    const fresh = startOverview({ ...PR, headSha: 'new' }, wc)
+    await vi.waitFor(() => expect(releases).toHaveLength(2))
+    for (const release of releases) release()
+    await Promise.all([old, fresh])
+
+    expect(sent.filter(([c]) => c === 'screenprs:overview-status').map(([, d]) => (d as { status: string; headSha?: string }))).toEqual([
+      { url: PR.url, status: 'running', error: undefined, headSha: 'old' },
+      { url: PR.url, status: 'idle' },
+      { url: PR.url, status: 'running', error: undefined, headSha: 'new' },
+      { url: PR.url, status: 'done', error: undefined },
+    ])
+    expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'done', headSha: 'new', text: 'x' })
   })
 
   it('keeps each finished overview for a client that missed it', async () => {
