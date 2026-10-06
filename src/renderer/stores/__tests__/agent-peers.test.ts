@@ -45,8 +45,24 @@ beforeEach(async () => {
 })
 
 describe('agent-bus peer snapshot', () => {
+  // A reloaded renderer's list is empty until hydration fills it; pushing that
+  // would tell main every session is gone and drop their mail.
+  it('pushes nothing before the window has restored its sessions', async () => {
+    const off = initSessionListeners()
+    try {
+      await flush()
+      expect(lastSyncedPeers()).toBeUndefined()
+      sessionsStore.markHydrated()
+      await flush()
+      expect(lastSyncedPeers()).toEqual([])
+    } finally {
+      off()
+    }
+  })
+
   it('exposes both providers as addressable peers', async () => {
     const off = initSessionListeners()
+    sessionsStore.markHydrated()
     try {
       const claude = sessionsStore.createClaude(ROOT, MAIN_WT)
       const codex = sessionsStore.createCodex(ROOT, MAIN_WT)
@@ -65,6 +81,7 @@ describe('agent-bus peer snapshot', () => {
 
   it('excludes plain terminals — there is no agent behind them', async () => {
     const off = initSessionListeners()
+    sessionsStore.markHydrated()
     try {
       const term = sessionsStore.createTerminal(MAIN_WT)
       await flush()
@@ -76,6 +93,7 @@ describe('agent-bus peer snapshot', () => {
 
   it('excludes a session with no live process, so mail cannot queue undeliverably', async () => {
     const off = initSessionListeners()
+    sessionsStore.markHydrated()
     try {
       const dead = sessionsStore.createCodex(ROOT, MAIN_WT)
       sessionsStore.update(dead, { exited: { exitCode: 1 } })

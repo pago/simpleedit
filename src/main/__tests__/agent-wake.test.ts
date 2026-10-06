@@ -137,7 +137,7 @@ describe('agent-wake', () => {
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
     vi.advanceTimersByTime(10 * 60_000)
     expect(writes).toHaveLength(1)
-    expect(wakeOutlook('claude-b')).toBe('busy')
+    expect(wakeOutlook('claude-b')).toBe('notified')
   })
 
   // Claude turns a prompt idle for ~60s into `waiting` via the Notification
@@ -217,13 +217,25 @@ describe('agent-wake', () => {
     expect(writes).toHaveLength(1)
   })
 
-  it("leaves a Claude session's mail to the Stop block until it has sent an idle prompt", () => {
+  // A user active within a minute of each turn end would keep Claude's idle
+  // prompt from ever coming, so a Claude Stop never leaves mail for a wake.
+  it("never defers a Claude session's mail from its Stop to a wake", () => {
+    idleAtPrompt('claude-b')
     noteStatus('claude-b', 'running', true)
     send()
     expect(canWake('claude-b')).toBe(false)
-    idleAtPrompt('claude-b')
-    noteStatus('claude-b', 'running', true)
+
+    syncPeers([peer('claude-a', 'alpha'), { ...peer('claude-b', 'beta'), provider: 'codex' }])
     expect(canWake('claude-b')).toBe(true)
+  })
+
+  it('ignores an idle-prompt reminder that arrives once a turn has started', () => {
+    noteStatus('claude-b', 'running', true)
+    noteNotification('claude-b', 'idle_prompt', null)
+    send()
+    vi.advanceTimersByTime(WAKE_SETTLE_MS * 4)
+    expect(writes).toHaveLength(0)
+    expect(wakeOutlook('claude-b')).toBe('busy')
   })
 
   it('needs a fresh idle-prompt confirmation after every turn', () => {

@@ -70,6 +70,7 @@
     if (saved) {
       hydrateSession(saved)
     }
+    sessionsStore.markHydrated()
     // Defer enabling auto-save by one tick so initial hydration writes don't
     // round-trip back to disk before the user has done anything.
     queueMicrotask(() => { sessionReady = true })

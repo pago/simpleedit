@@ -1160,9 +1160,11 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
       registerSession('sess-b', 'claude-b')
     })
 
-    it('leaves mail for the wake instead of a Stop block, and check_inbox hands it over', async () => {
-      noteStatus('claude-b', 'idle', true)
-      noteNotification('claude-b', 'idle_prompt', null)
+    it('leaves a Codex session\'s mail for the wake instead of a Stop block, and check_inbox hands it over', async () => {
+      syncPeers([
+        { terminalId: 'claude-a', label: 'alpha', provider: 'claude', worktreePath: '/repo/a', status: 'idle' },
+        { terminalId: 'claude-b', label: 'beta', provider: 'codex', worktreePath: '/repo/b', status: 'idle' },
+      ])
       noteStatus('claude-b', 'running', true)
       await callTool('send_message', { to: 'beta', text: 'please rebase' }, 'claude-a')
 
@@ -1170,8 +1172,6 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
       expect(stop['decision']).toBeUndefined()
 
       noteStatus('claude-b', 'idle', true)
-      expect(writes).toHaveLength(0)
-      noteNotification('claude-b', 'idle_prompt', null)
       await vi.waitFor(() => expect(writes).toHaveLength(1), { timeout: 3000 })
       expect(writes[0].id).toBe('claude-b')
       expect(writes[0].data).toContain('check_inbox')
@@ -1179,6 +1179,19 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
       const { body } = await callTool('check_inbox', {}, 'claude-b')
       expect(body['count']).toBe(1)
       expect(wc.send).toHaveBeenCalledWith('agent-message:delivered', expect.objectContaining({ terminalId: 'claude-b' }))
+    })
+
+    // Starvation guard: Claude's idle prompt needs a minute without
+    // interaction, so its Stop must deliver whatever is queued.
+    it('always delivers a Claude session\'s queued mail at its Stop, even after it has confirmed idle before', async () => {
+      noteStatus('claude-b', 'idle', true)
+      noteNotification('claude-b', 'idle_prompt', null)
+      noteStatus('claude-b', 'running', true)
+      await callTool('send_message', { to: 'beta', text: 'please rebase' }, 'claude-a')
+
+      const stop = await postHook({ session_id: 'sess-b', cwd: '/repo/b', hook_event_name: 'Stop', stop_hook_active: false })
+      expect(stop['decision']).toBe('block')
+      expect(String(stop['reason'])).toContain('please rebase')
     })
 
     it('still delivers through the Stop block when the user has typed into the prompt', async () => {

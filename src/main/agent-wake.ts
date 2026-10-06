@@ -43,11 +43,10 @@ interface Track {
    */
   idleConfirmed: boolean
   /**
-   * This session has sent an idle-prompt Notification at least once, so one
-   * can be relied on to come. Until then its `Stop` delivers by block: a
-   * CLI that never sends one would otherwise leave mail queued for good.
+   * A notice was submitted and no turn has started since. If the TUI swallowed
+   * it, nothing will change until the user acts, so it is not retried.
    */
-  idlePromptSeen: boolean
+  noticeSent: boolean
   /** Stop hooks being answered. A wake waits for them: the hook may still deliver by block. */
   stopsInFlight: number
   timer?: ReturnType<typeof setTimeout>
@@ -59,7 +58,7 @@ let write: (terminalId: string, data: string) => void = () => {}
 function track(terminalId: string): Track {
   let t = tracks.get(terminalId)
   if (!t) {
-    t = { precise: false, inputPending: false, blocked: false, idleConfirmed: false, idlePromptSeen: false, stopsInFlight: 0 }
+    t = { precise: false, inputPending: false, blocked: false, idleConfirmed: false, noticeSent: false, stopsInFlight: 0 }
     tracks.set(terminalId, t)
   }
   return t
@@ -88,6 +87,7 @@ export function noteStatus(terminalId: string, status: AgentStatus, precise: boo
     t.inputPending = false
     t.blocked = false
     t.idleConfirmed = false
+    t.noticeSent = false
   }
   if (status === 'waiting') {
     t.blocked = true
@@ -112,9 +112,10 @@ export function noteNotification(terminalId: string, notificationType: string | 
     t.blocked = true
     return
   }
+  // A reminder that raced the start of a turn is stale.
+  if (t.status === 'running') return
   t.blocked = false
   t.idleConfirmed = true
-  t.idlePromptSeen = true
   t.status = 'idle'
   requestWake(terminalId)
 }
@@ -142,6 +143,7 @@ function wakeable(terminalId: string, t: Track | undefined): t is Track {
     t?.status === 'idle' &&
     !t.inputPending &&
     !t.blocked &&
+    !t.noticeSent &&
     t.stopsInFlight === 0 &&
     (t.idleConfirmed || !needsIdleConfirmation(terminalId))
   )
@@ -150,7 +152,10 @@ function wakeable(terminalId: string, t: Track | undefined): t is Track {
 /**
  * Whether queued mail for this session will be picked up by a wake, so the
  * `Stop` hook needn't deliver it as a block. Requires a known status: without
- * one, idle can't be detected and the mail would never move.
+ * one, idle can't be detected and the mail would never move. Never for
+ * Claude: its idle prompt comes only after a minute without interaction, so a
+ * user active in that session would starve the mail. Its Stop always delivers,
+ * and the wake serves only mail that arrives after that Stop.
  */
 export function canWake(terminalId: string): boolean {
   const t = tracks.get(terminalId)
@@ -159,16 +164,17 @@ export function canWake(terminalId: string): boolean {
     t?.status !== undefined &&
     !t.inputPending &&
     !t.blocked &&
-    (t.idlePromptSeen || !needsIdleConfirmation(terminalId)) &&
+    !needsIdleConfirmation(terminalId) &&
     hasWakeable(terminalId)
   )
 }
 
 /** What will happen to mail queued for this session now, for tool results. */
-export function wakeOutlook(terminalId: string): 'waking' | 'confirming' | 'busy' | 'typing' | 'blocked' | 'unknown' {
+export function wakeOutlook(terminalId: string): 'waking' | 'confirming' | 'notified' | 'busy' | 'typing' | 'blocked' | 'unknown' {
   const t = tracks.get(terminalId)
   if (!t?.status || !getPeer(terminalId)?.provider) return 'unknown'
   if (t.blocked) return 'blocked'
+  if (t.noticeSent) return 'notified'
   if (t.inputPending) return 'typing'
   if (t.status !== 'idle') return 'busy'
   return t.idleConfirmed || !needsIdleConfirmation(terminalId) ? 'waking' : 'confirming'
@@ -184,6 +190,7 @@ export function beginStop(terminalId: string): void {
   t.stopsInFlight += 1
   t.blocked = false
   t.idleConfirmed = false
+  t.noticeSent = false
 }
 
 export function endStop(terminalId: string): void {
@@ -213,10 +220,10 @@ function fire(terminalId: string): void {
   if (!wakeable(terminalId, t) || !getPeer(terminalId)?.provider) return
   const messages = takeWakeable(terminalId)
   if (messages.length === 0) return
-  // Our own submit starts a turn; don't wake again until the next idle edge.
-  // A notice the TUI swallowed is not retried: the mail stays queued, reported
-  // as `notified`, until the session's next turn ends.
-  t.status = 'running'
+  // Our own submit should start a turn. Until one starts, don't wake again: a
+  // notice the TUI swallowed is not retried, and the mail stays queued until
+  // the session's next turn ends.
+  t.noticeSent = true
   t.idleConfirmed = false
   console.log(`[AgentWake] Waking ${terminalId} for ${messages.map((m) => m.id).join(', ')}`)
   write(terminalId, agentSubmitWrite(formatWakeNotice(messages)))

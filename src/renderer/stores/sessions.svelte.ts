@@ -168,6 +168,12 @@ let _groups = $state<SessionGroup[]>([])
 let _pendingFocusId = $state<string | null>(null)
 /** Sessions whose workspace has been mounted — kept alive across switches. */
 let _visitedIds = $state<string[]>([])
+/**
+ * The window's sessions have been restored. Until then the list is empty only
+ * because it hasn't been filled, and pushing it to the messaging bus would
+ * read as "every session is gone" and drop their mail.
+ */
+let _hydrated = $state(false)
 
 let nextAgentsIndex = 1
 let nextTerminalIndex = 1
@@ -877,6 +883,11 @@ export const sessionsStore = {
     return id
   },
 
+  /** The repo's saved sessions are restored (or there were none). */
+  markHydrated(): void {
+    _hydrated = true
+  },
+
   /** Seed group definitions from a restored blob (before sessions are added). */
   restoreGroups(groups: SessionGroup[]): void {
     _groups = groups.map((g) => ({ ...g }))
@@ -893,6 +904,7 @@ export const sessionsStore = {
 
   /** Reset everything (switching repos). */
   reset(): void {
+    _hydrated = false
     _sessions = []
     _activeId = null
     _groups = []
@@ -1254,6 +1266,7 @@ export function initSessionListeners(): () => void {
   // of them changes. $effect.root because this runs outside a component.
   const stopPeerSync = $effect.root(() => {
     $effect(() => {
+      if (!_hydrated) return
       void window.api.invoke('agent-bus:sync', peerSnapshot())
     })
     // The same push, for the wider list a second client renders. Main drops it
