@@ -144,26 +144,54 @@ Sessions can message each other: `list_sessions`, `send_message` (optionally
 blocking on the answer), `reply`, `check_inbox`. `spawn_session` returns the new
 session's id, so an agent can delegate and then collect.
 
-**No new transport.** The bridge already had both directions and they were simply
-never connected: an agent SENDS via `/tool-call`, and RECEIVES through the
-**response body of its own `Stop` hook**. When a session's turn ends with mail
-queued, `handleHook` answers `{decision:'block', reason:<mail>}` — which both
-Claude Code and Codex honour by continuing the turn with that text as input.
+**No new transport.** An agent SENDS via `/tool-call` and normally RECEIVES by
+calling `check_inbox`. Two things get it to call that:
+- **Idle wake (`agent-wake.ts`).** A session idle at its prompt fires no hooks,
+  so when it has mail main submits a one-line `[SimpleEdit] … call check_inbox`
+  notice into its PTY (`agentSubmitWrite`: bracketed paste + CR). It waits for
+  the idle edge (`agent:status`, via `onAgentStatus`) plus `WAKE_SETTLE_MS`,
+  and re-checks before writing; a `Stop` hook still being answered holds it
+  (`beginStop`/`endStop`), since that hook may yet deliver by block. The
+  notice carries no mail, so delivery stays a tool result. Each message
+  justifies at most two notices; after that the `Stop` block delivers it.
+- **`Stop` block, the fallback.** When a turn ends with mail queued and the
+  session can't be woken, `handleTurnEnd` answers `{decision:'block',
+  reason:<mail>}`, which both CLIs honour by continuing the turn. Claude Code
+  renders this as a Stop-hook "blocking error", which is why it's no longer
+  the default.
 
 Consequences worth knowing before touching this:
-- **Delivery is at turn boundaries only**, deliberately. Nothing writes to the
-  PTY, so nothing races the live TUI.
+- **The user's prompt wins.** `pty:write` feeds `noteUserInput`: printable text
+  (escape sequences stripped, since xterm answers focus/colour/DA queries on
+  the same channel) marks the prompt dirty, and CR / Ctrl-C / Ctrl-U clear it.
+  A CR inside a bracketed paste, Meta-Enter and backslash-Enter only add a
+  line, so they keep it dirty.
+  A dirty prompt is never woken (the paste would merge into the user's text);
+  its mail rides the `Stop` block instead.
+- **No status, no wake.** `canWake` needs a reported status. Without one, idle
+  can't be detected, so the `Stop` block delivers.
 - **`stop_hook_active` must gate delivery.** That flag means the stop already
   belongs to a turn a hook continued; blocking again re-blocks the same turn and
   the agent never reaches idle (Claude hard-caps this at 8 blocks, then overrides).
+  Mail left by such a stop is picked up by the wake.
+- **`SubagentStop` is ignored.** A block there would hand the mail to the
+  sub-agent, and its text is not the session's answer.
 - **The reply channel is `last_assistant_message`** on the following `Stop`, so a
-  peer answers *without calling any tool*. That is what removes the copy-paste.
-  Only messages sent with `wait_for_reply` capture one — otherwise an unrelated
-  "fyi" would relay the peer's next turn as a bogus answer.
+  peer answers *without calling any tool*. Only messages sent with
+  `wait_for_reply` capture one, armed when the mail is handed over (`drain` /
+  `commitDelivery`). A reply nobody is blocked on is queued and wakes its
+  recipient like any other mail.
+- **Each message has a state** (`queued` → `notified` → `delivered`).
+  `send_message`, `list_sessions` and the `wait_for_reply` timeout report it, so
+  a sender can tell "recipient idle, being prompted" from "read, no answer yet".
+  Every hand-over is logged as `[AgentBus] Delivered … via …`.
+- **`spawn_session` appends the spawner's session id to the brief**, except for
+  `target: 'replace'`, so a worker can report back without polling.
 - **The renderer owns the peer list** (labels, provider, status), so it pushes
   snapshots via `agent-bus:sync`; main cannot derive them.
 - Exchanges are bounded: hop budget, per-sender rate limit, message size cap.
-  `agent-message:sent` / `:delivered` are emitted for UI surfacing.
+  `agent-message:sent` / `:delivered` drive the sidebar's unread-mail badge
+  (`stores/agent-mail.svelte.ts`).
 
 ### Screen PRs prompt overrides (`src/main/prompts/`)
 Triage, each deep-review lens and the synthesis step build their prompt as
@@ -385,6 +413,7 @@ src/
     claude-paths.ts    ← Claude project/JSONL path helpers
     cwd-tracker.ts     ← Parses hook bodies → session cwd / repo-touch trail
     agent-bus.ts       ← Agent-to-agent messaging: peers, mailboxes, replies
+    agent-wake.ts      ← Prompts an idle session with mail to call check_inbox
     mcp-bridge.ts      ← Per-window HTTP bridge: MCP tool-calls + hook endpoint
     mcp-server/
       index.mjs        ← Stdio MCP server ("simpleedit" tools) → posts to bridge

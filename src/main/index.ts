@@ -89,6 +89,7 @@ import { initAutoUpdater } from './auto-update'
 import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { syncPeers, resolveSpawn } from './agent-bus'
+import { initAgentWake, noteUserInput } from './agent-wake'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { createSessionOnce, resolveSessionCreate, type ModelCatalog } from './session-create'
 import { getProvider, registeredProviderIds } from './agents/provider'
@@ -400,6 +401,7 @@ configurePush({
 // wiring, so it is on before any window exists — a session can block while
 // the settings pane has never been opened.
 onAgentStatus((event, client) => handleAgentStatus(event, client.id))
+initAgentWake(writeToTerminal)
 
 /**
  * Serialised. Two `remote:set-*` calls landing together would otherwise each
@@ -755,6 +757,7 @@ function registerAllHandlers(): void {
   })
 
   handleInvoke('pty:write', (_event, id: string, data: string) => {
+    noteUserInput(id, data)
     writeToTerminal(id, data)
   })
 

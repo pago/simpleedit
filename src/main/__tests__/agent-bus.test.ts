@@ -7,6 +7,7 @@ import {
   enqueue,
   formatForDelivery,
   listPeers,
+  messageState,
   pendingCount,
   resetBus,
   resolvePeer,
@@ -156,6 +157,35 @@ describe('agent-bus — replies', () => {
     // The waiter consumed it; queueing as well would show the sender the same
     // answer a second time on its next turn.
     expect(pendingCount('claude-a')).toBe(0)
+  })
+
+  it('hands an explicit reply to a blocked sender without also queueing it', async () => {
+    const sent = enqueue({ from: 'claude-a', to: 'beta', text: 'q', expectsReply: true })
+    const id = (sent as { message: { id: string } }).message.id
+    drain('claude-b')
+
+    const waiting = waitForReply(id, 5000)
+    const replied = enqueue({ from: 'claude-b', to: 'alpha', text: 'a', replyTo: id })
+    expect((await waiting)?.text).toBe('a')
+    expect(pendingCount('claude-a')).toBe(0)
+    expect(messageState((replied as { message: { id: string } }).message.id)).toBe('delivered')
+  })
+
+  it('does not relay the next turn as a second answer after an explicit reply', () => {
+    const sent = enqueue({ from: 'claude-a', to: 'beta', text: 'q', expectsReply: true })
+    const id = (sent as { message: { id: string } }).message.id
+    drain('claude-b')
+    enqueue({ from: 'claude-b', to: 'alpha', text: 'a', replyTo: id })
+    expect(captureImplicitReplies('claude-b', 'unrelated later turn')).toHaveLength(0)
+    expect(pendingCount('claude-a')).toBe(1)
+  })
+
+  it('tracks a message from queued to delivered', () => {
+    const sent = enqueue({ from: 'claude-a', to: 'beta', text: 'q' })
+    const id = (sent as { message: { id: string } }).message.id
+    expect(messageState(id)).toBe('queued')
+    drain('claude-b')
+    expect(messageState(id)).toBe('delivered')
   })
 
   it('resolves a waiter with null on timeout rather than hanging', async () => {

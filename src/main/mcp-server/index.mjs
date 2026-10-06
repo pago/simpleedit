@@ -500,7 +500,7 @@ server.registerTool(
     if (!id) return okResult(result.data?.note ?? 'New session started in SimpleEdit.')
     return okResult(
       `New session started: session_id "${id}" (label "${result.data.label}"). ` +
-        `You can now message it with send_message(to: "${id}", …).`,
+        `You can now message it with send_message(to: "${id}", …). Its brief carries your session id, so it can message you back.`,
     )
   },
 )
@@ -517,8 +517,9 @@ server.registerTool(
       '',
       'Use this before send_message when you do not already have a session id — e.g. the user says',
       '"ask the other agent", "check with the session working on the parser", or you want to know',
-      'who is available. A session that is `running` can still be messaged: delivery happens when',
-      'its current turn ends.',
+      'who is available. Any session can be messaged: an idle one is prompted to read its inbox, a',
+      '`running` one gets the message when its current turn ends. `mail`, when present, says what',
+      'is holding up its unread messages.',
     ].join('\n'),
     inputSchema: {},
   },
@@ -539,7 +540,8 @@ server.registerTool(
     description: [
       'Send a message to ANOTHER agent session in SimpleEdit and optionally wait for its answer.',
       'This is real agent-to-agent communication: the recipient may be Claude Code or Codex, in a',
-      'different worktree, and it receives your message as input when its current turn ends.',
+      'different worktree. An idle recipient is prompted to read its inbox right away; a busy one',
+      'receives your message when its current turn ends. The result says which applies.',
       '',
       'Reach for this when you want a peer to do or answer something: "ask the other session whether',
       'the migration landed", "tell the reviewer session to look at PR 42", "get the Codex session\'s',
@@ -549,7 +551,7 @@ server.registerTool(
       'The recipient pays for every byte in its own context and can read files itself. Reference',
       `paths, PR numbers, commit SHAs, doc names. Messages over ${8000} characters are rejected.`,
       '',
-      'With `wait_for_reply: true` this call BLOCKS until the peer answers (it is mid-turn, so this',
+      'With `wait_for_reply: true` this call BLOCKS until the peer answers (if it is mid-turn, this',
       'can take minutes) and returns the reply as your tool result. Without it, the call returns',
       'immediately and any reply arrives on a later turn. If the wait times out, the reply is not',
       'lost — it will be delivered to you later, so do NOT resend.',
@@ -581,13 +583,9 @@ server.registerTool(
       return okResult(`Reply from "${data.reply.from_label}" (${data.reply.from}):\n\n${data.reply.text}`)
     }
     if (data.timed_out) {
-      return okResult(
-        `Message ${data.message_id} delivered to ${data.delivered_to}, but no reply yet. ${data.note} Continue with other work.`,
-      )
+      return okResult(`Message ${data.message_id} to ${data.delivered_to}: ${data.note} Continue with other work.`)
     }
-    return okResult(
-      `Message ${data.message_id} queued for ${data.delivered_to}. It is delivered when that session's current turn ends.`,
-    )
+    return okResult(`Message ${data.message_id} sent to ${data.delivered_to}. ${data.note ?? ''}`.trim())
   },
 )
 
@@ -620,9 +618,9 @@ server.registerTool(
   {
     description: [
       'Read messages other agent sessions have sent you, and clear them from your inbox.',
-      'You normally do not need this: queued messages are delivered to you automatically when your',
-      'turn ends. Use it to check explicitly mid-turn — e.g. before a long task, or when the user',
-      'asks whether another session has replied yet.',
+      'When you are idle and mail arrives, SimpleEdit submits a "[SimpleEdit] You have … call',
+      'check_inbox" prompt: call this tool then. You can also check explicitly mid-turn — e.g.',
+      'before a long task, or when the user asks whether another session has replied yet.',
     ].join('\n'),
     inputSchema: {},
   },

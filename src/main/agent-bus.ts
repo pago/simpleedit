@@ -6,12 +6,12 @@
  * own `Stop` hook (`/hooks`). Both halves already existed — this module is the
  * mailbox in between.
  *
- * Delivery happens at turn boundaries only. When a session's `Stop` hook fires
- * and it has mail, the bridge answers `{decision:'block', reason:<mail>}`, which
- * both Claude Code and Codex honour by continuing the turn with that text as
- * input. That is why there is no PTY writing here: injecting keystrokes into a
- * live TUI races with the agent's own rendering, whereas the hook response is
- * consumed at a point where the agent is definitionally waiting on us.
+ * Mail is normally read with `check_inbox`. A recipient sitting idle at its
+ * prompt is told to call it by a one-line notice submitted into its PTY
+ * (`agent-wake.ts`) — the idle prompt is the one moment PTY input doesn't race
+ * the TUI. The `Stop` hook's `{decision:'block', reason:<mail>}` is the
+ * fallback for a session that can't be woken that way (the user has unsent
+ * text in its prompt, or no status has been seen for it yet).
  *
  * The reply comes back the same way: the recipient's NEXT `Stop` carries
  * `last_assistant_message`, so a peer that never calls `reply` still answers
@@ -32,6 +32,12 @@ export interface Peer {
   status: AgentStatus | 'unknown'
 }
 
+/**
+ * `notified`: a wake notice was submitted, but the recipient hasn't read the
+ * mail yet. `delivered`: it was handed over (tool result or hook response).
+ */
+export type MessageState = 'queued' | 'notified' | 'delivered'
+
 export interface Message {
   id: string
   from: string
@@ -48,6 +54,9 @@ export interface Message {
   expectsReply: boolean
   /** Set when this message answers an earlier one. */
   replyTo?: string
+  state: MessageState
+  /** Wake notices sent for it, bounded so an agent that ignores them isn't nagged forever. */
+  wakes: number
 }
 
 export interface DeliveryRecord {
@@ -65,6 +74,7 @@ export interface DeliveryRecord {
  */
 export const MAX_MESSAGE_CHARS = 8000
 export const MAX_HOPS = 8
+const MAX_WAKES_PER_MESSAGE = 2
 /** Per-sender ceiling, mirroring the gen-UI panel's send_to_agent limiter. */
 const SEND_RATE_MAX = 20
 const SEND_RATE_WINDOW_MS = 60_000
@@ -75,8 +85,8 @@ const mailboxes = new Map<string, Message[]>()
 const awaitingImplicitReply = new Map<string, DeliveryRecord[]>()
 /** Senders blocked in `send_message(wait_for_reply)`, keyed by message id. */
 const waiters = new Map<string, (reply: Message | null) => void>()
-/** Routing table for `reply(to_message_id)`: message id → who sent it. */
-const sentIndex = new Map<string, { from: string; to: string; hops: number }>()
+/** Routing table for `reply(to_message_id)` (message id → who sent it), and each message's delivery state. */
+const sentIndex = new Map<string, { from: string; to: string; hops: number; state: MessageState }>()
 const sendTimestamps = new Map<string, number[]>()
 
 // -- Peer registry ---------------------------------------------
@@ -190,17 +200,39 @@ export function enqueue(req: EnqueueRequest): { message: Message } | { error: st
     hops,
     expectsReply: req.expectsReply === true,
     ...(req.replyTo ? { replyTo: req.replyTo } : {}),
+    state: 'queued',
+    wakes: 0,
+  }
+  sentIndex.set(message.id, { from: message.from, to: message.to, hops, state: 'queued' })
+
+  if (message.replyTo) {
+    // Answered explicitly, so this session's next turn text is not the answer.
+    const armed = awaitingImplicitReply.get(req.from)?.filter((r) => r.messageId !== message.replyTo)
+    if (armed?.length) awaitingImplicitReply.set(req.from, armed)
+    else awaitingImplicitReply.delete(req.from)
+  }
+
+  // A reply settles whoever was blocked on the message it answers, as that
+  // tool call's result — queueing it as well would show the answer twice.
+  if (message.replyTo && settleWaiter(message.replyTo, message)) {
+    setState(message, 'delivered')
+    return { message }
   }
 
   const box = mailboxes.get(target.terminalId) ?? []
   box.push(message)
   mailboxes.set(target.terminalId, box)
-  sentIndex.set(message.id, { from: message.from, to: message.to, hops })
-
-  // A reply settles whoever was blocked on the message it answers.
-  if (message.replyTo) settleWaiter(message.replyTo, message)
-
   return { message }
+}
+
+function setState(message: Message, state: MessageState): void {
+  message.state = state
+  const entry = sentIndex.get(message.id)
+  if (entry) entry.state = state
+}
+
+export function messageState(messageId: string): MessageState | null {
+  return sentIndex.get(messageId)?.state ?? null
 }
 
 // -- Delivery --------------------------------------------------
@@ -214,10 +246,23 @@ export function senderOf(messageId: string): string | null {
   return sentIndex.get(messageId)?.from ?? null
 }
 
+export function hasWakeable(terminalId: string): boolean {
+  return (mailboxes.get(terminalId) ?? []).some((m) => m.wakes < MAX_WAKES_PER_MESSAGE)
+}
+
 /**
- * Take everything queued for a session. Records which of those messages want a
- * reply so the session's *next* `Stop` can be read as the answer.
+ * Queued mail that may still justify a wake notice. Marks it `notified` and
+ * counts the wake, so the caller must actually send the notice.
  */
+export function takeWakeable(terminalId: string): Message[] {
+  const wakeable = (mailboxes.get(terminalId) ?? []).filter((m) => m.wakes < MAX_WAKES_PER_MESSAGE)
+  for (const m of wakeable) {
+    m.wakes += 1
+    setState(m, 'notified')
+  }
+  return wakeable
+}
+
 /**
  * A SNAPSHOT of what is queued, without consuming it.
  *
@@ -247,6 +292,7 @@ export function commitDelivery(terminalId: string, deliveredIds: ReadonlySet<str
   if (!box || box.length === 0) return []
 
   const delivered = box.filter((m) => deliveredIds.has(m.id))
+  for (const m of delivered) setState(m, 'delivered')
   const remaining = box.filter((m) => !deliveredIds.has(m.id))
   if (remaining.length > 0) mailboxes.set(terminalId, remaining)
   else mailboxes.delete(terminalId)
@@ -260,10 +306,15 @@ export function commitDelivery(terminalId: string, deliveredIds: ReadonlySet<str
   return delivered
 }
 
+/**
+ * Take everything queued for a session. Records which of those messages want a
+ * reply so the session's *next* `Stop` can be read as the answer.
+ */
 export function drain(terminalId: string): Message[] {
   const box = mailboxes.get(terminalId)
   if (!box || box.length === 0) return []
   mailboxes.delete(terminalId)
+  for (const m of box) setState(m, 'delivered')
 
   const wanting = box
     .filter((m) => m.expectsReply)
@@ -290,6 +341,17 @@ export function formatForDelivery(messages: Message[]): string {
     `You have ${messages.length} message${messages.length === 1 ? '' : 's'} from another agent session in SimpleEdit.`,
     ...parts,
   ].join('\n\n')
+}
+
+/**
+ * The prompt submitted to wake an idle recipient. It points at `check_inbox`
+ * instead of carrying the mail, so the text arrives as a tool result — which
+ * is also what arms the implicit-reply capture.
+ */
+export function formatWakeNotice(messages: Message[]): string {
+  const senders = [...new Set(messages.map((m) => `"${m.fromLabel}" (${m.from})`))].join(', ')
+  const what = messages.length === 1 ? '1 new message' : `${messages.length} new messages`
+  return `[SimpleEdit] You have ${what} from agent session ${senders}. Call the check_inbox tool to read ${messages.length === 1 ? 'it' : 'them'}.`
 }
 
 /**
@@ -321,13 +383,17 @@ export function captureImplicitReplies(terminalId: string, lastAssistantMessage:
       hops: rec.hops + 1,
       expectsReply: false,
       replyTo: rec.messageId,
+      state: 'queued',
+      wakes: 0,
     }
-    sentIndex.set(reply.id, { from: reply.from, to: reply.to, hops: reply.hops })
+    sentIndex.set(reply.id, { from: reply.from, to: reply.to, hops: reply.hops, state: 'queued' })
 
     // Deliver to the sender's mailbox only if nobody is actively waiting —
     // a settled waiter already returns the text as its tool result, and
     // queueing it too would show the same answer twice.
-    if (!settleWaiter(rec.messageId, reply)) {
+    if (settleWaiter(rec.messageId, reply)) {
+      setState(reply, 'delivered')
+    } else {
       const box = mailboxes.get(rec.from) ?? []
       box.push(reply)
       mailboxes.set(rec.from, box)
