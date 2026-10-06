@@ -6,7 +6,7 @@ import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeReso
 import { attachToTerminal, detachFromTerminal } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import { pendingCount, resetBus, resolveSpawn, syncPeers } from '../agent-bus'
-import { initAgentWake, noteStatus, noteUserInput, resetAgentWake } from '../agent-wake'
+import { initAgentWake, noteNotification, noteStatus, noteUserInput, resetAgentWake } from '../agent-wake'
 import { clearAgentStatusWatchers } from '../agent-status'
 import type { WorktreeInfo } from '../../shared/ipc-types'
 
@@ -1161,6 +1161,8 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
     })
 
     it('leaves mail for the wake instead of a Stop block, and check_inbox hands it over', async () => {
+      noteStatus('claude-b', 'idle', true)
+      noteNotification('claude-b', 'idle_prompt', null)
       noteStatus('claude-b', 'running', true)
       await callTool('send_message', { to: 'beta', text: 'please rebase' }, 'claude-a')
 
@@ -1168,6 +1170,8 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
       expect(stop['decision']).toBeUndefined()
 
       noteStatus('claude-b', 'idle', true)
+      expect(writes).toHaveLength(0)
+      noteNotification('claude-b', 'idle_prompt', null)
       await vi.waitFor(() => expect(writes).toHaveLength(1), { timeout: 3000 })
       expect(writes[0].id).toBe('claude-b')
       expect(writes[0].data).toContain('check_inbox')
@@ -1189,8 +1193,14 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
 
     it('tells the sender an idle recipient is being prompted, and a busy one is mid-turn', async () => {
       noteStatus('claude-b', 'idle', true)
+      noteNotification('claude-b', 'idle_prompt', null)
       const idle = await callTool('send_message', { to: 'beta', text: 'one' }, 'claude-a')
       expect(String(idle.body['note'])).toContain('prompting it to read its inbox')
+
+      noteStatus('claude-b', 'running', true)
+      noteStatus('claude-b', 'idle', true)
+      const unconfirmed = await callTool('send_message', { to: 'beta', text: 'between' }, 'claude-a')
+      expect(String(unconfirmed.body['note'])).toContain('queued')
 
       noteStatus('claude-b', 'running', true)
       const busy = await callTool('send_message', { to: 'beta', text: 'two' }, 'claude-a')
@@ -1234,6 +1244,7 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
 
     it('wakes an idle sender when a reply lands in its inbox', async () => {
       noteStatus('claude-a', 'idle', true)
+      noteNotification('claude-a', 'idle_prompt', null)
       const sent = await callTool('send_message', { to: 'beta', text: 'q' }, 'claude-a')
       await callTool('reply', { to_message_id: String(sent.body['message_id']), text: 'a' }, 'claude-b')
       await vi.waitFor(() => expect(writes.map((w) => w.id)).toContain('claude-a'), { timeout: 3000 })

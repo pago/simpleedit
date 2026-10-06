@@ -168,11 +168,19 @@ Consequences worth knowing before touching this:
     rewind picker, `/model` + Enter leaves a picker up. Only what xterm sends on
     its own (focus, DA, cursor and mode reports, OSC/DCS replies) is ignored.
     The next real `running` clears it.
-  - `waiting` blocks wakes until the turn moves on (`running` or a `Stop`),
-    except Claude's idle-prompt reminder: the `Notification` hook turns a
-    prompt idle for ~60 s into `waiting` and the title never changes after, so
-    `notification_type: idle_prompt` (or, lacking a type, its exact message)
-    counts as idle. Any other or unknown kind blocks.
+  - **A Claude session is woken only on its explicit idle-prompt signal**,
+    never on its title going idle: the title reads idle under a permission or
+    AskUserQuestion dialog too. Claude's `Notification` hook reports a prompt
+    left idle for ~60 s with `notification_type: idle_prompt` (older CLIs: the
+    exact message "Claude is waiting for your input"); only that sets
+    `idleConfirmed`, and every new turn or `Stop` clears it. So a Claude
+    session is woken up to a minute after its turn ends, and senders are told
+    `confirming`. Until a session has sent one idle prompt (`idlePromptSeen`),
+    its `Stop` still delivers by block, so a CLI that never sends one can't
+    strand mail. Codex (idle from its `Stop` hook) and OpenCode (its server's
+    `session.status`) report idle explicitly, so idle alone suffices for them.
+  - `waiting` of any other kind (permission, question, unknown) blocks wakes
+    until the turn moves on (`running` or a `Stop`).
   - A notice the TUI swallowed is not retried; the mail stays `notified` until
     the next turn ends.
   - Everything in the notice is stripped of control characters
