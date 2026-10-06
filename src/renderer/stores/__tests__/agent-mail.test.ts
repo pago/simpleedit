@@ -3,9 +3,11 @@ import { initAgentMailListeners, queuedMailCount } from '../agent-mail.svelte'
 
 let handlers: Record<string, (d: unknown) => void>
 let dispose: () => void
+let seed: Record<string, string[]>
 
 beforeEach(() => {
   handlers = {}
+  seed = {}
   vi.stubGlobal('api', {
     on: (channel: string, cb: (d: unknown) => void) => {
       handlers[channel] = cb
@@ -14,7 +16,7 @@ beforeEach(() => {
       }
     },
     once: vi.fn(),
-    invoke: vi.fn(),
+    invoke: vi.fn(async () => seed),
   })
   dispose = initAgentMailListeners()
 })
@@ -42,6 +44,20 @@ describe('agent-mail store', () => {
     expect(queuedMailCount('b')).toBe(1)
     handlers['agent-message:delivered']?.({ terminalId: 'b', messageIds: ['m2'] })
     expect(queuedMailCount('b')).toBe(0)
+  })
+
+  it('clears mail that was dropped', () => {
+    sent('m1', 'b')
+    handlers['agent-message:dropped']?.({ terminalId: 'b', messageIds: ['m1'] })
+    expect(queuedMailCount('b')).toBe(0)
+  })
+
+  it("rebuilds from main's unread mail after a reload", async () => {
+    dispose()
+    seed = { c: ['m9'] }
+    dispose = initAgentMailListeners()
+    sent('m10', 'c')
+    await vi.waitFor(() => expect(queuedMailCount('c')).toBe(2))
   })
 
   it('drops a session that exits', () => {

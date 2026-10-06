@@ -161,13 +161,23 @@ calling `check_inbox`. Two things get it to call that:
   the default.
 
 Consequences worth knowing before touching this:
-- **The user's prompt wins.** `pty:write` feeds `noteUserInput`: printable text
-  (escape sequences stripped, since xterm answers focus/colour/DA queries on
-  the same channel) marks the prompt dirty, and CR / Ctrl-C / Ctrl-U clear it.
-  A CR inside a bracketed paste, Meta-Enter and backslash-Enter only add a
-  line, so they keep it dirty.
-  A dirty prompt is never woken (the paste would merge into the user's text);
-  its mail rides the `Stop` block instead.
+- **When in doubt, don't wake.** Queued mail reported honestly is always
+  safe; an Enter typed into the wrong UI is not.
+  - `pty:write` feeds `noteUserInput`. **Any** key since the last turn started
+    rules a wake out, not just text: Up recalls history, Esc-Esc opens the
+    rewind picker, `/model` + Enter leaves a picker up. Only what xterm sends on
+    its own (focus, DA, cursor and mode reports, OSC/DCS replies) is ignored.
+    The next real `running` clears it.
+  - `waiting` blocks wakes until the turn moves on (`running` or a `Stop`),
+    except Claude's idle-prompt reminder: the `Notification` hook turns a
+    prompt idle for ~60 s into `waiting` and the title never changes after, so
+    `notification_type: idle_prompt` (or, lacking a type, its exact message)
+    counts as idle. Any other or unknown kind blocks.
+  - A notice the TUI swallowed is not retried; the mail stays `notified` until
+    the next turn ends.
+  - Everything in the notice is stripped of control characters
+    (`sanitizeLabel`; labels come from agents via `spawn_session`), and
+    `agentSubmitWrite` strips paste markers until none are left.
 - **No status, no wake.** `canWake` needs a reported status. Without one, idle
   can't be detected, so the `Stop` block delivers.
 - **`stop_hook_active` must gate delivery.** That flag means the stop already
@@ -181,17 +191,26 @@ Consequences worth knowing before touching this:
   `wait_for_reply` capture one, armed when the mail is handed over (`drain` /
   `commitDelivery`). A reply nobody is blocked on is queued and wakes its
   recipient like any other mail.
-- **Each message has a state** (`queued` → `notified` → `delivered`).
+- **Each message has a state** (`queued` → `notified` → `delivered`, or
+  `dropped` when its recipient goes away unread — logged, its waiter released,
+  `agent-message:dropped` broadcast).
   `send_message`, `list_sessions` and the `wait_for_reply` timeout report it, so
   a sender can tell "recipient idle, being prompted" from "read, no answer yet".
   Every hand-over is logged as `[AgentBus] Delivered … via …`.
 - **`spawn_session` appends the spawner's session id to the brief**, except for
   `target: 'replace'`, so a worker can report back without polling.
 - **The renderer owns the peer list** (labels, provider, status), so it pushes
-  snapshots via `agent-bus:sync`; main cannot derive them.
+  snapshots via `agent-bus:sync`; main cannot derive them. Each peer belongs
+  to the window that listed it: a window's sync only forgets its own, and a
+  closed window's peers go with it (`forgetWindow`).
+- **Hops carry across `send_message` too.** A fresh message continues the hop
+  count of the mail that started the sender's turn (`chainHops`), so two agents
+  answering each other without `reply` still stop at `MAX_HOPS`. A turn the
+  user starts resets it.
 - Exchanges are bounded: hop budget, per-sender rate limit, message size cap.
-  `agent-message:sent` / `:delivered` drive the sidebar's unread-mail badge
-  (`stores/agent-mail.svelte.ts`).
+  `agent-message:sent` / `:delivered` / `:dropped` drive the sidebar's
+  unread-mail badge (`stores/agent-mail.svelte.ts`), seeded from
+  `agent-bus:queued` on load.
 
 ### Screen PRs prompt overrides (`src/main/prompts/`)
 Triage, each deep-review lens and the synthesis step build their prompt as

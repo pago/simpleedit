@@ -35,8 +35,9 @@ export interface Peer {
 /**
  * `notified`: a wake notice was submitted, but the recipient hasn't read the
  * mail yet. `delivered`: it was handed over (tool result or hook response).
+ * `dropped`: the recipient session went away with it unread.
  */
-export type MessageState = 'queued' | 'notified' | 'delivered'
+export type MessageState = 'queued' | 'notified' | 'delivered' | 'dropped'
 
 export interface Message {
   id: string
@@ -88,6 +89,15 @@ const waiters = new Map<string, (reply: Message | null) => void>()
 /** Routing table for `reply(to_message_id)` (message id → who sent it), and each message's delivery state. */
 const sentIndex = new Map<string, { from: string; to: string; hops: number; state: MessageState }>()
 const sendTimestamps = new Map<string, number[]>()
+/** Which window's renderer listed each peer. Only that window's sync may forget it. */
+const peerOwners = new Map<string, number>()
+/**
+ * Hops of the mail a session last received. A fresh `send_message` from a
+ * turn that mail started continues that chain, so two agents answering each
+ * other without `reply` still hit MAX_HOPS. A turn the user starts resets it.
+ */
+const chainHops = new Map<string, number>()
+let dropListener: (terminalId: string, messageIds: string[]) => void = () => {}
 
 // -- Peer registry ---------------------------------------------
 
@@ -95,17 +105,44 @@ const sendTimestamps = new Map<string, number[]>()
  * Replace the peer set for a window. The renderer owns labels, provider and
  * status, so it pushes the whole list rather than main trying to derive it.
  */
-export function syncPeers(incoming: Peer[]): void {
+export function syncPeers(incoming: Peer[], owner = 0): void {
   const seen = new Set<string>()
   for (const p of incoming) {
     seen.add(p.terminalId)
     peers.set(p.terminalId, p)
+    peerOwners.set(p.terminalId, owner)
   }
-  // A session that vanished from the renderer's list is gone for good; release
-  // its mail and unblock anyone waiting on it rather than leaking either.
+  // A session that vanished from its own window's list is gone for good;
+  // release its mail and unblock anyone waiting on it rather than leaking
+  // either. Another window's sessions are not this window's to forget.
   for (const id of [...peers.keys()]) {
-    if (!seen.has(id)) forget(id)
+    if (!seen.has(id) && peerOwners.get(id) === owner) forget(id)
   }
+}
+
+/** A window closed: its sessions can no longer be reached. */
+export function forgetWindow(owner: number): void {
+  for (const [id, o] of [...peerOwners]) if (o === owner) forget(id)
+}
+
+export function onMailDropped(listener: (terminalId: string, messageIds: string[]) => void): void {
+  dropListener = listener
+}
+
+/** Every session's unread mail ids, so a reloaded renderer can rebuild its badges. */
+export function queuedSnapshot(): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const [id, box] of mailboxes) if (box.length > 0) out[id] = box.map((m) => m.id)
+  return out
+}
+
+export function resetChain(terminalId: string): void {
+  chainHops.delete(terminalId)
+}
+
+function noteReceived(terminalId: string, messages: Message[]): void {
+  const top = Math.max(chainHops.get(terminalId) ?? -1, ...messages.map((m) => m.hops))
+  chainHops.set(terminalId, top)
 }
 
 export function getPeer(terminalId: string): Peer | null {
@@ -179,8 +216,9 @@ export function enqueue(req: EnqueueRequest): { message: Message } | { error: st
   const target = resolved.peer
   if (target.terminalId === req.from) return { error: 'A session cannot message itself' }
 
-  // A reply inherits its prompt's chain length; a fresh message starts at 0.
-  const priorHops = req.replyTo ? (sentIndex.get(req.replyTo)?.hops ?? 0) : -1
+  // A reply inherits its prompt's chain length; a fresh message continues the
+  // chain of whatever mail started the sender's current turn.
+  const priorHops = req.replyTo ? (sentIndex.get(req.replyTo)?.hops ?? 0) : (chainHops.get(req.from) ?? -1)
   const hops = priorHops + 1
   if (hops > MAX_HOPS) {
     return { error: `Message chain exceeded ${MAX_HOPS} hops and was stopped. Summarise the outcome for the user instead of continuing the exchange.` }
@@ -293,6 +331,7 @@ export function commitDelivery(terminalId: string, deliveredIds: ReadonlySet<str
 
   const delivered = box.filter((m) => deliveredIds.has(m.id))
   for (const m of delivered) setState(m, 'delivered')
+  if (delivered.length > 0) noteReceived(terminalId, delivered)
   const remaining = box.filter((m) => !deliveredIds.has(m.id))
   if (remaining.length > 0) mailboxes.set(terminalId, remaining)
   else mailboxes.delete(terminalId)
@@ -315,6 +354,7 @@ export function drain(terminalId: string): Message[] {
   if (!box || box.length === 0) return []
   mailboxes.delete(terminalId)
   for (const m of box) setState(m, 'delivered')
+  noteReceived(terminalId, box)
 
   const wanting = box
     .filter((m) => m.expectsReply)
@@ -349,9 +389,18 @@ export function formatForDelivery(messages: Message[]): string {
  * is also what arms the implicit-reply capture.
  */
 export function formatWakeNotice(messages: Message[]): string {
-  const senders = [...new Set(messages.map((m) => `"${m.fromLabel}" (${m.from})`))].join(', ')
+  const senders = [...new Set(messages.map((m) => `"${sanitizeLabel(m.fromLabel)}" (${sanitizeLabel(m.from)})`))].join(', ')
   const what = messages.length === 1 ? '1 new message' : `${messages.length} new messages`
   return `[SimpleEdit] You have ${what} from agent session ${senders}. Call the check_inbox tool to read ${messages.length === 1 ? 'it' : 'them'}.`
+}
+
+/**
+ * Text bound for a PTY must not carry control characters: an ESC could end
+ * the bracketed paste early and turn the rest into keystrokes. Labels can come
+ * from agents (`spawn_session`), so they are untrusted.
+ */
+export function sanitizeLabel(text: string): string {
+  return text.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim().slice(0, 80)
 }
 
 /**
@@ -405,9 +454,21 @@ export function captureImplicitReplies(terminalId: string, lastAssistantMessage:
 
 /** Drop a session's mail and pending state when it goes away. */
 export function forget(terminalId: string): void {
+  const unread = mailboxes.get(terminalId) ?? []
   mailboxes.delete(terminalId)
   peers.delete(terminalId)
+  peerOwners.delete(terminalId)
+  chainHops.delete(terminalId)
   sendTimestamps.delete(terminalId)
+  if (unread.length > 0) {
+    for (const m of unread) {
+      setState(m, 'dropped')
+      settleWaiter(m.id, null)
+    }
+    const ids = unread.map((m) => m.id)
+    console.log(`[AgentBus] Dropped for ${terminalId}, which went away: ${ids.join(', ')}`)
+    dropListener(terminalId, ids)
+  }
   for (const rec of awaitingImplicitReply.get(terminalId) ?? []) settleWaiter(rec.messageId, null)
   awaitingImplicitReply.delete(terminalId)
 }
@@ -464,8 +525,9 @@ export function awaitSpawn(correlationId: string, timeoutMs: number): Promise<Pe
   })
 }
 
-export function resolveSpawn(correlationId: string, peer: Peer): void {
+export function resolveSpawn(correlationId: string, peer: Peer, owner = 0): void {
   peers.set(peer.terminalId, peer)
+  peerOwners.set(peer.terminalId, owner)
   const waiter = spawnWaiters.get(correlationId)
   if (!waiter) return
   spawnWaiters.delete(correlationId)
@@ -483,4 +545,7 @@ export function resetBus(): void {
   spawnWaiters.clear()
   sentIndex.clear()
   sendTimestamps.clear()
+  peerOwners.clear()
+  chainHops.clear()
+  dropListener = () => {}
 }

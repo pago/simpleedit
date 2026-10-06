@@ -51,6 +51,11 @@ export interface HookSignal {
    */
   message: string | null
   /**
+   * On Claude's `Notification`, its kind (`idle_prompt`, `permission_prompt`,
+   * …). Absent from older CLIs and other providers.
+   */
+  notificationType?: string
+  /**
    * True when this `Stop` follows a turn a Stop hook already continued. Mail
    * must NOT be delivered on such a stop: doing so re-blocks the same turn and
    * the agent never reaches idle (Claude hard-caps this at 8 and then overrides).
@@ -97,6 +102,7 @@ export function parseHookBody(body: unknown): HookSignal | null {
   if (typeof cwd !== 'string' || !cwd) return null
   const lastAssistant = rec['last_assistant_message']
   const message = rec['message']
+  const notificationType = rec['notification_type']
   return {
     sessionId,
     terminalId: typeof terminalId === 'string' && terminalId ? terminalId : null,
@@ -106,6 +112,7 @@ export function parseHookBody(body: unknown): HookSignal | null {
     lastAssistantMessage: typeof lastAssistant === 'string' ? lastAssistant : null,
     message: typeof message === 'string' && message ? message : null,
     stopHookActive: rec['stop_hook_active'] === true,
+    ...(typeof notificationType === 'string' && notificationType ? { notificationType } : {}),
   }
 }
 

@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { drain, enqueue, messageState, resetBus, syncPeers, type Peer } from '../agent-bus'
 import {
   WAKE_SETTLE_MS,
-  WAKE_UNANSWERED_MS,
   beginStop,
   canWake,
   endStop,
+  noteNotification,
   noteStatus,
   noteUserInput,
   requestWake,
@@ -93,42 +93,24 @@ describe('agent-wake', () => {
     expect(writes).toHaveLength(1)
   })
 
-  it('does not mistake terminal reports and arrow keys for typing', () => {
-    for (const seq of ['\x1b[I', '\x1b[O', '\x1b[A', '\x1b]11;rgb:0000/0000/0000\x07', '\x1b[?1;2c', '\x1bOP']) {
+  it('ignores what xterm sends on its own', () => {
+    for (const seq of ['\x1b[I', '\x1b[O', '\x1b]11;rgb:0000/0000/0000\x07', '\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[12;40R', '\x1b[0n']) {
       noteUserInput('claude-b', seq)
     }
     noteStatus('claude-b', 'idle', true)
     expect(wakeOutlook('claude-b')).toBe('waking')
   })
 
-  it('treats Ctrl-C and Ctrl-U as clearing the prompt', () => {
+  // Up-arrow recalls history, Esc-Esc opens the rewind picker, `/model` + Enter
+  // leaves a picker up: the wake's Enter would act on any of them.
+  it('treats any key since the last turn started as a reason not to wake', () => {
     noteStatus('claude-b', 'idle', true)
-    noteUserInput('claude-b', 'abc')
-    expect(wakeOutlook('claude-b')).toBe('typing')
-    noteUserInput('claude-b', '\x03')
-    expect(wakeOutlook('claude-b')).toBe('waking')
-    noteUserInput('claude-b', 'abc')
-    noteUserInput('claude-b', '\x15')
-    expect(wakeOutlook('claude-b')).toBe('waking')
-  })
-
-  it('keeps a prompt dirty through Enters that only add a line', () => {
-    noteStatus('claude-b', 'idle', true)
-    // A multi-line paste, Meta-Enter and backslash-Enter all leave text behind.
-    for (const input of [['\x1b[200~line one\rline two\x1b[201~'], ['abc', '\x1b\r'], ['abc\\', '\r']]) {
-      noteUserInput('claude-b', '\x15')
-      for (const chunk of input) noteUserInput('claude-b', chunk)
+    for (const keys of ['\x1b[A', '\x1b\x1b', '/model\r', '\x03']) {
+      noteStatus('claude-b', 'running', true)
+      noteStatus('claude-b', 'idle', true)
+      noteUserInput('claude-b', keys)
       expect(wakeOutlook('claude-b')).toBe('typing')
     }
-    // A paste followed by Enter is a submit (how a panel sends to the agent).
-    noteUserInput('claude-b', '\x1b[200~do it\x1b[201~\r')
-    expect(wakeOutlook('claude-b')).toBe('waking')
-  })
-
-  it('does not read an X10 mouse report as typing', () => {
-    noteStatus('claude-b', 'idle', true)
-    noteUserInput('claude-b', '\x1b[M !!')
-    expect(wakeOutlook('claude-b')).toBe('waking')
   })
 
   it('holds a wake while a Stop hook is being answered', () => {
@@ -142,13 +124,56 @@ describe('agent-wake', () => {
     expect(writes).toHaveLength(1)
   })
 
-  it('wakes again if its notice never started a turn', () => {
+  it('does not retry a notice that never started a turn', () => {
     noteStatus('claude-b', 'idle', true)
     send()
     vi.advanceTimersByTime(WAKE_SETTLE_MS)
+    vi.advanceTimersByTime(10 * 60_000)
     expect(writes).toHaveLength(1)
-    vi.advanceTimersByTime(WAKE_UNANSWERED_MS + WAKE_SETTLE_MS)
-    expect(writes).toHaveLength(2)
+    expect(wakeOutlook('claude-b')).toBe('busy')
+  })
+
+  // Claude turns a prompt idle for ~60s into `waiting` via the Notification
+  // hook, and its title never changes after that.
+  it("wakes a session whose idle prompt Claude has reported as waiting", () => {
+    noteStatus('claude-b', 'idle', true)
+    noteStatus('claude-b', 'waiting', true)
+    noteNotification('claude-b', 'idle_prompt', 'Claude is waiting for your input')
+    send()
+    vi.advanceTimersByTime(WAKE_SETTLE_MS)
+    expect(writes).toHaveLength(1)
+  })
+
+  it('recognises the idle-prompt reminder by its text on CLIs that send no type', () => {
+    noteStatus('claude-b', 'waiting', true)
+    noteNotification('claude-b', null, 'Claude is waiting for your input')
+    expect(wakeOutlook('claude-b')).toBe('waking')
+  })
+
+  it('never wakes into a permission or question prompt, even if the title then reads idle', () => {
+    noteStatus('claude-b', 'waiting', true)
+    noteNotification('claude-b', 'permission_prompt', 'Claude needs your permission to use Bash')
+    noteStatus('claude-b', 'idle', true)
+    send()
+    vi.advanceTimersByTime(WAKE_SETTLE_MS * 4)
+    expect(writes).toHaveLength(0)
+    expect(wakeOutlook('claude-b')).toBe('blocked')
+    expect(canWake('claude-b')).toBe(false)
+
+    // An unknown kind blocks too.
+    noteStatus('claude-b', 'running', true)
+    noteNotification('claude-b', null, 'Something else')
+    expect(wakeOutlook('claude-b')).toBe('blocked')
+  })
+
+  it('lifts a dialog block once the turn ends', () => {
+    noteStatus('claude-b', 'waiting', true)
+    send()
+    beginStop('claude-b')
+    noteStatus('claude-b', 'idle', true)
+    endStop('claude-b')
+    vi.advanceTimersByTime(WAKE_SETTLE_MS)
+    expect(writes).toHaveLength(1)
   })
 
   it('hands back to the Stop block once the notices are used up', () => {
