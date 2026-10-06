@@ -1,5 +1,15 @@
 # simpleedit
 
+## 0.23.1
+
+### Patch Changes
+
+- [#198](https://github.com/pago/simpleedit/pull/198) [`d7a3402`](https://github.com/pago/simpleedit/commit/d7a3402288179bad370f6ff23e7146cc6f5700bb) Thanks [@pago](https://github.com/pago)! - Agent-to-agent messages now reach idle sessions. When a session sitting at its prompt gets mail, SimpleEdit submits a short notice telling it to call `check_inbox`. A Claude session is prompted once Claude itself reports that it's waiting at its prompt, which can take up to about a minute after its turn ends. It doesn't do this if you've pressed any key in that terminal since its last turn started, or while it's showing a permission or question prompt. Replies to an idle session arrive the same way, as an ordinary message. Mail that is waiting when a session's turn ends is still handed over at that point. `send_message`, `list_sessions` and timed-out `wait_for_reply` calls now say whether a message is still queued, has been announced, or has been read. Sessions started with `spawn_session` are told their spawner's session id, so they can report back. A badge in the sidebar shows unread agent mail. Mail for a session that closes is reported as dropped instead of vanishing, and one window no longer forgets another window's sessions. Mail is no longer handed to a sub-agent's stop, where the session itself never saw it.
+
+- [#203](https://github.com/pago/simpleedit/pull/203) [`309b1bb`](https://github.com/pago/simpleedit/commit/309b1bb95683abaa468838251b3ff6bbd1bf7322) Thanks [@pago](https://github.com/pago)! - The phone can switch projects while Screen PRs is running. Screenings, deep reviews and PR overviews now report to every window and phone, a second start joins the run already going, and Stop works from any client and settles everywhere.
+
+- [#202](https://github.com/pago/simpleedit/pull/202) [`3e3e38b`](https://github.com/pago/simpleedit/commit/3e3e38b12ea813152cca74788ed0f5b9fdd8a3a0) Thanks [@pago](https://github.com/pago)! - Resuming a session from your last visit starts it again instead of leaving a black workspace. A restored Claude session also resumes on the model it ran on, and if a resume can't start, the Resume button comes back with the reason.
+
 ## 0.23.0
 
 ### Minor Changes
