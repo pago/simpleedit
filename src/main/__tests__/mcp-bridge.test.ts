@@ -1197,6 +1197,41 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
       expect(String(busy.body['note'])).toContain('mid-turn')
     })
 
+    it("wakes a session whose idle prompt Claude reported through the Notification hook", async () => {
+      noteStatus('claude-b', 'idle', true)
+      await postHook({
+        session_id: 'sess-b',
+        cwd: '/repo/b',
+        hook_event_name: 'Notification',
+        notification_type: 'idle_prompt',
+        message: 'Claude is waiting for your input',
+      })
+      await callTool('send_message', { to: 'beta', text: 'status?' }, 'claude-a')
+      await vi.waitFor(() => expect(writes).toHaveLength(1), { timeout: 3000 })
+    })
+
+    it('tells the sender a permission prompt is holding its message', async () => {
+      noteStatus('claude-b', 'running', true)
+      await postHook({
+        session_id: 'sess-b',
+        cwd: '/repo/b',
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Claude needs your permission to use Bash',
+      })
+      const { body } = await callTool('send_message', { to: 'beta', text: 'status?' }, 'claude-a')
+      expect(String(body['note'])).toContain('permission')
+    })
+
+    it('says a waiting sender\'s message was dropped when the recipient goes away', async () => {
+      const pending = callTool('send_message', { to: 'beta', text: 'q', wait_for_reply: true, timeout_seconds: 10 }, 'claude-a')
+      await vi.waitFor(() => expect(pendingCount('claude-b')).toBe(1))
+      syncPeers([{ terminalId: 'claude-a', label: 'alpha', provider: 'claude', worktreePath: '/repo/a', status: 'idle' }])
+      const { body } = await pending
+      expect(String(body['note'])).toContain('dropped')
+      expect(body['status']).toBe('dropped')
+    })
+
     it('wakes an idle sender when a reply lands in its inbox', async () => {
       noteStatus('claude-a', 'idle', true)
       const sent = await callTool('send_message', { to: 'beta', text: 'q' }, 'claude-a')

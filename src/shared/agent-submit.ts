@@ -13,9 +13,14 @@ const PASTE_END = '\x1b[201~'
  * may not, so this is for agent sessions only.
  *
  * Newlines inside the markers are pasted, not submitted. Markers inside the
- * text are dropped so it cannot end the paste early.
+ * text are dropped so it cannot end the paste early — repeatedly, since
+ * removing one can join its neighbours into another (`\x1b[2` + marker + `01~`).
  */
 export function agentSubmitWrite(text: string): string {
-  const body = text.split(PASTE_START).join('').split(PASTE_END).join('').replace(/\r\n?/g, '\n')
-  return `${PASTE_START}${body}${PASTE_END}\r`
+  let body = text
+  for (let prev = ''; prev !== body; ) {
+    prev = body
+    body = body.split(PASTE_START).join('').split(PASTE_END).join('')
+  }
+  return `${PASTE_START}${body.replace(/\r\n?/g, '\n')}${PASTE_END}\r`
 }

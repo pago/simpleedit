@@ -28,12 +28,25 @@ export function initAgentMailListeners(): () => void {
   const offDelivered = window.api.on('agent-message:delivered', ({ terminalId, messageIds }) => {
     remove(terminalId, new Set(messageIds))
   })
+  const offDropped = window.api.on('agent-message:dropped', ({ terminalId, messageIds }) => {
+    remove(terminalId, new Set(messageIds))
+  })
   const offExit = window.api.on('pty:exit', ({ id }) => {
     remove(id, new Set(queued[id] ?? []))
+  })
+  // Main still holds the mail across a renderer reload. Merge rather than
+  // replace: an event may have landed before this answer.
+  void window.api.invoke('agent-bus:queued').then((snapshot) => {
+    const merged = { ...queued }
+    for (const [id, ids] of Object.entries(snapshot)) {
+      merged[id] = [...new Set([...(merged[id] ?? []), ...ids])]
+    }
+    queued = merged
   })
   return () => {
     offSent()
     offDelivered()
+    offDropped()
     offExit()
   }
 }

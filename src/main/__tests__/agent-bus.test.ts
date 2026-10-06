@@ -6,8 +6,14 @@ import {
   drain,
   enqueue,
   formatForDelivery,
+  formatWakeNotice,
+  forgetWindow,
+  getPeer,
   listPeers,
   messageState,
+  onMailDropped,
+  queuedSnapshot,
+  resetChain,
   pendingCount,
   resetBus,
   resolvePeer,
@@ -237,3 +243,72 @@ describe('agent-bus — loop control', () => {
     expect(lastError).toContain('hops')
   })
 })
+
+describe('agent-bus — sessions going away (#197)', () => {
+  it('marks unread mail dropped, logs it, and releases its waiting sender', async () => {
+    const dropped: Array<[string, string[]]> = []
+    onMailDropped((id, ids) => dropped.push([id, ids]))
+    const sent = enqueue({ from: 'claude-a', to: 'beta', text: 'q', expectsReply: true })
+    const id = (sent as { message: { id: string } }).message.id
+    const waiting = waitForReply(id, 5000)
+
+    syncPeers([peer('claude-a', 'alpha')])
+    await expect(waiting).resolves.toBeNull()
+    expect(messageState(id)).toBe('dropped')
+    expect(dropped).toEqual([['claude-b', [id]]])
+  })
+
+  it("does not let one window's sync forget another window's sessions", () => {
+    syncPeers([peer('claude-a', 'alpha')], 1)
+    syncPeers([peer('claude-b', 'beta')], 2)
+    enqueue({ from: 'claude-a', to: 'beta', text: 'kept' })
+
+    syncPeers([peer('claude-a', 'alpha')], 1)
+    expect(getPeer('claude-b')).not.toBeNull()
+    expect(pendingCount('claude-b')).toBe(1)
+
+    forgetWindow(2)
+    expect(getPeer('claude-b')).toBeNull()
+  })
+
+  it('snapshots unread mail per session', () => {
+    const sent = enqueue({ from: 'claude-a', to: 'beta', text: 'q' })
+    expect(queuedSnapshot()).toEqual({ 'claude-b': [(sent as { message: { id: string } }).message.id] })
+  })
+})
+
+describe('agent-bus — chains without reply (#197)', () => {
+  it('carries hops into a fresh message sent from a turn that mail started', () => {
+    let from = 'claude-a'
+    let to = 'claude-b'
+    let stopped = false
+    for (let i = 0; i <= MAX_HOPS + 1; i++) {
+      const result = enqueue({ from, to, text: `ping ${i}` })
+      if ('error' in result) {
+        stopped = true
+        break
+      }
+      drain(to)
+      ;[from, to] = [to, from]
+    }
+    expect(stopped).toBe(true)
+  })
+
+  it('starts a fresh chain once the user starts a turn', () => {
+    enqueue({ from: 'claude-a', to: 'beta', text: 'x' })
+    drain('claude-b')
+    resetChain('claude-b')
+    const next = enqueue({ from: 'claude-b', to: 'alpha', text: 'y' })
+    expect((next as { message: { hops: number } }).message.hops).toBe(0)
+  })
+})
+
+describe('agent-bus — wake notice', () => {
+  it('strips control characters from labels before they reach a PTY', () => {
+    syncPeers([{ ...peer('claude-a', 'lbl\x1b[2\x1b[201~01~\nrm -rf x'), terminalId: 'claude-a' }, peer('claude-b', 'beta')])
+    enqueue({ from: 'claude-a', to: 'beta', text: 'q' })
+    const notice = formatWakeNotice(drain('claude-b'))
+    expect(notice).not.toMatch(/[\x00-\x1f\x7f]/)
+  })
+})
+

@@ -13,4 +13,13 @@ describe('agentSubmitWrite', () => {
   it('cannot be ended early by a marker in the text', () => {
     expect(agentSubmitWrite('a\x1b[201~\rb\x1b[200~')).toBe('\x1b[200~a\nb\x1b[201~\r')
   })
+
+  // Removing one marker can join its neighbours into another.
+  it('cannot be ended early by a marker rebuilt from the pieces around a stripped one', () => {
+    const out = agentSubmitWrite('lbl\x1b[2\x1b[201~01~\nrm -rf x')
+    expect(out.startsWith('\x1b[200~')).toBe(true)
+    expect(out.endsWith('\x1b[201~\r')).toBe(true)
+    expect(out.slice(6, -7)).not.toContain('\x1b[201~')
+    expect(out.slice(6, -7)).not.toContain('\x1b[200~')
+  })
 })

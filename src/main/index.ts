@@ -88,7 +88,7 @@ import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asse
 import { initAutoUpdater } from './auto-update'
 import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
-import { syncPeers, resolveSpawn } from './agent-bus'
+import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } from './agent-bus'
 import { initAgentWake, noteUserInput } from './agent-wake'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { createSessionOnce, resolveSessionCreate, type ModelCatalog } from './session-create'
@@ -402,6 +402,7 @@ configurePush({
 // the settings pane has never been opened.
 onAgentStatus((event, client) => handleAgentStatus(event, client.id))
 initAgentWake(writeToTerminal)
+onMailDropped((terminalId, messageIds) => broadcastToWindows('agent-message:dropped', { terminalId, messageIds }))
 
 /**
  * Serialised. Two `remote:set-*` calls landing together would otherwise each
@@ -500,6 +501,7 @@ function createWindow(repoPath?: string): BrowserWindow {
     // the teardown below is about to take apart.
     closeSocketsForHub(webContentsId)
     stopBridge(webContentsId)
+    forgetWindow(webContentsId)
     unwatchAllWorktreeListsForWindow(webContentsId)
     unwatchAllEditorFilesForWindow(webContentsId)
     windowRepoMap.delete(webContentsId)
@@ -1190,13 +1192,17 @@ function registerAllHandlers(): void {
   })
 
   // ── Agent-to-agent messaging ────────────────────────────
-  handleInvoke('agent-bus:sync', (_event, peers: AgentPeer[]) => {
-    syncPeers(peers)
+  // Keyed by window: each renderer lists only its own sessions, so one
+  // window's sync must not forget another's.
+  handleInvoke('agent-bus:sync', (event, peers: AgentPeer[]) => {
+    syncPeers(peers, event.sender.id)
   })
 
-  handleInvoke('agent-bus:spawned', (_event, correlationId: string, peer: AgentPeer) => {
-    resolveSpawn(correlationId, peer)
+  handleInvoke('agent-bus:spawned', (event, correlationId: string, peer: AgentPeer) => {
+    resolveSpawn(correlationId, peer, event.sender.id)
   })
+
+  handleInvoke('agent-bus:queued', () => queuedSnapshot())
 }
 
 // ── App lifecycle ─────────────────────────────────────────

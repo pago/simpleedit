@@ -19,11 +19,12 @@ import {
   listPeers,
   messageState,
   pendingCount,
+  sanitizeLabel,
   senderOf,
   waitForReply,
   type Message,
 } from './agent-bus'
-import { beginStop, canWake, endStop, noteBusy, requestWake, wakeOutlook } from './agent-wake'
+import { beginStop, canWake, endStop, noteBusy, noteNotification, requestWake, wakeOutlook } from './agent-wake'
 import { sendAgentStatus } from './agent-status'
 
 interface BridgeInstance {
@@ -141,9 +142,11 @@ function deliveryNote(messageId: string, recipient: string): string {
 
 function timeoutNote(messageId: string, recipient: string): string {
   const state = messageState(messageId)
-  if (state === 'delivered') return 'The recipient has read your message but has not answered yet.'
-  if (state === 'notified') return 'The recipient was prompted to read its inbox but has not done so yet.'
-  return `Your message is still queued. ${outlookNote(recipient)}`
+  if (state === 'dropped') return 'The recipient session went away before reading your message, so it was dropped. Nothing more will arrive.'
+  if (!getPeer(recipient)) return 'The recipient session went away before answering. Nothing more will arrive.'
+  if (state === 'delivered') return 'No reply yet. The recipient has read your message but has not answered. The reply will arrive in your inbox — do not resend.'
+  if (state === 'notified') return 'No reply yet. The recipient was prompted to read its inbox but has not done so. The reply will arrive in your inbox — do not resend.'
+  return `No reply yet; your message is still queued. ${outlookNote(recipient)} The reply will arrive in your inbox — do not resend.`
 }
 
 function outlookNote(recipient: string): string {
@@ -153,7 +156,9 @@ function outlookNote(recipient: string): string {
     case 'busy':
       return 'The recipient is mid-turn; it gets your message when that turn ends.'
     case 'typing':
-      return 'The recipient is idle, but the user has unsent text in its prompt, so SimpleEdit will not interrupt. It gets your message when the user\'s next turn there ends.'
+      return 'The user has been using the recipient\'s terminal since its last turn, so SimpleEdit will not interrupt. It gets your message when the next turn there ends.'
+    case 'blocked':
+      return 'The recipient is waiting on the user (a permission or question prompt). It gets your message when that turn ends.'
     default:
       return 'Queued; the recipient gets it when its current turn ends.'
   }
@@ -164,7 +169,7 @@ function outlookNote(recipient: string): string {
  * polling: the spawner's id is otherwise nowhere in its context.
  */
 function withSpawnerAddress(brief: string, spawnerId: string): string {
-  const label = getPeer(spawnerId)?.label
+  const label = sanitizeLabel(getPeer(spawnerId)?.label ?? '')
   const who = label ? `session "${label}" (session id ${spawnerId})` : `session id ${spawnerId}`
   return `${brief}\n\n---\nYou were started by SimpleEdit ${who}. To report back to it, use send_message(to: "${spawnerId}", text: "…").`
 }
@@ -408,7 +413,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     if (!brief) {
       return { status: 400, body: { error: 'spawn_session requires a non-empty brief in args' } }
     }
-    const label = typeof args['label'] === 'string' ? (args['label'] as string) : undefined
+    const label = typeof args['label'] === 'string' ? sanitizeLabel(args['label'] as string) || undefined : undefined
     const model = typeof args['model'] === 'string' ? (args['model'] as string) : undefined
     const providerArg = args['provider']
     if (providerArg !== undefined && providerArg !== 'claude' && providerArg !== 'codex') {
@@ -529,7 +534,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
           delivered_to: message.to,
           timed_out: true,
           status: messageState(message.id),
-          note: `No reply yet. ${timeoutNote(message.id, message.to)} The reply will arrive in your inbox — do not resend.`,
+          note: timeoutNote(message.id, message.to),
         },
       }
     }
@@ -703,6 +708,7 @@ async function applyRoutedSignal(
       precise: true,
       ...(signal.message ? { message: signal.message } : {}),
     })
+    noteNotification(terminalId, signal.notificationType ?? null, signal.message)
   }
 
   if (!webContents.isDestroyed()) {

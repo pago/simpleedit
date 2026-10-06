@@ -1437,6 +1437,8 @@ export interface AgentBusInvokeMap {
    * `correlationId` the bridge sent, so that call can return a usable handle.
    */
   'agent-bus:spawned': { args: [correlationId: string, peer: AgentPeer]; result: void }
+  /** Unread agent mail per session (message ids), to rebuild badges after a reload. */
+  'agent-bus:queued': { args: []; result: Record<string, string[]> }
 }
 
 export interface AgentBusEventMap {
@@ -1450,8 +1452,13 @@ export interface AgentBusEventMap {
     expectsReply: boolean
     replyTo?: string
   }
-  /** Queued mail was handed to a session via its Stop hook. */
+  /** Queued mail was handed to a session (check_inbox, Stop hook or push). */
   'agent-message:delivered': {
+    terminalId: string
+    messageIds: string[]
+  }
+  /** The recipient session went away with this mail unread. */
+  'agent-message:dropped': {
     terminalId: string
     messageIds: string[]
   }

@@ -7,14 +7,15 @@
  * tells the agent to call `check_inbox`. The idle prompt is the one moment PTY
  * input does not race the TUI.
  *
- * The user's own prompt wins: if they have typed into it since the last turn,
- * a bracketed paste would be appended to their text and submitted with it, so
- * the wake is skipped and the mail rides the `Stop` of the turn they start.
+ * When in doubt, don't wake. Leaving mail queued, and saying so, is always
+ * safe; typing into the wrong UI is not. So any key the user pressed since the
+ * last turn started, or a dialog the agent raised, rules a wake out, and the
+ * mail rides the `Stop` of the next turn instead.
  */
 import type { AgentStatus } from '../shared/ipc-types'
 import { agentSubmitWrite } from '../shared/agent-submit'
 import { onAgentStatus } from './agent-status'
-import { formatWakeNotice, getPeer, hasWakeable, takeWakeable } from './agent-bus'
+import { formatWakeNotice, getPeer, hasWakeable, resetChain, takeWakeable } from './agent-bus'
 
 /**
  * Status arrives from more than one reporter (OSC title, hooks), so a turn's
@@ -22,25 +23,21 @@ import { formatWakeNotice, getPeer, hasWakeable, takeWakeable } from './agent-bu
  * this long and re-check rather than writing on the first idle edge.
  */
 export const WAKE_SETTLE_MS = 750
-/**
- * A notice the TUI swallowed (a dialog open at the prompt) produces no status
- * change, and the OSC reporter only emits changes. Without this the session
- * would look busy until the user's next turn.
- */
-export const WAKE_UNANSWERED_MS = 30_000
 
 interface Track {
   status?: AgentStatus
   precise: boolean
-  /** The user typed into the prompt since it was last submitted or cleared. */
+  /**
+   * Any key reached the PTY since the last turn started. Not only typed text:
+   * an arrow key recalls history, Esc-Esc opens the rewind picker, `/model`
+   * leaves a picker up — and the wake's Enter would submit or select there.
+   */
   inputPending: boolean
-  /** Last character typed, so backslash-Enter reads as a newline, not a submit. */
-  lastChar: string
+  /** A `waiting` that isn't the idle-prompt reminder: a permission or question dialog is up. */
+  blocked: boolean
   /** Stop hooks being answered. A wake waits for them: the hook may still deliver by block. */
   stopsInFlight: number
   timer?: ReturnType<typeof setTimeout>
-  /** Set after our own notice, until a real status arrives. */
-  unanswered?: ReturnType<typeof setTimeout>
 }
 
 const tracks = new Map<string, Track>()
@@ -49,7 +46,7 @@ let write: (terminalId: string, data: string) => void = () => {}
 function track(terminalId: string): Track {
   let t = tracks.get(terminalId)
   if (!t) {
-    t = { precise: false, inputPending: false, lastChar: '', stopsInFlight: 0 }
+    t = { precise: false, inputPending: false, blocked: false, stopsInFlight: 0 }
     tracks.set(terminalId, t)
   }
   return t
@@ -63,7 +60,6 @@ export function initAgentWake(writer: (terminalId: string, data: string) => void
 export function noteStatus(terminalId: string, status: AgentStatus, precise: boolean): void {
   if (status === 'exited') {
     clearTimeout(tracks.get(terminalId)?.timer)
-    clearTimeout(tracks.get(terminalId)?.unanswered)
     tracks.delete(terminalId)
     return
   }
@@ -71,46 +67,54 @@ export function noteStatus(terminalId: string, status: AgentStatus, precise: boo
   // Same rule as the renderer's status store: once a precise reporter has
   // spoken, a coarse one can't override it.
   if (t.precise && !precise) return
-  clearTimeout(t.unanswered)
-  t.unanswered = undefined
   t.precise ||= precise
   t.status = status
+  if (status === 'running') {
+    // A turn the user started begins a fresh message chain.
+    if (t.inputPending) resetChain(terminalId)
+    t.inputPending = false
+    t.blocked = false
+  }
+  if (status === 'waiting') t.blocked = true
   if (status === 'idle') requestWake(terminalId)
 }
 
 /**
- * One token of PTY input, in order: a whole bracketed paste, Meta-Enter, any
- * other escape sequence, or a single character. Escape sequences are not
- * typing: xterm answers focus reports, colour queries and device attributes
- * through the same channel, and arrow keys and mouse reports arrive the same
- * way. X10 mouse reports carry three raw bytes after `ESC[M`.
+ * A `Notification` hook. Claude reports a prompt left idle for about a minute
+ * as `waiting`, after which its title never changes again — so that one kind
+ * must count as idle, or a session idle for a minute could never be woken.
+ * Anything else (a permission or question dialog) blocks wakes until the turn
+ * moves on. When the kind can't be told, it blocks.
  */
-const INPUT_TOKEN =
-  /\x1b\[200~[\s\S]*?\x1b\[201~|\x1b\r|\x1b\[M[\s\S]{3}|\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|O.|.)|[\s\S]/g
+export function noteNotification(terminalId: string, notificationType: string | null, message: string | null): void {
+  const idlePrompt = notificationType
+    ? notificationType === 'idle_prompt'
+    : message === 'Claude is waiting for your input'
+  const t = track(terminalId)
+  if (!idlePrompt) {
+    t.blocked = true
+    return
+  }
+  t.blocked = false
+  t.status = 'idle'
+  requestWake(terminalId)
+}
+
+/**
+ * What xterm sends on its own, not the user: focus reports, device-attribute,
+ * cursor-position and mode replies, and OSC/DCS answers to colour and setting
+ * queries. Everything else reaching the PTY is a key.
+ */
+const TERMINAL_REPLY =
+  /\x1b\[[IO]|\x1b\[[?>][\d;]*c|\x1b\[\d+;\d+R|\x1b\[\d*n|\x1b\[\??[\d;]*\$y|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/g
 
 /** Called for every write the user (or the renderer on their behalf) makes to a PTY. */
 export function noteUserInput(terminalId: string, data: string): void {
-  const t = track(terminalId)
-  for (const [token] of data.matchAll(INPUT_TOKEN)) {
-    if (token.startsWith('\x1b[200~')) {
-      // A paste leaves its text in the prompt; its newlines are not submits.
-      if (token.length > 12) t.inputPending = true
-      t.lastChar = ''
-    } else if (token === '\x1b\r') {
-      t.inputPending = true
-    } else if (token === '\r') {
-      // Claude Code reads backslash-Enter as a newline in the prompt.
-      t.inputPending = t.lastChar === '\\'
-      t.lastChar = ''
-    } else if (token === '\x03' || token === '\x15') {
-      // Ctrl-C and Ctrl-U clear the prompt.
-      t.inputPending = false
-      t.lastChar = ''
-    } else if (!token.startsWith('\x1b') && /[^\x00-\x1f\x7f]/.test(token)) {
-      t.inputPending = true
-      t.lastChar = token
-    }
-  }
+  if (data.replace(TERMINAL_REPLY, '').length > 0) track(terminalId).inputPending = true
+}
+
+function wakeable(t: Track | undefined): boolean {
+  return t?.status === 'idle' && !t.inputPending && !t.blocked && t.stopsInFlight === 0
 }
 
 /**
@@ -120,13 +124,14 @@ export function noteUserInput(terminalId: string, data: string): void {
  */
 export function canWake(terminalId: string): boolean {
   const t = tracks.get(terminalId)
-  return !!getPeer(terminalId)?.provider && t?.status !== undefined && !t.inputPending && hasWakeable(terminalId)
+  return !!getPeer(terminalId)?.provider && t?.status !== undefined && !t.inputPending && !t.blocked && hasWakeable(terminalId)
 }
 
 /** What will happen to mail queued for this session now, for tool results. */
-export function wakeOutlook(terminalId: string): 'waking' | 'busy' | 'typing' | 'unknown' {
+export function wakeOutlook(terminalId: string): 'waking' | 'busy' | 'typing' | 'blocked' | 'unknown' {
   const t = tracks.get(terminalId)
   if (!t?.status || !getPeer(terminalId)?.provider) return 'unknown'
+  if (t.blocked) return 'blocked'
   if (t.inputPending) return 'typing'
   return t.status === 'idle' ? 'waking' : 'busy'
 }
@@ -134,10 +139,12 @@ export function wakeOutlook(terminalId: string): 'waking' | 'busy' | 'typing' | 
 /**
  * Bracket the answering of a `Stop` hook. The idle title can land before the
  * hook does, and the hook may still continue the turn with a block, so a wake
- * must not fire in between.
+ * must not fire in between. A Stop also means any dialog the turn raised is gone.
  */
 export function beginStop(terminalId: string): void {
-  track(terminalId).stopsInFlight += 1
+  const t = track(terminalId)
+  t.stopsInFlight += 1
+  t.blocked = false
 }
 
 export function endStop(terminalId: string): void {
@@ -155,37 +162,29 @@ export function noteBusy(terminalId: string): void {
 
 export function requestWake(terminalId: string): void {
   const t = tracks.get(terminalId)
-  if (!t || t.status !== 'idle' || t.timer || t.stopsInFlight > 0) return
-  if (!hasWakeable(terminalId)) return
-  t.timer = setTimeout(() => {
-    t.timer = undefined
+  if (!wakeable(t) || t!.timer || !hasWakeable(terminalId)) return
+  t!.timer = setTimeout(() => {
+    t!.timer = undefined
     fire(terminalId)
   }, WAKE_SETTLE_MS)
 }
 
 function fire(terminalId: string): void {
   const t = tracks.get(terminalId)
-  if (!t || t.status !== 'idle' || t.inputPending || t.stopsInFlight > 0 || !getPeer(terminalId)?.provider) return
+  if (!wakeable(t) || !getPeer(terminalId)?.provider) return
   const messages = takeWakeable(terminalId)
   if (messages.length === 0) return
   // Our own submit starts a turn; don't wake again until the next idle edge.
-  t.status = 'running'
-  t.unanswered = setTimeout(() => {
-    t.unanswered = undefined
-    if (tracks.get(terminalId) !== t) return
-    t.status = 'idle'
-    requestWake(terminalId)
-  }, WAKE_UNANSWERED_MS)
+  // A notice the TUI swallowed is not retried: the mail stays queued, reported
+  // as `notified`, until the session's next turn ends.
+  t!.status = 'running'
   console.log(`[AgentWake] Waking ${terminalId} for ${messages.map((m) => m.id).join(', ')}`)
   write(terminalId, agentSubmitWrite(formatWakeNotice(messages)))
 }
 
 /** Test seam. */
 export function resetAgentWake(): void {
-  for (const t of tracks.values()) {
-    clearTimeout(t.timer)
-    clearTimeout(t.unanswered)
-  }
+  for (const t of tracks.values()) clearTimeout(t.timer)
   tracks.clear()
   write = () => {}
 }
