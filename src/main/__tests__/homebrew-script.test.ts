@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +21,8 @@ let script: string
 let resultFile: string
 let bundle: string
 let binDir: string
+/** The process group of a detached helper, killed whatever the test's outcome. */
+let group: number | undefined
 
 /** A stub on PATH, so the script's bare `open` resolves to us. */
 function stub(name: string, body: string): string {
@@ -29,16 +31,18 @@ function stub(name: string, body: string): string {
   return path
 }
 
-async function runScript(
+function startScript(
   pid: number,
   brew: string,
   version = '9.9.9',
-  env: Record<string, string> = {}
-): Promise<number> {
-  const child = spawn(
+  env: Record<string, string> = {},
+  options: Pick<SpawnOptions, 'detached' | 'stdio'> = {}
+): ChildProcess {
+  return spawn(
     '/bin/sh',
     [script, String(pid), brew, 'pago/simpleedit/simpleedit', resultFile, bundle, 'com.simpleedit.app', version],
     {
+      ...options,
       env: {
         ...process.env,
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
@@ -49,21 +53,16 @@ async function runScript(
       }
     }
   )
-  return new Promise((resolve) => child.on('exit', (code) => resolve(code ?? -1)))
 }
 
-/** pids of every `sleep <seconds>` on the machine, so a leak can be attributed. */
-async function sleepPids(seconds: string): Promise<Set<string>> {
-  const { stdout } = await run('/bin/sh', [
-    '-c',
-    `ps -A -o pid=,args= | grep -E "[s]leep ${seconds}\\b" || true`
-  ])
-  return new Set(
-    stdout
-      .split('\n')
-      .map((line) => line.trim().split(/\s+/)[0])
-      .filter(Boolean)
-  )
+async function runScript(
+  pid: number,
+  brew: string,
+  version = '9.9.9',
+  env: Record<string, string> = {}
+): Promise<number> {
+  const child = startScript(pid, brew, version, env)
+  return new Promise((resolve) => child.on('exit', (code) => resolve(code ?? -1)))
 }
 
 function result(): { ok: boolean; stage: string; version: string; detail: string } {
@@ -83,6 +82,15 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Here rather than in the test, so a helper that never exits is killed too.
+  if (group !== undefined) {
+    try {
+      process.kill(-group, 'SIGKILL')
+    } catch {
+      // ESRCH: nothing left, which is the passing case.
+    }
+    group = undefined
+  }
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -182,27 +190,23 @@ describe('the detached Homebrew upgrade helper', () => {
     expect(existsSync(join(binDir, 'open.calls'))).toBe(true)
   })
 
-  // The watchdog's `sleep` is a child of the watchdog subshell, so killing the
-  // subshell leaves it running — for the full half hour, holding the log's fd,
-  // after an upgrade that finished in seconds.
-  it('leaves no watchdog sleep behind', async () => {
+  // Production spawns the helper detached, so whatever it leaves behind runs on
+  // unseen. Detached here too, it leads its own process group, which everything
+  // it starts inherits even once orphaned. By the time 'exit' fires every one of
+  // them must already be reaped, so the group must be empty: a probe of it needs
+  // no waiting and cannot see anyone else's processes.
+  it('leaves nothing running once it exits', async () => {
     const brew = stub('fake-brew', 'exit 0')
-    const before = await sleepPids('1800')
+    // A real upgrade takes minutes, so the watchdog is always mid-sleep when brew
+    // finishes. A stub brew is instant; a long tick restores that.
+    stub('sleep', 'exec /bin/sleep 1')
+    const child = startScript(await deadPid(), brew, '9.9.9', {}, {
+      detached: true,
+      stdio: 'ignore'
+    })
+    group = child.pid!
 
-    expect(await runScript(await deadPid(), brew)).toBe(0)
-
-    let leaked = new Set<string>()
-    try {
-      // The watchdog is signalled as the script exits, so give it a moment to go.
-      for (let attempt = 0; attempt < 20; attempt++) {
-        leaked = new Set([...(await sleepPids('1800'))].filter((pid) => !before.has(pid)))
-        if (leaked.size === 0) break
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-      expect([...leaked]).toEqual([])
-    } finally {
-      // Do not leave half-hour sleeps on the machine when this test fails.
-      for (const pid of leaked) process.kill(Number(pid), 'SIGKILL')
-    }
+    expect(await new Promise((resolve) => child.on('exit', resolve))).toBe(0)
+    expect(() => process.kill(-group!, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
   })
 })

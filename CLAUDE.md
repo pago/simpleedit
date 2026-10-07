@@ -672,6 +672,13 @@ bundle's executable path), runs the upgrade, and relaunches with `open`. It runs
 brew with stdin from /dev/null so a sudo prompt fails fast instead of hanging
 forever with no terminal to answer it.
 
+Its brew timeout watchdog **polls** (`sleep 0.1` per tick) and the helper
+`wait`s for it; do not go back to one long `sleep` killed via a trap. A signal
+landing between that sleep's fork and `$!` being read orphans it for the full
+half hour. That was rare, but it happened on loaded CI runners.
+`homebrew-script.test.ts` runs the helper detached and proves nothing outlives
+it by probing its process group the moment it exits.
+
 The helper has no window to report to, so it writes a verdict JSON that
 `takeUpgradeResult` picks up on the next launch and reports as
 `update:homebrew-failed` — otherwise a failed background upgrade would be
