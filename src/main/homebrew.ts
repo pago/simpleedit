@@ -154,25 +154,26 @@ brew_pid=$!
 # The timeout is in seconds, overridable only so the tests do not have to wedge
 # for half an hour to prove it fires.
 #
-# The sleep is a child of the watchdog subshell, and killing a subshell does not
-# touch its children — so the watchdog has to wait on the sleep and pass the
-# signal down, or every upgrade leaves a stray sleep orphaned to launchd for the
-# rest of the half hour, still holding this log's file descriptor open.
+# It polls in short steps instead of sleeping out the whole timeout, so it ends
+# by itself once brew is gone and never has to be killed. One long sleep would
+# be a grandchild that killing the watchdog leaves running, and a trap cannot
+# reliably reach it: a signal that lands between the fork and \`$!\` being read
+# finds no pid to pass on, leaving a half-hour sleep holding this log open.
 upgrade_timeout="\${SIMPLEEDIT_UPGRADE_TIMEOUT:-1800}"
-( sleep_pid=''
-  trap '[ -n "$sleep_pid" ] && kill "$sleep_pid" 2>/dev/null; exit 0' TERM
-  sleep "$upgrade_timeout" &
-  sleep_pid=$!
-  wait "$sleep_pid" || exit 0
-  if kill -0 "$brew_pid" 2>/dev/null; then
-    echo "brew still running after \${upgrade_timeout}s; terminating."
-    kill -TERM "$brew_pid" 2>/dev/null
-  fi ) &
+( ticks=0
+  while kill -0 "$brew_pid" 2>/dev/null; do
+    if [ "$ticks" -ge $((upgrade_timeout * 10)) ]; then
+      echo "brew still running after \${upgrade_timeout}s; terminating."
+      kill -TERM "$brew_pid" 2>/dev/null
+      exit 0
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done ) &
 watchdog_pid=$!
 
 wait "$brew_pid"
 status=$?
-kill "$watchdog_pid" 2>/dev/null
 
 echo "brew exited with status $status"
 if [ "$status" -eq 0 ]; then
@@ -185,6 +186,10 @@ fi
 # upgrade Homebrew restores the previous bundle from its backup.
 open "$APP" || open -b "$BUNDLE_ID"
 echo "relaunch requested"
+
+# After the relaunch, so the user is not kept waiting on it: the watchdog sees
+# brew gone within a tick, and nothing this script started outlives it.
+wait "$watchdog_pid"
 date
 `
 
