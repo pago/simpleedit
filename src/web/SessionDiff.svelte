@@ -11,8 +11,9 @@
    * survives the pane remounting this diff, and tapping another line opens
    * that line's own composer rather than moving the text. A remount may bring
    * a newer diff: a draft follows its line only while the line reads the same
-   * (`locateLine`), and otherwise waits, detached, for a tap on a line. It is
-   * never anchored to whatever code took its line number.
+   * (`locateLine`). Any draft whose line can't be found again is listed
+   * above the diff, kept but unsendable, until the user attaches it to a line
+   * on purpose; it is never anchored to whatever code took its line number.
    */
   import MobileDiff from './MobileDiff.svelte'
   import ThreadCard from './ThreadCard.svelte'
@@ -20,7 +21,7 @@
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
   import type { AgentThread } from '../shared/agent-threads'
   import { canAnchor, diffAnchor, locateLine, rowKey, threadLine, threadsByRow, type DiffView } from './lib/diff-threads'
-  import { diffKey, threadDrafts, type DraftLine } from './lib/thread-drafts.svelte'
+  import { diffKey, threadDrafts, type DraftLine, type SavedDraft } from './lib/thread-drafts.svelte'
 
   interface Props {
     diff: string
@@ -68,6 +69,22 @@
     return { at, key: rowKey(at.path, row.newNo!), file, row }
   })
   let draft = $derived(composing ? threadDrafts.get(thisDiff, composing.at) : '')
+
+  /** Saved drafts by the row they are on now, and the ones whose line is gone. */
+  let saved = $derived.by(() => {
+    const bound = new Map<string, SavedDraft>()
+    const unbound: SavedDraft[] = []
+    for (const d of threadDrafts.list(thisDiff)) {
+      const file = files.find((f) => f.path === d.at.path)
+      const line = file ? locateLine(file, d.at.line, d.at.text) : null
+      if (line === null) unbound.push(d)
+      else bound.set(rowKey(d.at.path, line), d)
+    }
+    return { bound, unbound }
+  })
+  /** The unbound draft the next tap on a line attaches. */
+  let attaching = $state<DraftLine | null>(null)
+  const sameLine = (a: DraftLine | null, b: DraftLine): boolean => a?.path === b.path && a.line === b.line
   let sending = $state(false)
   let error = $state<string | null>(null)
 
@@ -77,15 +94,22 @@
   }
 
   function tap(file: DiffFile, row: DiffRow): void {
-    if (composing?.key === rowKey(file.path, row.newNo!)) return openComposer(null)
-    const at = { path: file.path, line: row.newNo!, text: row.text }
-    // A detached draft is waiting for exactly this: the line it is about.
-    if (composing && !composing.row && draft) {
-      const own = threadDrafts.get(thisDiff, at)
-      threadDrafts.set(thisDiff, at, own ? `${own}\n\n${draft}` : draft)
-      threadDrafts.set(thisDiff, composing.at, '')
+    const key = rowKey(file.path, row.newNo!)
+    const here = saved.bound.get(key)?.at ?? { path: file.path, line: row.newNo!, text: row.text }
+    const moving = attaching && saved.unbound.find((d) => sameLine(attaching, d.at))
+    if (moving) {
+      const own = threadDrafts.get(thisDiff, here)
+      threadDrafts.set(thisDiff, here, own ? `${own}\n\n${moving.body}` : moving.body)
+      threadDrafts.set(thisDiff, moving.at, '')
+      attaching = null
+      return openComposer(here)
     }
-    openComposer(at)
+    openComposer(composing?.key === key ? null : here)
+  }
+
+  function discard(at: DraftLine): void {
+    threadDrafts.set(thisDiff, at, '')
+    if (sameLine(attaching, at)) attaching = null
   }
 
   function cancel(): void {
@@ -123,23 +147,41 @@
   }
 </script>
 
-{#if composing && !composing.row && draft}
-  <div class="m-3 mb-0 space-y-2 rounded-lg border border-amber-900/60 bg-amber-950/30 p-3" data-testid="thread-composer-detached">
+{#if saved.unbound.length > 0}
+  <div class="m-3 mb-0 space-y-3 rounded-lg border border-amber-900/60 bg-amber-950/30 p-3" data-testid="thread-drafts-detached">
     <p class="text-xs leading-relaxed text-amber-300">
-      Line {composing.at.line} of {composing.at.path} has changed since you started this comment. Tap a line to attach it there.
+      {saved.unbound.length === 1 ? 'This comment is' : 'These comments are'} on code that has changed since you wrote
+      {saved.unbound.length === 1 ? 'it' : 'them'}. Attach each to a line to send it.
     </p>
-    <textarea
-      value={draft}
-      oninput={(e) => threadDrafts.set(thisDiff, composing!.at, e.currentTarget.value)}
-      rows="3"
-      class="w-full resize-none rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-zinc-200 outline-none focus:border-blue-500"
-      aria-label="Comment for the agent"
-    ></textarea>
-    <button
-      type="button"
-      class="min-h-11 w-full rounded-md border border-zinc-700 text-sm text-zinc-300 active:bg-zinc-800"
-      onclick={cancel}>Discard</button
-    >
+    {#each saved.unbound as d (`${d.at.path}:${d.at.line}`)}
+      {@const chosen = sameLine(attaching, d.at)}
+      <div class="space-y-2" data-testid="thread-draft-detached">
+        <div class="font-mono text-[11px] text-zinc-400">{d.at.path}:{d.at.line}</div>
+        <textarea
+          value={d.body}
+          oninput={(e) => threadDrafts.set(thisDiff, d.at, e.currentTarget.value)}
+          rows="3"
+          class="w-full resize-none rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-zinc-200 outline-none focus:border-blue-500"
+          aria-label="Comment for the agent, from {d.at.path}:{d.at.line}"
+        ></textarea>
+        <div class="flex gap-2">
+          <button
+            type="button"
+            aria-pressed={chosen}
+            class="min-h-11 flex-1 rounded-md border text-sm active:bg-zinc-800 {chosen
+              ? 'border-orange-500 text-orange-300'
+              : 'border-zinc-700 text-zinc-300'}"
+            onclick={() => (attaching = chosen ? null : d.at)}
+            >{chosen ? 'Now tap a line…' : 'Attach to a line'}</button
+          >
+          <button
+            type="button"
+            class="min-h-11 flex-1 rounded-md border border-zinc-700 text-sm text-zinc-300 active:bg-zinc-800"
+            onclick={() => discard(d.at)}>Discard</button
+          >
+        </div>
+      </div>
+    {/each}
   </div>
 {/if}
 

@@ -23,18 +23,27 @@ export interface DraftLine {
 
 const lineKey = (diff: string, at: DraftLine): string => [diff, at.path, at.line].join('\u0000')
 
-const drafts = new SvelteMap<string, { text: string; body: string }>()
+export interface SavedDraft {
+  at: DraftLine
+  body: string
+}
+
+const drafts = new SvelteMap<string, SavedDraft & { diff: string }>()
 const open = new SvelteMap<string, DraftLine>()
 
 export const threadDrafts = {
   get(diff: string, at: DraftLine): string {
     const d = drafts.get(lineKey(diff, at))
-    return d && d.text === at.text ? d.body : ''
+    return d && d.at.text === at.text ? d.body : ''
   },
   /** An empty body forgets the line's draft. */
   set(diff: string, at: DraftLine, body: string): void {
-    if (body) drafts.set(lineKey(diff, at), { text: at.text, body })
+    if (body) drafts.set(lineKey(diff, at), { diff, at, body })
     else drafts.delete(lineKey(diff, at))
+  },
+  /** Every saved draft in `diff`, wherever its line is now. */
+  list(diff: string): SavedDraft[] {
+    return [...drafts.values()].filter((d) => d.diff === diff).map(({ at, body }) => ({ at, body }))
   },
   /** The line whose composer is open in `diff`, if any. */
   openLine(diff: string): DraftLine | null {
