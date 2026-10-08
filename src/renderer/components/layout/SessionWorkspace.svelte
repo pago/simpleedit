@@ -675,7 +675,7 @@
         </p>
         <button
           class="rounded border border-red-500/40 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-500/20"
-          onclick={() => sessionsStore.close(sessionId)}
+          onclick={() => sessionsStore.remove(sessionId)}
         >
           Close session
         </button>

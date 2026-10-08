@@ -543,11 +543,23 @@ export const sessionsStore = {
       ...opts,
       target: { groupId: outgoing.groupId, index },
     })
+    void window.api.invoke('agent-threads:session-ended', outgoingId, newId)
     this.close(outgoingId)
     return newId
   },
 
   // ── lifecycle ────────────────────────────────────────────────────────────
+
+  /**
+   * The user removed a session: close it, and its agent threads go with it.
+   * Only for that explicit act — `close` also runs when a PTY exits, which
+   * includes quitting the app, and threads must outlive a quit.
+   */
+  remove(id: string): void {
+    if (!findSession(id)) return
+    void window.api.invoke('agent-threads:session-ended', id, null)
+    this.close(id)
+  },
 
   /**
    * Close a session: kill its PTY (if live) and remove the entry plus all
