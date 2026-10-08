@@ -5,6 +5,7 @@
  * list and the follow-up headers (`formatThreadForAgent`) read the stored
  * anchor, so they follow.
  */
+import { createHash } from 'crypto'
 import { statSync } from 'fs'
 import { readFile, stat } from 'fs/promises'
 import { join } from 'path'
@@ -20,6 +21,12 @@ let broadcast: Broadcast = () => {}
 const fileOf = new Map<string, string>()
 /** Absolute file → its unwatch. */
 const watches = new Map<string, () => void>()
+/**
+ * File → a hash of its content at the last pass (`null`: gone). The first
+ * pass after startup or a new watch has nothing to compare with and counts as
+ * unchanged.
+ */
+const lastSeen = new Map<string, string | null>()
 const running = new Map<string, Promise<void>>()
 const rerun = new Set<string>()
 
@@ -46,6 +53,7 @@ function track(threadId: string, file: string | null): boolean {
   if (old && ![...fileOf.values()].includes(old)) {
     watches.get(old)?.()
     watches.delete(old)
+    lastSeen.delete(old)
   }
   return file !== null
 }
@@ -77,13 +85,16 @@ async function reanchorOnce(file: string): Promise<void> {
     return
   }
   if (content === NOT_A_FILE) return
+  const hash = content === null ? null : createHash('sha1').update(content).digest('hex')
+  const fileChanged = lastSeen.has(file) && lastSeen.get(file) !== hash
+  lastSeen.set(file, hash)
   // Synchronous from here: nothing can change the threads between reading an
   // anchor and storing its successor.
   const changes: ThreadChange[] = []
   for (const [threadId, f] of fileOf) {
     if (f !== file) continue
     const stored = getThreadAnchor(threadId)
-    const next = stored ? reanchor(stored.anchor, content) : null
+    const next = stored ? reanchor(stored.anchor, content, fileChanged) : null
     if (!next) continue
     const change = setThreadAnchor(threadId, next)
     if (!change) continue
@@ -144,5 +155,6 @@ export function stopThreadAnchorWatch(): void {
   for (const unwatch of watches.values()) unwatch()
   watches.clear()
   fileOf.clear()
+  lastSeen.clear()
   rerun.clear()
 }

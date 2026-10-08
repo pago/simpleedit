@@ -113,6 +113,21 @@ describe('thread anchor watch', () => {
     expect(getThread('t_agent1')?.anchor.startLine).toBe(5)
   })
 
+  it('orphans a short thread without context once its file changes, not before', async () => {
+    writeFileSync(file, '}')
+    applyThreadOp({
+      kind: 'add-thread',
+      thread: { id: 't_lone11', sessionId: 's1', worktreePath: wt, anchor: { ...anchor(), startLine: 1, endLine: 1, snippet: '}', before: '', after: '' } },
+      message: { id: 'm_lone111', body: 'why?' },
+    })
+    await startThreadAnchorWatch({ broadcast: (c) => broadcasts.push(c) })
+    await reanchorFile(file)
+    expect(getThread('t_lone11')?.anchor.orphaned).toBeUndefined()
+    writeFileSync(file, '}\n// more')
+    await reanchorFile(file)
+    expect(getThread('t_lone11')?.anchor.orphaned).toBe(true)
+  })
+
   it('leaves a thread on a directory alone instead of orphaning it', async () => {
     const { change } = applyThreadOp({
       kind: 'add-thread',
