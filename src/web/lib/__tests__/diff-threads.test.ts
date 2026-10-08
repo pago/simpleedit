@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseUnifiedDiff, type DiffFile } from '../../../shared/parseDiff'
-import { diffAnchor, rowKey, threadsByRow } from '../diff-threads'
+import { diffAnchor, locateLine, rowKey, threadsByRow } from '../diff-threads'
 import type { AgentThread, ThreadAnchor } from '../../../shared/agent-threads'
 
 // Two hunks: new lines 10-15, then 40-41. `inserted` is new 12.
@@ -98,5 +98,20 @@ describe('threadsByRow', () => {
       WT,
     )
     expect([...placed.entries()].map(([k, ts]) => [k, ts.map((t) => t.id)])).toEqual([[rowKey('src/a.ts', 15), ['t_range']]])
+  })
+})
+
+describe('locateLine', () => {
+  it('keeps a line that still reads the same, and refuses one that does not', () => {
+    expect(locateLine(file(), 12, 'inserted')).toBe(12)
+    expect(locateLine(file(), 11, 'inserted')).toBeNull()
+  })
+
+  it('finds distinctive text that moved, but only when it is unique', () => {
+    const long = 'const answer = computeTheAnswer(input)'
+    const moved = parseUnifiedDiff(['diff --git a/x b/x', '--- a/x', '+++ b/x', '@@ -1,1 +1,3 @@', '+a', '+b', `+${long}`].join('\n'))[0]!
+    expect(locateLine(moved, 1, long)).toBe(3)
+    const twice = parseUnifiedDiff(['diff --git a/x b/x', '--- a/x', '+++ b/x', '@@ -1,1 +1,3 @@', `+${long}`, '+b', `+${long}`].join('\n'))[0]!
+    expect(locateLine(twice, 2, long)).toBeNull()
   })
 })

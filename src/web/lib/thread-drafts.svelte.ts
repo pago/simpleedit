@@ -14,23 +14,26 @@ export function diffKey(sessionId: string, view: DiffView): string {
   return [sessionId, view.worktreePath.replace(/\/+$/, ''), view.commit].join('\u0000')
 }
 
+/** A line as it read when its composer was opened; a draft only shows on a line that still reads so. */
 export interface DraftLine {
   path: string
   line: number
+  text: string
 }
 
 const lineKey = (diff: string, at: DraftLine): string => [diff, at.path, at.line].join('\u0000')
 
-const drafts = new SvelteMap<string, string>()
+const drafts = new SvelteMap<string, { text: string; body: string }>()
 const open = new SvelteMap<string, DraftLine>()
 
 export const threadDrafts = {
   get(diff: string, at: DraftLine): string {
-    return drafts.get(lineKey(diff, at)) ?? ''
+    const d = drafts.get(lineKey(diff, at))
+    return d && d.text === at.text ? d.body : ''
   },
-  /** Empty text forgets the line's draft. */
-  set(diff: string, at: DraftLine, text: string): void {
-    if (text) drafts.set(lineKey(diff, at), text)
+  /** An empty body forgets the line's draft. */
+  set(diff: string, at: DraftLine, body: string): void {
+    if (body) drafts.set(lineKey(diff, at), { text: at.text, body })
     else drafts.delete(lineKey(diff, at))
   },
   /** The line whose composer is open in `diff`, if any. */
