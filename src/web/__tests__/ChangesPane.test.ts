@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import ChangesPane from '../ChangesPane.svelte'
 import { nav } from '../lib/nav.svelte'
+import { _resetThreadDraftsForTests } from '../lib/thread-drafts.svelte'
 import type { ConnectionState, RemoteConnection } from '../api-shim'
 import type { GitCommitInfo, WindowSession } from '../../shared/ipc-types'
 
@@ -113,6 +114,7 @@ function commit(hash: string, message: string): GitCommitInfo {
 
 beforeEach(() => {
   nav.reset()
+  _resetThreadDraftsForTests()
   listeners = new Map()
   calls = []
   stateWatchers = []
@@ -400,6 +402,21 @@ describe('ChangesPane', () => {
       },
       message: { body: 'Why?' },
     })
+  })
+
+  it('keeps a half-typed comment through a reload of the diff', async () => {
+    mount()
+    await waitFor(() => expect(screen.getByText('new')).toBeTruthy())
+    await fireEvent.click(screen.getAllByTestId('diff-line').find((el) => el.textContent?.includes('new'))!)
+    await fireEvent.input(screen.getByLabelText('Comment for the agent'), { target: { value: 'still typing' } })
+
+    holdChannels.add('git:staging-diff')
+    emit('git:status-changed', { worktreePath: WORKTREE })
+    await fireEvent.click(await screen.findByTestId('stale-reload'))
+    await waitFor(() => expect(screen.queryByTestId('thread-composer')).toBeNull())
+    held.get('git:staging-diff|' + WORKTREE)!.resolve(DIFF)
+
+    await waitFor(() => expect((screen.getByLabelText('Comment for the agent') as HTMLTextAreaElement).value).toBe('still typing'))
   })
 
   it('keeps a plain terminal\'s diff read-only: there is no agent to ask', async () => {

@@ -4,6 +4,7 @@ import SessionDiff from '../SessionDiff.svelte'
 import '../app.css'
 import { initAgentThreadsListeners, _resetAgentThreadsForTests } from '../../renderer/stores/agentThreads.svelte'
 import type { AgentThread, AgentThreadOp, ThreadChange } from '../../shared/agent-threads'
+import { _resetThreadDraftsForTests } from '../lib/thread-drafts.svelte'
 
 /**
  * Tap-to-comment on the session's diff. A comment becomes an `add-thread` op
@@ -87,6 +88,7 @@ afterEach(() => {
   expect(invoke).not.toHaveBeenCalledWith('pty:write', expect.anything(), expect.anything())
   dispose()
   _resetAgentThreadsForTests()
+  _resetThreadDraftsForTests()
   vi.unstubAllGlobals()
 })
 
@@ -150,6 +152,59 @@ describe('SessionDiff tap-to-comment', () => {
     await fireEvent.click(row('TWO'))
     await fireEvent.click(row('TWO'))
     expect(screen.queryByTestId('thread-composer')).toBeNull()
+  })
+})
+
+describe('SessionDiff composer drafts', () => {
+  const box = (): HTMLTextAreaElement => screen.getByLabelText('Comment for the agent') as HTMLTextAreaElement
+
+  // The Changes pane remounts the diff on every reload, retry and Back.
+  it('keeps the open composer and its text across a remount', async () => {
+    const { unmount } = renderDiff()
+    await fireEvent.click(row('TWO'))
+    await fireEvent.input(box(), { target: { value: 'half a thought' } })
+    unmount()
+
+    renderDiff()
+    expect(screen.getByTestId('thread-composer').closest('li')?.querySelector('[data-testid="diff-line"]')).toHaveTextContent('TWO')
+    expect(box().value).toBe('half a thought')
+  })
+
+  it('never carries text to another line: each line keeps its own draft', async () => {
+    renderDiff()
+    await fireEvent.click(row('TWO'))
+    await fireEvent.input(box(), { target: { value: 'about TWO' } })
+    await fireEvent.click(row('three'))
+    expect(screen.getAllByTestId('thread-composer')).toHaveLength(1)
+    expect(box().value).toBe('')
+    await fireEvent.click(row('TWO'))
+    expect(box().value).toBe('about TWO')
+  })
+
+  it("keeps a draft per diff: a commit's line is not the working copy's", async () => {
+    const { unmount } = renderDiff()
+    await fireEvent.click(row('TWO'))
+    await fireEvent.input(box(), { target: { value: 'uncommitted note' } })
+    unmount()
+    renderDiff('abc1234')
+    expect(screen.queryByTestId('thread-composer')).toBeNull()
+    await fireEvent.click(row('TWO'))
+    expect(box().value).toBe('')
+  })
+
+  it('drops the text on Cancel and once sent', async () => {
+    renderDiff()
+    await fireEvent.click(row('TWO'))
+    await fireEvent.input(box(), { target: { value: 'never mind' } })
+    await fireEvent.click(screen.getByText('Cancel'))
+    await fireEvent.click(row('TWO'))
+    expect(box().value).toBe('')
+
+    await fireEvent.input(box(), { target: { value: 'sent' } })
+    await fireEvent.click(screen.getByText('Send to agent'))
+    await waitFor(() => expect(screen.queryByTestId('thread-composer')).toBeNull())
+    await fireEvent.click(row('TWO'))
+    expect(box().value).toBe('')
   })
 })
 
