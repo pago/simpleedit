@@ -121,8 +121,8 @@ async function checkStatus(key: string): Promise<void> {
  * Called when Claude touches a file so the UI updates without
  * waiting for the next poll cycle.
  */
-export function triggerStatusCheck(worktreePath: string, pathspec?: string): void {
-  checkStatus(gitWatchKey(worktreePath, pathspec))
+export function triggerStatusCheck(worktreePath: string, pathspec?: string): Promise<void> {
+  return checkStatus(gitWatchKey(worktreePath, pathspec))
 }
 
 export function unwatchGitRefs(worktreePath: string, pathspec?: string): void {
