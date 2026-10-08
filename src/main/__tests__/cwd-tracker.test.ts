@@ -31,7 +31,7 @@ describe('parseHookBody', () => {
     })
   })
 
-  it('ignores fields it does not use (Bash command, tool name, etc.)', () => {
+  it('ignores fields it does not use (Bash command, tool input, etc.)', () => {
     const body = {
       session_id: 's',
       cwd: '/p',
@@ -47,6 +47,7 @@ describe('parseHookBody', () => {
       lastAssistantMessage: null,
       message: null,
       stopHookActive: false,
+      toolName: 'Bash',
     })
   })
 
@@ -66,7 +67,20 @@ describe('parseHookBody', () => {
       lastAssistantMessage: null,
       message: null,
       stopHookActive: false,
+      toolName: 'Edit',
     })
+  })
+
+  it('surfaces what agent threads need: the submitted prompt and the tool call', () => {
+    expect(parseHookBody({
+      session_id: 's',
+      cwd: '/p',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_use_id: 'toolu_1',
+    })).toEqual(expect.objectContaining({ eventName: 'PermissionRequest', toolName: 'Bash', toolUseId: 'toolu_1' }))
+    expect(parseHookBody({ session_id: 's', cwd: '/p', hook_event_name: 'UserPromptSubmit', prompt: '[Thread t_abcdef · /x:1]' }))
+      .toEqual(expect.objectContaining({ prompt: '[Thread t_abcdef · /x:1]' }))
   })
 
   it('accepts Codex reporter identity and lifecycle metadata', () => {

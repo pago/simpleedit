@@ -3,7 +3,7 @@ import type { RemoteClient } from './client-hub'
 import { existsSync } from 'fs'
 import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtyClientId, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
-import { getProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
+import { getProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
 import { applyAgentSignal } from './mcp-bridge'
 import { sendAgentStatus } from './agent-status'
@@ -19,6 +19,8 @@ const terminals = new Map<string, IPty>()
  * plain terminals and Agent-View tabs, which wire nothing to clean up.
  */
 const agentCleanups = new Map<string, () => void>()
+/** The provider driving each agent terminal, kept for its exit. */
+const agentProviders = new Map<string, AgentProvider>()
 /**
  * Which client currently sizes each PTY. A PTY has one size but can have many
  * clients attached (two desktop windows on the same session, later a phone),
@@ -84,6 +86,7 @@ const spawning = new Set<string>()
 const killedWhileSpawning = new Set<string>()
 
 function runAgentCleanup(id: string): void {
+  agentProviders.delete(id)
   const cleanup = agentCleanups.get(id)
   if (cleanup) {
     cleanup()
@@ -363,6 +366,7 @@ export async function spawnAgentTerminalForProvider(
   // without this a second `agent:spawn` for the same id passes the check above
   // while the first is still awaiting, and both spawn.
   spawning.add(id)
+  agentProviders.set(id, provider)
   const ctx: LaunchContext = {
     provider: target.provider,
     target,
@@ -479,6 +483,16 @@ export function spawnAgentsTerminal(
     webContents,
     owner,
   )
+}
+
+/**
+ * A provider's own way of handing a live session a prompt (OpenCode's
+ * `prompt_async`), when it has one. Null: write to the PTY instead.
+ */
+export function pushToAgent(id: string, text: string): Promise<boolean> | null {
+  const provider = agentProviders.get(id)
+  if (!provider?.deliverMessage || !terminals.has(id)) return null
+  return provider.deliverMessage(id, text)
 }
 
 export function writeToTerminal(id: string, data: string): void {

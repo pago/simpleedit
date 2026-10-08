@@ -128,9 +128,14 @@ export function noteNotification(terminalId: string, notificationType: string | 
 const TERMINAL_REPLY =
   /\x1b\[[IO]|\x1b\[[?>][\d;]*c|\x1b\[\d+;\d+R|\x1b\[\d*n|\x1b\[\??[\d;]*\$y|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/g
 
+/** Whether a PTY write holds anything but the terminal's own replies. */
+export function isUserInput(data: string): boolean {
+  return data.replace(TERMINAL_REPLY, '').length > 0
+}
+
 /** Called for every write the user (or the renderer on their behalf) makes to a PTY. */
 export function noteUserInput(terminalId: string, data: string): void {
-  if (data.replace(TERMINAL_REPLY, '').length > 0) track(terminalId).inputPending = true
+  if (isUserInput(data)) track(terminalId).inputPending = true
 }
 
 /** Claude's idle comes from its title, which can't tell its prompt from a dialog. */

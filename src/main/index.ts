@@ -10,6 +10,7 @@ import {
   reportSpawnFailure,
   spawnAgentsTerminal,
   writeToTerminal,
+  pushToAgent,
   resizeTerminal,
   claimTerminal,
   releaseTerminalsOwnedBy,
@@ -91,7 +92,11 @@ import { checkForUpdatesFromMenu, initAutoUpdater } from './auto-update'
 import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } from './agent-bus'
-import { initAgentWake, noteUserInput } from './agent-wake'
+import { initAgentWake, isUserInput, noteUserInput } from './agent-wake'
+import { applyThreadOp, loadThreads, reassignSession, removeSessionThreads } from './agent-threads-store'
+import { forceSend, initThreadDelivery, moveSession, noteThreadStatus, noteThreadUserInput, requestSend, retryMessage } from './thread-delivery'
+import { parseMessageIdRequest, parseThreadOp, type ThreadChange } from '../shared/agent-threads'
+import { getPeer } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { createSessionOnce, resolveSessionCreate, type ModelCatalog } from './session-create'
 import { getProvider, registeredProviderIds } from './agents/provider'
@@ -409,6 +414,21 @@ configurePush({
 // the settings pane has never been opened.
 onAgentStatus((event, client) => handleAgentStatus(event, client.id))
 initAgentWake(writeToTerminal)
+
+function broadcastThreadChanges(changes: ThreadChange[]): void {
+  for (const change of changes) broadcastToAllClients('agent-threads:changed', change)
+}
+
+// Deferred to app-ready: the store opens the database under userData.
+function startThreadDelivery(): void {
+  initThreadDelivery({
+    provider: (sessionId) => getPeer(sessionId)?.provider ?? null,
+    write: writeToTerminal,
+    push: pushToAgent,
+    broadcast: broadcastThreadChanges,
+  })
+  onAgentStatus((event) => noteThreadStatus(event.terminalId, event.status))
+}
 onMailDropped((terminalId, messageIds) => broadcastToWindows('agent-message:dropped', { terminalId, messageIds }))
 
 /**
@@ -768,6 +788,7 @@ function registerAllHandlers(): void {
 
   handleInvoke('pty:write', (_event, id: string, data: string) => {
     noteUserInput(id, data)
+    if (isUserInput(data)) noteThreadUserInput(id)
     writeToTerminal(id, data)
   })
 
@@ -1060,6 +1081,33 @@ function registerAllHandlers(): void {
     return applyAndBroadcastDraftOp(url, op)
   })
 
+  handleInvoke('agent-threads:load', () => loadThreads())
+
+  handleInvoke('agent-threads:op', (_event, raw: unknown) => {
+    const { change, queued } = applyThreadOp(parseThreadOp(raw))
+    if (change) broadcastThreadChanges([change])
+    if (queued) requestSend(queued.sessionId)
+    return change
+  })
+
+  handleInvoke('agent-threads:retry', (_event, sessionId: unknown, messageId: unknown) =>
+    typeof sessionId === 'string' && retryMessage(sessionId, parseMessageIdRequest(messageId))
+  )
+
+  handleInvoke('agent-threads:force-send', (_event, sessionId: unknown) => {
+    if (typeof sessionId === 'string') forceSend(sessionId)
+  })
+
+  handleInvoke('agent-threads:session-ended', (_event, sessionId: unknown, successor: unknown) => {
+    if (typeof sessionId !== 'string' || !sessionId) return
+    if (typeof successor === 'string' && successor) {
+      broadcastThreadChanges(reassignSession(sessionId, successor))
+      moveSession(sessionId, successor)
+    } else {
+      broadcastThreadChanges(removeSessionThreads(sessionId))
+    }
+  })
+
   handleInvoke('screenprs:filter-get', () => loadFilter())
 
   handleInvoke('screenprs:filter-set', (_event, filter: unknown) => {
@@ -1249,6 +1297,12 @@ app.whenReady().then(() => {
   // A crash mid-transcription skips the cleanup in `transcribe`, leaving
   // somebody's voice in tmpdir. Swept before anything can add more.
   try { sweepAbandonedAudio() } catch { /* nothing better to do at launch */ }
+  try {
+    startThreadDelivery()
+  } catch (err) {
+    // Threads are one feature; a database that won't open must not keep the app from starting.
+    console.error('[Threads] Could not start:', err)
+  }
 
   if (isUnobtrusiveTest && process.platform === 'darwin') {
     // Accessory apps never activate on launch and have no Dock presence —
