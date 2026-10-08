@@ -63,13 +63,12 @@ import {
 const DEBOUNCE_MS = 5 * 60 * 1000
 
 /**
- * Quiet time after a thread-reply notification, per session.
- *
- * Shorter than a block's: each reply is a real answer, not a flapping status.
- * But one turn's implicit fallback answers every thread it carried at once,
- * and that is one buzz, not one per thread.
+ * Thread replies buzz once per TURN, per session: a turn may answer or open
+ * several threads, minutes apart, and that is one reason to look. The gate
+ * re-arms when the session next starts a turn (see `handleAgentStatus`); this
+ * is only the fallback for a session that never reports a status.
  */
-const REPLY_DEBOUNCE_MS = 60 * 1000
+const REPLY_FALLBACK_MS = 10 * 60 * 1000
 
 /**
  * A cap on devices, so a token holder cannot grow the file without bound.
@@ -338,8 +337,10 @@ export function removeAllSubscriptions(): PushStatus {
 const lastStatus = new Map<string, AgentStatusEvent['status']>()
 /** When we last notified about a terminal. */
 const lastNotifiedAt = new Map<string, number>()
-/** When we last notified about a reply in one of a terminal's threads. */
+/** When we last notified about a reply in one of a terminal's threads; cleared when its next turn starts. */
 const lastReplyNotifiedAt = new Map<string, number>()
+/** Last status of any precision, only to see a turn start. */
+const turnStatus = new Map<string, AgentStatusEvent['status']>()
 
 /**
  * Should this transition wake a phone?
@@ -506,7 +507,16 @@ export function handleAgentStatus(event: AgentStatusEvent, windowId: number): vo
     lastStatus.delete(event.terminalId)
     lastNotifiedAt.delete(event.terminalId)
     lastReplyNotifiedAt.delete(event.terminalId)
+    turnStatus.delete(event.terminalId)
     return
+  }
+
+  // A new turn re-arms the thread-reply buzz. Not out of `waiting`: that is a
+  // dialog inside the same turn.
+  const before = turnStatus.get(event.terminalId)
+  turnStatus.set(event.terminalId, event.status)
+  if (event.status === 'running' && before !== 'running' && before !== 'waiting') {
+    lastReplyNotifiedAt.delete(event.terminalId)
   }
 
   // Only a PRECISE status defines what "previously" was.
@@ -542,8 +552,8 @@ export function handleAgentStatus(event: AgentStatusEvent, windowId: number): vo
  * An agent appended a message to one of its threads. Registered by `index.ts`
  * as thread delivery's `onAgentReply`.
  *
- * The same gates as a block, in the same order: debounce, then presence (so a
- * reply read at the desk does not burn the debounce), then a reachable URL and
+ * The same gates as a block, in the same order: once per turn, then presence
+ * (so a reply read at the desk does not use up the turn's buzz), then a reachable URL and
  * a device to send to. Errors are swallowed for the same reason: this runs
  * inside thread delivery, which must not fail on an unreachable push service.
  */
@@ -552,7 +562,7 @@ export function handleThreadReply(thread: AgentThread): void {
   if (!last || last.author !== 'agent') return
   const now = deps.now()
   const lastAt = lastReplyNotifiedAt.get(thread.sessionId)
-  if (lastAt !== undefined && now - lastAt < REPLY_DEBOUNCE_MS) return
+  if (lastAt !== undefined && now - lastAt < REPLY_FALLBACK_MS) return
   if (deps.userIsPresent()) return
   const url = deps.targetUrl()
   if (!url) return
@@ -573,4 +583,5 @@ export function resetPushState(): void {
   lastStatus.clear()
   lastNotifiedAt.clear()
   lastReplyNotifiedAt.clear()
+  turnStatus.clear()
 }
