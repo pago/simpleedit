@@ -59,8 +59,8 @@ describe('attachThreadGlyphs', () => {
     const glyphs = attachThreadGlyphs(editor, () => {})
 
     glyphs.set([
-      { threadId: 't1', line: 2, unread: true, preview: 'hi' },
-      { threadId: 't2', line: 99, unread: false, preview: 'past the end' },
+      { threadId: 't1', line: 2, endLine: 2, unread: true, preview: 'hi' },
+      { threadId: 't2', line: 99, endLine: 99, unread: false, preview: 'past the end' },
     ])
     expect(editor.getOption(monaco.editor.EditorOption.glyphMargin)).toBe(true)
     await new Promise((r) => requestAnimationFrame(r))

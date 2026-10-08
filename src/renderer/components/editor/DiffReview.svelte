@@ -12,6 +12,9 @@
   import type { MemoryScope } from '../../stores/tabsStore.svelte'
   import { agentThreadsStore } from '../../stores/agentThreads.svelte'
   import { threadGlyphsFor } from '../../lib/thread-glyphs'
+  import { threadAnchorFor } from '../../lib/thread-anchor'
+  import type { ThreadHost } from '../../lib/thread-zones'
+  import { sessionsStore } from '../../stores/sessions.svelte'
 
   interface Props {
     /** null means staging/uncommitted changes */
@@ -204,6 +207,31 @@
       ? threadGlyphsFor(agentThreadsStore.forSession(workspaceKey), { worktreePath, path: selectedFile, commit: commitHash })
       : [],
   )
+
+  // New threads belong to this workspace's session, as from Discuss with Agent;
+  // threadAnchorFor turns away the diffs that can't take one (branch changes).
+  let threadHost = $derived.by((): ThreadHost | null => {
+    const file = selectedFile
+    if (!file || sessionsStore.get(workspaceKey)?.kind !== 'agent') return null
+    const host: ThreadHost = {
+      sessionId: workspaceKey,
+      anchorFor: (lines) =>
+        threadAnchorFor(
+          {
+            kind: 'diff',
+            filePath: file,
+            commitHash,
+            side: 'modified',
+            selectedText: '',
+            lineRange: [lines.startLine, lines.endLine],
+            lines,
+            worktreePath,
+          },
+          worktreePath,
+        ),
+    }
+    return host
+  })
 
   function handleDiscussWithAgent(ctx: AgentContext, pos: { x: number; y: number }): void {
     if (ctx.kind === 'diff') {
@@ -417,7 +445,7 @@
             {highlightLines}
             ondiscusswithagent={handleDiscussWithAgent}
             {threadGlyphs}
-            onopenthread={(id) => agentThreadsStore.reveal(workspaceKey, id)}
+            {threadHost}
           />
         </div>
       {:else}

@@ -22,6 +22,12 @@
 .thread-glyph-unread {
   background-color: rgb(96 165 250);
 }
+/* The hover "+" that starts a thread on a line. */
+.thread-glyph-add {
+  cursor: pointer;
+  background-color: rgb(96 165 250);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M7 2h2v5h5v2H9v5H7V9H2V7h5Z'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+}
 
 /* Where a composed panel's `focus_block` landed. Outline rather than border so
    the jump costs no layout shift in a panel the reader is scrolling. */
