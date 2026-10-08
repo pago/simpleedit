@@ -1,6 +1,9 @@
 <script lang="ts">
   /**
-   * A unified diff, read-only, at phone width.
+   * A unified diff at phone width: the one phone diff, under both the session's
+   * Changes pane (`SessionDiff`, agent threads) and Screen PRs (`PrDiff`, review
+   * drafts). Each wrapper decides what a tap on a line means and what shows
+   * under it; this decides how a diff reads on a phone.
    *
    * Unified because there is no second column to put anything in: a
    * side-by-side split at ~390 CSS px gives each side about twenty characters,
@@ -8,23 +11,31 @@
    * file's container so the PAGE never moves sideways — a horizontally
    * scrolling page on a touch screen fights every vertical swipe.
    *
-   * Nothing here can act on the repository. Rows are not tap targets, because
-   * there is nothing for a tap to do on this surface and a row that lights up
-   * under a thumb promises otherwise.
+   * Without `ontap` no row is a tap target, because a row that lights up under
+   * a thumb promises an action. With it, `tappable` says which rows are: a
+   * full-width row is the touch target, as tall as the text (a 44 px line would
+   * leave a screenful of diff at fifteen lines).
    *
-   * ⚠️ Convergence: `PrDiff.svelte` (pull-request review, on its own branch)
-   * renders the same rows with tappable lines and inline draft comments. The
-   * two should become one component with the tap handling optional; this is
-   * deliberately the same structure so that lift is mechanical rather than a
-   * rewrite.
+   * The gutter shows the number a comment on the row would use: a deletion
+   * exists only in the old file, so it reads its OLD number; `data-line` is
+   * always the new-file number, empty for a deletion.
    */
+  import { tick, type Snippet } from 'svelte'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
+  import { findRevealTarget, REVEAL_FLASH_MS, scrollBehavior, type RevealTarget } from '../renderer/lib/diffReveal'
 
   interface Props {
     diff: string
+    testid?: string
+    /** A line was tapped. Absent: the diff is read-only. */
+    ontap?: (file: DiffFile, row: DiffRow) => void
+    /** Which non-hunk rows `ontap` takes. Default: all of them. */
+    tappable?: (row: DiffRow) => boolean
+    /** Rendered under a row: comments, threads, a composer. */
+    below?: Snippet<[DiffFile, DiffRow]>
   }
 
-  let { diff }: Props = $props()
+  let { diff, testid = 'session-diff', ontap, tappable = () => true, below }: Props = $props()
 
   let files = $derived<DiffFile[]>(parseUnifiedDiff(diff))
 
@@ -58,31 +69,60 @@
   function marker(kind: DiffRow['kind']): string {
     return kind === 'add' ? '+' : kind === 'del' ? '−' : ' '
   }
+
+  let root = $state<HTMLDivElement>()
+  let revealed = $state<RevealTarget | null>(null)
+  let revealTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * Scroll `path` into view and briefly highlight it: the row nearest `line`
+   * (a new-file number, or a `12-18` range) when given, else the file header.
+   * Opens a collapsed file and un-truncates a long one when the row needs it.
+   * Resolves false when the diff has no such file. Call it with the diff
+   * showing — a hidden pane has nothing to scroll.
+   */
+  export async function reveal(path: string, line?: string | number): Promise<boolean> {
+    const target = findRevealTarget(files, path, line)
+    if (!target) return false
+    if (!isOpen(target.path)) override = new Map(override).set(target.path, true)
+    if (target.row !== null && target.row >= ROW_BUDGET) shownAll = new Set(shownAll).add(target.path)
+    clearTimeout(revealTimer)
+    revealed = target
+    await tick()
+    root?.querySelector('[data-revealed]')?.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
+    revealTimer = setTimeout(() => (revealed = null), REVEAL_FLASH_MS)
+    return true
+  }
+
+  $effect(() => () => clearTimeout(revealTimer))
+
+  const isRevealed = (file: DiffFile, row: number | null): boolean =>
+    revealed?.path === file.path && revealed.row === row
+  const REVEAL_CLASS = 'bg-orange-500/15 ring-1 ring-inset ring-orange-500/70'
+  /** A row keeps its add/del tint, which a second background would fight; the ring alone marks it. */
+  const REVEAL_ROW_CLASS = 'ring-2 ring-inset ring-orange-500/70'
+  const ROW = 'flex w-full min-w-full items-start gap-2 whitespace-pre px-2 py-[3px] text-left'
 </script>
 
 <!-- Keyed by position, not by path: a parsed path is display data, and the
      whole list is re-derived from scratch whenever the diff string changes. -->
-<div class="flex flex-col gap-3 p-3" data-testid="session-diff">
+<div class="flex flex-col gap-3 p-3" data-testid={testid} bind:this={root}>
   {#if files.length === 0}
-    <p class="px-1 py-4 text-sm text-zinc-500" data-testid="session-diff-empty">
-      No textual changes here.
-    </p>
+    <p class="px-1 py-4 text-sm text-zinc-500" data-testid="diff-empty">No textual changes here.</p>
   {/if}
 
   {#each files as file, index (index)}
     {@const open = isOpen(file.path)}
     {@const all = shownAll.has(file.path)}
     {@const rows = all ? file.rows : file.rows.slice(0, ROW_BUDGET)}
-    <section
-      class="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900"
-      data-testid="session-diff-file"
-    >
+    <section class="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900" data-testid="diff-file">
       <button
         type="button"
         onclick={() => toggle(file.path)}
-        data-testid="session-diff-file-header"
+        data-testid="diff-file-header"
+        data-revealed={isRevealed(file, null) || undefined}
         aria-expanded={open}
-        class="flex w-full items-center gap-2 border-b border-zinc-800 px-3 py-2.5 text-left"
+        class="flex min-h-11 w-full items-center gap-2 border-b border-zinc-800 px-3 py-2.5 text-left {isRevealed(file, null) ? REVEAL_CLASS : ''}"
       >
         <span class="flex-none text-[10px] text-zinc-600">{open ? '▾' : '▸'}</span>
         <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-300">{file.path}</span>
@@ -104,21 +144,41 @@
           <div class="overflow-x-auto">
             <ul class="min-w-full font-mono text-[11px] leading-[1.6]">
               {#each rows as row, i (i)}
-                <li
-                  data-testid="session-diff-line"
-                  data-line={row.newNo ?? ''}
-                  class="flex min-w-full items-start gap-2 whitespace-pre px-2 py-[3px] {ROW_CLASS[row.kind]}"
-                >
+                <li>
                   {#if row.kind === 'hunk'}
-                    <span class="px-1">{row.text}</span>
+                    <div class="whitespace-pre px-3 py-1 {ROW_CLASS.hunk}" data-testid="diff-hunk">{row.text}</div>
                   {:else}
-                    <span
-                      class="w-9 flex-none select-none text-right text-[10px] tabular-nums text-zinc-600"
-                      >{row.newNo ?? ''}</span
-                    >
-                    <span class="flex-none">{marker(row.kind)}</span>
-                    <span>{row.text}</span>
+                    {#snippet cells()}
+                      <span class="w-9 flex-none select-none text-right text-[10px] tabular-nums text-zinc-600"
+                        >{row.kind === 'del' ? row.oldNo : row.newNo}</span
+                      >
+                      <span class="flex-none">{marker(row.kind)}</span>
+                      <span>{row.text}</span>
+                    {/snippet}
+                    {@const rowClass = `${ROW} ${ROW_CLASS[row.kind]} ${isRevealed(file, i) ? REVEAL_ROW_CLASS : ''}`}
+                    {#if ontap && tappable(row)}
+                      <button
+                        type="button"
+                        onclick={() => ontap(file, row)}
+                        data-testid="diff-line"
+                        data-file={file.path}
+                        data-line={row.newNo ?? ''}
+                        data-revealed={isRevealed(file, i) || undefined}
+                        class="{rowClass} active:bg-zinc-700/60">{@render cells()}</button
+                      >
+                    {:else}
+                      <div
+                        data-testid="diff-line"
+                        data-file={file.path}
+                        data-line={row.newNo ?? ''}
+                        data-revealed={isRevealed(file, i) || undefined}
+                        class={rowClass}
+                      >
+                        {@render cells()}
+                      </div>
+                    {/if}
                   {/if}
+                  {@render below?.(file, row)}
                 </li>
               {/each}
             </ul>
@@ -127,8 +187,8 @@
             <button
               type="button"
               onclick={() => { shownAll = new Set(shownAll).add(file.path) }}
-              data-testid="session-diff-show-all"
-              class="w-full border-t border-zinc-800 px-3 py-2.5 text-[11px] text-blue-400"
+              data-testid="show-all-rows"
+              class="min-h-11 w-full border-t border-zinc-800 px-3 py-2.5 text-[11px] text-blue-400"
               >Show the remaining {file.rows.length - ROW_BUDGET} lines</button
             >
           {/if}

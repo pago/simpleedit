@@ -7,8 +7,8 @@ import MobileDiff from '../MobileDiff.svelte'
  *
  * `parseDiff.test.ts` already proves the parse. What is new here is the
  * rendering promises this surface makes: the page never scrolls sideways, a
- * huge file does not have to be paid for up front, and nothing on a row is
- * actionable.
+ * huge file does not have to be paid for up front, and without `ontap`
+ * nothing on a row is actionable.
  */
 
 const SMALL = `diff --git a/src/a.ts b/src/a.ts
@@ -30,9 +30,10 @@ function bigDiff(lines: number): string {
 describe('MobileDiff', () => {
   it('renders every changed line with its new-file line number', () => {
     render(MobileDiff, { props: { diff: SMALL } })
-    const rows = screen.getAllByTestId('session-diff-line')
-    // hunk header + 1 context + 1 deletion + 2 additions
-    expect(rows).toHaveLength(5)
+    const rows = screen.getAllByTestId('diff-line')
+    // 1 context + 1 deletion + 2 additions, under one hunk header
+    expect(rows).toHaveLength(4)
+    expect(screen.getAllByTestId('diff-hunk')).toHaveLength(1)
     const added = rows.find((r) => r.textContent?.includes('const added = 2'))
     const removed = rows.find((r) => r.textContent?.includes('const gone = 2'))
     expect(added?.getAttribute('data-line')).toBe('2')
@@ -45,7 +46,7 @@ describe('MobileDiff', () => {
 
   it('counts the file and shows its path', () => {
     render(MobileDiff, { props: { diff: SMALL } })
-    const header = screen.getByTestId('session-diff-file-header')
+    const header = screen.getByTestId('diff-file-header')
     expect(header.textContent).toContain('src/a.ts')
     expect(header.textContent).toContain('+2')
     expect(header.textContent).toContain('−1')
@@ -62,9 +63,9 @@ describe('MobileDiff', () => {
   // this surface does not have.
   it('makes no row actionable', () => {
     render(MobileDiff, { props: { diff: SMALL } })
-    for (const row of screen.getAllByTestId('session-diff-line')) {
-      expect(row.tagName).toBe('LI')
-      expect(row.querySelector('button')).toBeNull()
+    for (const row of screen.getAllByTestId('diff-line')) {
+      expect(row.tagName).toBe('DIV')
+      expect(row.closest('li')?.querySelector('button')).toBeNull()
     }
   })
 
@@ -74,21 +75,21 @@ describe('MobileDiff', () => {
       (_, i) => `diff --git a/f${i}.ts b/f${i}.ts\n--- a/f${i}.ts\n+++ b/f${i}.ts\n@@ -1 +1 @@\n+x\n`,
     ).join('')
     const { unmount } = render(MobileDiff, { props: { diff: SMALL } })
-    expect(screen.queryAllByTestId('session-diff-line').length).toBeGreaterThan(0)
+    expect(screen.queryAllByTestId('diff-line').length).toBeGreaterThan(0)
     unmount()
 
     render(MobileDiff, { props: { diff: many } })
-    expect(screen.queryAllByTestId('session-diff-line')).toHaveLength(0)
-    await fireEvent.click(screen.getAllByTestId('session-diff-file-header')[0])
-    expect(screen.queryAllByTestId('session-diff-line').length).toBeGreaterThan(0)
+    expect(screen.queryAllByTestId('diff-line')).toHaveLength(0)
+    await fireEvent.click(screen.getAllByTestId('diff-file-header')[0])
+    expect(screen.queryAllByTestId('diff-line').length).toBeGreaterThan(0)
   })
 
   it('holds a huge file back behind one tap rather than rendering it all', async () => {
     render(MobileDiff, { props: { diff: bigDiff(900) } })
-    // 500 rows plus the hunk header the budget is measured against.
-    expect(screen.getAllByTestId('session-diff-line')).toHaveLength(500)
-    await fireEvent.click(screen.getByTestId('session-diff-show-all'))
-    expect(screen.getAllByTestId('session-diff-line')).toHaveLength(901)
+    // The 500-row budget counts the hunk header too.
+    expect(screen.getAllByTestId('diff-line')).toHaveLength(499)
+    await fireEvent.click(screen.getByTestId('show-all-rows'))
+    expect(screen.getAllByTestId('diff-line')).toHaveLength(900)
   })
 
   it('says so instead of rendering nothing for a binary file', () => {
@@ -102,6 +103,6 @@ describe('MobileDiff', () => {
 
   it('says a diff is empty rather than showing a blank pane', () => {
     render(MobileDiff, { props: { diff: '' } })
-    expect(screen.getByTestId('session-diff-empty')).toBeTruthy()
+    expect(screen.getByTestId('diff-empty')).toBeTruthy()
   })
 })
