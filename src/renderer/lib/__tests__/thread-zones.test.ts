@@ -333,6 +333,26 @@ describe('review fixes', () => {
     expect(editor.getTopForLineNumber(5) - editor.getTopForLineNumber(4)).toBeGreaterThan(40)
   })
 
+  it('holds back a thread that arrives while the buffer is unsaved, until the save', async () => {
+    put(thread('t_aaaaaaaa'))
+    sync()
+    isDirty = true
+    editor.executeEdits('test', [{ range: new monaco.Range(1, 1, 1, 1), text: 'new\n' }])
+    put(thread('t_bbbbbbbb', { anchor: { ...thread('x').anchor, startLine: 5, endLine: 5 } }))
+    sync()
+    const glyphsOn = (line: number): number =>
+      editor.getLineDecorations(line)?.filter((d) => d.options.glyphMarginClassName?.startsWith('thread-glyph ') || d.options.glyphMarginClassName === 'thread-glyph').length ?? 0
+    expect(glyphsOn(3)).toBe(1)
+    expect(glyphsOn(5)).toBe(0)
+    expect(threads.open('t_bbbbbbbb')).toBe(false)
+
+    isDirty = false
+    threads.refresh()
+    expect(glyphsOn(3)).toBe(1)
+    expect(glyphsOn(5)).toBe(1)
+    expect(threads.open('t_bbbbbbbb')).toBe(true)
+  })
+
   it("keeps a composer's text when another composer replaces it, and restores it there", async () => {
     sync()
     await openComposerAt(1)
