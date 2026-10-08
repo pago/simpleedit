@@ -1,168 +1,262 @@
 # Plan: Agent threads
 
-Status: planned · Branch: `feat/agent-threads` · Worktree: `../agent-threads`
-This plan is committed for the life of the branch. The branch's final commit deletes it, and
-its durable parts move into `CLAUDE.md`.
+Status: planned, revised after adversarial review round 1 · Branch: `feat/agent-threads` ·
+Worktree: `../agent-threads`. This plan is committed for the life of the branch. The
+branch's final commit deletes it, and its durable parts move into `CLAUDE.md`.
 
-> Line-anchored comment threads between the user and the agent session in the file editor
-> and the session's diff view. It works like artifact comments: you comment on a line, the
-> agent acts and/or answers in the thread, and you append, reopen or resolve. It is built by
-> extending **Discuss with Agent** with a thread id, plus an MCP tool to answer a thread. It
-> needs no new transport.
+> Line-anchored comment threads between the user and the agent session, in the file editor
+> and the session's diff view, working like artifact comments. You comment on a line. The
+> agent acts and/or answers in the thread. You append, reopen or resolve. The feature is
+> built by extending **Discuss with Agent** with a thread id and adding an MCP tool to answer
+> a thread. There is no new transport.
 
 ## Why
 
-Talking to an agent in the terminal is linear, and every reference in it ("that function",
-"the second point") is implicit. A thread pins the conversation to the code it is about. Each
-topic progresses on its own, and the record stays next to the line. In practice the user
-already prefers artifacts over SimpleEdit for this reason alone.
+The terminal conversation is linear, and its references ("that function", "the second point")
+are implicit. A thread pins the conversation to the code it is about, lets each topic
+progress on its own, and keeps the record next to the line. The user already prefers
+artifacts over SimpleEdit for exactly this.
 
 ## Key decision: user comments are not agent mail
 
-Agent-to-agent mail has to wake a session that nobody is watching. That is the hard,
-unreliable part of `agent-bus.ts` and `agent-wake.ts` (#197, #198, #201). A thread comment is
-sent by the user, who is present, so submitting it into the PTY is equivalent to the user
-typing a prompt. We therefore do **not** route threads through the bus and do not depend on
-#201. What remains is a send policy (when it is safe to submit) and a reply fallback (when
-the agent doesn't call the tool).
+Agent-to-agent mail has to wake a session nobody is watching. That is the hard, unreliable
+part of `agent-bus.ts` and `agent-wake.ts` (#197, #198, #201). A thread comment is sent by a
+user who is present, which is close to the user typing a prompt. So threads do **not** go
+through the bus and do not depend on #201. The design that remains: send only at a safe
+moment, confirm delivery, and attach an answer even when the agent doesn't call the tool.
 
-Rejected alternatives, from the feasibility discussion of 2026-10-08:
-- **Claude Code channels.** Research preview. A local server needs
-  `--dangerously-load-development-channels`, which shows a dialog on every launch. It
-  requires claude.ai or Console auth, and it does not acknowledge delivery.
-- **Monitor or a CLI the agent listens to.** The agent has to decide to start it, it has a
-  5–30 minute deadline, and it is disabled under `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
-  (local-model sessions set this).
-- **A bundled mod's `$.prompt.submit` (#201).** Good for unattended mail and a possible later
-  upgrade here, but Claude-only and early-access. It isn't needed for an attended send.
+Rejected on 2026-10-08:
+- **Claude Code channels.** Research preview. It needs a `--dangerously-load-development-channels`
+  dialog on every launch and claude.ai or Console auth, and it gives no delivery
+  acknowledgement.
+- **Monitor or a CLI the agent listens to.** The agent has to choose to start it, it has a
+  5–30 min deadline, and it is disabled under `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+  (local-model sessions).
+- **A bundled mod's `$.prompt.submit` (#201).** Claude-only and early-access. It is still the
+  upgrade path if PTY sends prove flaky, since `$.prompt.read` would also solve the draft
+  problem below.
 
 ## How it works
 
 ### Data model (main-owned store, modelled on `screenprs-drafts.ts`)
 
-- `AgentThread`: `id`, `sessionId` (the agent session it belongs to), `worktreePath`,
-  `anchor`, `status: open | resolved`, `messages[]`, `createdAt`, `updatedAt`.
-- `anchor`: `path` (relative to the worktree), `startLine` and `endLine`, `snippet` (the
-  anchored lines' text, used for re-anchoring), and `context: 'file' | { diff: base/side }`.
-  Also `orphaned?: true` once re-anchoring fails.
-- `ThreadMessage`: `id`, `author: 'user' | 'agent'`, `body` (markdown), `at`,
-  `delivery` (user messages only): `held | sent | answered | answered-implicitly`.
-- Persisted as `userData/config/agent-threads.json`, written atomically. Changed only through
-  ops (`add-thread`, `append`, `set-status`, `remove-thread`, `mark-delivery`), with a `rev`
-  counter, tombstones and a `agent-threads:changed` broadcast to all clients. The phone gets
-  the data for free, but its UI is out of scope for v1.
-- IPC namespace `agent-threads:*`, following the IPC namespace convention in `CLAUDE.md`.
+- `AgentThread`: `id`, `sessionId` (owning agent session), `worktreePath`, `anchor`,
+  `status: open | resolved`, `messages[]`, `lastReadAt`, `createdAt`, `updatedAt`.
+- `anchor`:
+  - `path`, stored relative to the worktree.
+  - `startLine`, `endLine`.
+  - `snippet`, plus `before` and `after` (2–3 context lines each), for re-anchoring.
+  - `context: 'file' | { commit: sha | 'uncommitted', base?: sha }`. A thread on a commit
+    diff is anchored to immutable content and is never re-anchored. The `commit` field is
+    also what a later GitHub mapping (`commit_id`, side) needs.
+  - `orphaned?: true`.
+- `ThreadMessage`: `id`, `author: 'user' | 'agent'`, `body` (markdown), `at`. User messages
+  also have `delivery: held | sending | delivered | answered | answered-implicitly |
+  unanswered | failed`, with `heldReason` and `failedReason`.
+- Persisted to `userData/config/agent-threads.json`, written atomically.
+- Ops:
+  - `add-thread`, `append`, `set-status`, `remove-thread`.
+  - `set-anchor` (re-anchor and orphan).
+  - `mark-read`.
+  - `set-delivery` (main-only, never accepted from a client).
+- `rev`, tombstones, and the `agent-threads:changed` broadcast to every client, desktop
+  windows and phones alike. Main validates every op, since the phone is a remote client.
+  Clients only submit ops. Sending is main's job (below), so a phone and a desktop window
+  share one queue per session and can never double-send.
+- IPC namespace `agent-threads:*`.
 
-### Sending a user message
+### Sending
 
 `buildAgentMessage` (`src/renderer/lib/agent-message.ts:38`) gets a `thread` variant. The
-submitted prompt is a header plus the snippet (as today) plus the thread id and an explicit
-instruction:
+header carries an **absolute** path: Claude launches at the project root, not in the
+worktree, and the editor context already passes absolute paths
+(`CodeEditor.svelte:219-222`).
 
 ```
-[Thread t_3f9a · src/main/agent-bus.ts:411-451]
+[Thread t_3f9a · /abs/path/src/main/agent-bus.ts:411-451]
 <fenced snippet>
 <user comment>
 (Answer in this thread with reply_to_thread("t_3f9a", …). Act on it first if it asks for a change.)
 ```
 
-A follow-up in an existing thread also carries the thread's earlier messages, truncated, so
-it still makes sense after `/compact` or a fork.
+A follow-up carries the thread's earlier messages, truncated, so it survives `/compact` and
+forks.
 
-The send happens in **main**, not the renderer. That way the guards in `agent-wake.ts` are at
-hand and the phone can reuse the same path later. It uses `agentSubmitWrite`, i.e. a real
-submit, unlike today's Discuss with Agent, which only stages the text
-(`SessionWorkspace.svelte:239-241`). The thread composer replaces the staging step.
+**The send moment.** Main owns this. A new `thread-delivery.ts` sits beside `agent-wake.ts`
+and reuses its per-terminal state. A thread message is written only when **all** of these
+hold:
+1. **Idle after a turn ended.** For Claude and Codex this means a `Stop` was answered
+   (`endStop`) plus `WAKE_SETTLE_MS`, with nothing since: no `running`, no hook, no key. For
+   Claude, the `idle_prompt` Notification also counts as idle. Busy sessions are never
+   written to, so there is no mid-turn queueing, no Codex steering, and no merging with the
+   user's own prompt. Messages held during a turn go out **batched into one submit** at the
+   next idle edge, one header per thread.
+2. **No dialog.** Claude gets two new synchronous hooks in `writeHookSettings`
+   (`src/main/agents/claude.ts:84-91`): `PermissionRequest`, and `PreToolUse` matched to
+   `AskUserQuestion`. Each sets `blocked` *before* its dialog renders. `blocked` is cleared
+   only by that tool call's `PostToolUse` (or failure), a `Stop`, or a user-started
+   `UserPromptSubmit`, never by a plain `running`. Codex `PermissionRequest` and OpenCode
+   `permission.asked` already map to `waiting`.
+   - Check against the live CLI whether `PermissionRequest` exists in the current Claude
+     Code. Today `parseHookBody` (`cwd-tracker.ts`) reads neither `tool_name` nor
+     `tool_use_id`, so add both.
+   - Rule 1 already rules out every in-turn dialog. This rule is defense in depth for
+     dialogs outside a turn.
+3. **No draft.** `inputPending` is **latched** until a `UserPromptSubmit` the user started
+   (one without a `[Thread` header), not cleared by any `running`.
+   - Otherwise a draft typed mid-turn is forgotten once a Stop-block continuation reports
+     `running`.
+   - There is **no "Send anyway"**: a bracketed paste plus CR would submit the draft
+     merged with the comment.
+   - While held, the thread shows "held: unsent text in the terminal" and offers **Copy**.
+     See open question 1 for the case where the user has already cleared the prompt.
+4. **A live PTY.** For a `pendingResume` session, offer "Resume and send": resume with the
+   batched comment as the initial prompt (`--resume <id> "<prompt>"`).
 
-**Send policy.** The user is present, so this is looser than the wake path but never unsafe:
-- **Dialog up** (`blocked`: a Claude `Notification` other than `idle_prompt`, or a Codex or
-  OpenCode `waiting` status): hold the message. It shows as "held: agent is waiting on you"
-  and is sent automatically once `beginStop` or `running` clears it. Never type into a dialog.
-- **Draft pending** (`inputPending`, any key since the last turn started): hold the message
-  and offer **Send anyway**. The signal over-reports, because typing and then deleting text
-  still counts, so the user must be able to override it.
-- **Busy** (`running`): submit. Claude Code queues a prompt typed mid-turn. Codex and
-  OpenCode behaviour is a live-check item (below). For OpenCode, prefer its HTTP
-  `prompt_async` (`src/main/agents/opencode.ts:520`) over the PTY if that works.
-- **Idle:** submit.
+Providers:
+- **OpenCode** always uses its HTTP `prompt_async` (`deliverMessage`, `opencode.ts:519`),
+  which never touches the TUI input, so rule 3 does not apply to it.
+- **Claude and Codex** use `agentSubmitWrite`.
 
-### Agent replies
+**Delivery confirmation.** After a write the message is `sending`. It becomes `delivered`
+when a `UserPromptSubmit` arrives whose `prompt` contains its `[Thread t_…]` header.
+- Add reading `prompt` to `parseHookBody`.
+- For OpenCode, confirmation comes from `prompt_async` success plus its event stream.
+- With no confirmation within ~10 s, the message becomes `failed` ("the agent didn't
+  receive it") with **Retry**, so nothing stays "sent" forever.
+- When a PTY exits, every one of its `sending` messages fails and every arm on it expires.
 
-New MCP tools in `src/main/mcp-server/index.mjs`, dispatched in `mcp-bridge.ts`
-`handleToolCall` and scoped by `terminalId` → session:
-- `reply_to_thread(threadId, body)`: appends an agent message. Rejects thread ids that don't
-  belong to the calling session.
-- `open_thread(path, startLine, endLine?, body)` (slice 3): the agent opens a thread on a
-  line. This is the agent→user annotation idea that was deferred when Plan Mode was dropped.
+### Replies
 
-**Implicit fallback.** Each sent user message arms an "awaiting reply" entry on its terminal.
-On the next `Stop` (`handleTurnEnd`, `mcp-bridge.ts:760`), every armed thread that got no
-`reply_to_thread` in that turn receives `last_assistant_message` as an agent message marked
-`answered-implicitly`. That guarantees an answer always lands in the thread. The rate of
-implicit answers is the metric for whether the tool instruction works.
+New MCP tools are added in `src/main/mcp-server/index.mjs` and dispatched in `mcp-bridge.ts`
+`handleToolCall`. Each is scoped by `terminalId` to the calling session.
+- `reply_to_thread(threadId, body)` appends an agent message.
+  - A thread owned by another session is rejected with a reason the agent can act on:
+    "thread t_x belongs to session ‹label›; you are a fork, answer in your terminal".
+  - A forked session inherits the conversation, but not the threads.
+- `open_thread(path, startLine, endLine?, body)` arrives in slice 3.
+
+**Implicit fallback, armed on delivery and not on send.** The `UserPromptSubmit` that
+confirms delivery arms each thread it carries. On that turn's `Stop` (`handleTurnEnd`,
+`mcp-bridge.ts:759`), every armed thread that got no `reply_to_thread` receives
+`last_assistant_message` and is marked `answered-implicitly`. If the turn ends any other
+way, its arms are released and the messages are marked `unanswered` with Retry. That covers
+an Esc-interrupted turn (no `Stop`) followed by a user-started `UserPromptSubmit`, and a
+PTY exit. A later turn's answer is never attributed to an earlier comment.
+
+### Session lifecycle
+
+- **Hand off (`target: 'replace'`)** moves the old session's threads to the new session id.
+- **Fork:** threads stay with the origin, and the fork's `reply_to_thread` is rejected with
+  a reason (above).
+- **Session deleted:** its threads are removed with it. See open question 3.
 
 ### UI
 
-Both surfaces in a session are **Monaco**. The editor is `CodeEditor` (file tabs,
-`TabContainer.svelte:73-82`), and the diff tab is `DiffReview` → `MonacoDiffEditor`
-(`DiffReview.svelte:405`). `UnifiedDiffView`'s `belowRow` slot is only used by Screen PRs,
-so it doesn't help here. One Monaco thread mechanism serves both:
-- A glyph-margin "+" (or `⌘⇧M` / the context menu replacing the "Discuss with agent" action)
-  opens a composer view zone under the selected line or range.
-- Each thread is a **view zone** rendering a Svelte component (messages, composer, Resolve or
-  Reopen, delivery state). A glyph-margin decoration marks anchored lines, and a resolved
-  thread collapses to its glyph.
-- In the diff editor, threads attach to the modified side only. Comments on the original side
-  are a non-goal for v1.
-- **Threads list:** a session-level list of open threads with unread-reply badges. Clicking an
-  entry opens the file at the anchor. This is how you notice a reply in a file you don't have
-  open.
+Both session surfaces are Monaco: `CodeEditor` (`TabContainer.svelte:73-82`) and
+`DiffReview` → `MonacoDiffEditor` (`DiffReview.svelte:405`). `UnifiedDiffView`'s `belowRow`
+is only used by Screen PRs and does not apply here. A single Monaco thread mechanism serves
+both:
+- A glyph-margin "+", plus `⌘⇧M` and the context-menu action that replaces "Discuss with
+  agent", opens a composer view zone under the line or range.
+- Each thread is a view zone hosting a Svelte component: messages, composer,
+  Resolve/Reopen, and a delivery state with Retry or Copy. A glyph decoration marks
+  anchored lines. A resolved thread collapses to its glyph.
+- In diff tabs, threads live on the modified side only. The original side is a v1
+  non-goal.
+- A session-level **threads list** shows open threads with unread badges (from
+  `lastReadAt`), and a click opens the anchor. This is how a reply in a file that isn't
+  open gets noticed.
 
-### Re-anchoring
+### Phone (in from the start)
 
-Monaco decorations track edits made in the editor, but agent edits happen on disk. On
-model reload, if the line range's text no longer equals `snippet`, search for the snippet
-(exact match first, then trimmed whitespace) nearest to the old line. Move the anchor if
-found, otherwise mark the thread `orphaned` and list it under the file without a line. Do not
-attempt fuzzy diff-mapping in v1.
+The phone's session screen already has a Changes pane (`src/web/ChangesPane.svelte` →
+`MobileDiff.svelte`). Its rows are read-only today. `MobileDiff.svelte:11-17` itself notes
+that it should merge with `PrDiff`'s tappable lines and inline draft comments.
+- **Merge the two.** A single phone diff component makes tap handling optional, and its
+  inline slot renders either Screen PRs drafts or agent threads.
+- **On a line, tap to comment.** The thread shows inline under its row, with append,
+  resolve, reopen, and the delivery state (Retry, Copy).
+- A **threads list** on the session screen with unread badges, the same as on desktop.
+- **No PTY write from the phone for threads.** `SessionScreen.svelte:156` writes with
+  `agentSubmitWrite` directly. Thread messages instead go to main as `append` ops, and
+  `thread-delivery.ts` sends them under the same rules. That also covers a phone comment
+  while the desktop user has a draft in the terminal.
+- A push notification for an agent reply, using the existing push path, so a reply reaches
+  a phone that isn't open.
+
+### Re-anchoring (main, not the editor)
+
+Main re-anchors a thread whenever its file changes on disk. It uses the worktree watcher
+that already exists, so this also runs for files that aren't open. That keeps the list and
+the follow-up headers correct.
+- If the stored range still equals `snippet`, the anchor stays where it is.
+- Otherwise main searches for `before + snippet + after`, then for the snippet alone. A
+  match counts only if it is **unique**, with snippet-only matching allowed only for
+  snippets of at least 2 non-blank lines or 20 non-whitespace characters. So `}` or a
+  blank line never re-anchors.
+- If no unique match is found, the thread becomes `orphaned` and is listed under its file
+  without a line.
+- Moves are persisted with `set-anchor`.
+- Threads on commit diffs are skipped.
+- Fuzzy diff-mapping is out of scope for v1.
 
 ## Slices
 
-1. **Store and delivery, with minimal UI.** The thread store and its ops and IPC; the send
-   path with its policy; `reply_to_thread` and the implicit fallback; a plain threads list
-   panel, plus "Discuss with Agent" creating a thread instead of staging text. Then do the
-   **live check**.
-2. **Monaco threads.** View zones and glyphs in `CodeEditor` and `MonacoDiffEditor`, the
-   composer, resolve and reopen, re-anchoring.
-3. **Agent-opened threads.** `open_thread`, plus guidance on when an agent should use it, so
-   it doesn't spam threads.
-4. **Durable docs.** A new `CLAUDE.md` section "Agent threads", next to "Agent-to-agent
-   messaging" (`CLAUDE.md:144`), then delete this plan in the final commit.
+1. **Store and delivery, with a minimal UI.**
+   - The store with its ops and IPC.
+   - `thread-delivery.ts` with the four send rules, and the new Claude hooks with their
+     `parseHookBody` fields.
+   - Delivery confirmation, `reply_to_thread`, and the delivery-armed fallback.
+   - A plain threads list on desktop **and phone**, and "Discuss with Agent" creating a
+     thread.
+   - Every hold, send, confirm, arm and answer is logged as `[Threads] …` for the audit.
+   - Then the **live check**.
+2. **Inline threads.** On desktop, view zones and glyphs in both Monaco editors. On the
+   phone, the merged diff component with tap-to-comment and inline threads. Plus the
+   composer, resolve/reopen, reply push notifications, and re-anchoring in main.
+3. **Agent-opened threads.** `open_thread`, plus guidance so agents don't spam threads.
+4. **Durable docs.** A `CLAUDE.md` section "Agent threads" next to "Agent-to-agent
+   messaging" (`CLAUDE.md:144`). Delete this plan in the final commit.
 
-Later, not on this branch: phone UI; the PR-review variant (threads mirrored to GitHub
-review threads, #186); a mod-based Claude delivery (#201) if PTY submit proves flaky.
+Later, not on this branch:
+- the PR-review variant (GitHub review threads, #186)
+- mod-based Claude delivery (#201)
 
 ## Live check (gate after slice 1, before slice 2)
 
-Use a dev instance with real `claude`, `codex` and `opencode`. Pass means:
-1. About ten comments across idle and busy states all arrive as exactly one submitted prompt
-   each, never staged, duplicated or merged with each other.
-2. With a permission dialog **and** an AskUserQuestion dialog open, the comment is held and
-   then sent after the dialog closes. Nothing is typed into the dialog. Verify that Claude's
-   `Notification` fires promptly for both dialog kinds, since that is the only Claude dialog
-   signal.
-3. A pending draft holds the message, and **Send anyway** sends it.
-4. The rate of explicit `reply_to_thread` calls is noted. Every message gets an answer either
-   way, through the fallback.
-5. A reply from a busy turn that handled two threads lands in the right threads.
+Use a dev instance with real `claude`, `codex` and `opencode`. Do **at least 30 sends per
+provider**, then audit the `[Threads]` log. Passing means **zero** misrouted answers, zero
+messages typed into a dialog, and zero lost messages. Every message must end in `delivered`
+or later, or in a visible `failed`/`unanswered` state.
 
-If 1 or 2 fails for a provider, threads are disabled for that provider rather than shipped
-flaky.
+Cases:
+- Idle.
+- Busy, then sent at the idle edge, including several held messages batched into one
+  submit.
+- A permission dialog and an AskUserQuestion dialog, each **already open** and also
+  **appearing mid-turn** after the comment is held.
+- A draft in the prompt.
+- An Esc-interrupted turn.
+- `/compact`.
+- A `pendingResume` session.
+- A fork replying to an origin thread.
+- Hand-off `replace`.
+- A comment sent from the phone while the desktop terminal holds a draft, plus a desktop
+  and a phone appending to the same thread at the same time.
+- A submit forced to be swallowed (type into a picker first), to confirm `failed` and
+  Retry.
+
+Record the explicit `reply_to_thread` rate. If any case fails for a provider, threads stay
+disabled for that provider rather than shipping flaky.
 
 ## Open questions
 
-- Should a resolved thread tell the agent ("user resolved t_3f9a")? Default: no, it's
-  UI-only.
-- Thread lifetime: are they tied to the session (lost on session removal) or to the worktree
-  (outlive the session)? Default: to the session, with the store keeping them until the
-  session is deleted.
+1. **Draft escape hatch.** The draft flag over-reports: text that was typed and then deleted
+   still counts. Without "Send anyway", a user who cleared the prompt by hand stays held
+   until their next submitted turn ends. Options:
+   - (a) Accept it. Copy is the only escape.
+   - (b) Add "My prompt is empty, send". The user takes responsibility, with a confirm.
+   - (c) Ship the Claude mod's `$.prompt.read` (#201) as the real fix.
+2. **Telling the agent about a resolve.** Default: no, resolving stays UI-only.
+3. **Thread lifetime.** Default: a thread is tied to its session, and survives hand-off.
