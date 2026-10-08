@@ -3,9 +3,10 @@
    * One session: the real terminal, the keys a phone lacks, a composer — and
    * what the agent has changed.
    *
-   * A detail screen, so it gets the shell's back button. It has genuinely two
-   * panes, which is the one thing that earns a segmented control, and it is
-   * labelled for this screen: Terminal / Changes. The panes are not navigation
+   * A detail screen, so it gets the shell's back button. It has genuinely
+   * separate panes, which is the one thing that earns a segmented control, and
+   * it is labelled for this screen: Terminal / Changes / Threads (an agent's
+   * comment threads, with an unread count). The panes are not navigation
    * — switching them adds nothing for Back to undo — but a diff opened in
    * Changes is, so leaving Changes for Terminal closes it: Back from the
    * terminal must never close a diff nobody can see.
@@ -25,13 +26,16 @@
    *
    * Changes is mounted LAZILY — its first visit builds it — because a session
    * that is only ever read as a terminal should not pay for it at all. After
-   * that it stays.
+   * that it stays. Threads follows the same rule: each thread's composer holds
+   * a half-typed reply.
    *
    * The keys and the composer belong to the terminal and are hidden with it:
-   * there is nothing on the Changes pane to type at.
+   * the Changes pane has nothing to type at, and Threads has its own composers.
    */
   import MobileTerminal from './MobileTerminal.svelte'
   import ChangesPane from './ChangesPane.svelte'
+  import ThreadsPane from './ThreadsPane.svelte'
+  import { agentThreadsStore } from '../renderer/stores/agentThreads.svelte'
   import KeyBar from './KeyBar.svelte'
   import VoiceComposer from './VoiceComposer.svelte'
   import DiscardConfirm from './DiscardConfirm.svelte'
@@ -80,13 +84,18 @@
   let caps = $state<AgentCapabilities | null>(null)
   let composer = $state<VoiceComposer | undefined>()
 
-  const PANES = [
+  const ALL_PANES = [
     { id: 'terminal', label: 'Terminal' },
     { id: 'changes', label: 'Changes' },
+    { id: 'threads', label: 'Threads' },
   ] as const
-  let pane = $state<(typeof PANES)[number]['id']>('terminal')
+  type PaneId = (typeof ALL_PANES)[number]['id']
+  // A plain terminal has no agent to hold a thread with.
+  let panes = $derived(session.kind === 'terminal' ? ALL_PANES.filter((p) => p.id !== 'threads') : ALL_PANES)
+  let pane = $state<PaneId>('terminal')
+  let unreadThreads = $derived(agentThreadsStore.unreadCount(session.terminalId))
 
-  function selectPane(next: (typeof PANES)[number]['id']): void {
+  function selectPane(next: PaneId): void {
     pane = next
     if (next === 'changes') return
     const diff = nav
@@ -98,6 +107,10 @@
   let changesBuilt = $state(false)
   $effect(() => {
     if (pane === 'changes') changesBuilt = true
+  })
+  let threadsBuilt = $state(false)
+  $effect(() => {
+    if (pane === 'threads') threadsBuilt = true
   })
 
   $effect(() => {
@@ -168,16 +181,25 @@
 
 <div class="flex h-full min-h-0 flex-col" data-testid="session-screen" data-terminal-id={session.terminalId}>
   <div class="flex flex-none gap-1 border-b border-zinc-800 p-2" role="tablist" data-testid="session-panes">
-    {#each PANES as entry (entry.id)}
+    {#each panes as entry (entry.id)}
       <button
         type="button"
         role="tab"
         aria-selected={pane === entry.id}
         onclick={() => selectPane(entry.id)}
         data-testid="pane-{entry.id}"
-        class="min-h-8 flex-1 rounded-md text-xs font-medium
+        class="flex min-h-8 flex-1 items-center justify-center gap-1.5 rounded-md text-xs font-medium
           {pane === entry.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 active:bg-zinc-900'}"
-      >{entry.label}</button>
+      >
+        {entry.label}
+        {#if entry.id === 'threads' && unreadThreads > 0}
+          <span
+            class="min-w-4 rounded-full bg-blue-500 px-1 text-[10px] leading-4 text-white"
+            aria-label="{unreadThreads} unread"
+            data-testid="threads-unread"
+          >{unreadThreads}</span>
+        {/if}
+      </button>
     {/each}
   </div>
 
@@ -190,6 +212,12 @@
   {#if changesBuilt}
     <div class="min-h-0 flex-1 {pane === 'changes' ? '' : 'hidden'}">
       <ChangesPane {session} {connection} active={visible && pane === 'changes'} />
+    </div>
+  {/if}
+
+  {#if threadsBuilt}
+    <div class="min-h-0 flex-1 {pane === 'threads' ? '' : 'hidden'}">
+      <ThreadsPane sessionId={session.terminalId} active={visible && pane === 'threads'} />
     </div>
   {/if}
 
