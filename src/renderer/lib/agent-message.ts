@@ -1,4 +1,5 @@
 import type { ReviewFinding } from '../../shared/ipc-types'
+import type { AnchorLines } from './thread-anchor'
 
 export type AgentContext =
   | {
@@ -6,6 +7,8 @@ export type AgentContext =
       filePath: string
       selectedText: string
       lineRange: [number, number]
+      /** What a thread on this selection anchors to. */
+      lines: AnchorLines
     }
   | {
       kind: 'diff'
@@ -14,6 +17,9 @@ export type AgentContext =
       side: 'original' | 'modified'
       selectedText: string
       lineRange: [number, number]
+      lines: AnchorLines
+      /** The worktree the diff's paths are relative to; set by DiffReview, like `commitHash`. */
+      worktreePath?: string
     }
   | {
       kind: 'finding'

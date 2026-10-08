@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
   import type { AgentContext } from '../../lib/agent-message'
+  import { anchorLines } from '../../lib/thread-anchor'
   import { lspClientManager } from '../../lsp/client-manager'
   import {
     applyReveal,
@@ -220,6 +221,7 @@
             filePath: latestFilePath,
             selectedText,
             lineRange: [selection.startLineNumber, selection.endLineNumber],
+            lines: anchorLines(model, selection),
           },
           { x: rect.left + pixelPos.left, y: rect.top + pixelPos.top + pixelPos.height },
         )
