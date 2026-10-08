@@ -208,6 +208,47 @@ describe('SessionDiff composer drafts', () => {
   })
 })
 
+describe('SessionDiff drafts on a diff that moved', () => {
+  const box = (): HTMLTextAreaElement => screen.getByLabelText('Comment for the agent') as HTMLTextAreaElement
+  const LONG = 'const answer = computeTheAnswer(input)'
+  const before = (body: string[]) => ['diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', `@@ -1,1 +1,${body.length} @@`, ...body].join('\n')
+  const mountOn = (diff: string) =>
+    render(SessionDiff, { diff, sessionId: 's1', view: { worktreePath: '/wt', commit: 'uncommitted' }, visible: true })
+
+  it('never re-anchors a draft onto the code that took its line; it waits for a tap', async () => {
+    const first = mountOn(before([' one', '+TWO', ' three']))
+    await fireEvent.click(row('TWO'))
+    await fireEvent.input(box(), { target: { value: 'why upper?' } })
+    first.unmount()
+
+    // The agent added two lines above: line 2 is now other code, TWO is line 4.
+    mountOn(before([' one', '+new a', '+new b', '+TWO', ' three']))
+    expect(screen.queryByTestId('thread-composer')).toBeNull()
+    expect(screen.getByTestId('thread-composer-detached')).toHaveTextContent('has changed')
+    expect(box().value).toBe('why upper?')
+    expect(screen.queryByText('Send to agent')).toBeNull()
+
+    await fireEvent.click(row('TWO'))
+    expect(screen.queryByTestId('thread-composer-detached')).toBeNull()
+    expect(box().value).toBe('why upper?')
+    await fireEvent.click(screen.getByText('Send to agent'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('agent-threads:op', expect.objectContaining({ kind: 'add-thread' })))
+    const op = invoke.mock.calls.find(([c]) => c === 'agent-threads:op')?.[1] as Extract<AgentThreadOp, { kind: 'add-thread' }>
+    expect(op.thread.anchor).toMatchObject({ startLine: 4, snippet: 'TWO' })
+  })
+
+  it('follows a distinctive line that moved', async () => {
+    const first = mountOn(before([' one', `+${LONG}`]))
+    await fireEvent.click(row(LONG))
+    await fireEvent.input(box(), { target: { value: 'naming?' } })
+    first.unmount()
+
+    mountOn(before([' one', '+inserted', `+${LONG}`]))
+    expect(screen.getByTestId('thread-composer').closest('li')?.querySelector('[data-testid="diff-line"]')).toHaveAttribute('data-line', '3')
+    expect(box().value).toBe('naming?')
+  })
+})
+
 describe('SessionDiff inline threads', () => {
   it('shows an open thread under its line, with Retry for a failed message', async () => {
     put(thread('t_aaaaaaaa'))

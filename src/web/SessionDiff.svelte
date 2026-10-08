@@ -9,14 +9,17 @@
    *
    * What is typed into a composer belongs to its line (`thread-drafts`), so it
    * survives the pane remounting this diff, and tapping another line opens
-   * that line's own composer rather than moving the text.
+   * that line's own composer rather than moving the text. A remount may bring
+   * a newer diff: a draft follows its line only while the line reads the same
+   * (`locateLine`), and otherwise waits, detached, for a tap on a line. It is
+   * never anchored to whatever code took its line number.
    */
   import MobileDiff from './MobileDiff.svelte'
   import ThreadCard from './ThreadCard.svelte'
   import { agentThreadsStore } from '../renderer/stores/agentThreads.svelte'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
   import type { AgentThread } from '../shared/agent-threads'
-  import { canAnchor, diffAnchor, rowKey, threadLine, threadsByRow, type DiffView } from './lib/diff-threads'
+  import { canAnchor, diffAnchor, locateLine, rowKey, threadLine, threadsByRow, type DiffView } from './lib/diff-threads'
   import { diffKey, threadDrafts, type DraftLine } from './lib/thread-drafts.svelte'
 
   interface Props {
@@ -54,13 +57,15 @@
   }
 
   let thisDiff = $derived(diffKey(sessionId, view))
-  /** The open composer's line, while this diff still holds it. */
+  /** The open composer and the row it is on now, or `row: null` when its line can't be found again. */
   let composing = $derived.by(() => {
     const at = threadDrafts.openLine(thisDiff)
     if (!at) return null
     const file = files.find((f) => f.path === at.path)
-    const row = file?.rows.find((r) => canAnchor(r) && r.newNo === at.line)
-    return file && row ? { key: rowKey(at.path, at.line), at, file, row } : null
+    const line = file ? locateLine(file, at.line, at.text) : null
+    const row = line === null ? undefined : file?.rows.find((r) => canAnchor(r) && r.newNo === line)
+    if (!file || !row) return { at, key: null, file: null, row: null }
+    return { at, key: rowKey(at.path, row.newNo!), file, row }
   })
   let draft = $derived(composing ? threadDrafts.get(thisDiff, composing.at) : '')
   let sending = $state(false)
@@ -72,7 +77,15 @@
   }
 
   function tap(file: DiffFile, row: DiffRow): void {
-    openComposer(composing?.key === rowKey(file.path, row.newNo!) ? null : { path: file.path, line: row.newNo! })
+    if (composing?.key === rowKey(file.path, row.newNo!)) return openComposer(null)
+    const at = { path: file.path, line: row.newNo!, text: row.text }
+    // A detached draft is waiting for exactly this: the line it is about.
+    if (composing && !composing.row && draft) {
+      const own = threadDrafts.get(thisDiff, at)
+      threadDrafts.set(thisDiff, at, own ? `${own}\n\n${draft}` : draft)
+      threadDrafts.set(thisDiff, composing.at, '')
+    }
+    openComposer(at)
   }
 
   function cancel(): void {
@@ -89,7 +102,7 @@
   async function submit(): Promise<void> {
     const body = draft.trim()
     const at = composing
-    if (!body || !at || sending) return
+    if (!body || !at?.row || sending) return
     const anchor = diffAnchor(at.file, at.row, view)
     if (!anchor) return
     const where = thisDiff
@@ -109,6 +122,26 @@
     }
   }
 </script>
+
+{#if composing && !composing.row && draft}
+  <div class="m-3 mb-0 space-y-2 rounded-lg border border-amber-900/60 bg-amber-950/30 p-3" data-testid="thread-composer-detached">
+    <p class="text-xs leading-relaxed text-amber-300">
+      Line {composing.at.line} of {composing.at.path} has changed since you started this comment. Tap a line to attach it there.
+    </p>
+    <textarea
+      value={draft}
+      oninput={(e) => threadDrafts.set(thisDiff, composing!.at, e.currentTarget.value)}
+      rows="3"
+      class="w-full resize-none rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-zinc-200 outline-none focus:border-blue-500"
+      aria-label="Comment for the agent"
+    ></textarea>
+    <button
+      type="button"
+      class="min-h-11 w-full rounded-md border border-zinc-700 text-sm text-zinc-300 active:bg-zinc-800"
+      onclick={cancel}>Discard</button
+    >
+  </div>
+{/if}
 
 <MobileDiff bind:this={diffView} {diff} ontap={tap} tappable={canAnchor}>
   {#snippet below(file, row)}

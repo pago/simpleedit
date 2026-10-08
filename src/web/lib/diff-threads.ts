@@ -57,6 +57,23 @@ function inView(t: AgentThread, view: DiffView): boolean {
   return view.commit === 'uncommitted' ? workingCopy : ctx !== 'file' && ctx.commit === view.commit
 }
 
+/** Shortest snippet, in non-whitespace characters, that may be found again on a line of its own, as main's re-anchoring requires. */
+const MIN_RELOCATE_CHARS = 20
+
+/**
+ * Where a line read earlier is in `file` now: still at `line` with the same
+ * text, else the one row holding that text when the text is distinctive
+ * enough to be sure. Null when neither holds — a `}` or a blank line is never
+ * guessed at.
+ */
+export function locateLine(file: DiffFile, line: number, text: string): number | null {
+  const rows = file.rows.filter(canAnchor)
+  if (rows.some((r) => r.newNo === line && r.text === text)) return line
+  if (text.replace(/\s/g, '').length < MIN_RELOCATE_CHARS) return null
+  const same = rows.filter((r) => r.text === text)
+  return same.length === 1 ? same[0]!.newNo! : null
+}
+
 export function rowKey(path: string, newNo: number): string {
   return `${path}\u0000${newNo}`
 }
