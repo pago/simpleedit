@@ -953,8 +953,8 @@ function registerAllHandlers(): void {
   handleInvoke('agent:providers', () => registeredProviderIds())
 
   // ── Git ─────────────────────────────────────────────────
-  handleInvoke('git:log', (_event, worktreePath: string, count?: number) => {
-    return getCommitLog(worktreePath, count)
+  handleInvoke('git:log', (_event, worktreePath: string, count?: number, pathspec?: string) => {
+    return getCommitLog(worktreePath, count, pathspec)
   })
 
   // Diffs are the one read with no upper bound, and an oversized reply on a
@@ -973,8 +973,8 @@ function registerAllHandlers(): void {
     return getFileAtCommit(worktreePath, commitHash, filePath)
   })
 
-  handleInvoke('git:staging-files', (_event, worktreePath: string) => {
-    return getStagingFiles(worktreePath)
+  handleInvoke('git:staging-files', (_event, worktreePath: string, pathspec?: string) => {
+    return getStagingFiles(worktreePath, pathspec)
   })
 
   handleInvoke('git:staging-diff', async (event, worktreePath: string) => {
@@ -985,12 +985,12 @@ function registerAllHandlers(): void {
     return getFileAtHead(worktreePath, filePath)
   })
 
-  handleInvoke('git:watch', (event, worktreePath: string) => {
-    return watchGitRefs(worktreePath, hubFor(event.sender))
+  handleInvoke('git:watch', (event, worktreePath: string, pathspec?: string) => {
+    return watchGitRefs(worktreePath, hubFor(event.sender), pathspec)
   })
 
-  handleInvoke('git:unwatch', (_event, worktreePath: string) => {
-    unwatchGitRefs(worktreePath)
+  handleInvoke('git:unwatch', (_event, worktreePath: string, pathspec?: string) => {
+    unwatchGitRefs(worktreePath, pathspec)
   })
 
   handleInvoke('git:branch-diff', (_event, worktreePath: string) => {

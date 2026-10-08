@@ -13,9 +13,18 @@ interface GitWatchState {
   lastStatusSnapshot: string
   webContents: RemoteClient
   worktreePath: string
+  pathspec: string | undefined
 }
 
+/**
+ * Keyed by root + pathspec: a scoped watch (the memory view's GitLog) must
+ * neither inherit an unscoped watch on the same repo nor tear it down.
+ */
 const gitWatchers = new Map<string, GitWatchState>()
+
+export function gitWatchKey(worktreePath: string, pathspec?: string): string {
+  return pathspec ? `${worktreePath}\0${pathspec}` : worktreePath
+}
 
 /**
  * Watch a worktree for git state changes:
@@ -28,10 +37,12 @@ const gitWatchers = new Map<string, GitWatchState>()
  */
 export async function watchGitRefs(
   worktreePath: string,
-  webContents: RemoteClient
+  webContents: RemoteClient,
+  pathspec?: string
 ): Promise<void> {
+  const key = gitWatchKey(worktreePath, pathspec)
   // Don't double-watch
-  if (gitWatchers.has(worktreePath)) return
+  if (gitWatchers.has(key)) return
 
   const git = simpleGit(worktreePath)
 
@@ -60,7 +71,7 @@ export async function watchGitRefs(
     }
     // Also trigger an immediate status check since refs changes often
     // accompany status changes (e.g. commit clears staged files)
-    checkStatus(worktreePath)
+    checkStatus(key)
   }
 
   refsWatcher.on('add', emitRefs)
@@ -68,38 +79,39 @@ export async function watchGitRefs(
   refsWatcher.on('unlink', emitRefs)
 
   // Take initial status snapshot
-  const initialSnapshot = await getStatusSnapshot(worktreePath)
+  const initialSnapshot = await getStatusSnapshot(worktreePath, pathspec)
 
   // Start periodic status polling
-  const pollTimer = setInterval(() => checkStatus(worktreePath), STATUS_POLL_INTERVAL)
+  const pollTimer = setInterval(() => checkStatus(key), STATUS_POLL_INTERVAL)
 
-  gitWatchers.set(worktreePath, {
+  gitWatchers.set(key, {
     refsWatcher,
     pollTimer,
     lastStatusSnapshot: initialSnapshot,
     webContents,
-    worktreePath
+    worktreePath,
+    pathspec
   })
 }
 
-async function getStatusSnapshot(worktreePath: string): Promise<string> {
+export async function getStatusSnapshot(worktreePath: string, pathspec?: string): Promise<string> {
   try {
     const git = simpleGit(worktreePath)
-    return await git.raw(['status', '--porcelain'])
+    return await git.raw(pathspec ? ['status', '--porcelain', '--', pathspec] : ['status', '--porcelain'])
   } catch {
     return ''
   }
 }
 
-async function checkStatus(worktreePath: string): Promise<void> {
-  const state = gitWatchers.get(worktreePath)
+async function checkStatus(key: string): Promise<void> {
+  const state = gitWatchers.get(key)
   if (!state) return
 
-  const snapshot = await getStatusSnapshot(worktreePath)
+  const snapshot = await getStatusSnapshot(state.worktreePath, state.pathspec)
   if (snapshot !== state.lastStatusSnapshot) {
     state.lastStatusSnapshot = snapshot
     if (!state.webContents.isDestroyed()) {
-      state.webContents.send('git:status-changed', { worktreePath })
+      state.webContents.send('git:status-changed', { worktreePath: state.worktreePath })
     }
   }
 }
@@ -109,17 +121,22 @@ async function checkStatus(worktreePath: string): Promise<void> {
  * Called when Claude touches a file so the UI updates without
  * waiting for the next poll cycle.
  */
-export function triggerStatusCheck(worktreePath: string): void {
-  checkStatus(worktreePath)
+export function triggerStatusCheck(worktreePath: string, pathspec?: string): void {
+  checkStatus(gitWatchKey(worktreePath, pathspec))
 }
 
-export function unwatchGitRefs(worktreePath: string): void {
-  const state = gitWatchers.get(worktreePath)
+export function unwatchGitRefs(worktreePath: string, pathspec?: string): void {
+  const key = gitWatchKey(worktreePath, pathspec)
+  const state = gitWatchers.get(key)
   if (state) {
     state.refsWatcher.close()
     clearInterval(state.pollTimer)
-    gitWatchers.delete(worktreePath)
+    gitWatchers.delete(key)
   }
+}
+
+export function isWatchingGitRefs(worktreePath: string, pathspec?: string): boolean {
+  return gitWatchers.has(gitWatchKey(worktreePath, pathspec))
 }
 
 export function unwatchAllGitRefs(): void {
@@ -132,10 +149,11 @@ export function unwatchAllGitRefs(): void {
 
 export async function getCommitLog(
   worktreePath: string,
-  count: number = 50
+  count: number = 50,
+  pathspec?: string
 ): Promise<GitCommitInfo[]> {
   const git = simpleGit(worktreePath)
-  const log = await git.log({ maxCount: count })
+  const log = await git.log({ maxCount: count, ...(pathspec ? { file: pathspec } : {}) })
 
   return log.all.map((entry) => ({
     hash: entry.hash,
@@ -201,12 +219,14 @@ export async function getFileAtCommit(
  * Get staging (uncommitted) diff — both staged and unstaged changes.
  */
 export async function getStagingFiles(
-  worktreePath: string
+  worktreePath: string,
+  pathspec?: string
 ): Promise<DiffFileEntry[]> {
   const git = simpleGit(worktreePath)
 
-  // Get combined status of working tree
-  const status = await git.status()
+  // simple-git's status() already passes -u (every untracked file); the
+  // pathspec is what keeps a home-rooted repo from walking all of them.
+  const status = await git.status(pathspec ? ['--', pathspec] : [])
 
   const files: DiffFileEntry[] = []
   const seen = new Set<string>()
