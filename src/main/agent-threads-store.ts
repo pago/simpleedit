@@ -219,6 +219,35 @@ export function appendAgentMessage(threadId: string, id: string, body: string, n
   })
 }
 
+/** A thread the agent starts (`open_thread`): unread, with no message to deliver. */
+export function addAgentThread(
+  input: { id: string; sessionId: string; worktreePath: string; anchor: ThreadAnchor; messageId: string; body: string },
+  now = new Date(),
+): ThreadChange {
+  const d = getDb()
+  const at = now.toISOString()
+  return transaction(d, () => {
+    d.prepare(
+      'INSERT INTO threads (id, session_id, worktree_path, anchor, status, last_read_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)',
+    ).run(input.id, input.sessionId, input.worktreePath, JSON.stringify(input.anchor), 'open', at, at)
+    insertMessage(input.id, { id: input.messageId, author: 'agent', body: input.body, at })
+    return changed(input.id)
+  })
+}
+
+/** Open threads the agent started that the user hasn't answered yet. */
+export function unansweredAgentThreads(sessionId: string): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM threads t
+       WHERE t.session_id = ? AND t.status = 'open'
+         AND (SELECT author FROM thread_messages WHERE thread_id = t.id ORDER BY seq LIMIT 1) = 'agent'
+         AND NOT EXISTS (SELECT 1 FROM thread_messages WHERE thread_id = t.id AND author = 'user')`,
+    )
+    .get(sessionId) as { n: number }
+  return row.n
+}
+
 export function setThreadStatus(threadId: string, status: ThreadStatus, now = new Date()): ThreadChange | null {
   return applyThreadOp({ kind: 'set-status', threadId, status }, now).change
 }

@@ -425,7 +425,7 @@ function firstLine(text: string): string {
   )
 }
 
-/** For a thread whose last message is the agent's reply. */
+/** For a thread whose last message is the agent's: a reply, or a thread it opened. */
 export function buildThreadPayload(
   thread: AgentThread,
   label: string | null,
@@ -434,8 +434,9 @@ export function buildThreadPayload(
 ): PushPayload {
   const { path, startLine } = thread.anchor
   const reply = thread.messages[thread.messages.length - 1]?.body ?? ''
+  const verb = thread.messages.length === 1 ? 'commented' : 'replied'
   return {
-    title: label ? `${shorten(label, 52)} replied` : 'An agent replied',
+    title: label ? `${shorten(label, 52)} ${verb}` : `An agent ${verb}`,
     body: shorten(`${path}:${startLine} — ${firstLine(reply)}`, 140),
     terminalId: thread.sessionId,
     windowId,
