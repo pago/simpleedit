@@ -1,6 +1,6 @@
 # Plan: Agent threads
 
-Status: slice 1 implemented (pending the live check) · Branch: `feat/agent-threads` ·
+Status: slices 1–3 implemented, docs in `CLAUDE.md`; the live check is still open · Branch: `feat/agent-threads` ·
 Worktree: `../agent-threads`. This plan is committed for the life of the branch. The
 branch's final commit deletes it, and its durable parts move into `CLAUDE.md`.
 
@@ -303,6 +303,17 @@ disabled for that provider rather than shipping flaky.
   - A thread on a commit opens the working copy, not the diff.
   - A session that auto-closes on exit 0 keeps its threads in the DB, because app quit
     takes the same path.
+
+## Progress (slices 2–4)
+
+- **Slice 2 done.** Inline view-zone threads and a "+"/⌘⇧M composer on desktop; re-anchoring
+  in main; reply pushes once per turn; the phone's merged diff with tap-to-comment, inline
+  threads and "Show in diff". Two adversarial review rounds; every finding fixed.
+- **Slice 3 done.** `open_thread`, capped at 5 unanswered threads per session.
+- **Slice 4.** The "Agent threads" section is in `CLAUDE.md`. This plan stays until the live
+  check above has passed for every provider; deleting it is the branch's last commit.
+- **Accepted gap.** A one-line snippet with no context lines (a one-line file, or a phone tap
+  at a hunk edge) is trusted on the first check after a restart or its creation.
 
 ## Open questions
 
