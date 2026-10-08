@@ -25,6 +25,7 @@ interface MemoryWatchState {
   pendingDirs: Set<string>
   pendingStructural: boolean
   subscribers: Map<number, { refCount: number; webContents: RemoteClient }>
+  ready: Promise<void>
 }
 
 const watchers = new Map<string, MemoryWatchState>()
@@ -62,8 +63,13 @@ function isDirectory(p: string): boolean {
 export function watchMemoryDir(client: RemoteClient, memoryDir: string): boolean {
   let state = watchers.get(memoryDir)
   if (!isDirectory(memoryDir)) {
-    // Gone before chokidar told us: a subscriber added now would never hear from it again.
-    if (state) dispose(memoryDir, state)
+    // Gone before chokidar told us: a subscriber added now would never hear
+    // from it again, and the existing ones must learn the watch is over.
+    if (state) {
+      state.pendingStructural = true
+      flush(memoryDir, state, true)
+      dispose(memoryDir, state)
+    }
     return false
   }
 
@@ -80,6 +86,7 @@ export function watchMemoryDir(client: RemoteClient, memoryDir: string): boolean
       pendingDirs: new Set(),
       pendingStructural: false,
       subscribers: new Map(),
+      ready: new Promise((resolve) => watcher.once('ready', () => resolve())),
     }
     state = s
     watchers.set(memoryDir, s)
@@ -118,6 +125,11 @@ export function watchMemoryDir(client: RemoteClient, memoryDir: string): boolean
     state.subscribers.set(client.id, { refCount: 1, webContents: client })
   }
   return true
+}
+
+/** Test seam: resolves once chokidar has armed the watch of `memoryDir`. */
+export function memoryWatchReady(memoryDir: string): Promise<void> {
+  return watchers.get(memoryDir)?.ready ?? Promise.resolve()
 }
 
 function dispose(memoryDir: string, state: MemoryWatchState): void {
