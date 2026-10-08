@@ -23,6 +23,8 @@ let _threads = $state<Map<string, AgentThread>>(new Map())
 const _revs = new Map<string, number>()
 /** A thread a workspace should show expanded: set on create, taken by that session's panel. */
 let _focus = $state<{ sessionId: string; threadId: string } | null>(null)
+/** A thread to show inline in its workspace's editor: set from the panel, taken by the editor showing its file. */
+let _inline = $state<{ sessionId: string; threadId: string } | null>(null)
 /** Unsent replies by thread, so the panel and an editor's inline thread share one, and closing either keeps it. */
 let _drafts = $state<Record<string, string>>({})
 
@@ -135,6 +137,16 @@ export const agentThreadsStore = {
   reveal(sessionId: string, threadId: string): void {
     _focus = { sessionId, threadId }
   },
+  /** Show a thread inline in the editor of its session's workspace that loads its file. */
+  openInline(sessionId: string, threadId: string): void {
+    _inline = { sessionId, threadId }
+  },
+  inlineFor(sessionId: string): string | null {
+    return _inline?.sessionId === sessionId ? _inline.threadId : null
+  },
+  takeInline(sessionId: string, threadId: string): void {
+    if (_inline?.sessionId === sessionId && _inline.threadId === threadId) _inline = null
+  },
   /** The thread a session's panel should open on, once. */
   focusFor(sessionId: string): string | null {
     return _focus?.sessionId === sessionId ? _focus.threadId : null
@@ -155,5 +167,6 @@ export function _resetAgentThreadsForTests(): void {
   _threads = new Map()
   _revs.clear()
   _focus = null
+  _inline = null
   _drafts = {}
 }

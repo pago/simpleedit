@@ -262,7 +262,17 @@
     setViewerOpen(true)
   }
 
+  /**
+   * Opens the thread where its glyph is, with the thread shown inline: a
+   * commit's thread in that commit's diff, any other in the working copy.
+   */
   function openThreadAnchor(thread: AgentThread): void {
+    if (thread.status === 'open') agentThreadsStore.openInline(sessionId, thread.id)
+    const ctx = thread.anchor.context
+    if (ctx !== 'file' && ctx.commit !== 'uncommitted') {
+      openDiffTab(sessionId, thread.worktreePath, ctx.commit, `Commit ${ctx.commit.slice(0, 7)}`)
+      return
+    }
     const path = `${thread.worktreePath.replace(/\/+$/, '')}/${thread.anchor.path}`
     const active = tabsStore.active(sessionId)
     revealInEditor(

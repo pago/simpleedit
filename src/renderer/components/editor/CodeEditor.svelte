@@ -313,6 +313,19 @@
     )
   })
 
+  // A thread opened from the panel. It is taken once this file is loaded,
+  // shown or not (a moved anchor has no glyph), so it never pops up later.
+  $effect(() => {
+    const id = agentThreadsStore.inlineFor(workspaceKey)
+    const path = loaded?.path
+    if (!id || !path || !threads) return
+    const t = agentThreadsStore.get(id)
+    const ctx = t?.anchor.context
+    const workingCopy = ctx === 'file' || ctx?.commit === 'uncommitted'
+    const mine = !!t && workingCopy && path === `${t.worktreePath.replace(/\/+$/, '')}/${t.anchor.path}`
+    if (threads.open(id) || mine) agentThreadsStore.takeInline(workspaceKey, id)
+  })
+
   // Only reload when the path actually changes. The effect can re-fire on
   // unrelated reactive updates (e.g. parent re-renders because another tab's
   // modified flag flipped); calling loadFile again would reset the model to

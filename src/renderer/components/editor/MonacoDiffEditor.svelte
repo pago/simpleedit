@@ -20,6 +20,9 @@
     threadGlyphs?: ThreadGlyph[]
     /** Shows those threads inline and starts new ones on the modified side; null turns commenting off. */
     threadHost?: ThreadHost | null
+    /** A thread to show inline once this file is loaded; `onthreadshown` reports it was. */
+    showThread?: string | null
+    onthreadshown?: (threadId: string) => void
   }
 
   let {
@@ -31,6 +34,8 @@
     ondiscusswithagent,
     threadGlyphs = [],
     threadHost = null,
+    showThread = null,
+    onthreadshown,
   }: Props = $props()
 
   // Mutable refs so action closures always read the latest prop values.
@@ -113,10 +118,10 @@
     return () => {
       threads?.dispose()
       threads = undefined
-      originalModel.dispose()
-      modifiedModel.dispose()
       diffEditor?.dispose()
       diffEditor = undefined
+      originalModel.dispose()
+      modifiedModel.dispose()
     }
   })
 
@@ -169,6 +174,12 @@
     void modifiedContent
     void threadHost
     threads?.set(threadGlyphs)
+  })
+
+  $effect(() => {
+    void threadGlyphs
+    void modifiedContent
+    if (showThread && threads?.open(showThread)) onthreadshown?.(showThread)
   })
 </script>
 
