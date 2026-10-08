@@ -19,6 +19,8 @@ export interface PushPayload {
   url: string
   /** The window the session belongs to; a phone is attached to exactly one. */
   windowId: number | null
+  /** Set when an agent replied in a thread: a tap opens the session's Threads pane. */
+  threadId: string | null
 }
 
 export interface NotificationPlan {
@@ -28,10 +30,12 @@ export interface NotificationPlan {
   terminalId: string
   /** Carried alongside, so the app can say when a session is on another window. */
   windowId: number | null
+  threadId: string | null
   /**
    * One notification per session. A session that blocks, is answered and
    * blocks again should replace its own entry rather than stack a second one
-   * on a lock screen.
+   * on a lock screen. A thread reply has its own row: it must not replace an
+   * unread block.
    */
   tag: string
   /** Where a tap goes. Absolute, and always same-origin — see `sameOriginUrl`. */
@@ -63,7 +67,7 @@ export function parsePushPayload(raw: string | null | undefined): PushPayload | 
   try {
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null) return null
-    const { title, body, terminalId, url, windowId } = parsed as Record<string, unknown>
+    const { title, body, terminalId, url, windowId, threadId } = parsed as Record<string, unknown>
     if (typeof terminalId !== 'string' || typeof url !== 'string') return null
     return {
       title: typeof title === 'string' && title ? title : 'A session is blocked',
@@ -71,6 +75,7 @@ export function parsePushPayload(raw: string | null | undefined): PushPayload | 
       terminalId,
       url,
       windowId: typeof windowId === 'number' ? windowId : null,
+      threadId: typeof threadId === 'string' && threadId ? threadId : null,
     }
   } catch {
     return null
@@ -107,6 +112,7 @@ export function planNotification(raw: string | null | undefined, scope: string):
       tag: 'simpleedit-unknown',
       terminalId: '',
       windowId: null,
+      threadId: null,
       url: sameOriginUrl(scope, scope),
       renotify: true,
     }
@@ -114,9 +120,10 @@ export function planNotification(raw: string | null | undefined, scope: string):
   return {
     title: payload.title,
     body: payload.body,
-    tag: `simpleedit-${payload.terminalId}`,
+    tag: payload.threadId ? `simpleedit-thread-${payload.terminalId}` : `simpleedit-${payload.terminalId}`,
     terminalId: payload.terminalId,
     windowId: payload.windowId,
+    threadId: payload.threadId,
     url: sameOriginUrl(payload.url, scope),
     renotify: true,
   }
@@ -142,6 +149,7 @@ export function planClick(
   terminalId: string,
   clients: { url: string; focused?: boolean }[],
   windowId: number | null = null,
+  threadId: string | null = null,
 ): ClickAction {
   if (clients.length === 0) return { kind: 'open', url }
   // Prefer the tab the user was last looking at; otherwise the first one.
@@ -149,7 +157,7 @@ export function planClick(
   return {
     kind: 'focus',
     clientIndex: focused >= 0 ? focused : 0,
-    message: { type: 'open-session', terminalId, url, windowId },
+    message: { type: 'open-session', terminalId, url, windowId, threadId },
   }
 }
 
@@ -160,6 +168,8 @@ export interface OpenSessionMessage {
   url: string
   /** The window that session lives on, or null when the payload predates this. */
   windowId: number | null
+  /** The thread to open in the session's Threads pane, if the tap was about a reply. */
+  threadId?: string | null
 }
 
 export function isOpenSessionMessage(value: unknown): value is OpenSessionMessage {
@@ -175,13 +185,22 @@ export function isOpenSessionMessage(value: unknown): value is OpenSessionMessag
  * focused an existing one), so both paths land in exactly the same place.
  */
 export function sessionFromUrl(url: string): string | null {
+  return fragmentParam(url, 'session')
+}
+
+/** The thread a URL fragment asks for, alongside its session, or null. */
+export function threadFromUrl(url: string): string | null {
+  return fragmentParam(url, 'thread')
+}
+
+function fragmentParam(url: string, name: 'session' | 'thread'): string | null {
   let hash: string
   try {
     hash = new URL(url).hash
   } catch {
     hash = url.startsWith('#') ? url : ''
   }
-  const match = /(?:^#|[#&])session=([^&]*)/.exec(hash)
+  const match = new RegExp(`(?:^#|[#&])${name}=([^&]*)`).exec(hash)
   if (!match) return null
   try {
     return decodeURIComponent(match[1]) || null

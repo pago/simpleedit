@@ -27,6 +27,7 @@ let writes: Array<{ id: string; data: string }>
 let pushes: Array<{ id: string; text: string }>
 let providers: Record<string, string>
 let pushResult: boolean
+let replies: Array<{ threadId: string; body: string | undefined }>
 
 function comment(threadId = 't_aaaaaa', sessionId = 's1', messageId = 'm_aaaaaa1', body = 'why?'): void {
   const { queued } = applyThreadOp({
@@ -65,6 +66,7 @@ beforeEach(() => {
   writes = []
   pushes = []
   pushResult = true
+  replies = []
   providers = { s1: 'claude', s2: 'claude', o1: 'opencode' }
   initThreadDelivery({
     provider: (id) => providers[id] ?? null,
@@ -75,6 +77,7 @@ beforeEach(() => {
       return Promise.resolve(pushResult)
     },
     broadcast: (_changes: ThreadChange[]) => {},
+    onAgentReply: (thread) => replies.push({ threadId: thread.id, body: thread.messages.at(-1)?.body }),
   })
   noteThreadStatus('s1', 'running')
 })
@@ -109,6 +112,7 @@ describe('thread delivery', () => {
     stop('s1', 'It guards the retry loop.')
     expect(delivery()).toBe('answered-implicitly')
     expect(getThread('t_aaaaaa')!.messages.at(-1)).toEqual(expect.objectContaining({ author: 'agent', body: 'It guards the retry loop.' }))
+    expect(replies).toEqual([{ threadId: 't_aaaaaa', body: 'It guards the retry loop.' }])
   })
 
   it('takes an explicit reply instead of the final text', () => {
@@ -120,6 +124,7 @@ describe('thread delivery', () => {
     stop('s1', 'Summary of everything')
     expect(delivery()).toBe('answered')
     expect(getThread('t_aaaaaa')!.messages.filter((m) => m.author === 'agent').map((m) => m.body)).toEqual(['Renamed it.'])
+    expect(replies).toEqual([{ threadId: 't_aaaaaa', body: 'Renamed it.' }])
   })
 
   it('batches every held comment of a session into one submit', () => {

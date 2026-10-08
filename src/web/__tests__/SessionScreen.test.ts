@@ -197,6 +197,19 @@ describe('SessionScreen', () => {
     }
   })
 
+  it('opens on the Threads pane when a reply notification was tapped', async () => {
+    const { rerender } = render(SessionScreen, { props: { session, connection } })
+    expect(screen.getByTestId('pane-terminal').getAttribute('aria-selected')).toBe('true')
+    await rerender({ session, connection, openThread: { threadId: 't_aaaaaaaa' } })
+    await waitFor(() => expect(screen.getByTestId('pane-threads').getAttribute('aria-selected')).toBe('true'))
+    expect(screen.getByTestId('threads-pane')).toBeTruthy()
+
+    // Moving away and tapping the same thread again lands there again.
+    await fireEvent.click(screen.getByTestId('pane-terminal'))
+    await rerender({ session, connection, openThread: { threadId: 't_aaaaaaaa' } })
+    await waitFor(() => expect(screen.getByTestId('pane-threads').getAttribute('aria-selected')).toBe('true'))
+  })
+
   it('offers no Threads tab on a plain terminal', () => {
     const shell: WindowSession = { ...session, kind: 'terminal', provider: undefined }
     render(SessionScreen, { props: { session: shell, connection } })

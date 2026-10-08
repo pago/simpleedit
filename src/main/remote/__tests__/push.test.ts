@@ -3,16 +3,19 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { AgentStatusEvent } from '../../../shared/ipc-types'
+import type { AgentThread } from '../../../shared/agent-threads'
 
 vi.mock('electron', () => ({ app: { getPath: () => tmpdir() } }))
 
 import {
   addSubscription,
   buildPayload,
+  buildThreadPayload,
   configurePush,
   deliver,
   getPushStatus,
   handleAgentStatus,
+  handleThreadReply,
   removeAllSubscriptions,
   removeSubscription,
   resetPushState,
@@ -381,6 +384,104 @@ describe('pruning', () => {
   it('records a successful delivery', async () => {
     await deliver(buildPayload(waiting(), 'x', 'https://mac.ts.net/tok/', 7))
     expect(getPushStatus().devices.every((d) => d.lastPushAt === now && d.lastError === null)).toBe(true)
+  })
+})
+
+describe('thread replies', () => {
+  function replied(body = 'Renamed it.\nAnd moved the test.', overrides: Partial<AgentThread> = {}): AgentThread {
+    return {
+      id: 't_abcdef',
+      sessionId: 't1',
+      worktreePath: '/Users/dev/project/feat/push',
+      anchor: { path: 'src/a.ts', startLine: 12, endLine: 14, snippet: 'x', before: '', after: '', context: 'file' },
+      status: 'open',
+      messages: [
+        { id: 'm_aaaaaa', author: 'user', body: 'why?', at: '2026-10-08T10:00:00.000Z' },
+        { id: 'm_bbbbbb', author: 'agent', body, at: '2026-10-08T10:01:00.000Z' },
+      ],
+      lastReadAt: null,
+      createdAt: '2026-10-08T10:00:00.000Z',
+      updatedAt: '2026-10-08T10:01:00.000Z',
+      ...overrides,
+    }
+  }
+
+  beforeEach(() => {
+    addSubscription({ endpoint: phone.endpoint, keys: phone.keys, label: 'iPhone' })
+    configurePush({ windowOf: () => 7 })
+  })
+
+  it('names the session, the anchor and the first line, and links to the thread', async () => {
+    const labels: Array<[number, string]> = []
+    configurePush({ labelFor: (w, t) => (labels.push([w, t]), 'Fix the flaky test') })
+    handleThreadReply(replied())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    const payload = JSON.parse(phone.read(sent[0].body)) as Record<string, unknown>
+    expect(labels).toEqual([[7, 't1']])
+    expect(payload).toMatchObject({
+      title: 'Fix the flaky test replied',
+      body: 'src/a.ts:12 — Renamed it.',
+      terminalId: 't1',
+      threadId: 't_abcdef',
+      windowId: 7,
+      url: 'https://mac.tailnet.ts.net/tok/#session=t1&thread=t_abcdef',
+    })
+  })
+
+  it('still notifies when no window lists the session', async () => {
+    configurePush({ windowOf: () => null })
+    handleThreadReply(replied())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect(JSON.parse(phone.read(sent[0].body))).toMatchObject({ title: 'An agent replied', windowId: null })
+  })
+
+  it('buzzes once for a turn that answers several threads', async () => {
+    handleThreadReply(replied())
+    handleThreadReply(replied('Other answer', { id: 't_ghijkl' }))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(1)
+
+    now += 61 * 1000
+    handleThreadReply(replied('Later answer'))
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+  })
+
+  it('does not share its debounce with a block', async () => {
+    handleAgentStatus(waiting(), 7)
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    handleThreadReply(replied())
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+  })
+
+  it('stays silent at the Mac, without burning the debounce', async () => {
+    configurePush({ userIsPresent: () => true })
+    handleThreadReply(replied())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(0)
+
+    configurePush({ userIsPresent: () => false })
+    handleThreadReply(replied())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+  })
+
+  it('stays silent with nowhere to land a tap', async () => {
+    configurePush({ targetUrl: () => null })
+    handleThreadReply(replied())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(0)
+  })
+
+  it('ignores a thread whose last message is not the agent\'s', async () => {
+    const thread = replied()
+    handleThreadReply({ ...thread, messages: thread.messages.slice(0, 1) })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(0)
+  })
+
+  it('caps the body, skipping leading blank lines', () => {
+    const payload = buildThreadPayload(replied(`\n\n   ${'y'.repeat(500)}`), null, 'https://x.test/tok/', 7)
+    expect(payload.body.startsWith('src/a.ts:12 — yyy')).toBe(true)
+    expect(payload.body.length).toBeLessThanOrEqual(140)
   })
 })
 

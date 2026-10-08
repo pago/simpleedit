@@ -65,6 +65,7 @@ import {
   deviceIdFor,
   getPushStatus,
   handleAgentStatus,
+  handleThreadReply,
   removeAllSubscriptions,
   removeSubscription,
 } from './remote/push'
@@ -406,6 +407,8 @@ configurePush({
   // The renderer owns session labels; main only holds the list it was handed.
   labelFor: (windowId, terminalId) =>
     getWindowSessions(windowId).find((session) => session.terminalId === terminalId)?.label ?? null,
+  windowOf: (terminalId) =>
+    liveWindowContents().find((wc) => getWindowSessions(wc.id).some((s) => s.terminalId === terminalId))?.id ?? null,
   onStatusChange: broadcastPushStatus,
 })
 
@@ -426,6 +429,7 @@ function startThreadDelivery(): void {
     write: writeToTerminal,
     push: pushToAgent,
     broadcast: broadcastThreadChanges,
+    onAgentReply: handleThreadReply,
   })
   onAgentStatus((event) => noteThreadStatus(event.terminalId, event.status))
 }

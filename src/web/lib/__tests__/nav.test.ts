@@ -120,6 +120,25 @@ describe('a notification tap', () => {
     expect(topOf(state)?.id).toBe(a.id)
     expect(topOf(state)).toMatchObject({ fromNotification: true })
   })
+
+  it('names the thread a reply was in, and forgets it on a tap about the terminal', () => {
+    const before = build(session('a'), session('b'))
+    const threadOf = (state: NavState) => {
+      const top = topOf(state)
+      return top?.kind === 'session' ? top.openThread : undefined
+    }
+    const first = openFromNotification(before, 'a', undefined, 't_abcdef')
+    expect(topOf(first)).toMatchObject({ terminalId: 'a', openThread: { threadId: 't_abcdef' } })
+    // A second tap on the same thread is a new object, so the screen sees it.
+    const again = openFromNotification(first, 'a', undefined, 't_abcdef')
+    expect(threadOf(again)).toEqual(threadOf(first))
+    expect(threadOf(again)).not.toBe(threadOf(first))
+    expect(topOf(openFromNotification(again, 'a'))).toMatchObject({ openThread: undefined })
+    expect(topOf(openFromNotification(before, 'c', undefined, 't_abcdef'))).toMatchObject({
+      terminalId: 'c',
+      openThread: { threadId: 't_abcdef' },
+    })
+  })
 })
 
 describe('a session opened from a PR', () => {
