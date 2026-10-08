@@ -26,6 +26,7 @@ are first-class features, not afterthoughts.
 - No `any` — use `unknown` + narrowing
 - Use pnpm, never npm
 - `node-pty` must be rebuilt for Electron after install (`electron-rebuild -f -w node-pty`)
+- Node is pinned in `.tool-versions` to the exact Node bundled by the shipped Electron, so tests run on the runtime's Node. Bump it with every Electron bump; a CI step fails when they drift. The MCP server is the exception: agents launch it with the user's system `node`, so its esbuild target stays `node20`
 - Preload outputs `.mjs` (not `.js`) due to `"type": "module"` in package.json
 
 ## Architecture layers
