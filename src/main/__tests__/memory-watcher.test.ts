@@ -45,6 +45,51 @@ describe('memory-watcher', () => {
     await vi.waitFor(() => expect(c.send).toHaveBeenCalledWith('memory:changed', { memoryDir: dir, dirs: [], structural: false }))
   })
 
+  it('ignores changes inside .git', async () => {
+    const dir = mkdtempSync(join(tmpRoot, 'mem-'))
+    mkdirSync(join(dir, '.git'))
+    const c = client(1)
+    watchMemoryDir(c, dir)
+    await settle()
+
+    writeFileSync(join(dir, '.git', 'index'), 'x')
+    mkdirSync(join(dir, '.git', 'objects'))
+    await new Promise((r) => setTimeout(r, 500))
+    expect(c.send).not.toHaveBeenCalled()
+  })
+
+  it('does not watch a dir that does not exist, and watches it once it does', async () => {
+    const dir = join(tmpRoot, 'not-yet')
+    const c = client(1)
+    expect(watchMemoryDir(c, dir)).toBe(false)
+
+    mkdirSync(dir)
+    expect(watchMemoryDir(c, dir)).toBe(true)
+    await settle()
+    writeFileSync(join(dir, 'a.md'), 'a')
+    await vi.waitFor(() => expect(c.send).toHaveBeenCalledWith('memory:changed', { memoryDir: dir, dirs: [dir], structural: false }))
+  })
+
+  it('reports its own removal as structural, then starts afresh on the next watch', async () => {
+    const dir = mkdtempSync(join(tmpRoot, 'mem-'))
+    writeFileSync(join(dir, 'a.md'), 'a')
+    const c = client(1)
+    watchMemoryDir(c, dir)
+    await settle()
+
+    rmSync(dir, { recursive: true, force: true })
+    await vi.waitFor(() =>
+      expect(c.send).toHaveBeenCalledWith('memory:changed', expect.objectContaining({ memoryDir: dir, structural: true })),
+    )
+
+    mkdirSync(dir)
+    expect(watchMemoryDir(c, dir)).toBe(true)
+    await settle()
+    c.send.mockClear()
+    writeFileSync(join(dir, 'b.md'), 'b')
+    await vi.waitFor(() => expect(c.send).toHaveBeenCalledWith('memory:changed', { memoryDir: dir, dirs: [dir], structural: false }))
+  })
+
   it('stops notifying once the last ref is released', async () => {
     const dir = mkdtempSync(join(tmpRoot, 'mem-'))
     const c = client(1)

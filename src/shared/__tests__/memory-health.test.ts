@@ -7,7 +7,7 @@ import {
   type MemoryFile,
 } from '../memory-health'
 
-const f = (rel: string, content = ''): MemoryFile => ({ rel, content })
+const f = (rel: string, content: string | null = ''): MemoryFile => ({ rel, content })
 const kinds = (files: MemoryFile[]): string[] => analyzeMemory(files).map((i) => `${i.kind}:${i.rel}`)
 
 describe('normalizeMemoryKey', () => {
@@ -94,6 +94,26 @@ describe('analyzeMemory: index', () => {
   it('counts a wiki link in the index as indexing the file', () => {
     const files = [f('MEMORY.md', 'see [[Deploy Steps]]'), f('deploy_steps.md')]
     expect(analyzeMemory(files)).toEqual([])
+  })
+
+  it('ignores index links inside fenced and inline code', () => {
+    const files = [f('MEMORY.md', '```\n[x](gone.md)\n```\nuse `[y](nope.md)` here')]
+    expect(analyzeMemory(files)).toEqual([])
+  })
+
+  it('accepts links to a directory holding memories', () => {
+    const files = [f('MEMORY.md', '[n](notes/) [m](notes) [deep](notes/sub)'), f('notes/sub/a.md')]
+    expect(analyzeMemory(files)).toEqual([])
+    expect(kinds([f('MEMORY.md', '[n](note/)'), f('notes/a.md')])).toEqual(['index-missing-file:MEMORY.md'])
+  })
+
+  it('ignores absolute-path links', () => {
+    const files = [f('MEMORY.md', '[a](/etc/hosts) [b](~/x.md) [c](C:\\x.md) [d](file:///x.md)')]
+    expect(analyzeMemory(files)).toEqual([])
+  })
+
+  it('skips index-link and unindexed checks when the index was not read', () => {
+    expect(analyzeMemory([f('MEMORY.md', null), f('a.md'), f('b.md', null)])).toEqual([])
   })
 
   it('skips unindexed checks without an index', () => {
