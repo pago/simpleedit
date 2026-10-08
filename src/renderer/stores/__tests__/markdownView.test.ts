@@ -25,4 +25,11 @@ describe('markdownViewStore', () => {
     markdownViewStore.forget(p)
     expect(markdownViewStore.get(p)).toBe('rendered') // back to last-chosen default
   })
+
+  it('setFor changes one file without moving the default', () => {
+    markdownViewStore.set('/repo/d.md', 'rendered')
+    markdownViewStore.setFor('/repo/e.md', 'hybrid')
+    expect(markdownViewStore.get('/repo/e.md')).toBe('hybrid')
+    expect(markdownViewStore.get('/repo/unseen-after-setFor.md')).toBe('rendered')
+  })
 })

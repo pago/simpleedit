@@ -27,6 +27,12 @@ type OpenHandler = (path: string) => void
 const handlersByEditor = new WeakMap<monaco.editor.ICodeEditor, OpenHandler>()
 const pendingRevealsByPath = new Map<string, monaco.IPosition | monaco.IRange>()
 
+// Keyed by the path an editor has LOADED, not the one it was mounted for:
+// TabContainer reuses one editor instance across tabs, so a mount-time key
+// would point at whichever file it showed first.
+const editorsByLoadedPath = new Map<string, Set<monaco.editor.IStandaloneCodeEditor>>()
+const loadedPathByEditor = new Map<monaco.editor.IStandaloneCodeEditor, string>()
+
 let openerRegistered = false
 
 function ensureOpenerRegistered(): void {
@@ -75,6 +81,48 @@ export function consumePendingReveal(
   if (r === undefined) return null
   pendingRevealsByPath.delete(path)
   return r
+}
+
+/** Record the file `editor` now shows (call after every successful load). */
+export function setEditorLoadedPath(editor: monaco.editor.IStandaloneCodeEditor, path: string): void {
+  unregisterLoadedEditor(editor)
+  loadedPathByEditor.set(editor, path)
+  let set = editorsByLoadedPath.get(path)
+  if (!set) {
+    set = new Set()
+    editorsByLoadedPath.set(path, set)
+  }
+  set.add(editor)
+}
+
+export function unregisterLoadedEditor(editor: monaco.editor.IStandaloneCodeEditor): void {
+  const prev = loadedPathByEditor.get(editor)
+  if (prev === undefined) return
+  loadedPathByEditor.delete(editor)
+  const set = editorsByLoadedPath.get(prev)
+  set?.delete(editor)
+  if (set?.size === 0) editorsByLoadedPath.delete(prev)
+}
+
+/**
+ * Reveal `target` in `path`. Applied directly only when `path` is the
+ * session's active tab and an editor has it loaded; otherwise queued and the
+ * file opened via `open` — the editor that loads it consumes the reveal.
+ * (Re-opening an already-active tab never runs `loadFile`, which is why the
+ * direct path exists.)
+ */
+export function revealInEditor(
+  path: string,
+  target: monaco.IPosition | monaco.IRange,
+  opts: { isActiveTab: boolean; open: () => void },
+): void {
+  const editors = editorsByLoadedPath.get(path)
+  if (opts.isActiveTab && editors && editors.size > 0) {
+    for (const editor of editors) applyReveal(editor, target)
+    return
+  }
+  pendingRevealsByPath.set(path, target)
+  opts.open()
 }
 
 export function applyReveal(
