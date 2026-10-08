@@ -22,6 +22,9 @@
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
     onOpenFile?: (path: string) => void
+    /** The session's open Claude memory dir: file tabs under it are rooted
+     * there; everything else keeps the worktree (LSP clients are per root). */
+    memoryDir?: string
   }
 
   let {
@@ -34,7 +37,14 @@
     ondiscusswithagent,
     onsendtoagent,
     onOpenFile,
+    memoryDir,
   }: Props = $props()
+
+  let fileRoot = $derived(
+    tab.kind === 'file' && memoryDir && (tab.path === memoryDir || tab.path.startsWith(`${memoryDir}/`))
+      ? memoryDir
+      : worktreePath,
+  )
 
   /** Diff/tour tabs pin their git context at open time. */
   let tabWorktree = $derived('worktreePath' in tab ? tab.worktreePath : worktreePath)
@@ -53,7 +63,7 @@
   <div class="flex-1 min-h-0">
     <MarkdownView
       filePath={tab.path}
-      worktreeRoot={worktreePath}
+      worktreeRoot={fileRoot}
       onModified={onFileModified}
       {ondiscusswithagent}
       {onOpenFile}
@@ -63,7 +73,7 @@
   <div class="flex-1 min-h-0">
     <CodeEditor
       filePath={tab.path}
-      worktreeRoot={worktreePath}
+      worktreeRoot={fileRoot}
       onModified={onFileModified}
       {ondiscusswithagent}
       {onOpenFile}
@@ -74,6 +84,7 @@
     commitHash={tab.commitHash}
     commitMessage={tab.commitMessage}
     initialTab={tab.initialTab}
+    memoryScope={tab.memoryScope}
     {workspaceKey}
     worktreePath={tabWorktree}
     {terminals}

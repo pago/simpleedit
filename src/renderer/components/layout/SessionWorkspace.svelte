@@ -136,8 +136,14 @@
     const sid = sessionId
     const unsub = window.api.on('agent-workspace:open-worktree', (data) => {
       if (data.sourceTerminalId !== sid) return
-      sessionsStore.setWorktree(sid, data.worktreePath, repoForWorktree(data.worktreePath))
-      setViewerOpen(true)
+      sessionsStore.leaveMemoryThen(
+        sid,
+        () => {
+          sessionsStore.setWorktree(sid, data.worktreePath, repoForWorktree(data.worktreePath))
+          sessionsStore.setViewerOpen(sid, true)
+        },
+        { agentRepoint: true },
+      )
     })
     return unsub
   })
@@ -260,8 +266,10 @@
     // Normalize: undefined repoPath = the window's primary repo, so
     // worktreeListFor / repoForWorktree agree on a single representation.
     const repoArg = picked === primaryRepo() ? undefined : picked
-    sessionsStore.setActiveSessionWorktree(main.path, repoArg)
-    setViewerOpen(true)
+    sessionsStore.leaveMemoryThen(sessionId, () => {
+      sessionsStore.setActiveSessionWorktree(main.path, repoArg)
+      setViewerOpen(true)
+    })
   }
 
   function handleWindowPointerDown(e: PointerEvent): void {

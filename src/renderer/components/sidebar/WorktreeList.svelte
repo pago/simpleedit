@@ -103,7 +103,9 @@
   // worktrees are an isolation mechanism sessions use, not a navigation
   // entity of their own anymore.
   function handleSelect(worktree: WorktreeInfo): void {
-    sessionsStore.setActiveSessionWorktree(worktree.path, repoArg)
+    sessionsStore.leaveMemoryThen(sessionsStore.activeSessionId(), () =>
+      sessionsStore.setActiveSessionWorktree(worktree.path, repoArg),
+    )
     onselected?.(worktree)
   }
 
@@ -138,7 +140,9 @@
         : await window.api.invoke('worktree:checkout', selectedBranch, repoArg)
       cancelCreate()
       await refresh()
-      sessionsStore.setActiveSessionWorktree(created.path, repoArg)
+      sessionsStore.leaveMemoryThen(sessionsStore.activeSessionId(), () =>
+        sessionsStore.setActiveSessionWorktree(created.path, repoArg),
+      )
       onselected?.(created)
     } catch (err) {
       errorMsg = err instanceof Error ? err.message : 'Operation failed'

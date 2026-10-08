@@ -40,7 +40,9 @@ export const worktreeProvider: PaletteProvider = {
   execute(item: PaletteItem, _context: PaletteContext): void {
     const wt = item.data as WorktreeInfo
     // Repoint the active session's workspace at the picked worktree.
-    sessionsStore.setActiveSessionWorktree(wt.path)
+    sessionsStore.leaveMemoryThen(sessionsStore.activeSessionId(), () =>
+      sessionsStore.setActiveSessionWorktree(wt.path),
+    )
   }
 }
 

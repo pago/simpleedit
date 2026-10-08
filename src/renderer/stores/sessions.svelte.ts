@@ -9,7 +9,7 @@
  */
 import { untrack } from 'svelte'
 import { capabilitiesFor, providerForModelBrand, providerLabel } from './agent-capabilities.svelte'
-import type { AgentPeer, AgentProviderId, InteractiveTarget, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, SessionRepoTrail, WindowSessionInput } from '../../shared/ipc-types'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, MemoryGit, MemoryLocation, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, SessionRepoTrail, WindowSessionInput } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -86,6 +86,13 @@ export interface Session {
    * default).
    */
   viewerOpen?: boolean
+  /**
+   * The workspace is showing this session's Claude auto-memory directory
+   * instead of its worktree. A VIEW overlay only: `worktreePath` keeps
+   * pointing at the real worktree (agent spawn, cwd-follow, the repo trail and
+   * persistence all read it), and this field is never persisted.
+   */
+  memoryView?: MemoryView
   /** Claude session uuid (pinned at spawn) — required for fork/resume. */
   providerSessionId?: string
   /**
@@ -128,6 +135,17 @@ export interface Session {
    * `normalizeGroups`.
    */
   groupId?: string
+}
+
+export interface MemoryView {
+  memoryDir: string
+  exists: boolean
+  git: MemoryGit | null
+  /** `viewerOpen` before the memory view forced it open — restored on leave,
+   * since cwd-follow only runs while the viewer is closed. */
+  prevViewerOpen: boolean
+  /** A leave was refused because these memory files have unsaved edits. */
+  leaveBlocked?: { files: string[]; agentRepoint: boolean }
 }
 
 /**
@@ -212,6 +230,15 @@ function select(id: string | null): void {
 
 function findSession(id: string): Session | undefined {
   return _sessions.find((s) => s.id === id)
+}
+
+export function isInMemoryDir(path: string, memoryDir: string): boolean {
+  return path === memoryDir || path.startsWith(`${memoryDir}/`)
+}
+
+/** Where the session's file tree and editor are rooted right now. */
+export function viewRootFor(session: Session): string {
+  return session.memoryView?.memoryDir ?? session.worktreePath
 }
 
 /**
@@ -631,6 +658,92 @@ export const sessionsStore = {
       return // already at front — no state churn
     }
     this.update(id, { touchedWorktrees: [worktreePath, ...rest] })
+  },
+
+  // ── Claude memory view ───────────────────────────────────────────────────
+
+  /** Point the session's viewer at its Claude memory dir (resolved in main). */
+  async openMemoryView(id: string): Promise<void> {
+    const session = findSession(id)
+    if (!session || session.memoryView) return
+    const loc = await window.api.invoke('memory:resolve', session.launchDir)
+    const current = findSession(id)
+    if (!current || current.memoryView) return
+    this.update(id, {
+      memoryView: {
+        memoryDir: loc.memoryDir,
+        exists: loc.exists,
+        git: loc.git,
+        prevViewerOpen: !!current.viewerOpen,
+      },
+      viewerOpen: true,
+    })
+  },
+
+  /** Apply a re-resolve to every open memory view launched from `launchDir`. */
+  applyMemoryLocation(launchDir: string, loc: MemoryLocation): void {
+    for (const s of _sessions) {
+      const mv = s.memoryView
+      if (!mv || s.launchDir !== launchDir) continue
+      if (
+        mv.memoryDir === loc.memoryDir &&
+        mv.exists === loc.exists &&
+        mv.git?.root === loc.git?.root &&
+        mv.git?.pathspec === loc.git?.pathspec
+      ) {
+        continue
+      }
+      this.update(s.id, { memoryView: { ...mv, memoryDir: loc.memoryDir, exists: loc.exists, git: loc.git } })
+    }
+  },
+
+  /**
+   * Leave the memory view: close its file and diff tabs and restore the
+   * viewer's previous open state. Refused — nothing changes — while any memory
+   * file has unsaved edits, since closing a tab discards them.
+   */
+  closeMemoryView(id: string): { blocked: string[] } {
+    const session = findSession(id)
+    const mv = session?.memoryView
+    if (!mv) return { blocked: [] }
+    const tabs = tabsStore.list(id)
+    const memoryFileTabs = tabs.filter(
+      (t) => t.kind === 'file' && isInMemoryDir(t.path, mv.memoryDir),
+    )
+    const blocked = memoryFileTabs.flatMap((t) => (t.kind === 'file' && t.modified ? [t.path] : []))
+    if (blocked.length > 0) return { blocked }
+    for (const t of tabs) {
+      if (memoryFileTabs.includes(t) || (t.kind === 'diff' && t.memoryScope)) tabsStore.close(id, t.id)
+    }
+    this.update(id, { memoryView: undefined, viewerOpen: mv.prevViewerOpen })
+    return { blocked: [] }
+  },
+
+  /**
+   * Run a repoint of the session's view, leaving the memory view first. When
+   * the leave is refused `fn` is dropped and the workspace shows why.
+   */
+  leaveMemoryThen(id: string | null, fn: () => void, opts: { agentRepoint?: boolean } = {}): boolean {
+    const mv = id ? findSession(id)?.memoryView : undefined
+    if (!id || !mv) {
+      fn()
+      return true
+    }
+    const { blocked } = this.closeMemoryView(id)
+    if (blocked.length > 0) {
+      this.update(id, {
+        memoryView: { ...mv, leaveBlocked: { files: blocked, agentRepoint: !!opts.agentRepoint } },
+      })
+      return false
+    }
+    fn()
+    return true
+  },
+
+  dismissMemoryLeaveBlocked(id: string): void {
+    const mv = findSession(id)?.memoryView
+    if (!mv?.leaveBlocked) return
+    this.update(id, { memoryView: { ...mv, leaveBlocked: undefined } })
   },
 
   setViewerOpen(id: string, open: boolean): void {

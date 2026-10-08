@@ -9,6 +9,7 @@
   import { reviewStore, reviewKey, triggerReview } from '../../stores/reviewStore.svelte'
   import { tourStore, tourKey, triggerTour } from '../../stores/tourStore.svelte'
   import { openTourTab } from '../../stores/diffReview.svelte'
+  import type { MemoryScope } from '../../stores/tabsStore.svelte'
 
   interface Props {
     /** null means staging/uncommitted changes */
@@ -23,9 +24,17 @@
     onclose: () => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     onsendtoagent?: (terminalId: string | 'new', message: string) => string | undefined
+    /** A Claude-memory diff: files limited to the memory dir, and no
+     * review/tour — those would run over the whole enclosing repo. */
+    memoryScope?: MemoryScope
   }
 
-  let { commitHash, commitMessage, workspaceKey, worktreePath, terminals, initialTab, onclose, ondiscusswithagent, onsendtoagent }: Props = $props()
+  let { commitHash, commitMessage, workspaceKey, worktreePath, terminals, initialTab, onclose, ondiscusswithagent, onsendtoagent, memoryScope }: Props = $props()
+
+  function inScope(path: string): boolean {
+    const prefix = memoryScope?.pathspec
+    return !prefix || path === prefix || path.startsWith(`${prefix}/`)
+  }
 
   let files = $state<DiffFileEntry[]>([])
   let selectedFile = $state<string | null>(null)
@@ -101,6 +110,7 @@
   $effect(() => {
     void commitHash
     void worktreePath
+    void memoryScope?.pathspec
     loadFiles(false)
   })
 
@@ -128,13 +138,15 @@
       highlightLines = undefined
     }
     try {
+      let loaded: DiffFileEntry[]
       if (isBranch) {
-        files = await window.api.invoke('git:branch-files', worktreePath)
+        loaded = await window.api.invoke('git:branch-files', worktreePath)
       } else if (isStaging) {
-        files = await window.api.invoke('git:staging-files', worktreePath)
+        loaded = await window.api.invoke('git:staging-files', worktreePath, memoryScope?.pathspec ?? undefined)
       } else {
-        files = await window.api.invoke('git:commit-files', worktreePath, commitHash!)
+        loaded = await window.api.invoke('git:commit-files', worktreePath, commitHash!)
       }
+      files = memoryScope ? loaded.filter((f) => inScope(f.path)) : loaded
       if (isRefresh && selectedFile && !files.some((f) => f.path === selectedFile)) {
         selectedFile = null
         originalContent = ''
@@ -248,57 +260,59 @@
       {/if}
     </div>
 
-    <!-- Review button -->
-    <button
-      class="flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors
-        {reviewState?.status === 'running'
-          ? 'cursor-default text-zinc-500'
-          : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
-      onclick={handleStartReview}
-      disabled={reviewState?.status === 'running'}
-      title={reviewState?.status === 'running' ? 'Review in progress…' : 'Review this diff with Claude'}
-    >
-      {#if reviewState?.status === 'running'}
-        <span class="animate-spin text-[10px]">⠿</span>
-        <span>Reviewing…</span>
-      {:else if typeof reviewBadge === 'object' && reviewBadge !== null}
-        <span>✦ Re-review</span>
-        {#if reviewBadge.blocking > 0}
-          <span class="rounded bg-red-900/60 px-1 py-0.5 text-[10px] text-red-300">
-            {reviewBadge.blocking} blocking
+    {#if !memoryScope}
+      <!-- Review button -->
+      <button
+        class="flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors
+          {reviewState?.status === 'running'
+            ? 'cursor-default text-zinc-500'
+            : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
+        onclick={handleStartReview}
+        disabled={reviewState?.status === 'running'}
+        title={reviewState?.status === 'running' ? 'Review in progress…' : 'Review this diff with Claude'}
+      >
+        {#if reviewState?.status === 'running'}
+          <span class="animate-spin text-[10px]">⠿</span>
+          <span>Reviewing…</span>
+        {:else if typeof reviewBadge === 'object' && reviewBadge !== null}
+          <span>✦ Re-review</span>
+          {#if reviewBadge.blocking > 0}
+            <span class="rounded bg-red-900/60 px-1 py-0.5 text-[10px] text-red-300">
+              {reviewBadge.blocking} blocking
+            </span>
+          {:else}
+            <span class="rounded bg-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400">
+              {reviewBadge.total}
+            </span>
+          {/if}
+        {:else}
+          <span>✦ Review</span>
+        {/if}
+      </button>
+
+      <!-- Tour button — opens a top-level tour tab -->
+      <button
+        class="flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors
+          {tourState?.status === 'running'
+            ? 'cursor-default text-zinc-500'
+            : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
+        onclick={handleStartTour}
+        disabled={tourState?.status === 'running'}
+        title={tourState?.status === 'running' ? 'Tour in progress…' : 'Generate a guided tour of this changeset'}
+      >
+        {#if tourState?.status === 'running'}
+          <span class="animate-spin text-[10px]">⠿</span>
+          <span>Touring…</span>
+        {:else if tourState && tourState.topics.length > 0}
+          <span>✦ Re-tour</span>
+          <span class="rounded bg-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400">
+            {tourState.topics.length}
           </span>
         {:else}
-          <span class="rounded bg-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400">
-            {reviewBadge.total}
-          </span>
+          <span>✦ Tour</span>
         {/if}
-      {:else}
-        <span>✦ Review</span>
-      {/if}
-    </button>
-
-    <!-- Tour button — opens a top-level tour tab -->
-    <button
-      class="flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors
-        {tourState?.status === 'running'
-          ? 'cursor-default text-zinc-500'
-          : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
-      onclick={handleStartTour}
-      disabled={tourState?.status === 'running'}
-      title={tourState?.status === 'running' ? 'Tour in progress…' : 'Generate a guided tour of this changeset'}
-    >
-      {#if tourState?.status === 'running'}
-        <span class="animate-spin text-[10px]">⠿</span>
-        <span>Touring…</span>
-      {:else if tourState && tourState.topics.length > 0}
-        <span>✦ Re-tour</span>
-        <span class="rounded bg-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400">
-          {tourState.topics.length}
-        </span>
-      {:else}
-        <span>✦ Tour</span>
-      {/if}
-    </button>
+      </button>
+    {/if}
   </div>
 
   <div class="flex min-h-0 flex-1" class:select-none={isResizing}>

@@ -53,12 +53,15 @@
     // its main worktree when the repo was opened manually but never worked in.
     const touched = touchedWorktreesForRepo(session, repo)
     if (touched[0]) {
-      sessionsStore.setActiveSessionWorktree(touched[0], repoArg)
+      const target = touched[0]
+      sessionsStore.leaveMemoryThen(session.id, () => sessionsStore.setActiveSessionWorktree(target, repoArg))
       return
     }
     await refreshWorktreesFor(repo)
     const main = mainWorktreeFor(repo)
-    if (main) sessionsStore.setActiveSessionWorktree(main.path, repoArg)
+    if (main) {
+      sessionsStore.leaveMemoryThen(session.id, () => sessionsStore.setActiveSessionWorktree(main.path, repoArg))
+    }
   }
 
   function handleWindowPointerDown(e: PointerEvent): void {
