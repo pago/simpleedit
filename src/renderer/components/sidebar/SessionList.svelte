@@ -321,7 +321,7 @@
     if (id === 'rename') {
       renameTarget = { id: session.id, currentLabel: session.label }
     } else if (id === 'close') {
-      sessionsStore.close(session.id)
+      sessionsStore.remove(session.id)
     } else if (id === 'remove-from-group') {
       sessionsStore.removeFromGroup(session.id)
     } else if (id.startsWith('move-to-group:')) {
@@ -695,7 +695,7 @@
       title="Close session (sends exit to the agent)"
       onclick={(e: MouseEvent) => {
         e.stopPropagation()
-        sessionsStore.close(session.id)
+        sessionsStore.remove(session.id)
       }}
       onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
     >
