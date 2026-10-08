@@ -25,7 +25,10 @@ const _revs = new Map<string, number>()
 let _focus = $state<{ sessionId: string; threadId: string } | null>(null)
 /** A thread to show inline in its workspace's editor: set from the panel, taken by the editor showing its file. */
 let _inline = $state<{ sessionId: string; threadId: string } | null>(null)
-/** Unsent replies by thread, so the panel and an editor's inline thread share one, and closing either keeps it. */
+/**
+ * Unsent text: replies by thread id, so the panel and an editor's inline thread
+ * share one and closing either keeps it; and new-thread composers by their place.
+ */
 let _drafts = $state<Record<string, string>>({})
 
 function receive(change: ThreadChange): void {
@@ -146,6 +149,10 @@ export const agentThreadsStore = {
   },
   takeInline(sessionId: string, threadId: string): void {
     if (_inline?.sessionId === sessionId && _inline.threadId === threadId) _inline = null
+  },
+  /** Drop a request no editor took (its file never loaded here). */
+  clearInline(sessionId: string): void {
+    if (_inline?.sessionId === sessionId) _inline = null
   },
   /** The thread a session's panel should open on, once. */
   focusFor(sessionId: string): string | null {

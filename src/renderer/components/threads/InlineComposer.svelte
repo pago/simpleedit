@@ -1,16 +1,20 @@
 <script lang="ts">
+  import { agentThreadsStore } from '../../stores/agentThreads.svelte'
+
   /** Starts a thread from an editor, in a view zone under the commented lines (`lib/thread-zones.ts`). */
   interface Props {
     /** Where the thread will anchor, e.g. `src/a.ts:12-14`. */
     label: string
+    /** Where the typed text is kept until it is sent or cancelled. */
+    draftKey: string
     /** Rejects if the thread couldn't be started; the text stays. */
     onsubmit: (body: string) => Promise<void>
     oncancel: () => void
   }
 
-  let { label, onsubmit, oncancel }: Props = $props()
+  let { label, draftKey, onsubmit, oncancel }: Props = $props()
 
-  let body = $state('')
+  let body = $derived(agentThreadsStore.draft(draftKey))
   let sending = $state(false)
   let error = $state<string | null>(null)
   let box: HTMLTextAreaElement | undefined = $state()
@@ -47,7 +51,8 @@
   <div class="mb-1 truncate font-mono text-[11px] text-zinc-400">New thread · {label}</div>
   <textarea
     bind:this={box}
-    bind:value={body}
+    value={body}
+    oninput={(e) => agentThreadsStore.setDraft(draftKey, e.currentTarget.value)}
     class="w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500"
     rows="2"
     placeholder="Comment for the agent…"

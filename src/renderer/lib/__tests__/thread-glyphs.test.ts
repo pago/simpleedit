@@ -35,6 +35,11 @@ describe('threadGlyphsFor', () => {
     ])
   })
 
+  it('skips an orphaned thread: its old line now holds other code', () => {
+    const orphan = thread('t_orphan', { orphaned: true })
+    expect(threadGlyphsFor([orphan], { worktreePath: '/wt', path: 'src/a.ts', commit: null })).toEqual([])
+  })
+
   it("shows a commit's threads only in that commit's diff", () => {
     expect(threadGlyphsFor(threads, { worktreePath: '/wt', path: 'src/a.ts', commit: 'abc1234' }).map((g) => g.threadId)).toEqual([
       't_commit',

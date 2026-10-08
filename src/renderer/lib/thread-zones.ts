@@ -70,6 +70,7 @@ function svelteZone(
   width()
   scroll()
   const subs = [editor.onDidLayoutChange(width), editor.onDidScrollChange(scroll)]
+  let disposed = false
 
   return {
     get line() {
@@ -80,6 +81,8 @@ function svelteZone(
       editor.changeViewZones((a) => a.layoutZone(id))
     },
     dispose() {
+      if (disposed) return
+      disposed = true
       ro.disconnect()
       for (const s of subs) s.dispose()
       void unmount(instance)
@@ -87,6 +90,17 @@ function svelteZone(
     },
   }
 }
+
+/** The message Monaco shows at the cursor, e.g. for typing into a read-only editor. */
+function showMessage(editor: monaco.editor.ICodeEditor, text: string): void {
+  const c: unknown = editor.getContribution('editor.contrib.messageController')
+  const position = editor.getPosition()
+  if (position && typeof c === 'object' && c !== null && 'showMessage' in c && typeof c.showMessage === 'function') {
+    c.showMessage(text, position)
+  }
+}
+
+export const SAVE_TO_COMMENT = 'Save the file to comment on it'
 
 /**
  * Threads in an editor: glyphs for open threads, which toggle the thread in a
@@ -96,11 +110,28 @@ function svelteZone(
  *
  * Zones go when their thread stops being in `set` (resolved, removed, another
  * file), when the editor's model changes, and on `reset` and `dispose`.
+ *
+ * While `dirty()` (unsaved edits), nothing new is anchored: main re-anchors
+ * against the file on disk, so a buffer line may name other code there. For
+ * the same reason, threads already shown stay where Monaco tracked them
+ * through the edits rather than jumping to their stored lines. Call `refresh`
+ * when that state flips.
+ *
+ * A composer's text is kept in the store by place (session, file, lines), so
+ * it survives the composer closing for any reason other than send or cancel.
  */
 export function attachEditorThreads(
   editor: monaco.editor.IStandaloneCodeEditor,
   host: () => ThreadHost | null,
-): { set(glyphs: ThreadGlyph[]): void; open(threadId: string): boolean; comment(): void; reset(): void; dispose(): void } {
+  { dirty = () => false }: { dirty?: () => boolean } = {},
+): {
+  set(glyphs: ThreadGlyph[]): void
+  refresh(): void
+  open(threadId: string): boolean
+  comment(): void
+  reset(): void
+  dispose(): void
+} {
   const open = new Map<string, Zone>()
   let composer: Zone | null = null
   let current: ThreadGlyph[] = []
@@ -175,27 +206,47 @@ export function attachEditorThreads(
     )
     const target = h.anchorFor(lines)
     if (!target) return
+    if (dirty()) {
+      showMessage(editor, SAVE_TO_COMMENT)
+      return
+    }
     closeComposer()
     const sessionId = h.sessionId
-    composer = svelteZone(editor, lines.endLine, (el) =>
+    const ctx = target.anchor.context
+    const draftKey = `new|${sessionId}|${target.worktreePath}|${target.anchor.path}|${ctx === 'file' ? 'file' : ctx.commit}|${lines.startLine}-${lines.endLine}`
+    const mine: Zone = svelteZone(editor, lines.endLine, (el) =>
       mount(InlineComposer, {
         target: el,
         props: {
           label: anchorLabel(target.anchor),
+          draftKey,
           onsubmit: async (body: string) => {
+            if (dirty()) throw new Error(SAVE_TO_COMMENT)
             const id = await agentThreadsStore.create({ sessionId, ...target, body }, { reveal: false })
+            agentThreadsStore.setDraft(draftKey, '')
+            // The composer may have closed while main answered (another file, another composer).
+            if (composer !== mine) return
             closeComposer()
             pending = id
             show(id)
             if (open.has(id)) pending = null
           },
           oncancel: () => {
-            closeComposer()
+            agentThreadsStore.setDraft(draftKey, '')
+            if (composer === mine) closeComposer()
             editor.focus()
           },
         },
       }),
     )
+    composer = mine
+  }
+
+  function refresh(): void {
+    const on = commentable()
+    glyphs.setCommentable(on && !dirty())
+    // Kept on while dirty, so ⌘⇧M can say why it won't comment.
+    canComment.set(on)
   }
 
   function reset(): void {
@@ -220,15 +271,20 @@ export function attachEditorThreads(
 
   return {
     set(next) {
+      const frozen = dirty()
+      if (frozen) {
+        next = next.map((g) => {
+          const line = glyphs.lineOf(g.threadId)
+          return line === undefined ? g : { ...g, line, endLine: line + (g.endLine - g.line) }
+        })
+      }
       current = next
       glyphs.set(next)
-      const on = commentable()
-      glyphs.setCommentable(on)
-      canComment.set(on)
+      refresh()
       for (const [id, zone] of [...open]) {
         const g = next.find((x) => x.threadId === id)
         if (!g) close(id)
-        else if (zoneLine(g) !== zone.line) zone.move(zoneLine(g))
+        else if (!frozen && zoneLine(g) !== zone.line) zone.move(zoneLine(g))
       }
       if (pending && next.some((g) => g.threadId === pending)) {
         show(pending)
@@ -243,6 +299,7 @@ export function attachEditorThreads(
       editor.revealLineInCenterIfOutsideViewport(zoneLine(g))
       return true
     },
+    refresh,
     comment: () => compose(),
     reset,
     dispose() {
