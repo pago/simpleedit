@@ -26,6 +26,8 @@ import {
 import { listWorktrees, createWorktree, checkoutWorktree, listAvailableBranches, removeWorktree, cloneBareRepo } from './worktree'
 import { watchWorktreeList, unwatchWorktreeList, unwatchAllWorktreeLists, unwatchAllWorktreeListsForWindow } from './worktree-watcher'
 import { watchEditorFile, unwatchEditorFile, unwatchAllEditorFilesForWindow, unwatchAllEditorFiles } from './editor-watcher'
+import { watchMemoryDir, unwatchMemoryDir, unwatchAllMemoryDirsForWindow, unwatchAllMemoryDirs } from './memory-watcher'
+import { resolveMemoryLocation, memoryHealth, listMemoryFiles, isHandedOutMemoryDir } from './claude-memory'
 import {
   getCommitLog, getCommitDiff, getCommitFiles, getFileAtCommit,
   getStagingFiles, getStagingDiff, getFileAtHead,
@@ -509,6 +511,7 @@ function createWindow(repoPath?: string): BrowserWindow {
     forgetWindow(webContentsId)
     unwatchAllWorktreeListsForWindow(webContentsId)
     unwatchAllEditorFilesForWindow(webContentsId)
+    unwatchAllMemoryDirsForWindow(webContentsId)
     windowRepoMap.delete(webContentsId)
     windowReposMap.delete(webContentsId)
     clientHubs.delete(webContentsId)
@@ -838,6 +841,28 @@ function registerAllHandlers(): void {
 
   handleInvoke('editor:unwatch', (event, filePath: string) => {
     unwatchEditorFile(event.sender.id, filePath)
+  })
+
+  // ── Claude memory ───────────────────────────────────────
+  handleInvoke('memory:resolve', (_event, launchDir: string) => {
+    return resolveMemoryLocation(launchDir)
+  })
+
+  handleInvoke('memory:health', (_event, memoryDir: string) => {
+    return memoryHealth(memoryDir)
+  })
+
+  handleInvoke('memory:list-files', (_event, memoryDir: string) => {
+    return listMemoryFiles(memoryDir)
+  })
+
+  handleInvoke('memory:watch', (event, memoryDir: string) => {
+    if (!isHandedOutMemoryDir(memoryDir)) throw new Error(`Not a resolved memory dir: ${memoryDir}`)
+    watchMemoryDir(hubFor(event.sender), memoryDir)
+  })
+
+  handleInvoke('memory:unwatch', (event, memoryDir: string) => {
+    unwatchMemoryDir(event.sender.id, memoryDir)
   })
 
   // ── Worktrees ───────────────────────────────────────────
@@ -1358,6 +1383,7 @@ app.on('before-quit', () => {
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { unwatchAllEditorFiles() } catch { /* ignore */ }
+  try { unwatchAllMemoryDirs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
@@ -1394,6 +1420,7 @@ app.on('window-all-closed', () => {
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { unwatchAllEditorFiles() } catch { /* ignore */ }
+  try { unwatchAllMemoryDirs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
