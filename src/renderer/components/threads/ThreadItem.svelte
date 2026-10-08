@@ -18,7 +18,7 @@
   let draft = $state('')
   let sending = $state(false)
   let error = $state<string | null>(null)
-  let confirming = $state<'force-send' | 'remove' | null>(null)
+  let confirming = $state<'remove' | null>(null)
 
   let unread = $derived(hasUnread(thread))
   let implicit = $derived(implicitAnswerIds(thread))
@@ -75,7 +75,6 @@
   }
 
   async function forceSend(): Promise<void> {
-    confirming = null
     await run(() => agentThreadsStore.forceSend(thread.sessionId))
   }
 
@@ -90,9 +89,9 @@
 </script>
 
 <li class="border-b border-zinc-800 {thread.status === 'resolved' ? 'opacity-70' : ''}">
-  <div class="flex items-center gap-1 px-2 py-1.5">
+  <div class="flex items-center gap-1 py-0.5 pl-1 pr-2">
     <button
-      class="flex-none text-[10px] text-zinc-500 hover:text-zinc-300"
+      class="flex h-6 w-6 flex-none items-center justify-center rounded text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
       aria-expanded={expanded}
       aria-label={expanded ? 'Collapse thread' : 'Expand thread'}
       onclick={ontoggle}
@@ -100,7 +99,7 @@
       {expanded ? '▾' : '▸'}
     </button>
     <button
-      class="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-zinc-300 hover:text-blue-300 hover:underline"
+      class="min-w-0 truncate text-left font-mono text-[11px] text-zinc-300 hover:text-blue-300 hover:underline"
       title="Open {anchorLabel(thread.anchor)}"
       onclick={() => onopen(thread)}
     >
@@ -118,6 +117,8 @@
     {#if unread}
       <span class="h-1.5 w-1.5 flex-none rounded-full bg-blue-400" aria-label="Unread reply"></span>
     {/if}
+    <!-- The rest of the row toggles too; the chevron is the accessible control. -->
+    <button class="h-6 min-w-4 flex-1 self-stretch" tabindex="-1" aria-hidden="true" onclick={ontoggle}></button>
   </div>
 
   {#if !expanded}
@@ -154,20 +155,9 @@
                 <button class="rounded border border-zinc-700 px-1.5 text-zinc-300 hover:bg-zinc-700" onclick={() => copy(m)}>
                   {copiedId === m.id ? 'Copied' : 'Copy'}
                 </button>
-                {#if confirming === 'force-send'}
-                  <span class="text-zinc-400">Anything typed in the terminal is submitted with it.</span>
-                  <button class="rounded border border-amber-500/40 px-1.5 text-amber-200 hover:bg-amber-500/20" onclick={forceSend}>
-                    Send now
-                  </button>
-                  <button class="px-1 text-zinc-400 hover:text-zinc-200" onclick={() => (confirming = null)}>Cancel</button>
-                {:else}
-                  <button
-                    class="rounded border border-zinc-700 px-1.5 text-zinc-300 hover:bg-zinc-700"
-                    onclick={() => (confirming = 'force-send')}
-                  >
-                    My prompt is empty, send
-                  </button>
-                {/if}
+                <button class="rounded border border-zinc-700 px-1.5 text-zinc-300 hover:bg-zinc-700" onclick={forceSend}>
+                  My prompt is empty, send
+                </button>
               {/if}
             </div>
           {/if}

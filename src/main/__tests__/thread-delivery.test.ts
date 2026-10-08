@@ -136,7 +136,7 @@ describe('thread delivery', () => {
     stop()
     noteThreadSignal('s1', { eventName: 'PermissionRequest', toolName: 'Bash', toolUseId: 'tu1' })
     comment()
-    noteThreadUserInput('s1')
+    noteThreadUserInput('s1', 'x')
     noteThreadSignal('s1', { eventName: 'Notification', notificationType: 'permission_prompt' })
     vi.advanceTimersByTime(SEND_SETTLE_MS * 2)
     expect(writes).toEqual([])
@@ -159,7 +159,7 @@ describe('thread delivery', () => {
 
   it('holds for a draft until the user submits, or vouches the prompt is empty', () => {
     stop()
-    noteThreadUserInput('s1')
+    noteThreadUserInput('s1', 'x')
     comment()
     vi.advanceTimersByTime(SEND_SETTLE_MS * 2)
     expect(writes).toEqual([])
@@ -168,6 +168,29 @@ describe('thread delivery', () => {
     forceSend('s1')
     vi.advanceTimersByTime(SEND_SETTLE_MS)
     expect(writes).toHaveLength(1)
+  })
+
+  it("doesn't hold for keys that leave the prompt empty, but does after a command's Enter", () => {
+    stop()
+    noteThreadUserInput('s1', '\x1b')
+    noteThreadUserInput('s1', '\x1b[Z')
+    noteThreadUserInput('s1', 'ok')
+    noteThreadUserInput('s1', '\x7f\x7f')
+    noteThreadUserInput('s1', 'scrap that\x03')
+    comment()
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    expect(writes).toHaveLength(1)
+
+    submitted()
+    stop()
+    noteThreadUserInput('s1', '/model\r')
+    comment('t_bbbbbb', 's1', 'm_bbbbbb1')
+    vi.advanceTimersByTime(SEND_SETTLE_MS * 2)
+    expect(writes).toHaveLength(1)
+    expect(heldReason('t_bbbbbb')).toBe('draft')
+    noteThreadUserInput('s1', '\x1b')
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    expect(writes).toHaveLength(2)
   })
 
   it('fails a write the agent never confirms, and retries only once the prompt is known empty', () => {
@@ -251,7 +274,7 @@ describe('thread delivery', () => {
     stop()
     comment()
     vi.advanceTimersByTime(SEND_SETTLE_MS)
-    noteThreadUserInput('s1')
+    noteThreadUserInput('s1', 'x')
     submitted()
     stop()
     comment('t_bbbbbb', 's1', 'm_bbbbbb1')
@@ -299,7 +322,7 @@ describe('thread delivery', () => {
   it("pushes to OpenCode over its own API, which a draft can't clobber", async () => {
     noteThreadStatus('o1', 'running')
     stop('o1')
-    noteThreadUserInput('o1')
+    noteThreadUserInput('o1', 'x')
     comment('t_oooooo', 'o1', 'm_oooooo1')
     await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS)
     expect(writes).toEqual([])
@@ -318,7 +341,7 @@ describe('thread delivery without a database', () => {
       initThreadDelivery({ provider: () => 'claude', write: () => {}, push: () => null, broadcast: () => {} }),
     ).toThrow()
     expect(() => {
-      noteThreadUserInput('s1')
+      noteThreadUserInput('s1', 'x')
       noteThreadSignal('s1', { eventName: 'UserPromptSubmit', prompt: 'x' })
       beginThreadStop('s1')
       endThreadStop('s1', { continued: false, lastAssistantMessage: 'x' })

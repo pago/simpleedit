@@ -29,7 +29,6 @@
   let draft = $state('')
   let sending = $state(false)
   let error = $state<string | null>(null)
-  let confirmingForceSend = $state(false)
   let copiedId = $state<string | null>(null)
 
   let unread = $derived(hasUnread(thread))
@@ -68,7 +67,6 @@
   }
 
   async function forceSend(): Promise<void> {
-    confirmingForceSend = false
     await run(() => agentThreadsStore.forceSend(thread.sessionId))
   }
 
@@ -145,28 +143,12 @@
                 <button type="button" class={ACTION} onclick={() => retry(m.id)}>Retry</button>
               </div>
             {:else if info.action === 'force-send'}
-              {#if confirmingForceSend}
-                <p class="mt-1.5 text-[11px] leading-relaxed text-zinc-400">
-                  Anything typed in the terminal is submitted with it.
-                </p>
-                <div class="mt-1.5 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    class="min-h-9 rounded-md border border-amber-500/40 px-3 text-xs text-amber-200 active:bg-amber-500/20"
-                    onclick={forceSend}
-                  >Send now</button>
-                  <button type="button" class={ACTION} onclick={() => (confirmingForceSend = false)}>Cancel</button>
-                </div>
-              {:else}
-                <div class="mt-1.5 flex flex-wrap gap-2">
-                  <button type="button" class={ACTION} onclick={() => copy(m)}>
-                    {copiedId === m.id ? 'Copied' : 'Copy'}
-                  </button>
-                  <button type="button" class={ACTION} onclick={() => (confirmingForceSend = true)}>
-                    My prompt is empty, send
-                  </button>
-                </div>
-              {/if}
+              <div class="mt-1.5 flex flex-wrap gap-2">
+                <button type="button" class={ACTION} onclick={() => copy(m)}>
+                  {copiedId === m.id ? 'Copied' : 'Copy'}
+                </button>
+                <button type="button" class={ACTION} onclick={forceSend}>My prompt is empty, send</button>
+              </div>
             {/if}
           {/if}
         </div>
