@@ -16,16 +16,37 @@
   let thread = $derived(agentThreadsStore.get(threadId))
   let root: HTMLDivElement | undefined = $state()
   // Hidden workspaces stay mounted and Monaco hides zones scrolled out of view;
-  // either way the zone stops intersecting, and an unseen answer stays unread.
-  let visible = $state(false)
+  // either way the zone stops intersecting. A window in the background still
+  // intersects, so it must also be focused. An unseen answer stays unread.
+  let intersecting = $state(false)
+  let windowActive = $state(isWindowActive())
+  let visible = $derived(intersecting && windowActive)
+
+  function isWindowActive(): boolean {
+    return document.visibilityState === 'visible' && document.hasFocus()
+  }
 
   $effect(() => {
     if (!root) return
     const io = new IntersectionObserver((entries) => {
-      visible = entries.some((e) => e.isIntersecting)
+      intersecting = entries.some((e) => e.isIntersecting)
     })
     io.observe(root)
     return () => io.disconnect()
+  })
+
+  $effect(() => {
+    const update = (): void => {
+      windowActive = isWindowActive()
+    }
+    window.addEventListener('focus', update)
+    window.addEventListener('blur', update)
+    document.addEventListener('visibilitychange', update)
+    return () => {
+      window.removeEventListener('focus', update)
+      window.removeEventListener('blur', update)
+      document.removeEventListener('visibilitychange', update)
+    }
   })
 </script>
 

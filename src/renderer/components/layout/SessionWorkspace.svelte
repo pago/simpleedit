@@ -29,6 +29,7 @@
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
   import { threadAnchorFor } from '../../lib/thread-anchor'
+  import { threadOpenFor } from '../../lib/thread-open'
   import { agentThreadsStore } from '../../stores/agentThreads.svelte'
   import { revealInEditor } from '../../lsp/editor-opener'
   import type { AgentThread } from '../../../shared/agent-threads'
@@ -262,23 +263,39 @@
     setViewerOpen(true)
   }
 
-  /**
-   * Opens the thread where its glyph is, with the thread shown inline: a
-   * commit's thread in that commit's diff, any other in the working copy.
-   */
+  /** The tab opened to show a thread inline; leaving it drops the request if no editor took it. */
+  let inlineTab: string | null = null
+  $effect(() => {
+    const id = activeTab?.id
+    if (inlineTab === null || id === inlineTab) return
+    inlineTab = null
+    agentThreadsStore.clearInline(sessionId)
+  })
+
+  /** Opens a thread from the panel; see `threadOpenFor`. */
   function openThreadAnchor(thread: AgentThread): void {
-    if (thread.status === 'open') agentThreadsStore.openInline(sessionId, thread.id)
-    const ctx = thread.anchor.context
-    if (ctx !== 'file' && ctx.commit !== 'uncommitted') {
-      openDiffTab(sessionId, thread.worktreePath, ctx.commit, `Commit ${ctx.commit.slice(0, 7)}`)
+    agentThreadsStore.clearInline(sessionId)
+    inlineTab = null
+    const target = threadOpenFor(thread)
+    if (target.kind === 'panel') {
+      openFile(target.path)
+      agentThreadsStore.reveal(sessionId, thread.id)
       return
     }
-    const path = `${thread.worktreePath.replace(/\/+$/, '')}/${thread.anchor.path}`
+    if (target.inline) {
+      agentThreadsStore.openInline(sessionId, thread.id)
+      inlineTab = target.tabId
+    }
+    if (target.kind === 'diff') {
+      openDiffTab(sessionId, thread.worktreePath, target.commit, `Commit ${target.commit.slice(0, 7)}`)
+      return
+    }
+    const path = target.path
     const active = tabsStore.active(sessionId)
     revealInEditor(
       sessionId,
       path,
-      { lineNumber: thread.anchor.startLine, column: 1 },
+      { lineNumber: target.line, column: 1 },
       { isActiveTab: active?.kind === 'file' && active.path === path, open: () => openFile(path) },
     )
   }

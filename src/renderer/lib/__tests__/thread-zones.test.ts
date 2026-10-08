@@ -2,8 +2,8 @@ import * as monaco from 'monaco-editor'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { waitFor } from '@testing-library/svelte'
-import './ignore-monaco-cancellation'
-import { attachEditorThreads, type ThreadHost } from '../thread-zones'
+import { isMonacoCancellation } from './ignore-monaco-cancellation'
+import { attachEditorThreads, SAVE_TO_COMMENT, type ThreadHost } from '../thread-zones'
 import { threadGlyphsFor } from '../thread-glyphs'
 import { agentThreadsStore, initAgentThreadsListeners, _resetAgentThreadsForTests } from '../../stores/agentThreads.svelte'
 import type { AgentThread, AgentThreadOp, ThreadChange, ThreadMessage } from '../../../shared/agent-threads'
@@ -44,6 +44,7 @@ const host: ThreadHost = {
 let editor: monaco.editor.IStandaloneCodeEditor
 let threads: ReturnType<typeof attachEditorThreads>
 let currentHost: ThreadHost | null
+let isDirty = false
 
 function sync(): void {
   threads.set(threadGlyphsFor(agentThreadsStore.forSession('s1'), VIEW))
@@ -87,7 +88,9 @@ beforeEach(() => {
   document.body.append(el)
   editor = monaco.editor.create(el, { value: 'a\nb\nc\nd\ne\nf', glyphMargin: false })
   currentHost = host
-  threads = attachEditorThreads(editor, () => currentHost)
+  isDirty = false
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+  threads = attachEditorThreads(editor, () => currentHost, { dirty: () => isDirty })
 })
 
 afterEach(() => {
@@ -99,6 +102,7 @@ afterEach(() => {
   dispose()
   _resetAgentThreadsForTests()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('inline threads', () => {
@@ -265,5 +269,134 @@ describe('new-thread composer', () => {
 
     await userEvent.keyboard('{Escape}')
     expect(document.querySelector('textarea[aria-label="Comment on these lines"]')).toBeNull()
+  })
+})
+
+function composerBox(): HTMLTextAreaElement | null {
+  return document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Comment on these lines"]')
+}
+
+async function openComposerAt(line: number): Promise<HTMLTextAreaElement> {
+  editor.setPosition({ lineNumber: line, column: 1 })
+  threads.comment()
+  return waitFor(() => {
+    const b = composerBox()
+    expect(b).not.toBeNull()
+    return b!
+  })
+}
+
+const reply = (at: string): ThreadMessage[] => [
+  { id: 'm_1', author: 'user', body: 'Why?', at: '2026-10-08T10:00:00.000Z', delivery: 'answered' },
+  { id: 'm_2', author: 'agent', body: 'Because.', at },
+]
+
+describe('review fixes', () => {
+  it('gives an orphaned thread no glyph and no zone', () => {
+    put(thread('t_aaaaaaaa', { anchor: { ...thread('x').anchor, orphaned: true } }))
+    sync()
+    expect(threads.open('t_aaaaaaaa')).toBe(false)
+    expect(editor.getLineDecorations(2)?.some((d) => d.options.glyphMarginClassName?.includes('thread-glyph'))).toBeFalsy()
+  })
+
+  it('refuses a new comment while the buffer is unsaved, and says why', async () => {
+    sync()
+    isDirty = true
+    threads.refresh()
+    expect(editor.getOption(monaco.editor.EditorOption.glyphMargin)).toBe(false)
+    editor.setPosition({ lineNumber: 2, column: 1 })
+    threads.comment()
+    await waitFor(() => expect(document.querySelector('.monaco-editor-overlaymessage')?.textContent).toContain(SAVE_TO_COMMENT))
+    expect(composerBox()).toBeNull()
+
+    isDirty = false
+    threads.refresh()
+    expect(editor.getOption(monaco.editor.EditorOption.glyphMargin)).toBe(true)
+  })
+
+  it('keeps glyphs and zones where the unsaved edits moved them', async () => {
+    put(thread('t_aaaaaaaa'))
+    sync()
+    threads.open('t_aaaaaaaa')
+    await waitFor(() => expect(document.querySelector('[data-inline-thread]')).not.toBeNull())
+    isDirty = true
+    editor.executeEdits('test', [{ range: new monaco.Range(1, 1, 1, 1), text: 'new\n' }])
+
+    put(thread('t_aaaaaaaa', {}, reply('2026-10-08T10:01:00.000Z')))
+    sync()
+    const glyphOn = (line: number): boolean =>
+      !!editor.getLineDecorations(line)?.some((d) => d.options.glyphMarginClassName?.startsWith('thread-glyph'))
+    expect(glyphOn(3)).toBe(true)
+    expect(glyphOn(2)).toBe(false)
+    // The zone followed the anchor down to line 4, and stays there.
+    await frame()
+    expect(editor.getTopForLineNumber(5) - editor.getTopForLineNumber(4)).toBeGreaterThan(40)
+  })
+
+  it("keeps a composer's text when another composer replaces it, and restores it there", async () => {
+    sync()
+    await openComposerAt(1)
+    await userEvent.keyboard('First thoughts')
+    const other = await openComposerAt(4)
+    expect(other.value).toBe('')
+    expect(document.querySelectorAll('textarea[aria-label="Comment on these lines"]')).toHaveLength(1)
+    expect((await openComposerAt(1)).value).toBe('First thoughts')
+  })
+
+  it("keeps a composer's text across a model change", async () => {
+    // A model the editor made from `value` is disposed when the editor moves off it.
+    const model = monaco.editor.createModel(editor.getValue())
+    editor.setModel(model)
+    sync()
+    await openComposerAt(2)
+    await userEvent.keyboard('Half a thought')
+    const other = monaco.editor.createModel('other')
+    editor.setModel(other)
+    expect(composerBox()).toBeNull()
+    editor.setModel(model)
+    sync()
+    expect((await openComposerAt(2)).value).toBe('Half a thought')
+    other.dispose()
+  })
+
+  it('closes only its own composer when main answers after another one opened', async () => {
+    let answer: (v: unknown) => void = () => {}
+    invoke.mockImplementationOnce(() => new Promise((r) => (answer = r)))
+    sync()
+    await openComposerAt(1)
+    await userEvent.keyboard('Slow one{Enter}')
+    await openComposerAt(4)
+    await userEvent.keyboard('Next')
+    answer(null)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(composerBox()?.value).toBe('Next')
+    expect(agentThreadsStore.draft(`new|s1|/wt|src/a.ts|file|1-1`)).toBe('')
+  })
+
+  it('marks a reply read only while the window is focused', async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    put(thread('t_aaaaaaaa', {}, reply('2026-10-08T10:01:00.000Z')))
+    sync()
+    threads.open('t_aaaaaaaa')
+    await waitFor(() => expect(document.querySelector('[data-inline-thread]')).not.toBeNull())
+    await new Promise((r) => setTimeout(r, 50))
+    expect(invoke).not.toHaveBeenCalledWith('agent-threads:op', expect.objectContaining({ kind: 'mark-read' }))
+
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('agent-threads:op', { kind: 'mark-read', threadId: 't_aaaaaaaa', at: '2026-10-08T10:01:00.000Z' }),
+    )
+  })
+
+  it("ignores only Monaco's own cancellations", () => {
+    const monacoCancel = new Error('Canceled')
+    monacoCancel.name = 'Canceled'
+    expect(isMonacoCancellation(monacoCancel)).toBe(true)
+    expect(isMonacoCancellation(new Error('Canceled'))).toBe(false)
+    const other = new Error('request aborted')
+    other.name = 'Canceled'
+    expect(isMonacoCancellation(other)).toBe(false)
+    expect(isMonacoCancellation('Canceled')).toBe(false)
   })
 })

@@ -16,12 +16,16 @@ export interface ThreadGlyph {
  */
 export type GlyphView = { worktreePath: string; path: string; commit: string | null }
 
-/** The open threads anchored in `view`, as glyphs. `path` is relative to the worktree. */
+/**
+ * The open threads anchored in `view`, as glyphs. `path` is relative to the
+ * worktree. An orphaned thread keeps its old line, which now holds other code,
+ * so it gets none.
+ */
 export function threadGlyphsFor(threads: AgentThread[], view: GlyphView): ThreadGlyph[] {
   const root = view.worktreePath.replace(/\/+$/, '')
   const out: ThreadGlyph[] = []
   for (const t of threads) {
-    if (t.status !== 'open' || t.worktreePath !== root || t.anchor.path !== view.path) continue
+    if (t.status !== 'open' || t.anchor.orphaned || t.worktreePath !== root || t.anchor.path !== view.path) continue
     const ctx = t.anchor.context
     const workingCopy = ctx === 'file' || ctx.commit === 'uncommitted'
     if (view.commit === null ? !workingCopy : ctx === 'file' || ctx.commit !== view.commit) continue
@@ -42,7 +46,13 @@ export function attachThreadGlyphs(
   editor: monaco.editor.ICodeEditor,
   onopen: (threadId: string) => void,
   oncomment?: (line: number) => void,
-): { set(glyphs: ThreadGlyph[]): void; setCommentable(on: boolean): void; dispose(): void } {
+): {
+  set(glyphs: ThreadGlyph[]): void
+  setCommentable(on: boolean): void
+  /** Where a thread's glyph is now, after the edits since the last `set`. */
+  lineOf(threadId: string): number | undefined
+  dispose(): void
+} {
   const collection = editor.createDecorationsCollection()
   const hover = editor.createDecorationsCollection()
   let current: ThreadGlyph[] = []
@@ -109,6 +119,10 @@ export function attachThreadGlyphs(
         })),
       )
       if (glyphAt(hover.getRange(0)?.startLineNumber)) hover.clear()
+    },
+    lineOf(threadId) {
+      const i = current.findIndex((g) => g.threadId === threadId)
+      return i >= 0 ? collection.getRange(i)?.startLineNumber : undefined
     },
     setCommentable(on) {
       commentable = on

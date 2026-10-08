@@ -165,6 +165,7 @@
     try {
       await window.api.invoke('editor:save', currentFilePath, content)
       isDirty = false
+      threads?.refresh()
       onModified?.(currentFilePath, false)
     } catch (err: unknown) {
       console.error('Failed to save file:', err)
@@ -236,13 +237,16 @@
       },
     })
 
-    threads = attachEditorThreads(editor, threadHost)
+    threads = attachEditorThreads(editor, threadHost, { dirty: () => isDirty })
 
     oneditorready?.(editor)
 
     editor.onDidChangeModelContent(() => {
       if (currentFilePath && !isLoadingFile) {
-        isDirty = true
+        if (!isDirty) {
+          isDirty = true
+          threads?.refresh()
+        }
         const content = editor!.getValue()
         onModified?.(currentFilePath, true)
         oncontentchange?.(content)
