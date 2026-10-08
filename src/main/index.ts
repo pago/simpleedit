@@ -858,7 +858,7 @@ function registerAllHandlers(): void {
 
   handleInvoke('memory:watch', (event, memoryDir: string) => {
     if (!isHandedOutMemoryDir(memoryDir)) throw new Error(`Not a resolved memory dir: ${memoryDir}`)
-    watchMemoryDir(hubFor(event.sender), memoryDir)
+    return watchMemoryDir(hubFor(event.sender), memoryDir)
   })
 
   handleInvoke('memory:unwatch', (event, memoryDir: string) => {

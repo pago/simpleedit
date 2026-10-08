@@ -23,6 +23,7 @@ beforeEach(() => {
       return Promise.resolve({ memoryDir: DIR, indexPresent: true, fileCount: 1, issues: [] })
     }
     if (channel === 'memory:resolve') return Promise.resolve(location)
+    if (channel === 'memory:watch') return Promise.resolve(true)
     return Promise.resolve(undefined)
   })
   vi.stubGlobal('api', {

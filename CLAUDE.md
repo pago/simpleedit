@@ -298,9 +298,11 @@ health problems as Monaco markers and a badge.
   Without git, the health list takes GitLog's slot.
 - **`stores/memoryView.svelte.ts`** holds a dir (refcounted): `memory:watch`,
   health + markers (`lib/memory-markers.ts`), and on `memory:changed` tree
-  nonces, palette cache, health refetch, and a re-resolve when dirs came or
-  went. Dir creation, `git init` and first commits fire no event, so the
-  visible view polls `memory:resolve` (5 s while missing, 30 s while no-git).
+  nonces, palette cache, health refetch, and a re-resolve (of every launch
+  dir holding it) when dirs came or went. The dir's own removal ends main's
+  watch (`watchEnded`); if it is back by the re-resolve, the store watches it
+  again, since no `exists` flip will re-acquire it. Dir creation, `git init`
+  and first commits fire no event, so the visible view polls `memory:resolve` (5 s while missing, 30 s while no-git).
 - **Revealing an issue** switches a 'rendered' Markdown file to 'hybrid'
   (`markdownViewStore.setFor`) and uses `revealInEditor`, which tracks the path
   each editor has LOADED — one editor instance is reused across tabs, and

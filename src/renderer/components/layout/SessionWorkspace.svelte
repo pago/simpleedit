@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import FileTree from '../filetree/FileTree.svelte'
   import Terminal from '../terminal/Terminal.svelte'
   import GitLog from '../sidebar/GitLog.svelte'
@@ -51,7 +52,7 @@
     const dir = heldMemoryDir
     const from = launchDir
     if (!dir) return
-    return memoryViewStore.acquire(dir, from)
+    return untrack(() => memoryViewStore.acquire(dir, from))
   })
 
   // Directory creation, `git init` and a first commit raise no watcher event

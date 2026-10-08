@@ -173,7 +173,7 @@ export interface MemoryInvokeMap {
   'memory:health': { args: [memoryDir: string]; result: MemoryHealthReport }
   /** Paths relative to `memoryDir`, bounded walk, `.git` skipped. */
   'memory:list-files': { args: [memoryDir: string]; result: string[] }
-  'memory:watch': { args: [memoryDir: string]; result: void }
+  'memory:watch': { args: [memoryDir: string]; result: boolean }
   'memory:unwatch': { args: [memoryDir: string]; result: void }
 }
 
@@ -183,7 +183,13 @@ export interface MemoryEventMap {
    * changes). `structural`: a directory appeared or vanished, the memory dir
    * itself included — callers re-resolve.
    */
-  'memory:changed': { memoryDir: string; dirs: string[]; structural: boolean }
+  'memory:changed': {
+    memoryDir: string
+    dirs: string[]
+    structural: boolean
+    /** The dir itself was removed: main dropped the watch and every ref to it. */
+    watchEnded?: boolean
+  }
 }
 
 // ── Git ───────────────────────────────────────────────────

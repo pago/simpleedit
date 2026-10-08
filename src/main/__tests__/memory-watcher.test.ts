@@ -79,7 +79,10 @@ describe('memory-watcher', () => {
 
     rmSync(dir, { recursive: true, force: true })
     await vi.waitFor(() =>
-      expect(c.send).toHaveBeenCalledWith('memory:changed', expect.objectContaining({ memoryDir: dir, structural: true })),
+      expect(c.send).toHaveBeenCalledWith(
+        'memory:changed',
+        expect.objectContaining({ memoryDir: dir, structural: true, watchEnded: true }),
+      ),
     )
 
     mkdirSync(dir)
