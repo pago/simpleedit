@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { hasUnread, type AgentThread } from '../../../shared/agent-threads'
+  import { hasUnread, type AgentThread, type ThreadMessage } from '../../../shared/agent-threads'
   import { agentThreadsStore } from '../../stores/agentThreads.svelte'
   import { renderMarkdown } from '../../lib/markdown'
   import { anchorContextLabel, anchorLabel, deliveryInfo, implicitAnswerIds, type DeliveryInfo } from '../../lib/thread-labels'
@@ -60,6 +60,15 @@
   async function retry(messageId: string): Promise<void> {
     await run(async () => {
       if (!(await agentThreadsStore.retry(thread.sessionId, messageId))) throw new Error("It couldn't be queued again.")
+    })
+  }
+
+  let copiedId = $state<string | null>(null)
+
+  async function copy(m: ThreadMessage): Promise<void> {
+    await run(async () => {
+      await navigator.clipboard.writeText(m.body)
+      copiedId = m.id
     })
   }
 
@@ -140,6 +149,9 @@
                   Retry
                 </button>
               {:else if info.action === 'force-send'}
+                <button class="rounded border border-zinc-700 px-1.5 text-zinc-300 hover:bg-zinc-700" onclick={() => copy(m)}>
+                  {copiedId === m.id ? 'Copied' : 'Copy'}
+                </button>
                 {#if confirming === 'force-send'}
                   <span class="text-zinc-400">Anything typed in the terminal is submitted with it.</span>
                   <button class="rounded border border-amber-500/40 px-1.5 text-amber-200 hover:bg-amber-500/20" onclick={forceSend}>
