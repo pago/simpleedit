@@ -6,6 +6,7 @@ import {
   planNotification,
   sameOriginUrl,
   sessionFromUrl,
+  threadFromUrl,
 } from '../lib/push-payload'
 
 /**
@@ -21,7 +22,7 @@ describe('parsePushPayload', () => {
   it('reads what main sends', () => {
     expect(
       parsePushPayload(JSON.stringify({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1` })),
-    ).toEqual({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null })
+    ).toEqual({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null, threadId: null })
   })
 
   it('returns null rather than throwing on anything unusable', () => {
@@ -58,6 +59,16 @@ describe('planNotification', () => {
     const plan = planNotification(JSON.stringify({ terminalId: 't1', url: SCOPE, windowId: 7 }), SCOPE)
     expect(plan.windowId).toBe(7)
     expect(planNotification(JSON.stringify({ terminalId: 't1', url: SCOPE }), SCOPE).windowId).toBeNull()
+  })
+
+  it('gives a thread reply its own row, so it never replaces an unread block', () => {
+    const plan = planNotification(
+      JSON.stringify({ terminalId: 't7', url: `${SCOPE}#session=t7&thread=t_abcdef`, threadId: 't_abcdef' }),
+      SCOPE,
+    )
+    expect(plan.tag).toBe('simpleedit-thread-t7')
+    expect(plan.threadId).toBe('t_abcdef')
+    expect(planNotification(JSON.stringify({ terminalId: 't7', url: SCOPE }), SCOPE).threadId).toBeNull()
   })
 
   it('still shows something when the body cannot be read', () => {
@@ -109,8 +120,13 @@ describe('planClick', () => {
     expect(action).toEqual({
       kind: 'focus',
       clientIndex: 0,
-      message: { type: 'open-session', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null },
+      message: { type: 'open-session', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null, threadId: null },
     })
+  })
+
+  it('tells the tab which thread a reply was in', () => {
+    const action = planClick(`${SCOPE}#session=t1&thread=t_abcdef`, 't1', [{ url: SCOPE }], 7, 't_abcdef')
+    expect(action.kind === 'focus' && action.message.threadId).toBe('t_abcdef')
   })
 
   it('prefers the tab the user was last looking at', () => {
@@ -134,6 +150,14 @@ describe('sessionFromUrl', () => {
     expect(sessionFromUrl(SCOPE)).toBeNull()
     expect(sessionFromUrl(`${SCOPE}#session=`)).toBeNull()
     expect(sessionFromUrl('')).toBeNull()
+  })
+})
+
+describe('threadFromUrl', () => {
+  it('reads the thread beside the session', () => {
+    expect(threadFromUrl(`${SCOPE}#session=t1&thread=t_abcdef`)).toBe('t_abcdef')
+    expect(sessionFromUrl(`${SCOPE}#session=t1&thread=t_abcdef`)).toBe('t1')
+    expect(threadFromUrl(`${SCOPE}#session=t1`)).toBeNull()
   })
 })
 

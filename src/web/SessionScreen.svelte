@@ -32,6 +32,7 @@
    * The keys and the composer belong to the terminal and are hidden with it:
    * the Changes pane has nothing to type at, and Threads has its own composers.
    */
+  import { untrack } from 'svelte'
   import MobileTerminal from './MobileTerminal.svelte'
   import ChangesPane from './ChangesPane.svelte'
   import ThreadsPane from './ThreadsPane.svelte'
@@ -55,13 +56,15 @@
      * a hot mic on wake would be wrong where it does not.
      */
     focusComposer?: boolean
+    /** Show the Threads pane: a tap on a thread-reply notification. A new object per tap. */
+    openThread?: { threadId: string }
     /** This is the screen on top of the tab being shown. */
     visible?: boolean
     /** Leave this screen; called once a discard has been confirmed. */
     onleave?: () => void
   }
 
-  let { session, connection, focusComposer = false, visible = true, onleave }: Props = $props()
+  let { session, connection, focusComposer = false, openThread, visible = true, onleave }: Props = $props()
 
   let confirmingDiscard = $state(false)
 
@@ -115,6 +118,9 @@
 
   $effect(() => {
     if (focusComposer) composer?.focusField()
+  })
+  $effect(() => {
+    if (openThread && session.kind !== 'terminal') untrack(() => selectPane('threads'))
   })
   // The terminal owns key encoding: what an arrow sends depends on the cursor
   // mode, which only it knows.

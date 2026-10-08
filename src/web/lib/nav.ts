@@ -17,7 +17,17 @@ import type { PrRef } from '../../shared/screenprs'
 export type TabId = 'sessions' | 'prs'
 
 export type NavLayer =
-  | { kind: 'session'; terminalId: string; fromNotification: boolean }
+  | {
+      kind: 'session'
+      terminalId: string
+      fromNotification: boolean
+      /**
+       * A tap on a thread-reply notification: show this thread in the Threads
+       * pane. A fresh object per tap, so a second tap on the same thread is
+       * still a change the screen sees.
+       */
+      openThread?: { threadId: string }
+    }
   /** The Changes pane is showing one entry's diff rather than the log. */
   | { kind: 'changes-diff'; terminalId: string }
   | { kind: 'new-session' }
@@ -168,20 +178,23 @@ export function contains(state: NavState, id: number): boolean {
  * Pushed, never replaced, so Back returns to what the user was doing and every
  * draft underneath survives. A session already open is brought to the front
  * as the SAME entry (`bringToFront`), minus any diff it had open, because the
- * tap is about the terminal — on the PRs tab when it was opened over a PR.
+ * tap is about the terminal (or, with `threadId`, about that thread) — on the
+ * PRs tab when it was opened over a PR.
  */
 export function openFromNotification(
   state: NavState,
   terminalId: string,
   hold?: (entry: NavEntry) => boolean,
+  threadId?: string,
 ): NavState {
+  const patch = { fromNotification: true, openThread: threadId ? { threadId } : undefined }
   const overPr = sessionOn(state, 'prs', terminalId)
-  if (overPr) return bringToFront(state, 'prs', overPr, { fromNotification: true })
+  if (overPr) return bringToFront(state, 'prs', overPr, patch)
   const onSessions = selectTab(state, 'sessions')
   const existing = sessionOn(onSessions, 'sessions', terminalId)
-  if (existing) return bringToFront(onSessions, 'sessions', existing, { fromNotification: true })
+  if (existing) return bringToFront(onSessions, 'sessions', existing, patch)
   const id = onSessions.nextId
-  const layer: NavLayer = { kind: 'session', terminalId, fromNotification: true }
+  const layer: NavLayer = { kind: 'session', terminalId, ...patch }
   return push(onSessions, layer, hold && (() => hold({ ...layer, id }))).state
 }
 

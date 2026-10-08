@@ -94,6 +94,8 @@ export interface DeliveryDeps {
   /** A provider's own way in, when it has one (OpenCode's `prompt_async`). */
   push: (sessionId: string, text: string) => Promise<boolean> | null
   broadcast: (changes: ThreadChange[]) => void
+  /** An agent message was appended, explicitly or from `last_assistant_message`. */
+  onAgentReply?: (thread: AgentThread) => void
 }
 
 const tracks = new Map<string, Track>()
@@ -123,6 +125,12 @@ function emit(changes: ThreadChange[] | ThreadChange | null): void {
   if (!deps || !changes) return
   const list = Array.isArray(changes) ? changes : [changes]
   if (list.length) deps.broadcast(list)
+}
+
+function appendReply(threadId: string, body: string): void {
+  const change = appendAgentMessage(threadId, newMessageId(), body)
+  emit(change)
+  if (change?.thread) deps?.onAgentReply?.(change.thread)
 }
 
 function patch(ids: Iterable<string>, p: DeliveryPatch): void {
@@ -321,7 +329,7 @@ export function replyToThread(sessionId: string, threadId: string, body: string)
     }
   }
   if (!body.trim()) return { ok: false, error: 'reply_to_thread needs a non-empty `body`.' }
-  emit(appendAgentMessage(threadId, newMessageId(), body))
+  appendReply(threadId, body)
   const t = tracks.get(sessionId)
   const armed = t?.armed.get(threadId)
   if (t && armed) {
@@ -337,7 +345,7 @@ function settleArms(sessionId: string, t: Track, lastAssistantMessage: string | 
   for (const [threadId, messageIds] of t.armed) {
     if (t.replied.has(threadId)) continue
     if (text && !reason) {
-      emit(appendAgentMessage(threadId, newMessageId(), text))
+      appendReply(threadId, text)
       patch(messageIds, { delivery: 'answered-implicitly' })
     } else {
       patch(messageIds, { delivery: 'unanswered', failedReason: reason ?? 'The turn ended without an answer' })

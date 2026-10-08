@@ -44,6 +44,7 @@ import { createHash } from 'crypto'
 import { join } from 'path'
 import { configDir } from '../config-dir'
 import type { AgentStatusEvent, PushDevice, PushStatus, PushSubscriptionInput } from '../../shared/ipc-types'
+import type { AgentThread } from '../../shared/agent-threads'
 import {
   generateVapidKeys,
   isGoneStatus,
@@ -60,6 +61,15 @@ import {
  * second genuine block ten minutes later still reaches you.
  */
 const DEBOUNCE_MS = 5 * 60 * 1000
+
+/**
+ * Quiet time after a thread-reply notification, per session.
+ *
+ * Shorter than a block's: each reply is a real answer, not a flapping status.
+ * But one turn's implicit fallback answers every thread it carried at once,
+ * and that is one buzz, not one per thread.
+ */
+const REPLY_DEBOUNCE_MS = 60 * 1000
 
 /**
  * A cap on devices, so a token holder cannot grow the file without bound.
@@ -98,6 +108,8 @@ interface Deps {
   targetUrl: () => string | null
   /** A session's display label, for the notification title. */
   labelFor: (windowId: number, terminalId: string) => string | null
+  /** The window a session belongs to, or null when no window lists it. */
+  windowOf: (terminalId: string) => number | null
   /**
    * Is a person at the Mac right now?
    *
@@ -114,6 +126,7 @@ let deps: Deps = {
   now: () => Date.now(),
   targetUrl: () => null,
   labelFor: () => null,
+  windowOf: () => null,
   // Defaults to "nobody is here": a module that has not been wired up should
   // notify rather than stay silent, since a duplicate costs a glance and a
   // miss costs the whole reason the phone is in your pocket.
@@ -325,6 +338,8 @@ export function removeAllSubscriptions(): PushStatus {
 const lastStatus = new Map<string, AgentStatusEvent['status']>()
 /** When we last notified about a terminal. */
 const lastNotifiedAt = new Map<string, number>()
+/** When we last notified about a reply in one of a terminal's threads. */
+const lastReplyNotifiedAt = new Map<string, number>()
 
 /**
  * Should this transition wake a phone?
@@ -366,9 +381,11 @@ export interface PushPayload {
    * window alone, while this trigger fires for every window's sessions. So a
    * tap can name a session the connected phone cannot see — and the client has
    * to be able to say that rather than leave the user on a list wondering what
-   * the buzz was about.
+   * the buzz was about. Null when no window lists the session.
    */
-  windowId: number
+  windowId: number | null
+  /** Set for an agent's reply in a thread: a tap opens that session's Threads pane. */
+  threadId?: string
 }
 
 function shorten(text: string, max: number): string {
@@ -391,7 +408,39 @@ export function buildPayload(
     windowId,
     // The deep link the service worker opens. `PocketApp` reads the fragment
     // and opens straight into that session.
-    url: `${url}${url.includes('#') ? '' : '#'}session=${encodeURIComponent(event.terminalId)}`,
+    url: sessionLink(url, event.terminalId),
+  }
+}
+
+function sessionLink(url: string, terminalId: string): string {
+  return `${url}${url.includes('#') ? '' : '#'}session=${encodeURIComponent(terminalId)}`
+}
+
+function firstLine(text: string): string {
+  return (
+    text
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? ''
+  )
+}
+
+/** For a thread whose last message is the agent's reply. */
+export function buildThreadPayload(
+  thread: AgentThread,
+  label: string | null,
+  url: string,
+  windowId: number | null,
+): PushPayload {
+  const { path, startLine } = thread.anchor
+  const reply = thread.messages[thread.messages.length - 1]?.body ?? ''
+  return {
+    title: label ? `${shorten(label, 52)} replied` : 'An agent replied',
+    body: shorten(`${path}:${startLine} — ${firstLine(reply)}`, 140),
+    terminalId: thread.sessionId,
+    windowId,
+    threadId: thread.id,
+    url: `${sessionLink(url, thread.sessionId)}&thread=${encodeURIComponent(thread.id)}`,
   }
 }
 
@@ -455,6 +504,7 @@ export function handleAgentStatus(event: AgentStatusEvent, windowId: number): vo
     // two maps grow by one entry per session for the life of the process.
     lastStatus.delete(event.terminalId)
     lastNotifiedAt.delete(event.terminalId)
+    lastReplyNotifiedAt.delete(event.terminalId)
     return
   }
 
@@ -487,10 +537,39 @@ export function handleAgentStatus(event: AgentStatusEvent, windowId: number): vo
   })
 }
 
+/**
+ * An agent appended a message to one of its threads. Registered by `index.ts`
+ * as thread delivery's `onAgentReply`.
+ *
+ * The same gates as a block, in the same order: debounce, then presence (so a
+ * reply read at the desk does not burn the debounce), then a reachable URL and
+ * a device to send to. Errors are swallowed for the same reason: this runs
+ * inside thread delivery, which must not fail on an unreachable push service.
+ */
+export function handleThreadReply(thread: AgentThread): void {
+  const last = thread.messages[thread.messages.length - 1]
+  if (!last || last.author !== 'agent') return
+  const now = deps.now()
+  const lastAt = lastReplyNotifiedAt.get(thread.sessionId)
+  if (lastAt !== undefined && now - lastAt < REPLY_DEBOUNCE_MS) return
+  if (deps.userIsPresent()) return
+  const url = deps.targetUrl()
+  if (!url) return
+  if (load().subscriptions.length === 0) return
+
+  lastReplyNotifiedAt.set(thread.sessionId, now)
+  const windowId = deps.windowOf(thread.sessionId)
+  const label = windowId === null ? null : deps.labelFor(windowId, thread.sessionId)
+  void deliver(buildThreadPayload(thread, label, url, windowId)).catch((error: unknown) => {
+    lastError = error instanceof Error ? error.message : String(error)
+  })
+}
+
 /** Exported for tests: forget every in-memory gate and the cached file. */
 export function resetPushState(): void {
   cached = null
   lastError = null
   lastStatus.clear()
   lastNotifiedAt.clear()
+  lastReplyNotifiedAt.clear()
 }

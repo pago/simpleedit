@@ -50,7 +50,7 @@
   import PairScreen from './PairScreen.svelte'
   import { storeKey } from './lib/remote-key'
   import { onOpenSession } from './lib/push-client'
-  import { sessionFromUrl } from './lib/push-payload'
+  import { sessionFromUrl, threadFromUrl } from './lib/push-payload'
   import { visualViewport } from './lib/visual-viewport.svelte'
   import { nav } from './lib/nav.svelte'
   import { isOverlay, type NavEntry, type TabId } from './lib/nav'
@@ -70,6 +70,8 @@
   ]
 
   type SessionEntry = Extract<NavEntry, { kind: 'session' }>
+  /** A session a notification (or the Started note) asked for; `threadId` when it was about a thread reply. */
+  type PendingSession = { terminalId: string; windowId: number | null; threadId: string | null }
   type PrEntry = Extract<NavEntry, { kind: 'pr' }>
 
   // Read, not assumed: with no key the shim is already `unpaired` before mount.
@@ -105,9 +107,7 @@
    * sit armed and then yank the user out of whatever they had opened in the
    * meantime, minutes later.
    */
-  let pendingSession = $state<{ terminalId: string; windowId: number | null } | null>(
-    initialPending(),
-  )
+  let pendingSession = $state<PendingSession | null>(initialPending())
   /**
    * Why a notification's session could not be opened. Shown instead of leaving
    * the user on a list wondering what the buzz was about.
@@ -142,9 +142,9 @@
   const attaches = new AttachSequence()
   let projectSheet = $state<ProjectSheet | undefined>()
 
-  function initialPending(): { terminalId: string; windowId: number | null } | null {
+  function initialPending(): PendingSession | null {
     const terminalId = sessionFromUrl(window.location.href)
-    return terminalId ? { terminalId, windowId: null } : null
+    return terminalId ? { terminalId, windowId: null, threadId: threadFromUrl(window.location.href) } : null
   }
 
   /**
@@ -291,9 +291,9 @@
    * confirmed it, so whatever was open is still underneath for Back.
    */
   $effect(() =>
-    onOpenSession(({ terminalId, windowId }) => {
+    onOpenSession(({ terminalId, windowId, threadId }) => {
       deepLinkProblem = null
-      pendingSession = { terminalId, windowId }
+      pendingSession = { terminalId, windowId, threadId: threadId ?? null }
     }),
   )
 
@@ -352,7 +352,7 @@
       remember(match)
       // A tap has to land on the session whatever was on screen, including the
       // PR board — the phone was buzzed about a blocked agent, not about a PR.
-      nav.openFromNotification(match.terminalId, holdSession)
+      nav.openFromNotification(match.terminalId, holdSession, pending.threadId ?? undefined)
       return
     }
     const elsewhere =
@@ -453,7 +453,8 @@
         onleave={() => nav.close(entry.id)}
         {session}
         {connection}
-        focusComposer={entry.fromNotification}
+        focusComposer={entry.fromNotification && !entry.openThread}
+        openThread={entry.openThread}
         visible={tab === on && shown?.id === entry.id && top?.kind !== 'new-session'}
       />
     </div>
@@ -538,7 +539,11 @@
                 type="button"
                 data-testid="open-started"
                 onclick={() => {
-                  pendingSession = { terminalId: note.terminalId, windowId: connection.identity()?.windowId ?? null }
+                  pendingSession = {
+                    terminalId: note.terminalId,
+                    windowId: connection.identity()?.windowId ?? null,
+                    threadId: null,
+                  }
                   startedNote = null
                 }}
                 class="flex-none px-1 font-semibold underline"
