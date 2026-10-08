@@ -10,6 +10,8 @@ interface ActionDef {
   label: string
   description?: string
   keywords: string
+  /** Offered in the Claude memory view; git, tour and review actions would act on the worktree. */
+  inMemoryView?: boolean
   execute: (context: PaletteContext) => void
 }
 
@@ -89,6 +91,7 @@ const actions: ActionDef[] = [
     id: 'action:refresh-worktrees',
     label: 'Refresh Worktrees',
     keywords: 'refresh reload worktrees sync',
+    inMemoryView: true,
     execute() {
       refreshWorktrees()
     }
@@ -111,9 +114,10 @@ export const actionProvider: PaletteProvider = {
 
   async search(query: string, context: PaletteContext): Promise<PaletteItem[]> {
     const worktreePath = getWorktreePath(context)
+    const staticActions = context.memory ? actions.filter((a) => a.inMemoryView) : actions
 
     let tourCommitActions: ActionDef[] = []
-    if (worktreePath) {
+    if (worktreePath && !context.memory) {
       try {
         const commits = await getRecentCommits(worktreePath)
         tourCommitActions = buildTourCommitActions(commits)
@@ -122,12 +126,12 @@ export const actionProvider: PaletteProvider = {
       }
     }
 
-    const allActions = [...actions, ...tourCommitActions]
+    const allActions = [...staticActions, ...tourCommitActions]
 
     if (query.length === 0) {
       // Static actions only when no query — per-commit tour entries would
       // dominate the palette otherwise.
-      return actions.map((a) => toItem(a))
+      return staticActions.map((a) => toItem(a))
     }
 
     const results: { item: PaletteItem; score: number }[] = []
