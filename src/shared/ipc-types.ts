@@ -9,6 +9,7 @@ import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepRevie
 import type { DraftOpResult, DraftsSnapshot, PrReviewDraftOp } from './review-drafts'
 import type { OverviewFacts, OverviewState, OverviewStatus } from './pr-overview'
 import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-filter'
+import type { MemoryHealthReport } from './memory-health'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -152,6 +153,39 @@ export interface EditorEventMap {
   'editor:file-changed': { filePath: string }
 }
 
+// ── Claude memory ─────────────────────────────────────────
+export interface MemoryGit {
+  /** Toplevel of the repo that tracks the memory dir. */
+  root: string
+  /** Memory dir relative to `root`; null when it IS the root. */
+  pathspec: string | null
+}
+
+export interface MemoryLocation {
+  memoryDir: string
+  exists: boolean
+  /** Null when not tracked by git (also: ignored, or a repo with no commits). */
+  git: MemoryGit | null
+}
+
+export interface MemoryInvokeMap {
+  'memory:resolve': { args: [launchDir: string]; result: MemoryLocation }
+  'memory:health': { args: [memoryDir: string]; result: MemoryHealthReport }
+  /** Paths relative to `memoryDir`, bounded walk, `.git` skipped. */
+  'memory:list-files': { args: [memoryDir: string]; result: string[] }
+  'memory:watch': { args: [memoryDir: string]; result: void }
+  'memory:unwatch': { args: [memoryDir: string]; result: void }
+}
+
+export interface MemoryEventMap {
+  /**
+   * `dirs`: parent dirs of added/removed entries (empty for content-only
+   * changes). `structural`: a directory appeared or vanished, the memory dir
+   * itself included — callers re-resolve.
+   */
+  'memory:changed': { memoryDir: string; dirs: string[]; structural: boolean }
+}
+
 // ── Git ───────────────────────────────────────────────────
 export interface GitCommitInfo {
   hash: string
@@ -166,15 +200,15 @@ export interface DiffFileEntry {
 }
 
 export interface GitInvokeMap {
-  'git:log': { args: [worktreePath: string, count?: number]; result: GitCommitInfo[] }
+  'git:log': { args: [worktreePath: string, count?: number, pathspec?: string]; result: GitCommitInfo[] }
   'git:diff': { args: [worktreePath: string, commitHash: string]; result: string }
   'git:commit-files': { args: [worktreePath: string, commitHash: string]; result: DiffFileEntry[] }
   'git:file-at-commit': { args: [worktreePath: string, commitHash: string, filePath: string]; result: string }
-  'git:staging-files': { args: [worktreePath: string]; result: DiffFileEntry[] }
+  'git:staging-files': { args: [worktreePath: string, pathspec?: string]; result: DiffFileEntry[] }
   'git:staging-diff': { args: [worktreePath: string]; result: string }
   'git:file-at-head': { args: [worktreePath: string, filePath: string]; result: string }
-  'git:watch': { args: [worktreePath: string]; result: void }
-  'git:unwatch': { args: [worktreePath: string]; result: void }
+  'git:watch': { args: [worktreePath: string, pathspec?: string]; result: void }
+  'git:unwatch': { args: [worktreePath: string, pathspec?: string]; result: void }
   'git:branch-diff': { args: [worktreePath: string]; result: string }
   'git:branch-files': { args: [worktreePath: string]; result: DiffFileEntry[] }
   'git:file-at-branch-base': { args: [worktreePath: string, filePath: string]; result: string }
@@ -1564,6 +1598,7 @@ export type InvokeMap = WorktreeInvokeMap &
   PtyInvokeMap &
   FsInvokeMap &
   EditorInvokeMap &
+  MemoryInvokeMap &
   GitInvokeMap &
   AgentInvokeMap &
   AppInvokeMap &
@@ -1594,6 +1629,7 @@ export type EventMap = WorktreeEventMap &
   AgentBusEventMap &
   UpdateEventMap &
   EditorEventMap &
+  MemoryEventMap &
   RemoteEventMap &
   SessionEventMap &
   ModelsEventMap
