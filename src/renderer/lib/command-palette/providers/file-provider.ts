@@ -5,18 +5,32 @@ import { dispatchPaletteAction } from '../../../stores/commandPalette.svelte'
 const cache = new Map<string, { files: string[]; timestamp: number }>()
 const CACHE_TTL = 30_000
 
-function getWorktreePath(context: PaletteContext): string | null {
+/** The directory listed files are relative to: the memory dir in memory mode. */
+function getRoot(context: PaletteContext): string | null {
+  return context.memory?.dir ?? context.worktreePath
+}
+
+function cacheKey(context: PaletteContext): string | null {
+  if (context.memory) return memoryCacheKey(context.memory.dir)
   return context.worktreePath
 }
 
-async function getFiles(worktreePath: string): Promise<string[]> {
-  const cached = cache.get(worktreePath)
+function memoryCacheKey(memoryDir: string): string {
+  return `memory:${memoryDir}`
+}
+
+async function getFiles(context: PaletteContext): Promise<string[]> {
+  const key = cacheKey(context)
+  if (!key) return []
+  const cached = cache.get(key)
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.files
   }
 
-  const files = await window.api.invoke('fs:list-all', worktreePath)
-  cache.set(worktreePath, { files, timestamp: Date.now() })
+  const files = context.memory
+    ? await window.api.invoke('memory:list-files', context.memory.dir)
+    : await window.api.invoke('fs:list-all', key)
+  cache.set(key, { files, timestamp: Date.now() })
   return files
 }
 
@@ -24,14 +38,17 @@ export function invalidateFileCache(worktreePath: string): void {
   cache.delete(worktreePath)
 }
 
+export function invalidateMemoryFileCache(memoryDir: string): void {
+  cache.delete(memoryCacheKey(memoryDir))
+}
+
 export const fileProvider: PaletteProvider = {
   category: 'file',
 
   async search(query: string, context: PaletteContext): Promise<PaletteItem[]> {
-    const worktreePath = getWorktreePath(context)
-    if (!worktreePath) return []
+    if (!getRoot(context)) return []
 
-    const files = await getFiles(worktreePath)
+    const files = await getFiles(context)
 
     if (query.length === 0) {
       return files.slice(0, 20).map((f) => toItem(f))
@@ -75,12 +92,12 @@ export const fileProvider: PaletteProvider = {
 
   execute(item: PaletteItem, context: PaletteContext): void {
     const relativePath = item.data as string
-    const worktreePath = getWorktreePath(context)
-    if (!worktreePath || !context.activeSessionId) return
+    const root = getRoot(context)
+    if (!root || !context.activeSessionId) return
     dispatchPaletteAction({
       type: 'open-file',
       workspaceKey: context.activeSessionId,
-      filePath: `${worktreePath}/${relativePath}`
+      filePath: `${root}/${relativePath}`
     })
   }
 }

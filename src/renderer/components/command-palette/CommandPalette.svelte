@@ -6,7 +6,7 @@
   import { closePalette } from '../../stores/commandPalette.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
   import { search, executeItem, type GroupedResults } from '../../lib/command-palette/palette-engine'
-  import { parseQuery, type PalettePrefix } from '../../lib/command-palette/types'
+  import { parseQuery, type PaletteContext, type PalettePrefix } from '../../lib/command-palette/types'
 
   let query = $state('')
   let selectedIndex = $state(0)
@@ -15,9 +15,14 @@
 
   let currentPrefix = $derived<PalettePrefix>(parseQuery(query).prefix)
 
-  let context = $derived({
-    activeSessionId: sessionsStore.activeSessionId(),
-    worktreePath: sessionsStore.activeSession()?.worktreePath ?? null
+  let context = $derived.by((): PaletteContext => {
+    const session = sessionsStore.activeSession()
+    const memoryView = session?.memoryView
+    return {
+      activeSessionId: sessionsStore.activeSessionId(),
+      worktreePath: session?.worktreePath ?? null,
+      ...(memoryView ? { memory: { dir: memoryView.memoryDir, git: memoryView.git } } : {}),
+    }
   })
 
   // Debounced search
