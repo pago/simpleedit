@@ -133,6 +133,12 @@ describe('reanchor', () => {
       expect(reanchor({ ...last, after: 'x\ny' }, text(FILE))).toBeNull()
     })
 
+    it('without any context stays only while the file is unchanged', () => {
+      const lone: ThreadAnchor = { ...brace, before: '', after: '' }
+      expect(reanchor(lone, text(FILE), false)).toBeNull()
+      expect(reanchor(lone, text(FILE))).toEqual({ ...lone, orphaned: true })
+    })
+
     it('never re-anchors on the snippet alone', () => {
       const lines = ['// new', ...FILE]
       lines[5] = '  return total // edited'
@@ -159,6 +165,13 @@ describe('reanchor', () => {
       const blankish = anchorAt(['a', 'b', '}', '', 'c'], 3, 4)
       expect(reanchor(blankish, text(['z', '}', '']))).toMatchObject({ orphaned: true })
     })
+  })
+
+  it('keeps refreshed context under the anchor cap, dropping whole lines', () => {
+    const huge = 'x'.repeat(20_000)
+    const lines = [huge, 'near', FILE[3]!, FILE[4]!, huge, 'far']
+    const next = reanchor(a, text(lines))
+    expect(next).toMatchObject({ startLine: 3, endLine: 4, before: 'near', after: '' })
   })
 
   it('matches a CRLF file against an LF snippet', () => {

@@ -6,7 +6,7 @@
  * unique: a thread that can't be placed with certainty is orphaned (keeping
  * its old lines) rather than pinned to the wrong code.
  */
-import type { ThreadAnchor } from '../shared/agent-threads'
+import { MAX_SNIPPET, type ThreadAnchor } from '../shared/agent-threads'
 
 /** As many context lines as the client captures (`renderer/lib/thread-anchor.ts`). */
 const CONTEXT_LINES = 3
@@ -69,10 +69,12 @@ function contextHolds(file: string[], at: number, length: number, before: string
  * around it: a short snippet such as `}` easily lands on an identical line
  * after an edit above it, and would otherwise read as unchanged.
  */
-function locate(file: string[], snippet: string[], anchor: ThreadAnchor, stored: number): number | null {
+function locate(file: string[], snippet: string[], anchor: ThreadAnchor, stored: number, fileChanged: boolean): number | null {
   const before = contextLines(anchor.before)
   const after = contextLines(anchor.after)
   const inPlace = matchesAt(file, snippet, stored)
+  // Nothing to check a short snippet against: only an untouched file vouches for it.
+  if (!before.length && !after.length && !substantial(snippet)) return inPlace && !fileChanged ? stored : null
   if (inPlace && contextHolds(file, stored, snippet.length, before, after)) return stored
   if (before.length || after.length) {
     const at = uniqueMatch(file, [...before, ...snippet, ...after])
@@ -84,20 +86,40 @@ function locate(file: string[], snippet: string[], anchor: ThreadAnchor, stored:
   return inPlace ? stored : uniqueMatch(file, snippet)
 }
 
+/**
+ * The context on one side, keeping the lines nearest the snippet that fit
+ * the cap `parseAnchor` enforces: a minified line can be megabytes, and
+ * threads go to every phone. A line is kept whole or not at all, since a cut
+ * one could never match again.
+ */
+function capContext(lines: string[], side: 'before' | 'after'): string {
+  const outward = side === 'before' ? [...lines].reverse() : lines
+  const kept: string[] = []
+  let size = -1
+  for (const line of outward) {
+    size += line.length + 1
+    if (size > MAX_SNIPPET) break
+    kept.push(line)
+  }
+  return (side === 'before' ? kept.reverse() : kept).join('\n')
+}
+
 function orphan(anchor: ThreadAnchor): ThreadAnchor | null {
   return anchor.orphaned ? null : { ...anchor, orphaned: true }
 }
 
 /**
  * The anchor for the file's current content (`null` content: the file is
- * gone), or `null` when it stays as stored.
+ * gone), or `null` when it stays as stored. `fileChanged`: whether the
+ * content differs from when this anchor was last placed, as far as the caller
+ * knows.
  */
-export function reanchor(anchor: ThreadAnchor, content: string | null): ThreadAnchor | null {
+export function reanchor(anchor: ThreadAnchor, content: string | null, fileChanged = true): ThreadAnchor | null {
   if (content === null) return orphan(anchor)
   const file = splitLines(content)
   const snippet = splitLines(anchor.snippet)
   const stored = anchor.startLine - 1
-  const start = locate(file, snippet, anchor, stored)
+  const start = locate(file, snippet, anchor, stored, fileChanged)
   if (start === null) return orphan(anchor)
 
   const { orphaned: _, ...placed } = anchor
@@ -105,8 +127,8 @@ export function reanchor(anchor: ThreadAnchor, content: string | null): ThreadAn
   const next: ThreadAnchor = { ...placed, startLine: start + 1, endLine: end }
   // The surroundings where the code is now: a later edit is then matched
   // against what is around it today, not where it was first commented on.
-  const before = file.slice(Math.max(0, start - CONTEXT_LINES), start).join('\n')
-  const after = file.slice(end, end + CONTEXT_LINES).join('\n')
+  const before = capContext(file.slice(Math.max(0, start - CONTEXT_LINES), start), 'before')
+  const after = capContext(file.slice(end, end + CONTEXT_LINES), 'after')
   const contextChanged = before !== anchor.before || after !== anchor.after
   if (start !== stored || (contextChanged && substantial(snippet))) return { ...next, before, after }
   return anchor.orphaned || anchor.endLine !== end ? next : null
