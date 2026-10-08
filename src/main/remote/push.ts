@@ -341,6 +341,14 @@ const lastNotifiedAt = new Map<string, number>()
 const lastReplyNotifiedAt = new Map<string, number>()
 /** Last status of any precision, only to see a turn start. */
 const turnStatus = new Map<string, AgentStatusEvent['status']>()
+/** Sessions that have reported a `UserPromptSubmit`: their turn starts come from that, not from status. */
+const hookTurns = new Set<string>()
+
+/** A session's `UserPromptSubmit` hook fired: a turn has really started. */
+export function noteTurnStarted(terminalId: string): void {
+  hookTurns.add(terminalId)
+  lastReplyNotifiedAt.delete(terminalId)
+}
 
 /**
  * Should this transition wake a phone?
@@ -433,12 +441,13 @@ export function buildThreadPayload(
   url: string,
   windowId: number | null,
 ): PushPayload {
-  const { path, startLine } = thread.anchor
+  const { path, startLine, orphaned } = thread.anchor
+  const where = orphaned ? path : `${path}:${startLine}`
   const reply = thread.messages[thread.messages.length - 1]?.body ?? ''
   const verb = thread.messages.length === 1 ? 'commented' : 'replied'
   return {
     title: label ? `${shorten(label, 52)} ${verb}` : `An agent ${verb}`,
-    body: shorten(`${path}:${startLine} — ${firstLine(reply)}`, 140),
+    body: shorten(`${where} — ${firstLine(reply)}`, 140),
     terminalId: thread.sessionId,
     windowId,
     threadId: thread.id,
@@ -508,14 +517,22 @@ export function handleAgentStatus(event: AgentStatusEvent, windowId: number): vo
     lastNotifiedAt.delete(event.terminalId)
     lastReplyNotifiedAt.delete(event.terminalId)
     turnStatus.delete(event.terminalId)
+    hookTurns.delete(event.terminalId)
     return
   }
 
   // A new turn re-arms the thread-reply buzz. Not out of `waiting`: that is a
-  // dialog inside the same turn.
+  // dialog inside the same turn. A session whose hooks report turn starts is
+  // re-armed only by those (`noteTurnStarted`): Claude's title reads idle under
+  // a permission dialog, so approving one would look like a new turn here.
   const before = turnStatus.get(event.terminalId)
   turnStatus.set(event.terminalId, event.status)
-  if (event.status === 'running' && before !== 'running' && before !== 'waiting') {
+  if (
+    !hookTurns.has(event.terminalId) &&
+    event.status === 'running' &&
+    before !== 'running' &&
+    before !== 'waiting'
+  ) {
     lastReplyNotifiedAt.delete(event.terminalId)
   }
 
@@ -584,4 +601,5 @@ export function resetPushState(): void {
   lastNotifiedAt.clear()
   lastReplyNotifiedAt.clear()
   turnStatus.clear()
+  hookTurns.clear()
 }

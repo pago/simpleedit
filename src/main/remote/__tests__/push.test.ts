@@ -16,6 +16,7 @@ import {
   getPushStatus,
   handleAgentStatus,
   handleThreadReply,
+  noteTurnStarted,
   removeAllSubscriptions,
   removeSubscription,
   resetPushState,
@@ -465,6 +466,31 @@ describe('thread replies', () => {
     status('running')
     handleThreadReply(replied('Next turn'))
     await vi.waitFor(() => expect(sent).toHaveLength(3))
+  })
+
+  it('re-arms a hook-reporting session only on its next UserPromptSubmit, not on an idle title under a dialog', async () => {
+    const status = (s: AgentStatusEvent['status']) => handleAgentStatus(waiting({ status: s, precise: false }), 7)
+    noteTurnStarted('t1')
+    status('running')
+    handleThreadReply(replied())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+
+    // Claude's title reads idle under a permission dialog; approving it is not a new turn.
+    status('idle')
+    status('running')
+    handleThreadReply(replied('After the dialog'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(1)
+
+    noteTurnStarted('t1')
+    handleThreadReply(replied('Next turn'))
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+  })
+
+  it('shows the bare path for a thread whose code moved', () => {
+    const thread = replied()
+    const orphan = { ...thread, anchor: { ...thread.anchor, orphaned: true as const } }
+    expect(buildThreadPayload(orphan, null, 'https://x.test/tok/', 7).body).toBe('src/a.ts — Renamed it.')
   })
 
   it('falls back to ten minutes for a session that reports no status', async () => {
