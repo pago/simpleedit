@@ -38,7 +38,7 @@ Rejected on 2026-10-08:
 
 ## How it works
 
-### Data model (main-owned store, modelled on `screenprs-drafts.ts`)
+### Data model (main-owned store in SQLite, op layer modelled on `screenprs-drafts.ts`)
 
 - `AgentThread`: `id`, `sessionId` (owning agent session), `worktreePath`, `anchor`,
   `status: open | resolved`, `messages[]`, `lastReadAt`, `createdAt`, `updatedAt`.
@@ -53,13 +53,28 @@ Rejected on 2026-10-08:
 - `ThreadMessage`: `id`, `author: 'user' | 'agent'`, `body` (markdown), `at`. User messages
   also have `delivery: held | sending | delivered | answered | answered-implicitly |
   unanswered | failed`, with `heldReason` and `failedReason`.
-- Persisted to `userData/config/agent-threads.json`, written atomically.
+- **Stored in SQLite via the built-in `node:sqlite`.** It was verified in Electron 42.5
+  (Node 24.17, SQLite 3.53) and works on the CI/test Node 22, which only prints an
+  ExperimentalWarning.
+  - There is one app database, `userData/config/simpleedit.db`, with WAL enabled and
+    migrations driven by `PRAGMA user_version`. Threads are its first tenant. The
+    existing JSON stores stay as they are.
+  - Tables: `threads`, `thread_messages`, `thread_tombstones`, and `meta` (holding `rev`).
+  - Each op is one transaction.
+  - All access goes through one module (`src/main/db.ts`), because the `node:sqlite`
+    API is not yet stable and an Electron bump could change it.
+  - Why not JSON:
+    - Delivery transitions are frequent, and each would rewrite the whole file.
+    - Threads accumulate across sessions without bound.
+    - Reads are queries: by session, by file, and unread counts.
+    - Later tenants are relational too: GitHub review threads (#186), persisted agent
+      mail (the bus is in-memory today), and the session backlog.
 - Ops:
   - `add-thread`, `append`, `set-status`, `remove-thread`.
   - `set-anchor` (re-anchor and orphan).
   - `mark-read`.
   - `set-delivery` (main-only, never accepted from a client).
-- `rev`, tombstones, and the `agent-threads:changed` broadcast to every client, desktop
+- `rev`, tombstones (a table), and the `agent-threads:changed` broadcast to every client, desktop
   windows and phones alike. Main validates every op, since the phone is a remote client.
   Clients only submit ops. Sending is main's job (below), so a phone and a desktop window
   share one queue per session and can never double-send.
@@ -109,7 +124,10 @@ hold:
    - There is **no "Send anyway"**: a bracketed paste plus CR would submit the draft
      merged with the comment.
    - While held, the thread shows "held: unsent text in the terminal" and offers **Copy**.
-     See open question 1 for the case where the user has already cleared the prompt.
+     It also offers **"My prompt is empty, send"** behind a confirm, which covers the
+     case where the user has already cleared the prompt. The user is vouching for an
+     empty prompt. A later Claude mod can read the prompt box with `$.prompt.read`
+     (#201) and replace this.
 4. **A live PTY.** For a `pendingResume` session, offer "Resume and send": resume with the
    batched comment as the initial prompt (`--resume <id> "<prompt>"`).
 
@@ -252,11 +270,5 @@ disabled for that provider rather than shipping flaky.
 
 ## Open questions
 
-1. **Draft escape hatch.** The draft flag over-reports: text that was typed and then deleted
-   still counts. Without "Send anyway", a user who cleared the prompt by hand stays held
-   until their next submitted turn ends. Options:
-   - (a) Accept it. Copy is the only escape.
-   - (b) Add "My prompt is empty, send". The user takes responsibility, with a confirm.
-   - (c) Ship the Claude mod's `$.prompt.read` (#201) as the real fix.
-2. **Telling the agent about a resolve.** Default: no, resolving stays UI-only.
-3. **Thread lifetime.** Default: a thread is tied to its session, and survives hand-off.
+1. **Telling the agent about a resolve.** Default: no, resolving stays UI-only.
+2. **Thread lifetime.** Default: a thread is tied to its session, and survives hand-off.
