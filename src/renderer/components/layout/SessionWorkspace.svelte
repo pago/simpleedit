@@ -4,6 +4,7 @@
   import GitLog from '../sidebar/GitLog.svelte'
   import WorktreeList from '../sidebar/WorktreeList.svelte'
   import AgentPopover from '../editor/AgentPopover.svelte'
+  import ThreadsPanel from '../threads/ThreadsPanel.svelte'
   import PaneTabBar from './PaneTabBar.svelte'
   import TabContainer from './TabContainer.svelte'
   import RepoPicker from './RepoPicker.svelte'
@@ -27,6 +28,10 @@
   } from '../../stores/worktrees.svelte'
   import { pendingPaletteAction, consumePaletteAction } from '../../stores/commandPalette.svelte'
   import type { AgentContext } from '../../lib/agent-message'
+  import { threadAnchorFor } from '../../lib/thread-anchor'
+  import { agentThreadsStore } from '../../stores/agentThreads.svelte'
+  import { revealInEditor } from '../../lsp/editor-opener'
+  import type { AgentThread } from '../../../shared/agent-threads'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
 
   interface Props {
@@ -221,9 +226,47 @@
     popoverState = { ...pos, ctx }
   }
 
-  function handlePopoverSend(terminalId: string | 'new', message: string): void {
-    sendToAgent(terminalId, message)
+  async function handlePopoverSend(terminalId: string | 'new', message: string, comment: string): Promise<void> {
+    const anchored = terminalId !== 'new' && popoverState ? threadAnchorFor(popoverState.ctx, worktreePath) : null
+    if (anchored) {
+      // Main sends it to the agent at a safe moment; this window never writes it to the PTY.
+      await agentThreadsStore.create({ sessionId: terminalId, ...anchored, body: comment })
+      if (terminalId !== sessionId) sessionsStore.select(terminalId)
+    } else {
+      sendToAgent(terminalId, message)
+    }
     popoverState = null
+  }
+
+  // ── threads ──────────────────────────────────────────────────────────────
+  let threadsOpen = $state(false)
+  let threadsUnread = $derived(agentThreadsStore.unreadCount(sessionId))
+
+  // A thread just started on this session: show it.
+  $effect(() => {
+    if (!agentThreadsStore.focusFor(sessionId)) return
+    threadsOpen = true
+    setViewerOpen(true)
+  })
+
+  function toggleThreads(): void {
+    if (threadsOpen && viewerOpen) {
+      threadsOpen = false
+      return
+    }
+    threadsOpen = true
+    setViewerOpen(true)
+  }
+
+  function openThreadAnchor(thread: AgentThread): void {
+    const path = `${thread.worktreePath.replace(/\/+$/, '')}/${thread.anchor.path}`
+    const active = tabsStore.active(sessionId)
+    revealInEditor(
+      sessionId,
+      path,
+      { lineNumber: thread.anchor.startLine, column: 1 },
+      { isActiveTab: active?.kind === 'file' && active.path === path, open: () => openFile(path) },
+    )
   }
 
   function sendToAgent(terminalId: string | 'new', message: string): string | undefined {
@@ -448,6 +491,20 @@
         >
           Files
         </button>
+        <button
+          class="relative rounded px-1.5 py-0.5 text-[10px] {threadsOpen && viewerOpen ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
+          onclick={toggleThreads}
+          aria-pressed={threadsOpen && viewerOpen}
+          title={threadsUnread ? `Threads: ${threadsUnread} with unread replies` : 'Threads with this session\'s agent'}
+        >
+          Threads
+          {#if threadsUnread > 0}
+            <span
+              class="ml-0.5 rounded-full bg-blue-500 px-1 text-[9px] font-semibold text-white"
+              aria-label="{threadsUnread} unread"
+            >{threadsUnread}</span>
+          {/if}
+        </button>
 
         {#if worktreePopoverOpen && !memoryView}
           <div
@@ -527,7 +584,7 @@
           {/if}
         </div>
 
-        {#if fileTreeCollapsed}
+        {#if fileTreeCollapsed && !threadsOpen}
           <button
             class="flex-none flex items-center justify-center w-6 border-l border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
             onclick={toggleFileTree}
@@ -546,49 +603,55 @@
           ></div>
 
           <!-- Right column: file tree above git log, both scoped to the
-               session's selected worktree. -->
+               session's selected worktree; or the session's threads. -->
           <div
             class="flex flex-none flex-col border-l border-zinc-800"
             style:width="{rightColumnWidth}px"
           >
-            <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-              {#if memoryView && !memoryView.exists}
-                <MemoryEmptyState memoryDir={memoryView.memoryDir} refused={!!memoryView.refused} />
+            {#if threadsOpen}
+              <ThreadsPanel {sessionId} onopen={openThreadAnchor} onclose={() => (threadsOpen = false)} />
+            {/if}
+            <!-- Hidden, not unmounted, under the threads: the tree keeps its expanded folders. -->
+            <div class="min-h-0 flex-1 flex-col {threadsOpen ? 'hidden' : 'flex'}">
+              <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+                {#if memoryView && !memoryView.exists}
+                  <MemoryEmptyState memoryDir={memoryView.memoryDir} refused={!!memoryView.refused} />
+                {:else}
+                  <FileTree
+                    rootPath={viewRoot}
+                    pinnedName={memoryView ? 'MEMORY.md' : undefined}
+                    {activeFilePath}
+                    onselect={openFile}
+                    oncollapse={toggleFileTree}
+                  />
+                {/if}
+              </div>
+              {#if memoryView && !memoryView.git}
+                <!-- No git history for this memory dir: its health list takes
+                     the git log's slot. -->
+                <div class="min-h-0 flex-1 overflow-y-auto border-t border-zinc-800 bg-zinc-900 px-3 pb-2">
+                  <div class="sticky top-0 z-10 -mx-3 bg-zinc-900 px-4 pb-1 pt-2">
+                    <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Memory health</span>
+                  </div>
+                  <MemoryHealthList {sessionId} memoryDir={memoryView.memoryDir} />
+                </div>
               {:else}
-                <FileTree
-                  rootPath={viewRoot}
-                  pinnedName={memoryView ? 'MEMORY.md' : undefined}
-                  {activeFilePath}
-                  onselect={openFile}
-                  oncollapse={toggleFileTree}
-                />
+                <div
+                  class="border-t border-zinc-800 bg-zinc-900 px-3 {gitLogCollapsed
+                    ? 'flex-none pb-1'
+                    : 'min-h-0 flex-1 overflow-y-auto pb-2'}"
+                >
+                  <GitLog
+                    workspaceKey={sessionId}
+                    worktreePath={memoryView?.git ? memoryView.git.root : worktreePath || null}
+                    pathspec={memoryView?.git?.pathspec ?? null}
+                    variant={memoryView ? 'memory' : 'worktree'}
+                    collapsed={gitLogCollapsed}
+                    ontoggle={toggleGitLog}
+                  />
+                </div>
               {/if}
             </div>
-            {#if memoryView && !memoryView.git}
-              <!-- No git history for this memory dir: its health list takes
-                   the git log's slot. -->
-              <div class="min-h-0 flex-1 overflow-y-auto border-t border-zinc-800 bg-zinc-900 px-3 pb-2">
-                <div class="sticky top-0 z-10 -mx-3 bg-zinc-900 px-4 pb-1 pt-2">
-                  <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Memory health</span>
-                </div>
-                <MemoryHealthList {sessionId} memoryDir={memoryView.memoryDir} />
-              </div>
-            {:else}
-              <div
-                class="border-t border-zinc-800 bg-zinc-900 px-3 {gitLogCollapsed
-                  ? 'flex-none pb-1'
-                  : 'min-h-0 flex-1 overflow-y-auto pb-2'}"
-              >
-                <GitLog
-                  workspaceKey={sessionId}
-                  worktreePath={memoryView?.git ? memoryView.git.root : worktreePath || null}
-                  pathspec={memoryView?.git?.pathspec ?? null}
-                  variant={memoryView ? 'memory' : 'worktree'}
-                  collapsed={gitLogCollapsed}
-                  ontoggle={toggleGitLog}
-                />
-              </div>
-            {/if}
           </div>
         {/if}
       </div>

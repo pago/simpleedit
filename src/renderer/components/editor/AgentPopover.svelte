@@ -9,7 +9,11 @@
     context: AgentContext
     terminals: AgentTabInfo[]
     onclose: () => void
-    onsend: (terminalId: string | 'new', message: string) => void
+    /**
+     * `message` is the comment with its context, for a prompt; `comment` is
+     * the comment alone, for a thread. A rejection keeps the popover open.
+     */
+    onsend: (terminalId: string | 'new', message: string, comment: string) => void | Promise<void>
   }
 
   let { x, y, context, terminals, onclose, onsend }: Props = $props()
@@ -18,6 +22,8 @@
   let selectedTerminalId = $state<string | 'new'>(terminals.length > 0 ? terminals[0].id : 'new')
   let textareaEl: HTMLTextAreaElement | undefined = $state()
   let popoverEl: HTMLDivElement | undefined = $state()
+  let sending = $state(false)
+  let error = $state<string | null>(null)
 
   $effect(() => {
     textareaEl?.focus()
@@ -39,14 +45,22 @@
       onclose()
     } else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      submit()
+      void submit()
     }
   }
 
-  function submit(): void {
+  async function submit(): Promise<void> {
     const trimmed = message.trim()
-    if (!trimmed) return
-    onsend(selectedTerminalId, buildAgentMessage(context, trimmed))
+    if (!trimmed || sending) return
+    sending = true
+    error = null
+    try {
+      await onsend(selectedTerminalId, buildAgentMessage(context, trimmed), trimmed)
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    } finally {
+      sending = false
+    }
   }
 
   function contextLabel(ctx: AgentContext): string {
@@ -100,11 +114,14 @@
 
       <button
         class="rounded bg-orange-600 px-3 py-1 text-xs text-white hover:bg-orange-500 disabled:opacity-40"
-        disabled={!message.trim()}
+        disabled={!message.trim() || sending}
         onclick={submit}
       >
         Send
       </button>
     </div>
+    {#if error}
+      <p role="alert" class="mt-1.5 text-[11px] text-red-300">Not sent: {error}</p>
+    {/if}
   </div>
 </div>

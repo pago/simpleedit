@@ -199,7 +199,7 @@
 
   function handleDiscussWithAgent(ctx: AgentContext, pos: { x: number; y: number }): void {
     if (ctx.kind === 'diff') {
-      ondiscusswithagent?.({ ...ctx, commitHash }, pos)
+      ondiscusswithagent?.({ ...ctx, commitHash, worktreePath }, pos)
     } else {
       ondiscusswithagent?.(ctx, pos)
     }
