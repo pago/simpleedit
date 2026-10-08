@@ -32,11 +32,12 @@
    * The keys and the composer belong to the terminal and are hidden with it:
    * the Changes pane has nothing to type at, and Threads has its own composers.
    */
-  import { untrack } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import MobileTerminal from './MobileTerminal.svelte'
   import ChangesPane from './ChangesPane.svelte'
   import ThreadsPane from './ThreadsPane.svelte'
   import { agentThreadsStore } from '../renderer/stores/agentThreads.svelte'
+  import type { AgentThread } from '../shared/agent-threads'
   import KeyBar from './KeyBar.svelte'
   import VoiceComposer from './VoiceComposer.svelte'
   import DiscardConfirm from './DiscardConfirm.svelte'
@@ -122,6 +123,18 @@
   $effect(() => {
     if (openThread && session.kind !== 'terminal') untrack(() => selectPane('threads'))
   })
+  let changes = $state<ChangesPane | undefined>()
+
+  /** "Show in diff" on a thread: over to Changes, or back to Threads when the diff doesn't hold its line. */
+  async function jumpToThread(thread: AgentThread): Promise<boolean> {
+    selectPane('changes')
+    changesBuilt = true
+    await tick()
+    const shown = (await changes?.revealThread(thread)) ?? false
+    if (!shown) selectPane('threads')
+    return shown
+  }
+
   // The terminal owns key encoding: what an arrow sends depends on the cursor
   // mode, which only it knows.
   let terminal = $state<MobileTerminal | undefined>()
@@ -217,13 +230,18 @@
   <!-- Built on first visit, hidden thereafter — never unmounted. -->
   {#if changesBuilt}
     <div class="min-h-0 flex-1 {pane === 'changes' ? '' : 'hidden'}">
-      <ChangesPane {session} {connection} active={visible && pane === 'changes'} />
+      <ChangesPane bind:this={changes} {session} {connection} active={visible && pane === 'changes'} />
     </div>
   {/if}
 
   {#if threadsBuilt}
     <div class="min-h-0 flex-1 {pane === 'threads' ? '' : 'hidden'}">
-      <ThreadsPane sessionId={session.terminalId} active={visible && pane === 'threads'} />
+      <ThreadsPane
+        sessionId={session.terminalId}
+        active={visible && pane === 'threads'}
+        {openThread}
+        onjump={jumpToThread}
+      />
     </div>
   {/if}
 

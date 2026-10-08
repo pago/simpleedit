@@ -1,10 +1,11 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/svelte'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import SessionScreen from '../SessionScreen.svelte'
 import type { RemoteConnection } from '../api-shim'
 import type { WindowSession } from '../../shared/ipc-types'
 import { initAgentThreadsListeners, _resetAgentThreadsForTests } from '../../renderer/stores/agentThreads.svelte'
-import type { ThreadChange } from '../../shared/agent-threads'
+import type { AgentThread, ThreadChange } from '../../shared/agent-threads'
+import { nav } from '../lib/nav.svelte'
 
 /**
  * The screen's second pane.
@@ -240,5 +241,98 @@ describe('SessionScreen', () => {
     expect(left).toBe(1)
     expect(screen.queryByTestId('mic-stop')).toBeNull()
     vi.unstubAllGlobals()
+  })
+})
+
+/**
+ * Between the Threads pane and the diff: a notification lands on its thread,
+ * and a thread's "Show in diff" lands on its row in Changes.
+ */
+describe('SessionScreen threads and the diff', () => {
+  const DIFF = ['diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,2 +1,2 @@', ' one', '-two', '+TWO'].join('\n')
+
+  function thread(id: string, line: number, over: Partial<AgentThread> = {}): AgentThread {
+    return {
+      id,
+      sessionId: session.terminalId,
+      worktreePath: WORKTREE,
+      anchor: { path: 'src/a.ts', startLine: line, endLine: line, snippet: 'x', before: '', after: '', context: 'file' },
+      status: 'open',
+      messages: [{ id: 'm_aaaaaaaa', author: 'user', body: 'Why?', at: '2026-10-08T10:00:00.000Z', delivery: 'delivered' }],
+      lastReadAt: null,
+      createdAt: '2026-10-08T10:00:00.000Z',
+      updatedAt: '2026-10-08T10:00:00.000Z',
+      ...over,
+    }
+  }
+
+  let dispose: () => void
+  let scrolled: Element[]
+
+  beforeEach(() => {
+    nav.reset()
+    scrolled = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    const threads = [thread('t_inline1', 2), thread('t_faraway', 40), thread('t_resolved', 2, { status: 'resolved' })]
+    vi.stubGlobal('api', {
+      on: () => () => {},
+      invoke: (channel: string) => {
+        switch (channel) {
+          case 'agent-threads:load':
+            return Promise.resolve({ threads, rev: 1 })
+          case 'git:staging-files':
+            return Promise.resolve([{ path: 'src/a.ts', status: 'modified' }])
+          case 'git:staging-diff':
+            return Promise.resolve(DIFF)
+          case 'git:log':
+          case 'worktree:list':
+            return Promise.resolve([])
+          default:
+            return Promise.resolve(undefined)
+        }
+      },
+    })
+    dispose = initAgentThreadsListeners()
+  })
+
+  afterEach(() => {
+    dispose()
+    _resetAgentThreadsForTests()
+    vi.restoreAllMocks()
+  })
+
+  const card = (id: string): HTMLElement => screen.getAllByTestId('thread-card').find((c) => c.dataset.threadId === id)!
+
+  it('expands and scrolls to the thread a notification names, unfolding Resolved for it', async () => {
+    render(SessionScreen, { props: { session, connection, openThread: { threadId: 't_resolved' } } })
+    await waitFor(() => expect(scrolled).toContain(card('t_resolved')))
+    expect(within(card('t_resolved')).getByTestId('thread-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(within(card('t_inline1')).getByTestId('thread-toggle')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it("shows a thread's line in Changes, with the thread open under it", async () => {
+    render(SessionScreen, { props: { session, connection } })
+    await fireEvent.click(screen.getByTestId('pane-threads'))
+    await waitFor(() => expect(card('t_inline1')).toBeTruthy())
+    await fireEvent.click(within(card('t_inline1')).getByTestId('thread-toggle'))
+    await fireEvent.click(within(card('t_inline1')).getByTestId('thread-jump'))
+
+    await waitFor(() => expect(screen.getByTestId('pane-changes')).toHaveAttribute('aria-selected', 'true'))
+    await waitFor(() => expect(document.querySelector('[data-revealed]')).toHaveAttribute('data-line', '2'))
+    const inline = screen.getByTestId('inline-threads')
+    expect(within(inline).getByTestId('thread-toggle')).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it("stays on Threads and says so when the diff doesn't hold the line", async () => {
+    render(SessionScreen, { props: { session, connection } })
+    await fireEvent.click(screen.getByTestId('pane-threads'))
+    await waitFor(() => expect(card('t_faraway')).toBeTruthy())
+    await fireEvent.click(within(card('t_faraway')).getByTestId('thread-toggle'))
+    await fireEvent.click(within(card('t_faraway')).getByTestId('thread-jump'))
+
+    expect(await within(card('t_faraway')).findByRole('alert')).toHaveTextContent("isn't in the diff")
+    expect(screen.getByTestId('pane-threads')).toHaveAttribute('aria-selected', 'true')
   })
 })

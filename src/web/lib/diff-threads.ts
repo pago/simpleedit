@@ -62,20 +62,25 @@ export function rowKey(path: string, newNo: number): string {
 }
 
 /**
- * Threads by the row they show under (`rowKey`): a range under its last line,
- * as on the desktop, or its first when the diff doesn't hold the last. A
- * thread whose lines aren't in the diff isn't placed; the Threads tab still
- * lists it.
+ * The new-file line `thread` shows under in `files`: a range under its last
+ * line, as on the desktop, or its first when the diff doesn't hold the last.
+ * Null when the diff holds neither, or the thread belongs to another view;
+ * the Threads tab still lists it.
  */
+export function threadLine(thread: AgentThread, files: DiffFile[], view: DiffView): number | null {
+  if (!inView(thread, view)) return null
+  const file = files.find((f) => f.path === thread.anchor.path && !f.binary)
+  if (!file) return null
+  const lines = newSide(file)
+  const { startLine, endLine } = thread.anchor
+  return lines.has(endLine) ? endLine : lines.has(startLine) ? startLine : null
+}
+
+/** Threads by the row they show under (`rowKey`, see `threadLine`). */
 export function threadsByRow(threads: AgentThread[], files: DiffFile[], view: DiffView): Map<string, AgentThread[]> {
   const out = new Map<string, AgentThread[]>()
-  const sides = new Map<string, Map<number, string>>()
-  for (const f of files) if (!f.binary) sides.set(f.path, newSide(f))
   for (const t of threads) {
-    if (!inView(t, view)) continue
-    const lines = sides.get(t.anchor.path)
-    if (!lines) continue
-    const line = lines.has(t.anchor.endLine) ? t.anchor.endLine : lines.has(t.anchor.startLine) ? t.anchor.startLine : null
+    const line = threadLine(t, files, view)
     if (line === null) continue
     const key = rowKey(t.anchor.path, line)
     out.set(key, [...(out.get(key) ?? []), t])
