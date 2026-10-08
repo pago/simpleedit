@@ -12,10 +12,10 @@ const providers: PaletteProvider[] = [
   commitProvider
 ]
 
-const GIT_CATEGORIES: ReadonlySet<PaletteCategory> = new Set(['action', 'commit'])
-
+// Memory mode drops commits wholesale; the action provider filters its own
+// git/tour/review actions.
 function activeProviders(context: PaletteContext): PaletteProvider[] {
-  return context.memory ? providers.filter((p) => !GIT_CATEGORIES.has(p.category)) : providers
+  return context.memory ? providers.filter((p) => p.category !== 'commit') : providers
 }
 
 function getProviderForPrefix(prefix: PalettePrefix, context: PaletteContext): PaletteProvider | null {

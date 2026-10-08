@@ -30,12 +30,14 @@ describe('palette engine', () => {
     const ctx = { activeSessionId: 's', worktreePath: '/wt', memory: { dir: '/mem', git: null } }
     const results = await search('', ctx)
     expect(results.groups.map((g) => g.category)).not.toContain('commit')
-    expect(results.groups.map((g) => g.category)).not.toContain('action')
     expect(results.flat.map((i) => i.label)).toEqual(expect.arrayContaining(['MEMORY.md', 'b.md']))
+    expect(results.flat.filter((i) => i.category === 'action').map((i) => i.label)).toEqual(['Refresh Worktrees'])
     expect(invoke).not.toHaveBeenCalledWith('git:log', expect.anything(), expect.anything())
 
     expect(await search('#', ctx)).toEqual({ groups: [], flat: [] })
-    expect(await search('>', ctx)).toEqual({ groups: [], flat: [] })
+    expect((await search('>tour', ctx)).flat).toEqual([])
+    expect((await search('>refresh', ctx)).flat.map((i) => i.label)).toEqual(['Refresh Worktrees'])
+    expect(invoke).not.toHaveBeenCalledWith('git:log', expect.anything(), expect.anything())
   })
 
   it('opens a memory file at its absolute path', async () => {
