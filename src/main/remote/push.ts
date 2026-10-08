@@ -50,6 +50,7 @@ import {
   isGoneStatus,
   isValidVapidKeys,
   sendPush,
+  withFullPrivateKey,
   type PushTransport,
   type VapidKeyPair,
 } from './webpush'
@@ -182,9 +183,9 @@ function load(): PushFile {
   } catch {
     parsed = null
   }
-  const vapid = isRecord(parsed) && isRecord(parsed.vapid)
+  const vapid = withFullPrivateKey(isRecord(parsed) && isRecord(parsed.vapid)
     ? { publicKey: String(parsed.vapid.publicKey ?? ''), privateKey: String(parsed.vapid.privateKey ?? '') }
-    : { publicKey: '', privateKey: '' }
+    : { publicKey: '', privateKey: '' })
 
   if (isValidVapidKeys(vapid)) {
     const rows = isRecord(parsed) && Array.isArray(parsed.subscriptions) ? parsed.subscriptions : []

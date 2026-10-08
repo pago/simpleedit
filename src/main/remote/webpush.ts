@@ -31,6 +31,7 @@ import {
   hkdfSync,
   randomBytes,
   sign,
+  type ECDH,
   type KeyObject,
 } from 'crypto'
 import { request as httpsRequest } from 'https'
@@ -78,10 +79,32 @@ export interface VapidKeyPair {
 export function generateVapidKeys(): VapidKeyPair {
   const ecdh = createECDH(CURVE)
   ecdh.generateKeys()
+  return vapidKeysOf(ecdh)
+}
+
+/** The pair an ECDH instance holds. Exported so a test can supply the scalar. */
+export function vapidKeysOf(ecdh: ECDH): VapidKeyPair {
   return {
     publicKey: toBase64Url(ecdh.getPublicKey()),
-    privateKey: toBase64Url(ecdh.getPrivateKey()),
+    privateKey: toBase64Url(toScalarBytes(ecdh.getPrivateKey())),
   }
+}
+
+/**
+ * `keys` with its private scalar restored to 32 bytes.
+ *
+ * Earlier versions stored about 1 key in 256 as 31 bytes (see
+ * `toScalarBytes`). Restoring the zero byte on load keeps those installs'
+ * phones subscribed. `isValidVapidKeys` still proves the pair belongs together.
+ */
+export function withFullPrivateKey(keys: VapidKeyPair): VapidKeyPair {
+  return { ...keys, privateKey: toBase64Url(toScalarBytes(fromBase64Url(keys.privateKey))) }
+}
+
+// getPrivateKey() drops leading zero bytes, so about 1 scalar in 256 comes
+// back as 31 bytes, which isValidVapidKeys rightly refuses: a scalar is 32.
+function toScalarBytes(scalar: Buffer): Buffer {
+  return scalar.length >= 32 ? scalar : Buffer.concat([Buffer.alloc(32 - scalar.length), scalar])
 }
 
 /** True when `keys` is a structurally valid P-256 pair. Cheap, and load-bearing. */

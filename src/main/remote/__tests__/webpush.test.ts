@@ -10,6 +10,7 @@ import {
   sendPush,
   toBase64Url,
   vapidAuthorization,
+  vapidKeysOf,
   vapidPublicKeyObject,
   type PushTransport,
 } from '../webpush'
@@ -148,6 +149,24 @@ describe('VAPID', () => {
     expect(isValidVapidKeys(keys)).toBe(true)
     expect(fromBase64Url(keys.publicKey)).toHaveLength(65)
     expect(fromBase64Url(keys.privateKey)).toHaveLength(32)
+  })
+
+  it('keeps a private scalar that starts with a zero byte at 32 bytes', () => {
+    const ecdh = createECDH('prime256v1')
+    ecdh.setPrivateKey(Buffer.concat([Buffer.from([0]), Buffer.alloc(31, 0x42)]))
+    expect(ecdh.getPrivateKey()).toHaveLength(31)
+
+    const short = vapidKeysOf(ecdh)
+    expect(fromBase64Url(short.privateKey)).toHaveLength(32)
+    expect(isValidVapidKeys(short)).toBe(true)
+
+    const header = vapidAuthorization(endpoint, { keys: short, subject: 'mailto:dev@example.com' })
+    const [encodedHeader, encodedClaims, signature] = (/^vapid t=([^,]+),/.exec(header) ?? [])[1].split('.')
+    const verifier = createVerify('sha256')
+    verifier.update(`${encodedHeader}.${encodedClaims}`)
+    expect(
+      verifier.verify({ key: vapidPublicKeyObject(short.publicKey), dsaEncoding: 'ieee-p1363' }, fromBase64Url(signature)),
+    ).toBe(true)
   })
 
   it('rejects a pair whose halves do not belong together', () => {
