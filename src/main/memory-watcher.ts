@@ -5,10 +5,11 @@
  * are `structural`, telling the renderer to re-resolve (the memory dir's own
  * `unlinkDir` means it is gone).
  *
- * A dir that is gone has no watch: its own `unlinkDir` flushes and disposes
- * the state, and watching a missing dir is a no-op. The renderer holds a dir
- * only while `memory:resolve` says it exists, so it watches again once the
- * dir comes back.
+ * A dir that is gone has no watch: its own `unlinkDir` flushes (with
+ * `watchEnded`) and disposes the state, dropping every subscriber's refs, and
+ * watching a missing dir is a no-op. The renderer re-watches when the dir is
+ * back — via a fresh acquire, or directly when it reappeared before the
+ * re-resolve noticed it was gone.
  */
 import { watch, type FSWatcher } from 'chokidar'
 import { statSync } from 'fs'
@@ -28,8 +29,13 @@ interface MemoryWatchState {
 
 const watchers = new Map<string, MemoryWatchState>()
 
-function flush(memoryDir: string, state: MemoryWatchState): void {
-  const payload = { memoryDir, dirs: [...state.pendingDirs], structural: state.pendingStructural }
+function flush(memoryDir: string, state: MemoryWatchState, watchEnded = false): void {
+  const payload = {
+    memoryDir,
+    dirs: [...state.pendingDirs],
+    structural: state.pendingStructural,
+    ...(watchEnded ? { watchEnded } : {}),
+  }
   state.pendingDirs.clear()
   state.pendingStructural = false
   for (const { webContents } of state.subscribers.values()) {
@@ -94,7 +100,7 @@ export function watchMemoryDir(client: RemoteClient, memoryDir: string): boolean
         if (path !== memoryDir) s.pendingDirs.add(dirname(path))
       }
       if (event === 'unlinkDir' && path === memoryDir) {
-        flush(memoryDir, s)
+        flush(memoryDir, s, true)
         dispose(memoryDir, s)
         return
       }
