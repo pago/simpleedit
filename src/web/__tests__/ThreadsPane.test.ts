@@ -149,18 +149,12 @@ describe('ThreadsPane', () => {
     expect(invoke).toHaveBeenCalledWith('agent-threads:retry', 's1', 'm_1')
   })
 
-  it('force-sends a draft-held message only after a confirm', async () => {
+  it('force-sends a draft-held message in one click', async () => {
     put(thread('t_aaaaaaaa', [user('m_1', { delivery: 'held', heldReason: 'draft' })]))
     renderPane()
     await expand()
     expect(screen.getByText('held: unsent text in the terminal')).toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'My prompt is empty, send' }))
-    expect(invoke).not.toHaveBeenCalledWith('agent-threads:force-send', 's1')
-    expect(screen.getByText('Anything typed in the terminal is submitted with it.')).toBeInTheDocument()
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'My prompt is empty, send' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
     expect(invoke).toHaveBeenCalledWith('agent-threads:force-send', 's1')
   })
 

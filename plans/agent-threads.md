@@ -284,6 +284,14 @@ disabled for that provider rather than shipping flaky.
     settles an Esc-interrupted turn.
   - A confirmation that arrives after the timeout still counts.
   - Keys typed after our write stay a draft.
+- **Live check fixes.**
+  - A draft is judged by a model of the prompt fed by the user's keys
+    (`prompt-model.ts`), not by "any key": Esc, arrows, Shift+Tab, mouse reports, text
+    backspaced away, Ctrl+C and a plain Enter leave it empty. A command's or
+    @-completion's Enter, a recalled history entry and Esc-Esc stay a draft (a picker
+    may be up) until a choice, an Esc, or a submitted prompt.
+  - "My prompt is empty, send" is one click.
+  - The thread header's whole row toggles, and the chevron's hit area is larger.
 - **Still open.**
   - Branch-changes diffs and the old side of a diff still use the staged prompt.
   - A thread on a commit opens the working copy, not the diff.

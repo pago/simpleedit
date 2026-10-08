@@ -107,14 +107,12 @@ describe('ThreadsPanel', () => {
     expect(await screen.findByText("waiting for the agent's turn to end")).toBeInTheDocument()
   })
 
-  it('force-sends a draft-held message only after a confirm', async () => {
+  it('force-sends a draft-held message in one click', async () => {
     put(thread('t_aaaaaaaa', [user('m_1', { delivery: 'held', heldReason: 'draft' })]))
     renderPanel()
     await fireEvent.click(screen.getByRole('button', { name: 'Expand thread' }))
     expect(screen.getByText('held: unsent text in the terminal')).toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'My prompt is empty, send' }))
-    expect(invoke).not.toHaveBeenCalledWith('agent-threads:force-send', 's1')
-    await fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
     expect(invoke).toHaveBeenCalledWith('agent-threads:force-send', 's1')
   })
 

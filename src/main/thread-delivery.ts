@@ -15,11 +15,12 @@
  *    `PermissionRequest`; OpenCode reports one only as its `waiting` status. A dialog clears only when the engine moves past it
  *    (the tool's result, a `Stop`, a submitted prompt), never on a mere
  *    `running`: a parallel sub-agent can report running with the dialog up.
- *  - The user has nothing typed in the prompt. Any key that didn't go to a
- *    dialog counts, and stays counted until a prompt is submitted: a bracketed
- *    paste plus Enter would submit their draft merged with the comment. The
- *    user can vouch for an empty prompt (`forceSend`). OpenCode is exempt; its
- *    messages go over HTTP and never touch the TUI's input.
+ *  - The user has nothing typed in the prompt and no picker is up, as far as
+ *    the keys they sent tell (`prompt-model.ts`): a bracketed paste plus Enter
+ *    would submit their draft merged with the comment. What the model can't
+ *    follow counts as a draft until a prompt is submitted or the user vouches
+ *    for an empty prompt (`forceSend`). OpenCode is exempt; its messages go
+ *    over HTTP and never touch the TUI's input.
  *
  * Delivery is confirmed, not assumed: the `UserPromptSubmit` whose prompt
  * carries a thread's header marks its messages `delivered` and arms the turn.
@@ -31,6 +32,7 @@
  */
 import type { AgentStatus } from '../shared/ipc-types'
 import { agentSubmitWrite } from '../shared/agent-submit'
+import { EMPTY_PROMPT, applyKeys, isDraft, type PromptModel } from './prompt-model'
 import {
   DIALOG_TOOLS,
   formatThreadsPrompt,
@@ -69,7 +71,7 @@ interface Track {
   turnEnded: boolean
   /** A dialog is up; the tool call that raised it, when known. */
   dialog: { toolUseId: string | null } | null
-  draft: boolean
+  prompt: PromptModel
   /** A key arrived since our last write, so a draft may follow our own submit. */
   inputSinceWrite: boolean
   stopsInFlight: number
@@ -104,7 +106,7 @@ function track(id: string): Track {
     t = {
       turnEnded: false,
       dialog: null,
-      draft: false,
+      prompt: EMPTY_PROMPT,
       inputSinceWrite: false,
       stopsInFlight: 0,
       sending: new Set(),
@@ -198,17 +200,18 @@ export function noteThreadStatus(sessionId: string, status: AgentStatus): void {
 }
 
 /** A key (or anything else the user sent) reached the session's PTY. */
-export function noteThreadUserInput(sessionId: string): void {
+export function noteThreadUserInput(sessionId: string, keys: string): void {
   safely('input', () => {
     const t = track(sessionId)
     // Keys pressed while a dialog is up answered the dialog; they leave nothing in the prompt.
     if (t.dialog) return
-    if (!t.draft) {
-      t.draft = true
-      t.inputSinceWrite = true
+    const was = isDraft(t.prompt)
+    t.prompt = applyKeys(t.prompt, keys)
+    t.inputSinceWrite = true
+    if (was !== isDraft(t.prompt)) {
+      console.log(`[Threads] Prompt of ${sessionId}: ${t.prompt.state}`)
       requestSendNow(sessionId)
     }
-    t.inputSinceWrite = true
   })
 }
 
@@ -226,7 +229,7 @@ function signal(sessionId: string, e: DeliveryEvent): void {
       const ours = promptSubmitted(sessionId, t, e.prompt ?? '')
       // The user's own submit empties the prompt. Ours does too, but keys that
       // arrived after our write are a new draft.
-      t.draft = ours ? t.inputSinceWrite : false
+      if (!ours || !t.inputSinceWrite) t.prompt = EMPTY_PROMPT
       break
     }
     case 'PermissionRequest':
@@ -376,7 +379,7 @@ function heldReason(sessionId: string, t: Track | undefined): HeldReason | null 
   const provider = deps?.provider(sessionId) ?? null
   if (!t || !provider || t.status === undefined) return 'not-running'
   if (t.dialog) return 'dialog'
-  if (t.draft && provider !== 'opencode') return 'draft'
+  if (isDraft(t.prompt) && provider !== 'opencode') return 'draft'
   if (!t.turnEnded || t.status === 'running' || t.stopsInFlight > 0 || t.sending.size > 0) return 'busy'
   return null
 }
@@ -461,7 +464,7 @@ function confirmTimedOut(sessionId: string): void {
   // No turn started, so the write may be sitting unsubmitted in the prompt (a
   // TUI that read the Enter as a newline). Writing again would double it, so a
   // retry waits like any draft until the user submits or vouches it is empty.
-  t.draft = true
+  t.prompt = { state: 'unknown', typed: null, escs: 0 }
   t.turnEnded = true
   requestSendNow(sessionId)
 }
@@ -483,7 +486,7 @@ export function retryMessage(sessionId: string, messageId: string): boolean {
 export function forceSend(sessionId: string): void {
   const t = tracks.get(sessionId)
   if (!t) return
-  t.draft = false
+  t.prompt = EMPTY_PROMPT
   t.inputSinceWrite = false
   requestSendNow(sessionId)
 }

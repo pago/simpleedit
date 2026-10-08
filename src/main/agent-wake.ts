@@ -128,9 +128,14 @@ export function noteNotification(terminalId: string, notificationType: string | 
 const TERMINAL_REPLY =
   /\x1b\[[IO]|\x1b\[[?>][\d;]*c|\x1b\[\d+;\d+R|\x1b\[\d*n|\x1b\[\??[\d;]*\$y|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/g
 
+/** A PTY write without the terminal's own replies: what the user typed. */
+export function userKeys(data: string): string {
+  return data.replace(TERMINAL_REPLY, '')
+}
+
 /** Whether a PTY write holds anything but the terminal's own replies. */
-export function isUserInput(data: string): boolean {
-  return data.replace(TERMINAL_REPLY, '').length > 0
+function isUserInput(data: string): boolean {
+  return userKeys(data).length > 0
 }
 
 /** Called for every write the user (or the renderer on their behalf) makes to a PTY. */

@@ -92,7 +92,7 @@ import { checkForUpdatesFromMenu, initAutoUpdater } from './auto-update'
 import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } from './agent-bus'
-import { initAgentWake, isUserInput, noteUserInput } from './agent-wake'
+import { initAgentWake, noteUserInput, userKeys } from './agent-wake'
 import { applyThreadOp, loadThreads, reassignSession, removeSessionThreads } from './agent-threads-store'
 import { forceSend, initThreadDelivery, moveSession, noteThreadStatus, noteThreadUserInput, requestSend, retryMessage } from './thread-delivery'
 import { parseMessageIdRequest, parseThreadOp, type ThreadChange } from '../shared/agent-threads'
@@ -789,7 +789,8 @@ function registerAllHandlers(): void {
   handleInvoke('pty:write', (_event, id: string, data: string) => {
     writeToTerminal(id, data)
     noteUserInput(id, data)
-    if (isUserInput(data)) noteThreadUserInput(id)
+    const keys = userKeys(data)
+    if (keys) noteThreadUserInput(id, keys)
   })
 
   // The client id is stamped from the IPC event, never taken from the args —
