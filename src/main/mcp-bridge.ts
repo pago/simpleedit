@@ -1,6 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
 import { randomBytes, randomUUID } from 'crypto'
-import { dirname } from 'path'
+import { readFile, realpath } from 'fs/promises'
+import { dirname, isAbsolute, relative } from 'path'
 import type { RemoteClient } from './client-hub'
 import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
@@ -26,7 +27,8 @@ import {
 } from './agent-bus'
 import { beginStop, canWake, endStop, noteBusy, noteNotification, requestWake, wakeOutlook } from './agent-wake'
 import { sendAgentStatus } from './agent-status'
-import { beginThreadStop, endThreadStop, noteThreadSignal, replyToThread } from './thread-delivery'
+import { beginThreadStop, endThreadStop, noteThreadSignal, openAgentThread, replyToThread } from './thread-delivery'
+import { anchorLines } from '../shared/thread-anchor-lines'
 
 interface BridgeInstance {
   server: Server
@@ -576,6 +578,11 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     return result.ok ? { status: 200, body: { ok: true } } : { status: 400, body: { error: result.error } }
   }
 
+  if (tool === 'open_thread') {
+    const result = await openThreadTool(args, terminalId, webContents.id)
+    return 'error' in result ? { status: 400, body: { error: result.error } } : { status: 200, body: { ok: true, thread_id: result.threadId } }
+  }
+
   if (tool === 'check_inbox') {
     const messages = drain(terminalId)
     announceDelivered(webContents, terminalId, messages, 'check_inbox')
@@ -596,6 +603,51 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
   }
 
   return { status: 400, body: { error: `Unknown tool: ${tool}` } }
+}
+
+const MAX_THREAD_FILE_BYTES = 5 * 1024 * 1024
+const MAX_THREAD_LINES = 200
+
+async function openThreadTool(
+  args: Record<string, unknown>,
+  terminalId: string,
+  webContentsId: number,
+): Promise<{ threadId: string } | { error: string }> {
+  const path = typeof args['path'] === 'string' ? args['path'] : ''
+  const body = typeof args['body'] === 'string' ? args['body'] : ''
+  const start = args['start_line']
+  const end = args['end_line'] ?? start
+  if (!isAbsolute(path)) return { error: 'open_thread needs an absolute `path`.' }
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return { error: 'open_thread needs whole-number `start_line` (and `end_line`).' }
+  const startLine = start as number
+  const endLine = end as number
+
+  const { worktreePath } = await locateWorktree(webContentsId, dirname(path), await resolveWorktrees(webContentsId))
+  if (!worktreePath) return { error: `${path} is not in a git worktree SimpleEdit can show.` }
+  let rel: string
+  let text: string
+  try {
+    // The worktree match compares realpaths, so the relative path must too.
+    rel = relative(await realpath(worktreePath), await realpath(path))
+    const buf = await readFile(path)
+    if (buf.length > MAX_THREAD_FILE_BYTES) return { error: `${path} is too large to comment on.` }
+    text = buf.toString('utf8')
+  } catch {
+    return { error: `Cannot read ${path}.` }
+  }
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return { error: `${path} is not in a git worktree SimpleEdit can show.` }
+
+  const lines = text.split(/\r?\n/)
+  if (startLine < 1 || endLine < startLine || endLine > lines.length) {
+    return { error: `Lines ${startLine}-${endLine} are outside ${path}, which has ${lines.length} lines.` }
+  }
+  if (endLine - startLine >= MAX_THREAD_LINES) return { error: `Anchor a thread on at most ${MAX_THREAD_LINES} lines.` }
+  const anchored = anchorLines(
+    { getLineCount: () => lines.length, getLineContent: (l) => lines[l - 1] ?? '' },
+    { startLineNumber: startLine, endLineNumber: endLine, endColumn: Number.MAX_SAFE_INTEGER },
+  )
+  const result = openAgentThread(terminalId, { worktreePath, anchor: { path: rel, ...anchored, context: 'file' }, body })
+  return result.ok ? { threadId: result.threadId } : { error: result.error }
 }
 
 /**

@@ -636,6 +636,32 @@ server.registerTool(
 )
 
 server.registerTool(
+  'open_thread',
+  {
+    description: [
+      'Start a comment thread on specific lines of a file, shown to the user next to that code in',
+      'SimpleEdit, like a review comment. Use it sparingly, for a question or a caveat the user',
+      'should see while reading those exact lines: an assumption you made there, a choice you want',
+      'confirmed, a risk you could not resolve. Do not use it for summaries, progress reports or',
+      'praise, and not for anything that is not about particular lines; say those in your reply.',
+      'At most a few per task. The user answers in the thread and their answer reaches you as a',
+      'thread prompt, which you answer with reply_to_thread.',
+    ].join('\n'),
+    inputSchema: {
+      path: z.string().min(1).describe('Absolute path of the file.'),
+      start_line: z.number().int().min(1).describe('First line the comment is about (1-based).'),
+      end_line: z.number().int().min(1).optional().describe('Last line, if more than one.'),
+      body: z.string().min(1).describe('The comment. Markdown is rendered. Do not repeat the code.'),
+    },
+  },
+  async ({ path, start_line, end_line, body }) => {
+    const result = await postToBridge('open_thread', { path, start_line, end_line, body })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(`Opened thread ${result.data?.thread_id ?? ''} on ${path}:${start_line}.`)
+  },
+)
+
+server.registerTool(
   'check_inbox',
   {
     description: [

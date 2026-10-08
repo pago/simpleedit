@@ -435,6 +435,13 @@ describe('thread replies', () => {
     expect(JSON.parse(phone.read(sent[0].body))).toMatchObject({ title: 'An agent replied', windowId: null })
   })
 
+  it('says the agent commented when it opened the thread', async () => {
+    configurePush({ labelFor: () => 'Fix the flaky test' })
+    handleThreadReply(replied('', { messages: [{ id: 'm_cccccc', author: 'agent', body: 'Is this intended?', at: '2026-10-08T10:01:00.000Z' }] }))
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect(JSON.parse(phone.read(sent[0].body))).toMatchObject({ title: 'Fix the flaky test commented', body: 'src/a.ts:12 — Is this intended?' })
+  })
+
   it('buzzes once for a turn that answers several threads', async () => {
     handleThreadReply(replied())
     handleThreadReply(replied('Other answer', { id: 't_ghijkl' }))

@@ -35,15 +35,20 @@ import { agentSubmitWrite } from '../shared/agent-submit'
 import { EMPTY_PROMPT, applyKeys, isDraft, type PromptModel } from './prompt-model'
 import {
   DIALOG_TOOLS,
+  MAX_BODY,
   formatThreadsPrompt,
   newMessageId,
+  newThreadId,
   threadIdsInPrompt,
   type AgentThread,
   type HeldReason,
+  type ThreadAnchor,
   type ThreadChange,
 } from '../shared/agent-threads'
 import {
+  addAgentThread,
   appendAgentMessage,
+  unansweredAgentThreads,
   getThread,
   messagesInState,
   sessionsWithMessagesIn,
@@ -54,6 +59,8 @@ import {
 
 export const SEND_SETTLE_MS = 750
 export const CONFIRM_MS = 10_000
+/** Threads an agent may leave open without an answer from the user, so a session can't bury its code in them. */
+export const MAX_UNANSWERED_AGENT_THREADS = 5
 
 export interface DeliveryEvent {
   eventName: string | null
@@ -337,6 +344,30 @@ export function replyToThread(sessionId: string, threadId: string, body: string)
     patch(armed, { delivery: 'answered' })
   }
   return { ok: true }
+}
+
+/** The agent starts a thread on a line (`open_thread`). */
+export function openAgentThread(
+  sessionId: string,
+  input: { worktreePath: string; anchor: ThreadAnchor; body: string },
+): { ok: true; threadId: string } | { ok: false; error: string } {
+  if (!deps) return { ok: false, error: 'Agent threads are unavailable in this SimpleEdit session.' }
+  if (!input.body.trim()) return { ok: false, error: 'open_thread needs a non-empty `body`.' }
+  if (input.body.length > MAX_BODY) return { ok: false, error: `open_thread's \`body\` is over ${MAX_BODY} characters.` }
+  if (unansweredAgentThreads(sessionId) >= MAX_UNANSWERED_AGENT_THREADS) {
+    return {
+      ok: false,
+      error:
+        `You already have ${MAX_UNANSWERED_AGENT_THREADS} open threads the user hasn't answered. ` +
+        'Wait for their answers, or say it in your terminal instead.',
+    }
+  }
+  const id = newThreadId()
+  const change = addAgentThread({ id, sessionId, worktreePath: input.worktreePath, anchor: input.anchor, messageId: newMessageId(), body: input.body })
+  emit(change)
+  if (change.thread) deps.onAgentReply?.(change.thread)
+  console.log(`[Threads] ${sessionId} opened ${id} on ${input.anchor.path}:${input.anchor.startLine}`)
+  return { ok: true, threadId: id }
 }
 
 function settleArms(sessionId: string, t: Track, lastAssistantMessage: string | null, reason: string | null): void {
