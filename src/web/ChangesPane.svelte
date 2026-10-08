@@ -15,10 +15,12 @@
    * open that lands then just leaves the log showing.
    *
    * ── Read, don't write ───────────────────────────────────────────────────
-   * Every call goes through `read`, whose type admits five channels, all of
-   * which only ever read. That is the enforcement; the paragraph is just the
-   * reason. There is no comment, no approval, no staging and no commit on this
-   * surface — those need a keyboard and a second screen.
+   * Every git call goes through `read`, whose type admits five channels, all
+   * of which only ever read. That is the enforcement; the paragraph is just the
+   * reason. There is no approval, no staging and no commit on this surface —
+   * those need a keyboard and a second screen. A comment on a line is the one
+   * thing it can make, and that is an agent thread (`SessionDiff`): an op to
+   * main, which decides when the agent reads it.
    *
    * ── A diff's lifetime is its screen's ───────────────────────────────────
    * Nothing here is cached. A diff is fetched when its entry is opened and
@@ -45,6 +47,7 @@
    */
   import { onMount, untrack } from 'svelte'
   import MobileDiff from './MobileDiff.svelte'
+  import SessionDiff from './SessionDiff.svelte'
   import { nav } from './lib/nav.svelte'
   import {
     defaultEntry,
@@ -443,6 +446,13 @@
               {/each}
             </ul>
           </div>
+        {:else if session.kind !== 'terminal' && worktreePath}
+          <SessionDiff
+            {diff}
+            sessionId={session.terminalId}
+            view={{ worktreePath, commit: entry.kind === 'commit' ? entry.hash : 'uncommitted' }}
+            visible={active}
+          />
         {:else}
           <MobileDiff {diff} />
         {/if}

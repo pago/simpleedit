@@ -139,6 +139,8 @@ beforeEach(() => {
         return diffs.staging
       case 'git:diff':
         return diffs[String(args[1])] ?? ''
+      case 'agent-threads:op':
+        return null
       default:
         throw new Error(`unexpected channel ${channel}`)
     }
@@ -203,7 +205,7 @@ describe('ChangesPane', () => {
     expect(nav.stack()).toEqual([])
   })
 
-  // The whole surface: five channels, none of which can change anything.
+  // The whole git surface: five channels, none of which can change anything.
   it('never reaches a channel that could write', async () => {
     mount()
     await waitFor(() => expect(screen.getByTestId('session-diff')).toBeTruthy())
@@ -377,5 +379,32 @@ describe('ChangesPane', () => {
     commits = []
     mount()
     await waitFor(() => expect(screen.getByText(/Nothing to review/)).toBeTruthy())
+  })
+
+  // The one thing this pane can make: a thread for the session's agent, on
+  // the worktree and the diff the line was read in.
+  it("starts an agent thread on a tapped line of the worktree in view", async () => {
+    mount()
+    await waitFor(() => expect(screen.getByText('new')).toBeTruthy())
+    const line = screen.getAllByTestId('diff-line').find((el) => el.textContent?.includes('new'))!
+    await fireEvent.click(line)
+    await fireEvent.input(screen.getByLabelText('Comment for the agent'), { target: { value: 'Why?' } })
+    await fireEvent.click(screen.getByText('Send to agent'))
+    await waitFor(() => expect(calls.some((c) => c.channel === 'agent-threads:op')).toBe(true))
+    expect(calls.find((c) => c.channel === 'agent-threads:op')?.args[0]).toMatchObject({
+      kind: 'add-thread',
+      thread: {
+        sessionId: 'agent-claude-1',
+        worktreePath: WORKTREE,
+        anchor: { path: 'src/a.ts', startLine: 1, snippet: 'new', context: { commit: 'uncommitted' } },
+      },
+      message: { body: 'Why?' },
+    })
+  })
+
+  it('keeps a plain terminal\'s diff read-only: there is no agent to ask', async () => {
+    mount({ kind: 'terminal', provider: undefined })
+    await waitFor(() => expect(screen.getByText('new')).toBeTruthy())
+    for (const line of screen.getAllByTestId('diff-line')) expect(line.tagName).toBe('DIV')
   })
 })
