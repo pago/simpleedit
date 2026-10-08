@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import type { AgentThread } from '../../../shared/agent-threads'
   import { agentThreadsStore } from '../../stores/agentThreads.svelte'
   import ThreadItem from './ThreadItem.svelte'
@@ -17,12 +17,14 @@
   let resolved = $derived(threads.filter((t) => t.status === 'resolved'))
   let expanded = $state<Set<string>>(new Set())
   let showResolved = $state(false)
+  let list: HTMLDivElement | undefined = $state()
 
   $effect(() => {
     const focus = agentThreadsStore.focusFor(sessionId)
     if (!focus) return
     expanded = new Set([...untrack(() => expanded), focus])
     agentThreadsStore.takeFocus(sessionId)
+    void tick().then(() => list?.querySelector(`[data-thread-id="${focus}"]`)?.scrollIntoView({ block: 'nearest' }))
   })
 
   function toggle(id: string): void {
@@ -38,7 +40,7 @@
     <span class="text-[11px] text-zinc-600">{open.length} open</span>
   </div>
 
-  <div class="min-h-0 flex-1 overflow-y-auto">
+  <div class="min-h-0 flex-1 overflow-y-auto" bind:this={list}>
     {#if threads.length === 0}
       <p class="px-3 py-4 text-[11px] leading-relaxed text-zinc-500">
         No threads yet. Select code and use Discuss with Agent (⌘I) to start one with this session's agent.

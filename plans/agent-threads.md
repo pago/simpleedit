@@ -292,6 +292,12 @@ disabled for that provider rather than shipping flaky.
     may be up) until a choice, an Esc, or a submitted prompt.
   - "My prompt is empty, send" is one click.
   - The thread header's whole row toggles, and the chevron's hit area is larger.
+- **Gutter icons (pulled forward from slice 2).** An open thread shows a comment icon in
+  the glyph margin of the file editor and of the diff's modified side (`lib/thread-glyphs.ts`),
+  blue while unread. Clicking it opens Threads with that thread expanded and scrolled into
+  view. Working-copy threads (file or uncommitted diff) show in both views; commit threads
+  only in that commit's diff. The margin appears only in files with threads. Glyphs sit on the
+  anchor's start line until main re-anchors (slice 2).
 - **Still open.**
   - Branch-changes diffs and the old side of a diff still use the staged prompt.
   - A thread on a commit opens the working copy, not the diff.

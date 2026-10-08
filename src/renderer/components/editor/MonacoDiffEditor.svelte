@@ -4,6 +4,7 @@
   import type { AgentContext } from '../../lib/agent-message'
   import { anchorLines } from '../../lib/thread-anchor'
   import { getLanguage } from '../../lib/monaco-utils'
+  import { attachThreadGlyphs, type ThreadGlyph } from '../../lib/thread-glyphs'
 
   interface Props {
     originalContent: string
@@ -14,9 +15,21 @@
     /** Line range [start, end] to highlight in the modified editor. */
     highlightLines?: [number, number]
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
+    /** Threads anchored on the modified side. */
+    threadGlyphs?: ThreadGlyph[]
+    onopenthread?: (threadId: string) => void
   }
 
-  let { originalContent, modifiedContent, filePath, inline = true, highlightLines, ondiscusswithagent }: Props = $props()
+  let {
+    originalContent,
+    modifiedContent,
+    filePath,
+    inline = true,
+    highlightLines,
+    ondiscusswithagent,
+    threadGlyphs = [],
+    onopenthread,
+  }: Props = $props()
 
   // Mutable refs so action closures always read the latest prop values.
   // Declared as $state so Svelte treats the assignment in $effect as intentional.
@@ -27,6 +40,7 @@
 
   let container: HTMLDivElement | undefined = $state()
   let diffEditor: monaco.editor.IStandaloneDiffEditor | undefined
+  let glyphs = $state<ReturnType<typeof attachThreadGlyphs>>()
 
   // Create the diff editor once when the container mounts (or when inline layout changes).
   // Content/filePath reads are untracked — the content-update effect handles those.
@@ -92,8 +106,11 @@
 
     registerDiscussAction(diffEditor.getOriginalEditor(), 'original')
     registerDiscussAction(diffEditor.getModifiedEditor(), 'modified')
+    glyphs = attachThreadGlyphs(diffEditor.getModifiedEditor(), (id) => onopenthread?.(id))
 
     return () => {
+      glyphs?.dispose()
+      glyphs = undefined
       originalModel.dispose()
       modifiedModel.dispose()
       diffEditor?.dispose()
@@ -136,6 +153,12 @@
       current.modified.setValue(modifiedContent)
       modifiedEditor.setScrollPosition({ scrollTop, scrollLeft })
     }
+  })
+
+  // After the content effect: a new value drops the old glyphs.
+  $effect(() => {
+    void modifiedContent
+    glyphs?.set(threadGlyphs)
   })
 </script>
 
