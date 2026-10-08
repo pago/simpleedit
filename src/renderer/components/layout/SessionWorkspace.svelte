@@ -557,6 +557,7 @@
               {:else}
                 <FileTree
                   rootPath={viewRoot}
+                  pinnedName={memoryView ? 'MEMORY.md' : undefined}
                   {activeFilePath}
                   onselect={openFile}
                   oncollapse={toggleFileTree}

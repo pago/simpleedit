@@ -9,6 +9,8 @@
     rootPath: string
     activeFilePath?: string | null
     highlightedFiles?: Set<string>
+    /** Top-level file (matched case-insensitively) listed above everything else. */
+    pinnedName?: string
     onselect?: (path: string) => void
     oncollapse?: () => void
   }
@@ -17,11 +19,18 @@
     rootPath,
     activeFilePath = null,
     highlightedFiles = new Set(),
+    pinnedName,
     onselect,
     oncollapse,
   }: Props = $props()
 
   let entries = $state<FileEntry[]>([])
+  let shown = $derived.by(() => {
+    if (!pinnedName) return entries
+    const name = pinnedName.toLowerCase()
+    const pinned = entries.filter((e) => !e.isDirectory && e.name.toLowerCase() === name)
+    return pinned.length ? [...pinned, ...entries.filter((e) => !pinned.includes(e))] : entries
+  })
   let revealRequest = $state<{ path: string; nonce: number } | null>(null)
 
   async function loadRoot(): Promise<void> {
@@ -205,7 +214,7 @@
   </div>
 
   <div role="tree" class="select-none text-sm">
-    {#each entries as entry (entry.path)}
+    {#each shown as entry (entry.path)}
       <FileNode
         {entry}
         {highlightedFiles}
