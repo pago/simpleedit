@@ -74,6 +74,8 @@ main-process module:
 - `git:` — git log, diff, commit inspection (`git-operations.ts`)
 - `claude:` — Claude session spawn + stream parser (`agents/claude.ts`,
   `claude-stream.ts`, `pty.ts`)
+- `memory:` — Claude auto-memory dir: resolve, health, file list, watch
+  (`claude-memory.ts`, `memory-watcher.ts`)
 
 ### Claude Code integration (provider architecture)
 The "✦ Claude" button in terminal tabs spawns `claude --output-format stream-json`
@@ -264,6 +266,45 @@ its PTY size claims are released. So no second teardown path exists to drift
 from the first. The phone empties its Sessions tab whenever a `hello` names a
 different window. It keeps the PRs tab, since Screen PRs and review drafts are
 not per window.
+
+### Claude memory view
+"Claude memory" in a Claude session's repo picker shows the project's
+auto-memory dir in the workspace (tree, editor, git log when tracked) with
+health problems as Monaco markers and a badge.
+- **An overlay, not a repoint.** `Session.memoryView` (never persisted) sets
+  only the VIEW root (`viewRootFor`): file tree, palette files, and editors for
+  files under the dir. `worktreePath` stays the real worktree, because agent
+  spawn, cwd-follow, the repo trail and persistence read it. File tabs outside
+  the dir keep the worktree as LSP root (clients are keyed per root).
+- **Every exit goes through `leaveMemoryThen`** (Back, repo/worktree pickers,
+  palette worktrees, MCP `open_worktree`). It closes memory file tabs and
+  memory-scoped diff tabs and restores `viewerOpen` — leaving the viewer
+  forced open would silently disable cwd-follow. It refuses while a memory
+  file is unsaved (tab close discards edits) and the header says why; a
+  refused agent repoint is dropped. `setActiveSessionWorktree` itself never
+  touches the overlay, and neither does cwd-follow.
+- **Locating the dir** (`claudeMemoryDir`): `autoMemoryDirectory` from USER
+  settings only (a cloned repo's settings must not aim the editor/watcher at
+  arbitrary dirs), else `<configDir>/projects/<key>/memory` for the first
+  existing of: main worktree root, git toplevel, launch dir. `CLAUDE_CONFIG_DIR`
+  / `CLAUDE_CODE_PROJECT_DIR_NAME` come from the login shell the CLI runs in
+  (`claudeShellEnv`), not main's env. `memory:resolve` refuses `/`, `$HOME`,
+  its ancestors and the config dir; the other `memory:*` channels only accept
+  dirs it handed out (the phone can reach them).
+- **Git mode** only when the dir is tracked, not ignored, and HEAD exists.
+  GitLog then runs on the repo root with a pathspec (log, status poll, watch —
+  a `~`-rooted repo would otherwise be walked every 3 s) and opens diffs with
+  `memoryScope` (part of the tab id; files filtered, review/tour hidden).
+  Without git, the health list takes GitLog's slot.
+- **`stores/memoryView.svelte.ts`** holds a dir (refcounted): `memory:watch`,
+  health + markers (`lib/memory-markers.ts`), and on `memory:changed` tree
+  nonces, palette cache, health refetch, and a re-resolve when dirs came or
+  went. Dir creation, `git init` and first commits fire no event, so the
+  visible view polls `memory:resolve` (5 s while missing, 30 s while no-git).
+- **Revealing an issue** switches a 'rendered' Markdown file to 'hybrid'
+  (`markdownViewStore.setFor`) and uses `revealInEditor`, which tracks the path
+  each editor has LOADED — one editor instance is reused across tabs, and
+  re-opening the active tab never runs `loadFile`.
 
 ### Diff review flow
 GitLog (in the session workspace) → click commit → `openDiffTab`
@@ -471,7 +512,9 @@ src/
       provider.ts      ← Pluggable interactive-agent provider interface
       claude.ts        ← Claude Code provider (flags, resume/fork, MCP + hooks)
     claude-stream.ts   ← stream/OSC parser, PTY data tap, status
-    claude-paths.ts    ← Claude project/JSONL path helpers
+    claude-paths.ts    ← Claude project/JSONL path helpers + memory dir resolution
+    claude-memory.ts   ← memory:* — resolve, git mode, bounded walk, health
+    memory-watcher.ts  ← Refcounted chokidar watch of a memory dir
     cwd-tracker.ts     ← Parses hook bodies → session cwd / repo-touch trail
     agent-bus.ts       ← Agent-to-agent messaging: peers, mailboxes, replies
     agent-wake.ts      ← Prompts an idle session with mail to call check_inbox
@@ -536,6 +579,7 @@ src/
       screenprs/              ← ScreenPrsView, PrDetail, ReviewComposer, OverviewCard, …
       settings/               ← SettingsWindow, ModelsPane, DefaultModelPane, …
       command-palette/        ← CommandPalette + input/results
+      memory/                 ← Memory health badge/list + empty state
     stores/
       sessions.svelte.ts      ← Session registry + groups (PRIMARY nav store)
       tabsStore.svelte.ts     ← Per-session editor tabs (keyed by session id)
@@ -546,12 +590,14 @@ src/
       screenprs.svelte.ts, reviewStore.svelte.ts ← Screen-PRs + review state
       uiView.svelte.ts, commandPalette.svelte.ts, tourStore.svelte.ts
       markdownView.svelte.ts, fsRefresh.svelte.ts
+      memoryView.svelte.ts    ← Open memory dirs: watch, health, markers, re-resolve
     lib/                      ← sessionPersistence, session-brief, agent-message, branchName, …
   shared/
     ipc-types.ts       ← All IPC channel type definitions
     git-types.ts       ← Re-exports from ipc-types
     gen-ui-catalog.ts, screenprs.ts ← Shared gen-UI + screen-PRs types
     pr-overview.ts     ← parseOverview (fixed-section parser) + overview types
+    memory-health.ts   ← analyzeMemory: broken index links, unindexed files, [[wiki]] links
 ```
 
 ## E2E repro workflow
