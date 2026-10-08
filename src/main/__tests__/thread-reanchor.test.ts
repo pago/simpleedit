@@ -94,6 +94,26 @@ describe('reanchor', () => {
       expect(reanchor(brace, text(['// new', ...FILE]))).toMatchObject({ startLine: 7, endLine: 7 })
     })
 
+    it('moves off an identical line it was shifted onto, when its context is found elsewhere', () => {
+      const nested = ['{', '  x', '}', '}', 'd']
+      const outer = anchorAt(nested, 4, 4)
+      const lines = ['// top', ...nested]
+      expect(lines[3]).toBe('}')
+      expect(reanchor(outer, text(lines))).toMatchObject({ startLine: 5, endLine: 5 })
+    })
+
+    it('stays put after an edit right above it when no unique context matches', () => {
+      const lines = [...FILE]
+      lines[4] = '  return total * 2'
+      expect(reanchor(brace, text(lines))).toBeNull()
+    })
+
+    it('treats context cut off by the end of the file as matching', () => {
+      const last = anchorAt(FILE, 10, 10)
+      expect(last.after).toBe('')
+      expect(reanchor({ ...last, after: 'x\ny' }, text(FILE))).toBeNull()
+    })
+
     it('never re-anchors on the snippet alone', () => {
       const lines = ['// new', ...FILE]
       lines[5] = '  return total // edited'
