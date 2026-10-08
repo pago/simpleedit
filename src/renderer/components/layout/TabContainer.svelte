@@ -63,6 +63,7 @@
   <div class="flex-1 min-h-0">
     <MarkdownView
       filePath={tab.path}
+      {workspaceKey}
       worktreeRoot={fileRoot}
       onModified={onFileModified}
       {ondiscusswithagent}
@@ -73,6 +74,7 @@
   <div class="flex-1 min-h-0">
     <CodeEditor
       filePath={tab.path}
+      {workspaceKey}
       worktreeRoot={fileRoot}
       onModified={onFileModified}
       {ondiscusswithagent}

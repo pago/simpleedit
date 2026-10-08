@@ -7,13 +7,14 @@
 
   interface Props {
     filePath: string
+    workspaceKey: string
     worktreeRoot: string | null
     onModified?: (path: string, modified: boolean) => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     onOpenFile?: (path: string) => void
   }
 
-  let { filePath, worktreeRoot, onModified, ondiscusswithagent, onOpenFile }: Props = $props()
+  let { filePath, workspaceKey, worktreeRoot, onModified, ondiscusswithagent, onOpenFile }: Props = $props()
 
   const viewMode = $derived(markdownViewStore.get(filePath))
 
@@ -152,6 +153,7 @@
   >
     <CodeEditor
       {filePath}
+      {workspaceKey}
       worktreeRoot={worktreeRoot}
       {onModified}
       {ondiscusswithagent}

@@ -103,7 +103,7 @@ describe('editor-opener', () => {
     })
 
     const handler = vi.fn()
-    cleanupFns.push(bindEditorOpener(editor, handler))
+    cleanupFns.push(bindEditorOpener(editor, 's', handler))
 
     editor.setPosition({ lineNumber: 1, column: 2 })
     editor.trigger('test', 'editor.action.revealDefinition', null)
@@ -112,7 +112,7 @@ describe('editor-opener', () => {
     expect(handler).toHaveBeenCalledTimes(1)
     expect(handler).toHaveBeenCalledWith('/test/target.ts')
 
-    const reveal = consumePendingReveal('/test/target.ts')
+    const reveal = consumePendingReveal('s', '/test/target.ts')
     expect(reveal).not.toBeNull()
     expect(reveal).toMatchObject({ startLineNumber: 3, startColumn: 5 })
   })
@@ -134,7 +134,7 @@ describe('editor-opener', () => {
     })
 
     const handler = vi.fn()
-    cleanupFns.push(bindEditorOpener(editor, handler))
+    cleanupFns.push(bindEditorOpener(editor, 's', handler))
 
     editor.setPosition({ lineNumber: 1, column: 2 })
     editor.trigger('test', 'editor.action.revealDefinition', null)
@@ -161,7 +161,7 @@ describe('editor-opener', () => {
     })
 
     const handler = vi.fn()
-    cleanupFns.push(bindEditorOpener(editor, handler))
+    cleanupFns.push(bindEditorOpener(editor, 's', handler))
 
     editor.setPosition({ lineNumber: 2, column: 2 })
     editor.trigger('test', 'editor.action.revealDefinition', null)
@@ -185,13 +185,13 @@ describe('editor-opener', () => {
       ],
     })
 
-    cleanupFns.push(bindEditorOpener(editor, () => {}))
+    cleanupFns.push(bindEditorOpener(editor, 's', () => {}))
     editor.setPosition({ lineNumber: 1, column: 2 })
     editor.trigger('test', 'editor.action.revealDefinition', null)
     await flushNavigation()
 
-    expect(consumePendingReveal('/test/once-target.ts')).not.toBeNull()
-    expect(consumePendingReveal('/test/once-target.ts')).toBeNull()
+    expect(consumePendingReveal('s', '/test/once-target.ts')).not.toBeNull()
+    expect(consumePendingReveal('s', '/test/once-target.ts')).toBeNull()
   })
 
   it('returns false (and does not throw) when no handler is bound for the source editor', async () => {
