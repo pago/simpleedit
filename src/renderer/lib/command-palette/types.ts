@@ -1,3 +1,5 @@
+import type { MemoryGit } from '../../../shared/ipc-types'
+
 export type PaletteCategory = 'file' | 'worktree' | 'action' | 'commit'
 
 export interface PaletteItem {
@@ -16,6 +18,12 @@ export interface PaletteContext {
   activeSessionId: string | null
   /** The active session's selected worktree (git context for searches). */
   worktreePath: string | null
+  /**
+   * Set while the active session shows its Claude memory dir: files come from
+   * the memory dir, and git-backed providers (commits, tours, reviews) are
+   * skipped — they would act on the worktree the user isn't looking at.
+   */
+  memory?: { dir: string; git: MemoryGit | null }
 }
 
 export interface PaletteProvider {
