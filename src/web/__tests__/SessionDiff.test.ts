@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import SessionDiff from '../SessionDiff.svelte'
+import '../app.css'
 import { initAgentThreadsListeners, _resetAgentThreadsForTests } from '../../renderer/stores/agentThreads.svelte'
 import type { AgentThread, AgentThreadOp, ThreadChange } from '../../shared/agent-threads'
 
@@ -181,5 +182,32 @@ describe('SessionDiff inline threads', () => {
     put(thread('t_aaaaaaaa', { anchor: { ...thread('x').anchor, context: { commit: 'abc1234' } } }))
     renderDiff()
     expect(screen.queryByTestId('thread-card')).toBeNull()
+  })
+})
+
+describe('SessionDiff on a long line', () => {
+  // A phone can't reach a composer or thread that scrolled away with the line.
+  it('keeps the composer and threads in view when the line is scrolled sideways', async () => {
+    const long = `+${'x'.repeat(400)}`
+    const diff = ['diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,0 +1,1 @@', long].join('\n')
+    put(thread('t_aaaaaaaa', { anchor: { ...thread('x').anchor, startLine: 1, endLine: 1 } }))
+    const host = document.createElement('div')
+    host.style.width = '360px'
+    document.body.append(host)
+    render(SessionDiff, { target: host, props: { diff, sessionId: 's1', view: { worktreePath: '/wt', commit: 'uncommitted' }, visible: true } })
+
+    await fireEvent.click(screen.getByTestId('diff-line'))
+    const scroller = screen.getByTestId('diff-line').closest('.overflow-x-auto') as HTMLElement
+    expect(scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth * 2)
+    scroller.scrollLeft = scroller.scrollWidth
+    await new Promise((r) => requestAnimationFrame(r))
+
+    const view = scroller.getBoundingClientRect()
+    for (const el of [screen.getByTestId('thread-composer'), screen.getByTestId('inline-threads')]) {
+      const box = el.getBoundingClientRect()
+      expect(box.left).toBeGreaterThanOrEqual(view.left - 1)
+      expect(box.right).toBeLessThanOrEqual(view.right + 1)
+    }
+    host.remove()
   })
 })
