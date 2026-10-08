@@ -120,7 +120,9 @@ Each spawned Claude session is launched with a `--settings` file
 (`agents/claude.ts` `writeHookSettings`) wiring `UserPromptSubmit` +
 `PostToolUse` + `Stop` + `Notification` HTTP hooks to the per-window bridge's
 `/<token>/hooks` endpoint. (`Stop` serves agent messaging — see below;
-`Notification` is the only route by which a Claude session reports `waiting`.)
+`Notification` is the only route by which a Claude session reports `waiting`.
+`PermissionRequest`, `PreToolUse` on the dialog tools, `PostToolUseFailure`,
+`PermissionDenied` and `StopFailure` serve agent threads.)
 `mcp-bridge.ts` `handleHook`
 parses the body (`cwd-tracker.ts` `parseHookBody`) and drives the session's
 "touched repos" trail — which feeds the **repo picker dropdown**
@@ -228,6 +230,73 @@ Consequences worth knowing before touching this:
   `agent-message:sent` / `:delivered` / `:dropped` drive the sidebar's
   unread-mail badge (`stores/agent-mail.svelte.ts`), seeded from
   `agent-bus:queued` on load.
+
+### Agent threads (line comments with the agent)
+Artifact-style threads on lines of a session's code: the user comments in the
+file editor, the diff or the phone's session diff, and the agent acts and/or
+answers in the thread (`reply_to_thread`); agents can also start one
+(`open_thread`). It is **Discuss with Agent plus a thread id**, not a new
+transport: a comment is submitted into the agent's prompt as a
+`[Thread t_… · /abs/path:lines]` block (`formatThreadsPrompt`).
+- **Main owns the threads**, in the app database (`db.ts`: `node:sqlite`,
+  `userData/config/simpleedit.db`, migrations append-only via
+  `PRAGMA user_version`; all `node:sqlite` use stays in that module, its API
+  isn't stable). `agent-threads-store.ts` applies client ops
+  (`shared/agent-threads.ts`, validated by `parseThreadOp`) and broadcasts
+  `agent-threads:changed` to every window and phone, the review-drafts pattern:
+  rev, tombstones, ops never whole writes. What only main may do (agent
+  messages, delivery states, anchors, hand-off) has its own functions and is
+  never an op. Main refuses a thread whose worktree isn't one of the sender
+  window's.
+- **A comment is the user's own prompt, sent while they're present**, so
+  `thread-delivery.ts` types it into the PTY (`agentSubmitWrite`) — but only
+  when ALL hold: the turn ended (Claude: `Stop` answered or `idle_prompt`;
+  Codex/OpenCode: `idle`) and nothing happened since; no dialog
+  (`PermissionRequest`/`PreToolUse` on `DIALOG_TOOLS` arrive *before* the
+  dialog renders; cleared by the tool's result, `idle_prompt` or a submit,
+  never by a bare `running`); no draft in the prompt; a live PTY. Held messages
+  go out batched as one submit. OpenCode is pushed over HTTP
+  (`deliverMessage`), so the draft rule doesn't apply to it.
+- **The draft rule reads keys, not the screen** (`prompt-model.ts`). It may
+  only err towards "draft": Esc, arrows, Shift+Tab, mouse reports, backspaced
+  text, Ctrl+C and a plain Enter leave the prompt empty; an Enter on a `/`
+  command or an `@` completion, a recalled history entry, Esc-Esc and other
+  control keys may leave a picker up, so they hold until a submit, an Esc or a
+  choice. "My prompt is empty, send" (`forceSend`) is the user's override.
+- **Delivery is confirmed, never assumed.** The `UserPromptSubmit` whose
+  `prompt` carries a thread's header marks it `delivered` and arms the turn;
+  that turn's `Stop` attaches `last_assistant_message` to every armed thread the
+  agent didn't `reply_to_thread` (`answered-implicitly`); a turn that ends any
+  other way leaves `unanswered` + Retry. Arming on confirmation is what keeps a
+  later turn's answer out of a thread. A write unconfirmed after `CONFIRM_MS`
+  is `failed` and counts as a draft (it may sit unsubmitted in the prompt), so
+  Retry never types a second copy. A fork's `reply_to_thread` on its origin's
+  thread is refused; hand-off moves threads to the successor.
+- **Anchors** are `path` (worktree-relative) + lines + `snippet` + 3 lines of
+  `before`/`after`, with `context: 'file' | {commit}`. Main re-anchors
+  working-copy threads (`file` and `{commit:'uncommitted'}`) whenever their
+  file changes on disk and when a thread is added (`thread-anchor-watch.ts` over
+  `editor-watcher`'s shared chokidar watch; matching in `thread-reanchor.ts`):
+  only a **unique** match moves a thread, a snippet too short to place on its
+  own (< 2 non-blank lines and < 20 non-space chars) never moves or stays
+  without its context, and no match **orphans** it (old lines kept, shown as
+  "moved", no glyph, no inline zone). Commit threads never move. Wrong code is
+  worse than no line.
+- **Desktop UI**: a glyph per open thread in `CodeEditor` and the diff's
+  modified side, an inline Monaco view zone hosting the thread
+  (`thread-zones.ts`, Svelte mounted into the zone), a "+"/⌘⇧M inline composer,
+  and the Threads dock (Files and Threads are one either/or control). Commenting
+  is refused on an unsaved buffer: main re-anchors against disk. Read state only
+  counts while the thread is on screen in a focused, visible window; hidden
+  workspaces neither take open-inline requests nor mark reads.
+- **Phone**: one diff component (`MobileDiff`) serves Screen PRs drafts and the
+  session diff; `SessionDiff` adds tap-to-comment and inline threads, drafts
+  kept per line (`web/lib/thread-drafts.svelte.ts`). A thread reply or an
+  agent-opened thread pushes once per turn (`push.ts` `handleThreadReply`),
+  and the tap opens the thread.
+- Every hold, send, confirm, arm and answer is logged as `[Threads] …`.
+- **Next steps, not built:** reading the prompt box through a Claude mod
+  (#201) to replace the key model; GitHub review threads (#186).
 
 ### Screen PRs prompt overrides (`src/main/prompts/`)
 Triage, each deep-review lens and the synthesis step build their prompt as
@@ -522,6 +591,11 @@ src/
     cwd-tracker.ts     ← Parses hook bodies → session cwd / repo-touch trail
     agent-bus.ts       ← Agent-to-agent messaging: peers, mailboxes, replies
     agent-wake.ts      ← Prompts an idle session with mail to call check_inbox
+    db.ts              ← The app's SQLite database (node:sqlite), migrations
+    agent-threads-store.ts ← Agent threads: ops, persistence, broadcast
+    thread-delivery.ts ← When a thread comment may be typed in; confirm, arm, answer
+    prompt-model.ts    ← Draft-in-the-prompt model fed by the user's keys
+    thread-reanchor.ts, thread-anchor-watch.ts ← Move threads with their code
     mcp-bridge.ts      ← Per-window HTTP bridge: MCP tool-calls + hook endpoint
     mcp-server/
       index.mjs        ← Stdio MCP server ("simpleedit" tools) → posts to bridge
