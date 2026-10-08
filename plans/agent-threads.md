@@ -1,6 +1,6 @@
 # Plan: Agent threads
 
-Status: planned, revised after adversarial review round 1 · Branch: `feat/agent-threads` ·
+Status: slice 1 implemented (pending the live check) · Branch: `feat/agent-threads` ·
 Worktree: `../agent-threads`. This plan is committed for the life of the branch. The
 branch's final commit deletes it, and its durable parts move into `CLAUDE.md`.
 
@@ -267,6 +267,28 @@ Cases:
 
 Record the explicit `reply_to_thread` rate. If any case fails for a provider, threads stay
 disabled for that provider rather than shipping flaky.
+
+## Progress and deviations (slice 1)
+
+- **Done.** Store, delivery, `reply_to_thread`, Claude dialog hooks, desktop threads panel
+  ("Threads" next to "Files"), Discuss with Agent creates threads, and session
+  removal/hand-off. The phone threads view is in progress.
+- **A write that is never confirmed counts as a draft.** It may be sitting unsubmitted in the
+  prompt (e.g. a TUI that read the Enter as a newline). A Retry therefore waits until the
+  user submits or clicks "My prompt is empty, send"; it never writes a second copy.
+- **Code review round 2 fixes.**
+  - Delivery is inert if the DB doesn't open, and every entry point is guarded.
+  - Codex and OpenCode `idle` counts as a finished turn.
+  - Notifications that ask nothing (e.g. `agent_completed`) aren't dialogs.
+  - `idle_prompt` clears a dialog that never closed (a user's denial fires no hook) and
+    settles an Esc-interrupted turn.
+  - A confirmation that arrives after the timeout still counts.
+  - Keys typed after our write stay a draft.
+- **Still open.**
+  - Branch-changes diffs and the old side of a diff still use the staged prompt.
+  - A thread on a commit opens the working copy, not the diff.
+  - A session that auto-closes on exit 0 keeps its threads in the DB, because app quit
+    takes the same path.
 
 ## Open questions
 
