@@ -45,7 +45,7 @@
    * that worktree. Passive listening costs nobody anything; the reload button
    * is what makes the staleness recoverable either way.
    */
-  import { onMount, untrack } from 'svelte'
+  import { onMount, tick, untrack } from 'svelte'
   import MobileDiff from './MobileDiff.svelte'
   import SessionDiff from './SessionDiff.svelte'
   import { nav } from './lib/nav.svelte'
@@ -62,6 +62,7 @@
     type ReviewEntry,
   } from './lib/review'
   import { DIFF_TRUNCATED_MARKER } from '../shared/ipc-types'
+  import type { AgentThread } from '../shared/agent-threads'
   import type { RemoteConnection } from './api-shim'
   import type {
     DiffFileEntry,
@@ -171,7 +172,21 @@
    * on. Both reads are needed before anything can be shown, so they fail and
    * retry together.
    */
-  async function loadLog(worktree: string | null, opening: boolean): Promise<void> {
+  /** The latest log and diff reads, for `revealThread` to wait on. */
+  let logLoad: Promise<void> = Promise.resolve()
+  let diffLoad: Promise<void> = Promise.resolve()
+
+  function loadLog(worktree: string | null, opening: boolean): Promise<void> {
+    logLoad = fetchLog(worktree, opening)
+    return logLoad
+  }
+
+  function loadDiff(worktree: string | null, target: ReviewEntry | null): Promise<void> {
+    diffLoad = fetchDiff(worktree, target)
+    return diffLoad
+  }
+
+  async function fetchLog(worktree: string | null, opening: boolean): Promise<void> {
     if (worktree === null) return
     const mine = ++logSeq
     logLoading = true
@@ -197,7 +212,7 @@
     }
   }
 
-  async function loadDiff(worktree: string | null, target: ReviewEntry | null): Promise<void> {
+  async function fetchDiff(worktree: string | null, target: ReviewEntry | null): Promise<void> {
     const mine = ++diffSeq
     if (worktree === null || target === null) {
       diff = null
@@ -290,6 +305,29 @@
     diffError = null
     diffSeq++
     void loadLog(worktree, true)
+  }
+
+  let sessionDiff = $state<SessionDiff>()
+
+  /**
+   * Open the diff `thread` was made in — its worktree, and its commit or the
+   * uncommitted changes — and scroll to its row. Resolves false when that
+   * diff doesn't hold the line. Call it with this pane `active`: a diff is
+   * only opened on screen.
+   */
+  export async function revealThread(thread: AgentThread): Promise<boolean> {
+    const root = thread.worktreePath.replace(/\/+$/, '')
+    if (worktreePath?.replace(/\/+$/, '') !== root) selectWorktree(root)
+    await logLoad
+    const ctx = thread.anchor.context
+    const target: ReviewEntry =
+      ctx === 'file' || ctx.commit === 'uncommitted'
+        ? { kind: 'uncommitted' }
+        : commitEntry(commits.find((c) => c.hash === ctx.commit) ?? { hash: ctx.commit, message: shortHash(ctx.commit), author: '', date: '' })
+    if (!diffEntry || !sameEntry(entry, target)) openEntry(target)
+    await diffLoad
+    await tick()
+    return (await sessionDiff?.revealThread(thread)) ?? false
   }
 
   function reload(): void {
@@ -448,6 +486,7 @@
           </div>
         {:else if session.kind !== 'terminal' && worktreePath}
           <SessionDiff
+            bind:this={sessionDiff}
             {diff}
             sessionId={session.terminalId}
             view={{ worktreePath, commit: entry.kind === 'commit' ? entry.hash : 'uncommitted' }}

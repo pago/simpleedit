@@ -11,7 +11,8 @@
   import ThreadCard from './ThreadCard.svelte'
   import { agentThreadsStore } from '../renderer/stores/agentThreads.svelte'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
-  import { canAnchor, diffAnchor, rowKey, threadsByRow, type DiffView } from './lib/diff-threads'
+  import type { AgentThread } from '../shared/agent-threads'
+  import { canAnchor, diffAnchor, rowKey, threadLine, threadsByRow, type DiffView } from './lib/diff-threads'
 
   interface Props {
     diff: string
@@ -33,6 +34,19 @@
       view,
     ),
   )
+
+  let diffView = $state<MobileDiff>()
+
+  /**
+   * Scroll to `thread`'s row and show it expanded there. Resolves false when
+   * this diff doesn't hold its line, rather than landing on a nearby one.
+   */
+  export async function revealThread(thread: AgentThread): Promise<boolean> {
+    const line = threadLine(thread, files, view)
+    if (line === null) return false
+    expanded = new Set(expanded).add(thread.id)
+    return (await diffView?.reveal(thread.anchor.path, line)) ?? false
+  }
 
   let composing = $state<{ key: string; file: DiffFile; row: DiffRow } | null>(null)
   let draft = $state('')
@@ -72,7 +86,7 @@
   }
 </script>
 
-<MobileDiff {diff} ontap={tap} tappable={canAnchor}>
+<MobileDiff bind:this={diffView} {diff} ontap={tap} tappable={canAnchor}>
   {#snippet below(file, row)}
     {#if canAnchor(row)}
       {@const key = rowKey(file.path, row.newNo!)}

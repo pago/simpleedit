@@ -22,9 +22,11 @@
     /** On screen: the pane is shown and its screen is on top. A hidden expanded thread reads nothing. */
     visible: boolean
     ontoggle: () => void
+    /** Show the thread's line in the Changes pane. Resolves false when the diff doesn't hold it. */
+    onjump?: () => Promise<boolean>
   }
 
-  let { thread, expanded, visible, ontoggle }: Props = $props()
+  let { thread, expanded, visible, ontoggle, onjump }: Props = $props()
 
   let draft = $state('')
   let sending = $state(false)
@@ -68,6 +70,12 @@
 
   async function forceSend(): Promise<void> {
     await run(() => agentThreadsStore.forceSend(thread.sessionId))
+  }
+
+  async function jump(jumpTo: () => Promise<boolean>): Promise<void> {
+    await run(async () => {
+      if (!(await jumpTo())) throw new Error("That line isn't in the diff right now.")
+    })
   }
 
   async function copy(m: ThreadMessage): Promise<void> {
@@ -185,6 +193,14 @@
           >Reopen</button>
         {/if}
       </div>
+      {#if onjump && !thread.anchor.orphaned}
+        <button
+          type="button"
+          class="min-h-11 w-full rounded-md border border-zinc-700 text-sm text-zinc-300 active:bg-zinc-800"
+          onclick={() => jump(onjump)}
+          data-testid="thread-jump"
+        >Show in diff</button>
+      {/if}
     </div>
   {/if}
 </li>
