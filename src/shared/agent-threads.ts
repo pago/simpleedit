@@ -34,7 +34,8 @@ export interface ThreadAnchor {
   /**
    * `file`: the working copy, re-anchored as it changes. A diff anchor names the
    * commit (or `uncommitted`) whose new side it is on; a commit's content never
-   * changes, so it is never re-anchored.
+   * changes, so it is never re-anchored. `uncommitted`'s new side is the working
+   * copy, so it is re-anchored like `file` (`main/thread-reanchor.ts`).
    */
   context: 'file' | { commit: string }
   orphaned?: true
