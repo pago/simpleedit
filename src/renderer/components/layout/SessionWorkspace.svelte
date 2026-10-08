@@ -609,7 +609,7 @@
             style:width="{rightColumnWidth}px"
           >
             {#if threadsOpen}
-              <ThreadsPanel {sessionId} onopen={openThreadAnchor} onclose={() => (threadsOpen = false)} />
+              <ThreadsPanel {sessionId} visible={isActiveSession} onopen={openThreadAnchor} onclose={() => (threadsOpen = false)} />
             {/if}
             <!-- Hidden, not unmounted, under the threads: the tree keeps its expanded folders. -->
             <div class="min-h-0 flex-1 flex-col {threadsOpen ? 'hidden' : 'flex'}">

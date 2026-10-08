@@ -6,11 +6,12 @@
 
   interface Props {
     sessionId: string
+    visible: boolean
     onopen: (thread: AgentThread) => void
     onclose: () => void
   }
 
-  let { sessionId, onopen, onclose }: Props = $props()
+  let { sessionId, visible, onopen, onclose }: Props = $props()
 
   let threads = $derived(agentThreadsStore.forSession(sessionId))
   let open = $derived(threads.filter((t) => t.status === 'open'))
@@ -48,7 +49,7 @@
     {:else}
       <ul>
         {#each open as t (t.id)}
-          <ThreadItem thread={t} expanded={expanded.has(t.id)} ontoggle={() => toggle(t.id)} {onopen} />
+          <ThreadItem thread={t} expanded={expanded.has(t.id)} {visible} ontoggle={() => toggle(t.id)} {onopen} />
         {/each}
       </ul>
       {#if resolved.length > 0}
@@ -62,7 +63,7 @@
         {#if showResolved}
           <ul>
             {#each resolved as t (t.id)}
-              <ThreadItem thread={t} expanded={expanded.has(t.id)} ontoggle={() => toggle(t.id)} {onopen} />
+              <ThreadItem thread={t} expanded={expanded.has(t.id)} {visible} ontoggle={() => toggle(t.id)} {onopen} />
             {/each}
           </ul>
         {/if}

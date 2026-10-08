@@ -7,11 +7,13 @@
   interface Props {
     thread: AgentThread
     expanded: boolean
+    /** The panel is on screen. Hidden workspaces stay mounted, and an answer nobody saw isn't read. */
+    visible: boolean
     ontoggle: () => void
     onopen: (thread: AgentThread) => void
   }
 
-  let { thread, expanded, ontoggle, onopen }: Props = $props()
+  let { thread, expanded, visible, ontoggle, onopen }: Props = $props()
 
   let draft = $state('')
   let sending = $state(false)
@@ -24,7 +26,7 @@
 
   // Showing a thread expanded is reading it, so newly arrived answers are read too.
   $effect(() => {
-    if (expanded && unread) agentThreadsStore.markRead(thread.id)
+    if (visible && expanded && unread) agentThreadsStore.markRead(thread.id)
   })
 
   function message(err: unknown): string {
