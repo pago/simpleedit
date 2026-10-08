@@ -787,9 +787,9 @@ function registerAllHandlers(): void {
   })
 
   handleInvoke('pty:write', (_event, id: string, data: string) => {
+    writeToTerminal(id, data)
     noteUserInput(id, data)
     if (isUserInput(data)) noteThreadUserInput(id)
-    writeToTerminal(id, data)
   })
 
   // The client id is stamped from the IPC event, never taken from the args —

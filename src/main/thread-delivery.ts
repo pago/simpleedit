@@ -11,8 +11,8 @@
  *    message is never queued mid-turn, steered into a running turn, or merged
  *    with the user's own prompt.
  *  - No dialog is up. Claude's `PermissionRequest` and `PreToolUse` on a
- *    dialog tool arrive before their dialog renders; a Codex or OpenCode
- *    `waiting` likewise. A dialog clears only when the engine moves past it
+ *    dialog tool arrive before their dialog renders; as does Codex's
+ *    `PermissionRequest`; OpenCode reports one only as its `waiting` status. A dialog clears only when the engine moves past it
  *    (the tool's result, a `Stop`, a submitted prompt), never on a mere
  *    `running`: a parallel sub-agent can report running with the dialog up.
  *  - The user has nothing typed in the prompt. Any key that didn't go to a
@@ -45,6 +45,7 @@ import {
   getThread,
   messagesInState,
   sessionsWithMessagesIn,
+  hasMessagesInState,
   setDelivery,
   type DeliveryPatch,
 } from './agent-threads-store'
@@ -63,14 +64,19 @@ export interface DeliveryEvent {
 
 interface Track {
   status?: AgentStatus
+
   /** The last turn ended and nothing has happened in the session since. */
   turnEnded: boolean
   /** A dialog is up; the tool call that raised it, when known. */
   dialog: { toolUseId: string | null } | null
   draft: boolean
+  /** A key arrived since our last write, so a draft may follow our own submit. */
+  inputSinceWrite: boolean
   stopsInFlight: number
   /** Messages written and awaiting their `UserPromptSubmit`. */
   sending: Set<string>
+  /** Messages whose confirmation timed out; a late one still counts. */
+  timedOut: Set<string>
   confirmTimer?: ReturnType<typeof setTimeout>
   settleTimer?: ReturnType<typeof setTimeout>
   /** Delivered this turn, by thread. */
@@ -95,7 +101,17 @@ let deps: DeliveryDeps | null = null
 function track(id: string): Track {
   let t = tracks.get(id)
   if (!t) {
-    t = { turnEnded: false, dialog: null, draft: false, stopsInFlight: 0, sending: new Set(), armed: new Map(), replied: new Set() }
+    t = {
+      turnEnded: false,
+      dialog: null,
+      draft: false,
+      inputSinceWrite: false,
+      stopsInFlight: 0,
+      sending: new Set(),
+      timedOut: new Set(),
+      armed: new Map(),
+      replied: new Set(),
+    }
     tracks.set(id, t)
   }
   return t
@@ -112,65 +128,107 @@ function patch(ids: Iterable<string>, p: DeliveryPatch): void {
 }
 
 /**
+ * Every entry point runs through this. They are called from the PTY write
+ * path, the hook endpoint and the status funnel, so a thread failure (a
+ * database error above all) must never cost a keystroke, a hook answer or a
+ * piece of agent mail.
+ */
+function safely(what: string, fn: () => void): void {
+  if (!deps) return
+  try {
+    fn()
+  } catch (err) {
+    console.error(`[Threads] ${what} failed:`, err)
+  }
+}
+
+/**
+ * Notification kinds that ask nothing of the user. Anything else, including a
+ * kind this list doesn't know yet, counts as a dialog until Claude moves on:
+ * when in doubt, don't type. Claude's idle-prompt reminder, sent only at its
+ * input prompt, clears a dialog that never reported closing (a denied
+ * permission fires no hook).
+ */
+const NOT_A_DIALOG = new Set(['idle_prompt', 'agent_completed', 'auth_success', 'elicitation_complete', 'push_notification', 'computer_use_exit'])
+
+/**
  * Wire up delivery. Messages left `sending` or `delivered` by a previous run
  * can never be confirmed or answered now, so they are settled first.
  */
 export function initThreadDelivery(d: DeliveryDeps): void {
-  deps = d
+  // `deps` is set only once the database answered: until then every entry point is inert.
+  deps = null
+  const restarted: Array<[string[], DeliveryPatch]> = []
   for (const sessionId of sessionsWithMessagesIn(['sending', 'delivered'])) {
     const stale = messagesInState(sessionId, ['sending', 'delivered'])
-    patch(
-      stale.filter((p) => p.message.delivery === 'sending').map((p) => p.message.id),
-      { delivery: 'failed', failedReason: 'SimpleEdit restarted before the agent received it' },
-    )
-    patch(
-      stale.filter((p) => p.message.delivery === 'delivered').map((p) => p.message.id),
-      { delivery: 'unanswered', failedReason: 'SimpleEdit restarted before the agent answered' },
+    restarted.push(
+      [stale.filter((p) => p.message.delivery === 'sending').map((p) => p.message.id), { delivery: 'failed', failedReason: 'SimpleEdit restarted before the agent received it' }],
+      [stale.filter((p) => p.message.delivery === 'delivered').map((p) => p.message.id), { delivery: 'unanswered', failedReason: 'SimpleEdit restarted before the agent answered' }],
     )
   }
-  for (const sessionId of sessionsWithMessagesIn(['held'])) refreshHeld(sessionId)
+  for (const [ids, p] of restarted) setDelivery(ids, p)
+  const held = sessionsWithMessagesIn(['held'])
+  deps = d
+  for (const sessionId of held) safely('refreshHeld', () => refreshHeld(sessionId))
 }
 
 // -- Signals -------------------------------------------------------------
 
 export function noteThreadStatus(sessionId: string, status: AgentStatus): void {
-  if (!deps) return
-  if (status === 'exited') {
-    sessionGone(sessionId)
-    return
-  }
-  const t = track(sessionId)
-  t.status = status
-  // Claude and Codex report dialogs through hooks, which say when each one
-  // closes. OpenCode has only its status, and Claude's `waiting` also covers
-  // the idle-prompt reminder, so only OpenCode's status means a dialog.
-  if (deps?.provider(sessionId) === 'opencode') {
-    if (status === 'waiting') t.dialog ??= { toolUseId: null }
-    else if (status === 'running') t.dialog = null
-  }
-  requestSend(sessionId)
+  safely('status', () => {
+    if (status === 'exited') {
+      sessionGone(sessionId)
+      return
+    }
+    const t = track(sessionId)
+    t.status = status
+    const provider = deps?.provider(sessionId)
+    // Claude's idle comes from its title, which also reads idle under a
+    // dialog, and its `waiting` also covers the idle-prompt reminder; its
+    // hooks are what count. Codex's and OpenCode's statuses are exact: an
+    // `idle` is a finished turn (also one from before this run, which no Stop
+    // will ever report), and OpenCode reports dialogs only as `waiting`.
+    if (provider && provider !== 'claude' && status === 'idle') t.turnEnded = true
+    if (provider === 'opencode') {
+      if (status === 'waiting') t.dialog ??= { toolUseId: null }
+      else if (status === 'running') t.dialog = null
+    }
+    requestSendNow(sessionId)
+  })
 }
 
 /** A key (or anything else the user sent) reached the session's PTY. */
 export function noteThreadUserInput(sessionId: string): void {
-  if (!deps) return
-  const t = track(sessionId)
-  // Keys pressed while a dialog is up answered the dialog; they leave nothing in the prompt.
-  if (!t.dialog) t.draft = true
-  requestSend(sessionId)
+  safely('input', () => {
+    const t = track(sessionId)
+    // Keys pressed while a dialog is up answered the dialog; they leave nothing in the prompt.
+    if (t.dialog) return
+    if (!t.draft) {
+      t.draft = true
+      t.inputSinceWrite = true
+      requestSendNow(sessionId)
+    }
+    t.inputSinceWrite = true
+  })
 }
 
 /** A hook, or a provider event translated into one, for this session. */
 export function noteThreadSignal(sessionId: string, e: DeliveryEvent): void {
-  if (!deps) return
+  safely(e.eventName ?? 'signal', () => signal(sessionId, e))
+}
+
+function signal(sessionId: string, e: DeliveryEvent): void {
   const t = track(sessionId)
   switch (e.eventName) {
-    case 'UserPromptSubmit':
+    case 'UserPromptSubmit': {
       t.turnEnded = false
-      t.draft = false
       t.dialog = null
-      promptSubmitted(sessionId, t, e.prompt ?? '')
+      const ours = promptSubmitted(sessionId, t, e.prompt ?? '')
+      // The user's own submit empties the prompt. Ours does too, but keys that
+      // arrived after our write are a new draft.
+      t.draft = ours ? t.inputSinceWrite : false
       break
+    }
     case 'PermissionRequest':
       t.turnEnded = false
       t.dialog = { toolUseId: e.toolUseId ?? null }
@@ -189,8 +247,15 @@ export function noteThreadSignal(sessionId: string, e: DeliveryEvent): void {
       const idlePrompt = e.notificationType
         ? e.notificationType === 'idle_prompt'
         : e.message === 'Claude is waiting for your input'
-      if (!idlePrompt) t.dialog ??= { toolUseId: null }
-      else if (t.status !== 'running' && !t.dialog) t.turnEnded = true
+      if (idlePrompt) {
+        if (t.status === 'running') break
+        t.dialog = null
+        t.turnEnded = true
+        // A turn interrupted with Esc fires no Stop; this is the first sign it's over.
+        settleArms(sessionId, t, null, 'The turn was interrupted before the agent answered')
+      } else if (!e.notificationType || !NOT_A_DIALOG.has(e.notificationType)) {
+        t.dialog ??= { toolUseId: null }
+      }
       break
     }
     case 'StopFailure':
@@ -199,14 +264,15 @@ export function noteThreadSignal(sessionId: string, e: DeliveryEvent): void {
       settleArms(sessionId, t, null, 'The turn failed before the agent answered')
       break
   }
-  requestSend(sessionId)
+  requestSendNow(sessionId)
 }
 
 export function beginThreadStop(sessionId: string): void {
-  if (!deps) return
-  const t = track(sessionId)
-  t.stopsInFlight += 1
-  t.dialog = null
+  safely('beginStop', () => {
+    const t = track(sessionId)
+    t.stopsInFlight += 1
+    t.dialog = null
+  })
 }
 
 /**
@@ -214,13 +280,14 @@ export function beginThreadStop(sessionId: string): void {
  * Stop-hook block), so it hasn't really ended and its arms stay.
  */
 export function endThreadStop(sessionId: string, opts: { continued: boolean; lastAssistantMessage: string | null }): void {
-  if (!deps) return
-  const t = track(sessionId)
-  t.stopsInFlight = Math.max(0, t.stopsInFlight - 1)
-  if (opts.continued) return
-  t.turnEnded = true
-  settleArms(sessionId, t, opts.lastAssistantMessage, null)
-  requestSend(sessionId)
+  safely('endStop', () => {
+    const t = track(sessionId)
+    t.stopsInFlight = Math.max(0, t.stopsInFlight - 1)
+    if (opts.continued) return
+    t.turnEnded = true
+    settleArms(sessionId, t, opts.lastAssistantMessage, null)
+    requestSendNow(sessionId)
+  })
 }
 
 function sessionGone(sessionId: string): void {
@@ -278,16 +345,20 @@ function settleArms(sessionId: string, t: Track, lastAssistantMessage: string | 
   t.replied.clear()
 }
 
-function promptSubmitted(sessionId: string, t: Track, prompt: string): void {
+/** Returns whether the prompt was one of ours (it carried a thread header). */
+function promptSubmitted(sessionId: string, t: Track, prompt: string): boolean {
   // A new turn: whatever was armed for the last one and never answered stays unanswered.
   settleArms(sessionId, t, null, 'The turn was interrupted before the agent answered')
   const ids = new Set(threadIdsInPrompt(prompt))
-  if (ids.size === 0) return
+  if (ids.size === 0) return false
   const confirmed: string[] = []
-  for (const { thread, message } of messagesInState(sessionId, ['sending'])) {
+  for (const { thread, message } of messagesInState(sessionId, ['sending', 'failed'])) {
     if (!ids.has(thread.id)) continue
+    // A slow hook can confirm after we gave up; the agent has it all the same.
+    if (message.delivery === 'failed' && !t.timedOut.has(message.id)) continue
     confirmed.push(message.id)
     t.sending.delete(message.id)
+    t.timedOut.delete(message.id)
     const list = t.armed.get(thread.id) ?? []
     list.push(message.id)
     t.armed.set(thread.id, list)
@@ -295,6 +366,7 @@ function promptSubmitted(sessionId: string, t: Track, prompt: string): void {
   if (t.sending.size === 0) clearTimeout(t.confirmTimer)
   patch(confirmed, { delivery: 'delivered' })
   console.log(`[Threads] Delivered to ${sessionId}: ${confirmed.join(', ') || '(no message in sending)'}`)
+  return true
 }
 
 // -- Sending -------------------------------------------------------------
@@ -310,6 +382,7 @@ function heldReason(sessionId: string, t: Track | undefined): HeldReason | null 
 }
 
 function refreshHeld(sessionId: string): void {
+  if (!hasMessagesInState(sessionId, ['held'])) return
   const held = messagesInState(sessionId, ['held'])
   if (held.length === 0) return
   const reason = heldReason(sessionId, tracks.get(sessionId)) ?? 'busy'
@@ -319,15 +392,19 @@ function refreshHeld(sessionId: string): void {
   )
 }
 
+/** A message was queued for this session: send it at the next safe moment. */
 export function requestSend(sessionId: string): void {
-  if (!deps) return
+  safely('requestSend', () => requestSendNow(sessionId))
+}
+
+function requestSendNow(sessionId: string): void {
+  if (!hasMessagesInState(sessionId, ['held'])) return
   refreshHeld(sessionId)
   const t = tracks.get(sessionId)
   if (!t || heldReason(sessionId, t) !== null || t.settleTimer) return
-  if (messagesInState(sessionId, ['held']).length === 0) return
   t.settleTimer = setTimeout(() => {
     t.settleTimer = undefined
-    void fire(sessionId)
+    fire(sessionId).catch((err: unknown) => console.error('[Threads] Send failed:', err))
   }, SEND_SETTLE_MS)
 }
 
@@ -351,12 +428,18 @@ async function fire(sessionId: string): Promise<void> {
   if (pushed) {
     // No prompt hook to confirm by: the push succeeding is the delivery.
     patch(ids, { delivery: 'sending' })
-    if (await pushed) promptSubmitted(sessionId, trackWithSending(t, ids), prompt)
-    else patch(ids, { delivery: 'failed', failedReason: 'The agent did not accept the message' })
+    if (await pushed) {
+      promptSubmitted(sessionId, trackWithSending(t, ids), prompt)
+    } else {
+      patch(ids, { delivery: 'failed', failedReason: 'The agent did not accept the message' })
+      // Nothing started, so the session is as idle as it was.
+      t.turnEnded = true
+    }
     return
   }
 
   for (const id of ids) t.sending.add(id)
+  t.inputSinceWrite = false
   patch(ids, { delivery: 'sending' })
   deps.write(sessionId, agentSubmitWrite(prompt))
   clearTimeout(t.confirmTimer)
@@ -373,23 +456,26 @@ function confirmTimedOut(sessionId: string): void {
   if (!t || t.sending.size === 0) return
   console.log(`[Threads] Not confirmed by ${sessionId}: ${[...t.sending].join(', ')}`)
   patch(t.sending, { delivery: 'failed', failedReason: "The agent didn't receive it. Check its prompt: the comment may still be there." })
+  for (const id of t.sending) t.timedOut.add(id)
   t.sending.clear()
   // No turn started, so the write may be sitting unsubmitted in the prompt (a
   // TUI that read the Enter as a newline). Writing again would double it, so a
   // retry waits like any draft until the user submits or vouches it is empty.
   t.draft = true
   t.turnEnded = true
-  requestSend(sessionId)
+  requestSendNow(sessionId)
 }
 
 // -- User actions --------------------------------------------------------
 
 /** Retry a failed or unanswered message: it is held and sent at the next safe moment. */
 export function retryMessage(sessionId: string, messageId: string): boolean {
+  if (!deps) return false
   const pending = messagesInState(sessionId, ['failed', 'unanswered']).find((p) => p.message.id === messageId)
   if (!pending) return false
+  tracks.get(sessionId)?.timedOut.delete(messageId)
   patch([messageId], { delivery: 'held', heldReason: 'busy' })
-  requestSend(sessionId)
+  requestSendNow(sessionId)
   return true
 }
 
@@ -398,14 +484,15 @@ export function forceSend(sessionId: string): void {
   const t = tracks.get(sessionId)
   if (!t) return
   t.draft = false
-  requestSend(sessionId)
+  t.inputSinceWrite = false
+  requestSendNow(sessionId)
 }
 
 /** A thread's owner now is another session (hand-off): carry the delivery state across. */
 export function moveSession(from: string, to: string): void {
   const t = tracks.get(from)
   if (t && t.armed.size) settleArms(from, t, null, 'The session was handed off before the agent answered')
-  requestSend(to)
+  requestSendNow(to)
 }
 
 /** Test seam. */

@@ -52,9 +52,15 @@ let db: Db | null = null
 
 export function openDb(path: string): Db {
   const d = new DatabaseSync(path, { enableForeignKeyConstraints: true })
-  d.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;')
-  migrate(d)
-  return d
+  try {
+    // A second instance (a dev build beside the installed app) shares the file.
+    d.exec('PRAGMA busy_timeout = 2000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;')
+    migrate(d)
+    return d
+  } catch (err) {
+    d.close()
+    throw err
+  }
 }
 
 function migrate(d: Db): void {
@@ -86,11 +92,11 @@ export function getDb(): Db {
 
 /** Test seam: an in-memory database, or a fresh one per test. */
 export function useDbForTests(d: Db | null): void {
-  db?.close()
+  if (db?.isOpen) db.close()
   db = d
 }
 
 export function closeDb(): void {
-  db?.close()
+  if (db?.isOpen) db.close()
   db = null
 }
