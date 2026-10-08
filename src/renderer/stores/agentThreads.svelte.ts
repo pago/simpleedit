@@ -23,6 +23,8 @@ let _threads = $state<Map<string, AgentThread>>(new Map())
 const _revs = new Map<string, number>()
 /** A thread a workspace should show expanded: set on create, taken by that session's panel. */
 let _focus = $state<{ sessionId: string; threadId: string } | null>(null)
+/** Unsent replies by thread, so the panel and an editor's inline thread share one, and closing either keeps it. */
+let _drafts = $state<Record<string, string>>({})
 
 function receive(change: ThreadChange): void {
   if (change.rev < (_revs.get(change.threadId) ?? -Infinity)) return
@@ -78,15 +80,21 @@ export const agentThreadsStore = {
     }
   },
 
-  /** Start a thread on `anchor` with its first message. Resolves to the new thread's id. Rejects if main refused it. */
-  async create(input: { sessionId: string; worktreePath: string; anchor: ThreadAnchor; body: string }): Promise<string> {
+  /**
+   * Start a thread on `anchor` with its first message. Resolves to the new thread's id. Rejects if main refused it.
+   * `reveal: false` leaves the session's panel alone, for a thread started where it is already shown.
+   */
+  async create(
+    input: { sessionId: string; worktreePath: string; anchor: ThreadAnchor; body: string },
+    { reveal = true }: { reveal?: boolean } = {},
+  ): Promise<string> {
     const id = newThreadId()
     await sendOp({
       kind: 'add-thread',
       thread: { id, sessionId: input.sessionId, worktreePath: input.worktreePath, anchor: input.anchor },
       message: { id: newMessageId(), body: input.body },
     })
-    _focus = { sessionId: input.sessionId, threadId: id }
+    if (reveal) _focus = { sessionId: input.sessionId, threadId: id }
     return id
   },
   /** Rejects if main refused it, so a composer can keep the text. */
@@ -115,6 +123,14 @@ export const agentThreadsStore = {
     return window.api.invoke('agent-threads:force-send', sessionId)
   },
 
+  draft(threadId: string): string {
+    return _drafts[threadId] ?? ''
+  },
+  setDraft(threadId: string, text: string): void {
+    if (text) _drafts[threadId] = text
+    else delete _drafts[threadId]
+  },
+
   /** Show a thread in its session's panel, expanded: from a thread's glyph in an editor. */
   reveal(sessionId: string, threadId: string): void {
     _focus = { sessionId, threadId }
@@ -139,4 +155,5 @@ export function _resetAgentThreadsForTests(): void {
   _threads = new Map()
   _revs.clear()
   _focus = null
+  _drafts = {}
 }

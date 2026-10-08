@@ -1,9 +1,11 @@
 <script lang="ts">
   import * as monaco from 'monaco-editor'
   import type { AgentContext } from '../../lib/agent-message'
-  import { anchorLines } from '../../lib/thread-anchor'
-  import { attachThreadGlyphs, threadGlyphsFor } from '../../lib/thread-glyphs'
+  import { anchorLines, threadAnchorFor } from '../../lib/thread-anchor'
+  import { threadGlyphsFor } from '../../lib/thread-glyphs'
+  import { attachEditorThreads, type ThreadHost } from '../../lib/thread-zones'
   import { agentThreadsStore } from '../../stores/agentThreads.svelte'
+  import { sessionsStore } from '../../stores/sessions.svelte'
   import { lspClientManager } from '../../lsp/client-manager'
   import {
     applyReveal,
@@ -52,7 +54,7 @@
   let isDirty = false
   let fileStaleDirty = $state(false)
   let watchedPath: string | null = null
-  let threadGlyphs: ReturnType<typeof attachThreadGlyphs> | undefined
+  let threads: ReturnType<typeof attachEditorThreads> | undefined
   /** Bumped on every load: a new model, or new content, drops the glyphs. */
   let loaded = $state<{ path: string; n: number } | null>(null)
 
@@ -234,7 +236,7 @@
       },
     })
 
-    threadGlyphs = attachThreadGlyphs(editor, (threadId) => agentThreadsStore.reveal(workspaceKey, threadId))
+    threads = attachEditorThreads(editor, threadHost)
 
     oneditorready?.(editor)
 
@@ -267,8 +269,8 @@
         watchedPath = null
       }
       unbindOpener()
-      threadGlyphs?.dispose()
-      threadGlyphs = undefined
+      threads?.dispose()
+      threads = undefined
       if (editor) unregisterLoadedEditor(editor)
       if (currentFilePath && worktreeRoot) {
         const language = getLanguage(currentFilePath)
@@ -281,14 +283,32 @@
     }
   })
 
+  /**
+   * New threads belong to this workspace's session, on its worktree, as from
+   * Discuss with Agent. A plain terminal session has no agent to answer them.
+   */
+  function threadHost(): ThreadHost | null {
+    const session = sessionsStore.get(workspaceKey)
+    const path = latestFilePath
+    if (session?.kind !== 'agent' || !path) return null
+    return {
+      sessionId: workspaceKey,
+      anchorFor: (lines) =>
+        threadAnchorFor(
+          { kind: 'editor', filePath: path, selectedText: '', lineRange: [lines.startLine, lines.endLine], lines },
+          session.worktreePath,
+        ),
+    }
+  }
+
   $effect(() => {
     const path = loaded?.path
-    if (!path || !threadGlyphs) return
+    if (!path || !threads) return
     const root = worktreeRoot?.replace(/\/+$/, '')
-    const threads = agentThreadsStore.forSession(workspaceKey)
-    threadGlyphs.set(
+    const all = agentThreadsStore.forSession(workspaceKey)
+    threads.set(
       root && path.startsWith(`${root}/`)
-        ? threadGlyphsFor(threads, { worktreePath: root, path: path.slice(root.length + 1), commit: null })
+        ? threadGlyphsFor(all, { worktreePath: root, path: path.slice(root.length + 1), commit: null })
         : [],
     )
   })

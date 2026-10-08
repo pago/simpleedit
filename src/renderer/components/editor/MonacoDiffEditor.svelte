@@ -4,7 +4,8 @@
   import type { AgentContext } from '../../lib/agent-message'
   import { anchorLines } from '../../lib/thread-anchor'
   import { getLanguage } from '../../lib/monaco-utils'
-  import { attachThreadGlyphs, type ThreadGlyph } from '../../lib/thread-glyphs'
+  import type { ThreadGlyph } from '../../lib/thread-glyphs'
+  import { attachEditorThreads, type ThreadHost } from '../../lib/thread-zones'
 
   interface Props {
     originalContent: string
@@ -17,7 +18,8 @@
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
     /** Threads anchored on the modified side. */
     threadGlyphs?: ThreadGlyph[]
-    onopenthread?: (threadId: string) => void
+    /** Shows those threads inline and starts new ones on the modified side; null turns commenting off. */
+    threadHost?: ThreadHost | null
   }
 
   let {
@@ -28,7 +30,7 @@
     highlightLines,
     ondiscusswithagent,
     threadGlyphs = [],
-    onopenthread,
+    threadHost = null,
   }: Props = $props()
 
   // Mutable refs so action closures always read the latest prop values.
@@ -40,7 +42,7 @@
 
   let container: HTMLDivElement | undefined = $state()
   let diffEditor: monaco.editor.IStandaloneDiffEditor | undefined
-  let glyphs = $state<ReturnType<typeof attachThreadGlyphs>>()
+  let threads = $state<ReturnType<typeof attachEditorThreads>>()
 
   // Create the diff editor once when the container mounts (or when inline layout changes).
   // Content/filePath reads are untracked — the content-update effect handles those.
@@ -106,11 +108,11 @@
 
     registerDiscussAction(diffEditor.getOriginalEditor(), 'original')
     registerDiscussAction(diffEditor.getModifiedEditor(), 'modified')
-    glyphs = attachThreadGlyphs(diffEditor.getModifiedEditor(), (id) => onopenthread?.(id))
+    threads = attachEditorThreads(diffEditor.getModifiedEditor(), () => threadHost)
 
     return () => {
-      glyphs?.dispose()
-      glyphs = undefined
+      threads?.dispose()
+      threads = undefined
       originalModel.dispose()
       modifiedModel.dispose()
       diffEditor?.dispose()
@@ -155,10 +157,18 @@
     }
   })
 
+  // Another file's threads and composer don't belong here. The models are
+  // reused across files, so no model change says so.
+  $effect(() => {
+    void filePath
+    untrack(() => threads)?.reset()
+  })
+
   // After the content effect: a new value drops the old glyphs.
   $effect(() => {
     void modifiedContent
-    glyphs?.set(threadGlyphs)
+    void threadHost
+    threads?.set(threadGlyphs)
   })
 </script>
 

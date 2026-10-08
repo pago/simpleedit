@@ -5,6 +5,7 @@ import { hasUnread, type AgentThread } from '../../shared/agent-threads'
 export interface ThreadGlyph {
   threadId: string
   line: number
+  endLine: number
   unread: boolean
   preview: string
 }
@@ -25,37 +26,78 @@ export function threadGlyphsFor(threads: AgentThread[], view: GlyphView): Thread
     const workingCopy = ctx === 'file' || ctx.commit === 'uncommitted'
     if (view.commit === null ? !workingCopy : ctx === 'file' || ctx.commit !== view.commit) continue
     const first = t.messages[0]?.body ?? ''
-    out.push({ threadId: t.id, line: t.anchor.startLine, unread: hasUnread(t), preview: first })
+    out.push({ threadId: t.id, line: t.anchor.startLine, endLine: t.anchor.endLine, unread: hasUnread(t), preview: first })
   }
   return out
 }
 
 /**
  * Draws thread glyphs in `editor`'s glyph margin and reports clicks on them.
- * The margin is shown only while there is a glyph, so editors without threads
- * keep their width. Glyphs track edits until the next `set`.
+ * While the editor is commentable, hovering a line without a glyph shows a "+"
+ * there that reports `oncomment`. The margin is shown only while there is a
+ * glyph or a "+" to show, so other editors keep their width. Glyphs track
+ * edits until the next `set`.
  */
 export function attachThreadGlyphs(
   editor: monaco.editor.ICodeEditor,
   onopen: (threadId: string) => void,
-): { set(glyphs: ThreadGlyph[]): void; dispose(): void } {
+  oncomment?: (line: number) => void,
+): { set(glyphs: ThreadGlyph[]): void; setCommentable(on: boolean): void; dispose(): void } {
   const collection = editor.createDecorationsCollection()
+  const hover = editor.createDecorationsCollection()
   let current: ThreadGlyph[] = []
+  let commentable = false
 
-  const sub = editor.onMouseDown((e) => {
-    if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return
-    const line = e.target.position?.lineNumber
-    const ranges = collection.getRanges()
-    const i = ranges.findIndex((r) => r.startLineNumber === line)
-    const glyph = i >= 0 ? current[i] : undefined
-    if (glyph) onopen(glyph.threadId)
-  })
+  function glyphAt(line: number | undefined): ThreadGlyph | undefined {
+    const i = collection.getRanges().findIndex((r) => r.startLineNumber === line)
+    return i >= 0 ? current[i] : undefined
+  }
+
+  function showAdd(line: number | null): void {
+    if (line === null || !commentable || glyphAt(line)) {
+      hover.clear()
+      return
+    }
+    if (hover.getRange(0)?.startLineNumber === line) return
+    hover.set([
+      {
+        range: new monaco.Range(line, 1, line, 1),
+        options: { glyphMarginClassName: 'thread-glyph-add', glyphMarginHoverMessage: { value: 'Comment on this line (⌘⇧M)' } },
+      },
+    ])
+  }
+
+  const subs = [
+    editor.onMouseDown((e) => {
+      if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return
+      const line = e.target.position?.lineNumber
+      const glyph = glyphAt(line)
+      if (glyph) onopen(glyph.threadId)
+      else if (line && commentable) oncomment?.(line)
+    }),
+    editor.onMouseMove((e) => {
+      const t = e.target.type
+      const overLine =
+        t === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
+        t === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS ||
+        t === monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS ||
+        t === monaco.editor.MouseTargetType.CONTENT_TEXT ||
+        t === monaco.editor.MouseTargetType.CONTENT_EMPTY
+      showAdd(overLine ? (e.target.position?.lineNumber ?? null) : null)
+    }),
+    editor.onMouseLeave(() => showAdd(null)),
+  ]
+
+  function layoutMargin(): void {
+    const on = current.length > 0 || commentable
+    if (editor.getOption(monaco.editor.EditorOption.glyphMargin) !== on) editor.updateOptions({ glyphMargin: on })
+  }
 
   return {
     set(glyphs) {
       const lines = editor.getModel()?.getLineCount() ?? 0
       current = glyphs.filter((g) => g.line >= 1 && g.line <= lines)
-      editor.updateOptions({ glyphMargin: current.length > 0 })
+      layoutMargin()
       collection.set(
         current.map((g) => ({
           range: new monaco.Range(g.line, 1, g.line, 1),
@@ -66,10 +108,17 @@ export function attachThreadGlyphs(
           },
         })),
       )
+      if (glyphAt(hover.getRange(0)?.startLineNumber)) hover.clear()
+    },
+    setCommentable(on) {
+      commentable = on
+      if (!on) hover.clear()
+      layoutMargin()
     },
     dispose() {
-      sub.dispose()
+      for (const s of subs) s.dispose()
       collection.clear()
+      hover.clear()
     },
   }
 }
