@@ -442,14 +442,40 @@ describe('thread replies', () => {
     expect(JSON.parse(phone.read(sent[0].body))).toMatchObject({ title: 'Fix the flaky test commented', body: 'src/a.ts:12 — Is this intended?' })
   })
 
-  it('buzzes once for a turn that answers several threads', async () => {
+  it('buzzes once per turn, however far apart its replies and opened threads are', async () => {
+    const status = (s: AgentStatusEvent['status']) => handleAgentStatus(waiting({ status: s }), 7)
+    status('running')
     handleThreadReply(replied())
+    now += 3 * 60 * 1000
     handleThreadReply(replied('Other answer', { id: 't_ghijkl' }))
+    now += 3 * 60 * 1000
+    handleThreadReply(replied('', { id: 't_mnopqr', messages: [{ id: 'm_cccccc', author: 'agent', body: 'Is this intended?', at: '2026-10-08T10:01:00.000Z' }] }))
     await new Promise((r) => setTimeout(r, 20))
     expect(sent).toHaveLength(1)
 
-    now += 61 * 1000
-    handleThreadReply(replied('Later answer'))
+    // A permission dialog inside the turn is not a new turn.
+    status('waiting')
+    status('running')
+    handleThreadReply(replied('After the dialog'))
+    await new Promise((r) => setTimeout(r, 20))
+    // The block buzzed on its own; the reply after it did not.
+    expect(sent).toHaveLength(2)
+
+    status('idle')
+    status('running')
+    handleThreadReply(replied('Next turn'))
+    await vi.waitFor(() => expect(sent).toHaveLength(3))
+  })
+
+  it('falls back to ten minutes for a session that reports no status', async () => {
+    handleThreadReply(replied())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    now += 9 * 60 * 1000
+    handleThreadReply(replied('Still the same turn, as far as we know'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toHaveLength(1)
+    now += 2 * 60 * 1000
+    handleThreadReply(replied('Later'))
     await vi.waitFor(() => expect(sent).toHaveLength(2))
   })
 
