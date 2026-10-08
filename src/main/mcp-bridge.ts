@@ -28,6 +28,7 @@ import {
 import { beginStop, canWake, endStop, noteBusy, noteNotification, requestWake, wakeOutlook } from './agent-wake'
 import { sendAgentStatus } from './agent-status'
 import { beginThreadStop, endThreadStop, noteThreadSignal, openAgentThread, replyToThread } from './thread-delivery'
+import { noteTurnStarted } from './remote/push'
 import { anchorLines } from '../shared/thread-anchor-lines'
 
 interface BridgeInstance {
@@ -726,6 +727,7 @@ export async function applyAgentSignal(
   // HTTP hooks don't, so those route by session_id through the registry.
   const terminalId = signal.terminalId ?? terminalForSession(signal.sessionId)
   if (!terminalId) return {}
+  if (signal.eventName === 'UserPromptSubmit') noteTurnStarted(terminalId)
   if (signal.eventName !== 'Stop') {
     // Before anything awaits: a PermissionRequest must mark the dialog before
     // this hook's answer lets the dialog render.
