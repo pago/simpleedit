@@ -47,4 +47,10 @@ describe('palette engine', () => {
     executeItem(item, ctx)
     expect(pendingPaletteAction()).toEqual({ type: 'open-file', workspaceKey: 's', filePath: '/mem2/notes/b.md' })
   })
+  it('offers no files, and asks main for none, for a refused memory dir', async () => {
+    const ctx = { activeSessionId: 's', worktreePath: '/wt', memory: { dir: '/', git: null, refused: true } }
+    const results = await search('', ctx)
+    expect(results.flat.filter((i) => i.category === 'file')).toEqual([])
+    expect(invoke).not.toHaveBeenCalledWith('memory:list-files', expect.anything())
+  })
 })

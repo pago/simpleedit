@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { untrack } from 'svelte'
   import FileTree from '../filetree/FileTree.svelte'
   import Terminal from '../terminal/Terminal.svelte'
   import GitLog from '../sidebar/GitLog.svelte'
@@ -52,7 +51,7 @@
     const dir = heldMemoryDir
     const from = launchDir
     if (!dir) return
-    return untrack(() => memoryViewStore.acquire(dir, from))
+    return memoryViewStore.acquire(dir, from)
   })
 
   // Directory creation, `git init` and a first commit raise no watcher event
@@ -60,7 +59,7 @@
   // view re-resolves on a timer until there's nothing left to wait for.
   let isActiveSession = $derived(sessionsStore.activeSessionId() === sessionId)
   let memoryPollMs = $derived(
-    !memoryView ? 0 : !memoryView.exists ? 5_000 : memoryView.git === null ? 30_000 : 0,
+    !memoryView || memoryView.refused ? 0 : !memoryView.exists ? 5_000 : memoryView.git === null ? 30_000 : 0,
   )
   $effect(() => {
     const ms = memoryPollMs
@@ -554,7 +553,7 @@
           >
             <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
               {#if memoryView && !memoryView.exists}
-                <MemoryEmptyState memoryDir={memoryView.memoryDir} />
+                <MemoryEmptyState memoryDir={memoryView.memoryDir} refused={!!memoryView.refused} />
               {:else}
                 <FileTree
                   rootPath={viewRoot}

@@ -166,6 +166,12 @@ export interface MemoryLocation {
   exists: boolean
   /** Null when not tracked by git (also: ignored, or a repo with no commits). */
   git: MemoryGit | null
+  /**
+   * The dir is one SimpleEdit won't open (`/`, `$HOME` or an ancestor, the
+   * config dir) — `exists` is then false whatever is on disk, and the other
+   * `memory:*` channels reject it.
+   */
+  refused?: true
 }
 
 export interface MemoryInvokeMap {

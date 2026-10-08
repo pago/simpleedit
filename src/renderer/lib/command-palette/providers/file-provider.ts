@@ -21,7 +21,7 @@ function memoryCacheKey(memoryDir: string): string {
 
 async function getFiles(context: PaletteContext): Promise<string[]> {
   const key = cacheKey(context)
-  if (!key) return []
+  if (!key || context.memory?.refused) return []
   const cached = cache.get(key)
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.files

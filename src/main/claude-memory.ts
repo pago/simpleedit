@@ -80,7 +80,7 @@ export async function resolveMemoryLocation(launchDir: string, env?: ClaudeEnv):
   const claudeEnv = env ?? (await claudeShellEnv())
   const memoryDir = await claudeMemoryDir(launchDir, claudeEnv)
   if (isRefusedMemoryDir(memoryDir, claudeEnv)) {
-    return { memoryDir, exists: false, git: null }
+    return { memoryDir, exists: false, git: null, refused: true }
   }
   handedOut.add(memoryDir)
   const exists = isDirectory(memoryDir)

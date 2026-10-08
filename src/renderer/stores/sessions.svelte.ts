@@ -141,6 +141,8 @@ export interface MemoryView {
   memoryDir: string
   exists: boolean
   git: MemoryGit | null
+  /** See `MemoryLocation.refused`. */
+  refused?: true
   /** `viewerOpen` before the memory view forced it open — restored on leave,
    * since cwd-follow only runs while the viewer is closed. */
   prevViewerOpen: boolean
@@ -674,6 +676,7 @@ export const sessionsStore = {
         memoryDir: loc.memoryDir,
         exists: loc.exists,
         git: loc.git,
+        refused: loc.refused,
         prevViewerOpen: !!current.viewerOpen,
       },
       viewerOpen: true,
@@ -688,12 +691,15 @@ export const sessionsStore = {
       if (
         mv.memoryDir === loc.memoryDir &&
         mv.exists === loc.exists &&
+        mv.refused === loc.refused &&
         mv.git?.root === loc.git?.root &&
         mv.git?.pathspec === loc.git?.pathspec
       ) {
         continue
       }
-      this.update(s.id, { memoryView: { ...mv, memoryDir: loc.memoryDir, exists: loc.exists, git: loc.git } })
+      this.update(s.id, {
+        memoryView: { ...mv, memoryDir: loc.memoryDir, exists: loc.exists, git: loc.git, refused: loc.refused },
+      })
     }
   },
 
