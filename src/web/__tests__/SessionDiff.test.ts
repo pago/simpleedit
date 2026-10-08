@@ -215,7 +215,7 @@ describe('SessionDiff drafts on a diff that moved', () => {
   const mountOn = (diff: string) =>
     render(SessionDiff, { diff, sessionId: 's1', view: { worktreePath: '/wt', commit: 'uncommitted' }, visible: true })
 
-  it('never re-anchors a draft onto the code that took its line; it waits for a tap', async () => {
+  it('never re-anchors a draft onto the code that took its line; it waits to be attached', async () => {
     const first = mountOn(before([' one', '+TWO', ' three']))
     await fireEvent.click(row('TWO'))
     await fireEvent.input(box(), { target: { value: 'why upper?' } })
@@ -224,17 +224,39 @@ describe('SessionDiff drafts on a diff that moved', () => {
     // The agent added two lines above: line 2 is now other code, TWO is line 4.
     mountOn(before([' one', '+new a', '+new b', '+TWO', ' three']))
     expect(screen.queryByTestId('thread-composer')).toBeNull()
-    expect(screen.getByTestId('thread-composer-detached')).toHaveTextContent('has changed')
-    expect(box().value).toBe('why upper?')
+    const card = screen.getByTestId('thread-draft-detached')
+    expect(card).toHaveTextContent('src/a.ts:2')
+    expect(within(card).getByRole('textbox')).toHaveValue('why upper?')
     expect(screen.queryByText('Send to agent')).toBeNull()
 
+    // A plain tap is a new comment, not an attach.
+    await fireEvent.click(row('new a'))
+    expect(box().value).toBe('')
+    await fireEvent.click(within(card).getByText('Attach to a line'))
     await fireEvent.click(row('TWO'))
-    expect(screen.queryByTestId('thread-composer-detached')).toBeNull()
+    expect(screen.queryByTestId('thread-drafts-detached')).toBeNull()
     expect(box().value).toBe('why upper?')
     await fireEvent.click(screen.getByText('Send to agent'))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('agent-threads:op', expect.objectContaining({ kind: 'add-thread' })))
     const op = invoke.mock.calls.find(([c]) => c === 'agent-threads:op')?.[1] as Extract<AgentThreadOp, { kind: 'add-thread' }>
     expect(op.thread.anchor).toMatchObject({ startLine: 4, snippet: 'TWO' })
+  })
+
+  it('lists every draft whose line is gone, not just the open one', async () => {
+    const first = mountOn(before([' one', '+TWO', ' three']))
+    await fireEvent.click(row('one'))
+    await fireEvent.input(box(), { target: { value: 'about one' } })
+    await fireEvent.click(row('TWO'))
+    await fireEvent.input(box(), { target: { value: 'about TWO' } })
+    await fireEvent.click(row('three'))
+    first.unmount()
+
+    mountOn(before([' zero', '+changed', ' three']))
+    const cards = screen.getAllByTestId('thread-draft-detached')
+    expect(cards.map((c) => c.querySelector('.font-mono')?.textContent)).toEqual(['src/a.ts:1', 'src/a.ts:2'])
+    await fireEvent.click(within(cards[0]!).getByText('Discard'))
+    expect(screen.getAllByTestId('thread-draft-detached')).toHaveLength(1)
+    expect(screen.getByTestId('thread-draft-detached')).toHaveTextContent('src/a.ts:2')
   })
 
   it('follows a distinctive line that moved', async () => {
