@@ -95,6 +95,7 @@ import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions,
 import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } from './agent-bus'
 import { initAgentWake, noteUserInput, userKeys } from './agent-wake'
 import { applyThreadOp, loadThreads, reassignSession, removeSessionThreads } from './agent-threads-store'
+import { noteAnchorChanges, startThreadAnchorWatch, stopThreadAnchorWatch } from './thread-anchor-watch'
 import { forceSend, initThreadDelivery, moveSession, noteThreadStatus, noteThreadUserInput, requestSend, retryMessage } from './thread-delivery'
 import { parseMessageIdRequest, parseThreadOp, type ThreadChange } from '../shared/agent-threads'
 import { getPeer } from './agent-bus'
@@ -419,6 +420,7 @@ onAgentStatus((event, client) => handleAgentStatus(event, client.id))
 initAgentWake(writeToTerminal)
 
 function broadcastThreadChanges(changes: ThreadChange[]): void {
+  noteAnchorChanges(changes)
   for (const change of changes) broadcastToAllClients('agent-threads:changed', change)
 }
 
@@ -1304,6 +1306,7 @@ app.whenReady().then(() => {
   try { sweepAbandonedAudio() } catch { /* nothing better to do at launch */ }
   try {
     startThreadDelivery()
+    startThreadAnchorWatch({ broadcast: broadcastThreadChanges }).catch((err) => console.error('[Threads] Re-anchoring at startup failed:', err))
   } catch (err) {
     // Threads are one feature; a database that won't open must not keep the app from starting.
     console.error('[Threads] Could not start:', err)
@@ -1447,6 +1450,7 @@ app.on('before-quit', () => {
   try { unwatchAllGitRefs() } catch { /* ignore */ }
   try { unwatchAllWorktreeLists() } catch { /* ignore */ }
   try { unwatchAllEditorFiles() } catch { /* ignore */ }
+  try { stopThreadAnchorWatch() } catch { /* ignore */ }
   try { unwatchAllMemoryDirs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }

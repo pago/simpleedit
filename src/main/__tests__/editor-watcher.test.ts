@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import { ClientHub, type RemoteClient } from '../client-hub'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -31,6 +31,8 @@ function makeWebContents(id: number): FakeClient {
 let watchEditorFile: typeof import('../editor-watcher').watchEditorFile
 let unwatchEditorFile: typeof import('../editor-watcher').unwatchEditorFile
 let unwatchAllEditorFilesForWindow: typeof import('../editor-watcher').unwatchAllEditorFilesForWindow
+let unwatchAllEditorFiles: typeof import('../editor-watcher').unwatchAllEditorFiles
+let watchFileInMain: typeof import('../editor-watcher').watchFileInMain
 
 beforeEach(async () => {
   // Fresh module per test to reset internal watcher state
@@ -39,6 +41,8 @@ beforeEach(async () => {
   watchEditorFile = mod.watchEditorFile
   unwatchEditorFile = mod.unwatchEditorFile
   unwatchAllEditorFilesForWindow = mod.unwatchAllEditorFilesForWindow
+  unwatchAllEditorFiles = mod.unwatchAllEditorFiles
+  watchFileInMain = mod.watchFileInMain
 })
 
 async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -140,5 +144,33 @@ describe('watchEditorFile / unwatchEditorFile', () => {
     writeFileSync(file2, 'b')
     await new Promise((r) => setTimeout(r, 300))
     expect(wc.send).not.toHaveBeenCalled()
+  })
+})
+
+describe('watchFileInMain', () => {
+  it('shares the editor watcher, outlives its windows, and hears deletion without telling the editor', async () => {
+    const filePath = join(tmpRoot, `main-${Math.random().toString(36).slice(2)}.ts`)
+    writeFileSync(filePath, 'v1')
+    const wc = makeWebContents(40)
+    const listener = vi.fn()
+
+    watchEditorFile(wc, filePath)
+    const stop = watchFileInMain(filePath, listener)
+    await new Promise((r) => setTimeout(r, 300))
+
+    writeFileSync(filePath, 'v2')
+    await waitFor(() => listener.mock.calls.length > 0 && wc.send.mock.calls.length > 0)
+
+    unwatchAllEditorFiles()
+    listener.mockClear()
+    unlinkSync(filePath)
+    await waitFor(() => listener.mock.calls.length > 0)
+    expect(wc.send).toHaveBeenCalledTimes(1)
+
+    stop()
+    listener.mockClear()
+    writeFileSync(filePath, 'v3')
+    await new Promise((r) => setTimeout(r, 300))
+    expect(listener).not.toHaveBeenCalled()
   })
 })

@@ -254,6 +254,39 @@ export function setDelivery(messageIds: Iterable<string>, patch: DeliveryPatch):
   })
 }
 
+export interface StoredAnchor {
+  threadId: string
+  worktreePath: string
+  anchor: ThreadAnchor
+}
+
+/** Every thread's anchor, without its messages. */
+export function listThreadAnchors(): StoredAnchor[] {
+  const rows = getDb().prepare('SELECT id, worktree_path, anchor FROM threads').all() as unknown as Array<Pick<ThreadRow, 'id' | 'worktree_path' | 'anchor'>>
+  return rows.map((r) => ({ threadId: r.id, worktreePath: r.worktree_path, anchor: JSON.parse(r.anchor) as ThreadAnchor }))
+}
+
+export function getThreadAnchor(threadId: string): StoredAnchor | null {
+  const row = getDb().prepare('SELECT worktree_path, anchor FROM threads WHERE id = ?').get(threadId) as
+    | Pick<ThreadRow, 'worktree_path' | 'anchor'>
+    | undefined
+  return row ? { threadId, worktreePath: row.worktree_path, anchor: JSON.parse(row.anchor) as ThreadAnchor } : null
+}
+
+/**
+ * Main re-anchored a thread after its file changed (`thread-anchor-watch.ts`).
+ * Never an op: only main reads the file, so a client can't move or orphan a
+ * thread. Not activity either, so `updatedAt` stays.
+ */
+export function setThreadAnchor(threadId: string, anchor: ThreadAnchor): ThreadChange | null {
+  const d = getDb()
+  const json = JSON.stringify(anchor)
+  return transaction(d, () => {
+    const r = d.prepare('UPDATE threads SET anchor = ? WHERE id = ? AND anchor != ?').run(json, threadId, json)
+    return r.changes ? changed(threadId) : null
+  })
+}
+
 export interface PendingMessage {
   thread: AgentThread
   message: ThreadMessage
