@@ -110,6 +110,17 @@ describe('ThreadsPanel', () => {
     expect(invoke).toHaveBeenCalledWith('agent-threads:force-send', 's1')
   })
 
+  it('copies a draft-held message so it can be pasted after the draft', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    put(thread('t_aaaaaaaa', [user('m_1', { delivery: 'held', heldReason: 'draft', body: 'Hold this one' })]))
+    renderPanel()
+    await fireEvent.click(screen.getByRole('button', { name: 'Expand thread' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(writeText).toHaveBeenCalledWith('Hold this one')
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+  })
+
   it('shows why a message failed and retries it', async () => {
     put(thread('t_aaaaaaaa', [user('m_1', { delivery: 'failed', failedReason: "the agent didn't receive it" })]))
     renderPanel()
