@@ -59,6 +59,14 @@
   const ROW_BUDGET = 500
   let shownAll = $state<Set<string>>(new Set())
 
+  /**
+   * Each file scroller's visible width. The row track is as wide as its
+   * longest line, so what renders under a row is pinned to the scroller's left
+   * edge at this width: a line scrolled sideways must not carry its comments
+   * or composer off screen.
+   */
+  let viewportWidths = $state<number[]>([])
+
   const ROW_CLASS: Record<DiffRow['kind'], string> = {
     add: 'bg-emerald-500/10 text-emerald-200',
     del: 'bg-red-500/10 text-red-200',
@@ -141,8 +149,8 @@
         {#if file.binary}
           <p class="px-3 py-3 text-[11px] italic text-zinc-500">Binary file — no diff to show.</p>
         {:else}
-          <div class="overflow-x-auto">
-            <ul class="min-w-full font-mono text-[11px] leading-[1.6]">
+          <div class="overflow-x-auto" bind:clientWidth={viewportWidths[index]}>
+            <ul class="w-max min-w-full font-mono text-[11px] leading-[1.6]">
               {#each rows as row, i (i)}
                 <li>
                   {#if row.kind === 'hunk'}
@@ -178,7 +186,11 @@
                       </div>
                     {/if}
                   {/if}
-                  {@render below?.(file, row)}
+                  {#if below}
+                    <div class="sticky left-0" style:width={viewportWidths[index] ? `${viewportWidths[index]}px` : '100%'}>
+                      {@render below(file, row)}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>
