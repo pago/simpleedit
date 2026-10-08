@@ -6,6 +6,10 @@
    * A thread starts as an op to main through the shared store, like every
    * other change to one; main decides when the agent reads it, so nothing here
    * touches a PTY.
+   *
+   * What is typed into a composer belongs to its line (`thread-drafts`), so it
+   * survives the pane remounting this diff, and tapping another line opens
+   * that line's own composer rather than moving the text.
    */
   import MobileDiff from './MobileDiff.svelte'
   import ThreadCard from './ThreadCard.svelte'
@@ -13,6 +17,7 @@
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
   import type { AgentThread } from '../shared/agent-threads'
   import { canAnchor, diffAnchor, rowKey, threadLine, threadsByRow, type DiffView } from './lib/diff-threads'
+  import { diffKey, threadDrafts, type DraftLine } from './lib/thread-drafts.svelte'
 
   interface Props {
     diff: string
@@ -48,15 +53,31 @@
     return (await diffView?.reveal(thread.anchor.path, line)) ?? false
   }
 
-  let composing = $state<{ key: string; file: DiffFile; row: DiffRow } | null>(null)
-  let draft = $state('')
+  let thisDiff = $derived(diffKey(sessionId, view))
+  /** The open composer's line, while this diff still holds it. */
+  let composing = $derived.by(() => {
+    const at = threadDrafts.openLine(thisDiff)
+    if (!at) return null
+    const file = files.find((f) => f.path === at.path)
+    const row = file?.rows.find((r) => canAnchor(r) && r.newNo === at.line)
+    return file && row ? { key: rowKey(at.path, at.line), at, file, row } : null
+  })
+  let draft = $derived(composing ? threadDrafts.get(thisDiff, composing.at) : '')
   let sending = $state(false)
   let error = $state<string | null>(null)
 
-  function tap(file: DiffFile, row: DiffRow): void {
-    const key = rowKey(file.path, row.newNo!)
-    composing = composing?.key === key ? null : { key, file, row }
+  function openComposer(at: DraftLine | null): void {
+    threadDrafts.setOpenLine(thisDiff, at)
     error = null
+  }
+
+  function tap(file: DiffFile, row: DiffRow): void {
+    openComposer(composing?.key === rowKey(file.path, row.newNo!) ? null : { path: file.path, line: row.newNo! })
+  }
+
+  function cancel(): void {
+    if (composing) threadDrafts.set(thisDiff, composing.at, '')
+    openComposer(null)
   }
 
   function toggle(id: string): void {
@@ -71,13 +92,16 @@
     if (!body || !at || sending) return
     const anchor = diffAnchor(at.file, at.row, view)
     if (!anchor) return
+    const where = thisDiff
     sending = true
     error = null
     try {
       const id = await agentThreadsStore.create({ sessionId, worktreePath: view.worktreePath.replace(/\/+$/, ''), anchor, body })
       expanded = new Set(expanded).add(id)
-      draft = ''
-      composing = null
+      threadDrafts.set(where, at.at, '')
+      // The user may have moved to another line while this was sending; leave that one open.
+      const still = threadDrafts.openLine(where)
+      if (still?.path === at.at.path && still.line === at.at.line) threadDrafts.setOpenLine(where, null)
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
     } finally {
@@ -102,7 +126,8 @@
         <div class="w-full space-y-2 border-y border-zinc-800 bg-zinc-950 p-3 font-sans" data-testid="thread-composer">
           <!-- svelte-ignore a11y_autofocus -->
           <textarea
-            bind:value={draft}
+            value={draft}
+            oninput={(e) => threadDrafts.set(thisDiff, composing!.at, e.currentTarget.value)}
             autofocus
             rows="3"
             class="w-full resize-none rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500"
@@ -122,7 +147,7 @@
             <button
               type="button"
               class="min-h-11 flex-1 rounded-md border border-zinc-700 text-sm text-zinc-300 active:bg-zinc-800"
-              onclick={() => { composing = null; error = null }}>Cancel</button
+              onclick={cancel}>Cancel</button
             >
           </div>
         </div>
