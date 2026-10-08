@@ -61,6 +61,11 @@ export interface HookSignal {
    * the agent never reaches idle (Claude hard-caps this at 8 and then overrides).
    */
   stopHookActive: boolean
+  /** On `UserPromptSubmit`, the submitted prompt. Agent threads confirm delivery by their header in it. */
+  prompt?: string
+  /** On tool events (`PreToolUse`, `PostToolUse`, `PermissionRequest`, …), which tool and which call. */
+  toolName?: string
+  toolUseId?: string
 }
 
 /**
@@ -103,6 +108,9 @@ export function parseHookBody(body: unknown): HookSignal | null {
   const lastAssistant = rec['last_assistant_message']
   const message = rec['message']
   const notificationType = rec['notification_type']
+  const prompt = rec['prompt']
+  const toolName = rec['tool_name']
+  const toolUseId = rec['tool_use_id']
   return {
     sessionId,
     terminalId: typeof terminalId === 'string' && terminalId ? terminalId : null,
@@ -113,6 +121,9 @@ export function parseHookBody(body: unknown): HookSignal | null {
     message: typeof message === 'string' && message ? message : null,
     stopHookActive: rec['stop_hook_active'] === true,
     ...(typeof notificationType === 'string' && notificationType ? { notificationType } : {}),
+    ...(typeof prompt === 'string' ? { prompt } : {}),
+    ...(typeof toolName === 'string' && toolName ? { toolName } : {}),
+    ...(typeof toolUseId === 'string' && toolUseId ? { toolUseId } : {}),
   }
 }
 

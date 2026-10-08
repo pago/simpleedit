@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { AgentStatus } from '../../shared/ipc-types'
+import { DIALOG_TOOLS } from '../../shared/agent-threads'
 import { extractOscTitles, statusFromTitle } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import { registerProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './provider'
@@ -87,6 +88,14 @@ function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: 
       PostToolUse: [{ hooks: [endpoint] }],
       Stop: [{ hooks: [endpoint] }],
       Notification: [{ hooks: [endpoint] }],
+      // Agent threads must never type into a dialog. These arrive BEFORE their
+      // dialog renders, unlike `Notification`; the tool's result (or a denial,
+      // a failure, a Stop) says it closed. See thread-delivery.ts.
+      PermissionRequest: [{ hooks: [endpoint] }],
+      PreToolUse: [{ matcher: DIALOG_TOOLS.join('|'), hooks: [endpoint] }],
+      PostToolUseFailure: [{ hooks: [endpoint] }],
+      PermissionDenied: [{ hooks: [endpoint] }],
+      StopFailure: [{ hooks: [endpoint] }],
     },
   }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2))

@@ -26,6 +26,7 @@ import {
 } from './agent-bus'
 import { beginStop, canWake, endStop, noteBusy, noteNotification, requestWake, wakeOutlook } from './agent-wake'
 import { sendAgentStatus } from './agent-status'
+import { beginThreadStop, endThreadStop, noteThreadSignal, replyToThread } from './thread-delivery'
 
 interface BridgeInstance {
   server: Server
@@ -567,6 +568,14 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     }
   }
 
+  if (tool === 'reply_to_thread') {
+    const threadId = typeof args['thread_id'] === 'string' ? args['thread_id'] : ''
+    const body = typeof args['body'] === 'string' ? args['body'] : ''
+    if (!threadId) return { status: 400, body: { error: 'reply_to_thread requires `thread_id`' } }
+    const result = replyToThread(terminalId, threadId, body)
+    return result.ok ? { status: 200, body: { ok: true } } : { status: 400, body: { error: result.error } }
+  }
+
   if (tool === 'check_inbox') {
     const messages = drain(terminalId)
     announceDelivered(webContents, terminalId, messages, 'check_inbox')
@@ -665,13 +674,34 @@ export async function applyAgentSignal(
   // HTTP hooks don't, so those route by session_id through the registry.
   const terminalId = signal.terminalId ?? terminalForSession(signal.sessionId)
   if (!terminalId) return {}
-  if (signal.eventName !== 'Stop') return applyRoutedSignal(signal, terminalId, webContents, opts)
+  if (signal.eventName !== 'Stop') {
+    // Before anything awaits: a PermissionRequest must mark the dialog before
+    // this hook's answer lets the dialog render.
+    noteThreadSignal(terminalId, {
+      eventName: signal.eventName,
+      prompt: signal.prompt ?? null,
+      toolName: signal.toolName ?? null,
+      toolUseId: signal.toolUseId ?? null,
+      notificationType: signal.notificationType ?? null,
+      message: signal.message,
+    })
+    return applyRoutedSignal(signal, terminalId, webContents, opts)
+  }
 
   beginStop(terminalId)
+  beginThreadStop(terminalId)
+  let result: Record<string, unknown> = {}
   try {
-    return await applyRoutedSignal(signal, terminalId, webContents, opts)
+    result = await applyRoutedSignal(signal, terminalId, webContents, opts)
+    return result
   } finally {
     endStop(terminalId)
+    // A block continues the turn for a hook-driven provider; a pushed provider
+    // ignores the answer, and its push starts a turn of its own.
+    endThreadStop(terminalId, {
+      continued: result['decision'] === 'block' && !opts.deliver,
+      lastAssistantMessage: signal.lastAssistantMessage,
+    })
   }
 }
 

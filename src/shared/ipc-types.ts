@@ -7,6 +7,7 @@
 import type { Spec } from './gen-ui-catalog'
 import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepReviewState, DeepLensStatus, PrReviewDraft, ReviewFolds } from './screenprs'
 import type { DraftOpResult, DraftsSnapshot, PrReviewDraftOp } from './review-drafts'
+import type { AgentThreadOp, ThreadChange, ThreadsSnapshot } from './agent-threads'
 import type { OverviewFacts, OverviewState, OverviewStatus } from './pr-overview'
 import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-filter'
 import type { MemoryHealthReport } from './memory-health'
@@ -562,6 +563,19 @@ export interface ScreenPrsInvokeMap {
   'screenprs:drafts-load': { args: []; result: DraftsSnapshot }
   /** Change one PR's draft. Main applies it, persists, and broadcasts `screenprs:draft-changed`. */
   'screenprs:draft-op': { args: [request: { url: string; op: PrReviewDraftOp }]; result: DraftOpResult }
+  /** Every agent thread — what a client's mirror starts from. */
+  'agent-threads:load': { args: []; result: ThreadsSnapshot }
+  /** Change a thread. Main validates, persists, broadcasts `agent-threads:changed`, and sends new messages to the agent. */
+  'agent-threads:op': { args: [op: AgentThreadOp]; result: ThreadChange | null }
+  /** Send a failed or unanswered message again, at the next safe moment. */
+  'agent-threads:retry': { args: [sessionId: string, messageId: string]; result: boolean }
+  /** The user vouches that the session's prompt is empty: send what the draft check holds. */
+  'agent-threads:force-send': { args: [sessionId: string]; result: void }
+  /**
+   * The user removed a session (its threads go too), or a hand-off replaced it
+   * with `successor` (its threads move there).
+   */
+  'agent-threads:session-ended': { args: [sessionId: string, successor: string | null]; result: void }
   /** The saved org + cutoff every client screens with. */
   'screenprs:filter-get': { args: []; result: ScreenPrsFilterSnapshot }
   /** Replace the saved filter. Main validates, persists, and broadcasts `screenprs:filter-changed`. */
@@ -635,6 +649,8 @@ export interface ScreenPrsEventMap {
   'screenprs:overview-status': { url: string; status: OverviewStatus; error?: string; headSha?: string }
   /** A PR's draft changed, from any client — sent to every window and phone. `null`: it is gone. */
   'screenprs:draft-changed': { url: string } & DraftOpResult
+  /** A thread changed (`thread: null`: removed), from any client or the agent — sent to every window and phone. */
+  'agent-threads:changed': ThreadChange
   /** The saved filter changed, from any client — sent to every window and phone. */
   'screenprs:filter-changed': ScreenPrsFilterSnapshot
 }

@@ -614,6 +614,28 @@ server.registerTool(
 )
 
 server.registerTool(
+  'reply_to_thread',
+  {
+    description: [
+      'Answer a comment thread the user opened on your code in SimpleEdit. Such comments arrive as',
+      'a prompt with a `[Thread t_… · /path:lines]` header per thread; your answer appears next to',
+      'the code, where the user is reading. Make the requested change first when the comment asks',
+      'for one, then reply once per thread: what you did, or your answer, in a few sentences.',
+      'Markdown is rendered. Do not repeat the code back.',
+    ].join('\n'),
+    inputSchema: {
+      thread_id: z.string().min(1).describe('The thread id from the header, e.g. "t_3f9a2c81b0d4".'),
+      body: z.string().min(1).describe('Your answer for that thread.'),
+    },
+  },
+  async ({ thread_id, body }) => {
+    const result = await postToBridge('reply_to_thread', { thread_id, body })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(`Answered in thread ${thread_id}.`)
+  },
+)
+
+server.registerTool(
   'check_inbox',
   {
     description: [
