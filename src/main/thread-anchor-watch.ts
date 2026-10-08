@@ -5,7 +5,8 @@
  * list and the follow-up headers (`formatThreadForAgent`) read the stored
  * anchor, so they follow.
  */
-import { readFile } from 'fs/promises'
+import { statSync } from 'fs'
+import { readFile, stat } from 'fs/promises'
 import { join } from 'path'
 import { getThreadAnchor, listThreadAnchors, setThreadAnchor } from './agent-threads-store'
 import { watchFileInMain } from './editor-watcher'
@@ -26,36 +27,56 @@ function followedFile(worktreePath: string, anchor: ThreadAnchor): string | null
   return followsWorkingCopy(anchor) ? join(worktreePath, anchor.path) : null
 }
 
-function track(threadId: string, file: string | null): void {
+function isDirectory(file: string): boolean {
+  try {
+    return statSync(file).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/** Whether the thread now follows a file it didn't before. */
+function track(threadId: string, file: string | null): boolean {
   const old = fileOf.get(threadId) ?? null
-  if (old === file) return
+  if (old === file) return false
   if (file) fileOf.set(threadId, file)
   else fileOf.delete(threadId)
-  if (file && !watches.has(file)) watches.set(file, watchFileInMain(file, () => void reanchorFile(file)))
+  // A watch on a directory would be recursive, and nothing is anchored in one.
+  if (file && !watches.has(file) && !isDirectory(file)) watches.set(file, watchFileInMain(file, () => void reanchorFile(file)))
   if (old && ![...fileOf.values()].includes(old)) {
     watches.get(old)?.()
     watches.delete(old)
   }
+  return file !== null
 }
 
-async function readContent(file: string): Promise<string | null> {
+const NOT_A_FILE = Symbol('not a file')
+
+function isGone(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** `null`: the file is gone. A directory or device is left alone rather than orphaning its threads. */
+async function readContent(file: string): Promise<string | null | typeof NOT_A_FILE> {
   try {
+    if (!(await stat(file)).isFile()) return NOT_A_FILE
     return await readFile(file, 'utf-8')
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') return null
+    if (isGone(err)) return null
     throw err
   }
 }
 
 async function reanchorOnce(file: string): Promise<void> {
-  let content: string | null
+  let content: string | null | typeof NOT_A_FILE
   try {
     content = await readContent(file)
   } catch (err) {
     console.warn(`[Threads] Could not read ${file} to re-anchor:`, err)
     return
   }
+  if (content === NOT_A_FILE) return
   // Synchronous from here: nothing can change the threads between reading an
   // anchor and storing its successor.
   const changes: ThreadChange[] = []
@@ -100,16 +121,23 @@ export function reanchorFile(file: string): Promise<void> {
   return run
 }
 
-/** Every change main broadcasts passes through here, so a new, moved or removed thread is (un)watched. */
+/**
+ * Every change main broadcasts passes through here, so a new, moved or
+ * removed thread is (un)watched. A new thread is re-anchored straight away:
+ * its lines may come from a stale diff or an unsaved buffer.
+ */
 export function noteAnchorChanges(changes: readonly ThreadChange[]): void {
-  for (const c of changes) track(c.threadId, c.thread ? followedFile(c.thread.worktreePath, c.thread.anchor) : null)
+  for (const c of changes) {
+    const file = c.thread ? followedFile(c.thread.worktreePath, c.thread.anchor) : null
+    if (track(c.threadId, file) && file) void reanchorFile(file)
+  }
 }
 
 /** Watch every followed file and re-anchor each once, for edits made while the app was closed. */
 export async function startThreadAnchorWatch(deps: { broadcast: Broadcast }): Promise<void> {
   broadcast = deps.broadcast
   for (const t of listThreadAnchors()) track(t.threadId, followedFile(t.worktreePath, t.anchor))
-  await Promise.all([...watches.keys()].map(reanchorFile))
+  await Promise.all([...new Set(fileOf.values())].map(reanchorFile))
 }
 
 export function stopThreadAnchorWatch(): void {

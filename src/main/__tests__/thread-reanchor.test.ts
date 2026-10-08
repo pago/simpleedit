@@ -57,6 +57,17 @@ describe('reanchor', () => {
     expect(next?.after).toBe(text(lines.slice(6, 9)))
   })
 
+  it('stays in place with fresh context when a distinctive snippet loses its surroundings', () => {
+    const lines = [...FILE]
+    lines[2] = 'function alphaRenamed() {'
+    lines[5] = '} // end'
+    const next = reanchor(a, text(lines))
+    expect(next).toMatchObject({ startLine: 4, endLine: 5 })
+    expect(next?.before).toBe(text(lines.slice(0, 3)))
+    expect(next?.after).toBe(text(lines.slice(5, 8)))
+    expect(reanchor(next!, text(lines))).toBeNull()
+  })
+
   it('falls back to the snippet alone when its context was edited', () => {
     const lines = ['// new', ...FILE]
     lines[3] = 'function alphaRenamed() {'
@@ -102,10 +113,18 @@ describe('reanchor', () => {
       expect(reanchor(outer, text(lines))).toMatchObject({ startLine: 5, endLine: 5 })
     })
 
-    it('stays put after an edit right above it when no unique context matches', () => {
+    it('orphans after an edit right above it when no unique context matches', () => {
       const lines = [...FILE]
       lines[4] = '  return total * 2'
-      expect(reanchor(brace, text(lines))).toBeNull()
+      expect(reanchor(brace, text(lines))).toEqual({ ...brace, orphaned: true })
+    })
+
+    it("orphans rather than keep another function's identical line", () => {
+      const fns = ['function a() {', '  1', '}', 'function b() {', '  2', '}', 'function c() {', '  3', '}']
+      const bClose = anchorAt(fns, 6, 6)
+      const withoutB = [...fns.slice(0, 3), ...fns.slice(6)]
+      expect(withoutB[5]).toBe('}')
+      expect(reanchor(bClose, text(withoutB))).toMatchObject({ orphaned: true, startLine: 6 })
     })
 
     it('treats context cut off by the end of the file as matching', () => {

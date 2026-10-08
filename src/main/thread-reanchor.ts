@@ -78,8 +78,10 @@ function locate(file: string[], snippet: string[], anchor: ThreadAnchor, stored:
     const at = uniqueMatch(file, [...before, ...snippet, ...after])
     if (at !== null) return at + before.length
   }
-  if (inPlace) return stored
-  return substantial(snippet) ? uniqueMatch(file, snippet) : null
+  // Without its context only a distinctive snippet is still itself: a `}`
+  // there may well be another function's.
+  if (!substantial(snippet)) return null
+  return inPlace ? stored : uniqueMatch(file, snippet)
 }
 
 function orphan(anchor: ThreadAnchor): ThreadAnchor | null {
@@ -99,18 +101,13 @@ export function reanchor(anchor: ThreadAnchor, content: string | null): ThreadAn
   if (start === null) return orphan(anchor)
 
   const { orphaned: _, ...placed } = anchor
-  if (start === stored) {
-    const endLine = start + snippet.length
-    return anchor.orphaned || anchor.endLine !== endLine ? { ...placed, endLine } : null
-  }
   const end = start + snippet.length
-  // The surroundings at the new place: a later edit is then matched against
-  // what is around the code now, not where it was first commented on.
-  return {
-    ...placed,
-    startLine: start + 1,
-    endLine: end,
-    before: file.slice(Math.max(0, start - CONTEXT_LINES), start).join('\n'),
-    after: file.slice(end, end + CONTEXT_LINES).join('\n'),
-  }
+  const next: ThreadAnchor = { ...placed, startLine: start + 1, endLine: end }
+  // The surroundings where the code is now: a later edit is then matched
+  // against what is around it today, not where it was first commented on.
+  const before = file.slice(Math.max(0, start - CONTEXT_LINES), start).join('\n')
+  const after = file.slice(end, end + CONTEXT_LINES).join('\n')
+  const contextChanged = before !== anchor.before || after !== anchor.after
+  if (start !== stored || (contextChanged && substantial(snippet))) return { ...next, before, after }
+  return anchor.orphaned || anchor.endLine !== end ? next : null
 }

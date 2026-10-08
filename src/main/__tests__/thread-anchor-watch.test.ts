@@ -7,7 +7,7 @@ import { parseThreadOp, formatThreadForAgent, type ThreadAnchor, type ThreadChan
 vi.mock('electron', () => ({ app: { getPath: () => '/nonexistent' } }))
 
 import { openDb, useDbForTests } from '../db'
-import { applyThreadOp, getThread, setThreadAnchor } from '../agent-threads-store'
+import { addAgentThread, applyThreadOp, assertKnownWorktree, getThread, setThreadAnchor } from '../agent-threads-store'
 import { noteAnchorChanges, reanchorFile, startThreadAnchorWatch, stopThreadAnchorWatch } from '../thread-anchor-watch'
 
 const root = mkdtempSync(join(tmpdir(), 'simpleedit-anchor-watch-'))
@@ -96,6 +96,36 @@ describe('thread anchor watch', () => {
     expect(broadcasts.at(-1)?.[0]?.threadId).toBe('t_aaaaaa')
   })
 
+  it('re-anchors a new thread straight away, as its lines may come from a stale diff', async () => {
+    await startThreadAnchorWatch({ broadcast: (c) => broadcasts.push(c) })
+    writeFileSync(file, ['// one', ...LINES].join('\n'))
+    noteAnchorChanges([addThread('t_aaaaaa')])
+    await reanchorFile(file)
+    expect(getThread('t_aaaaaa')?.anchor.startLine).toBe(5)
+  })
+
+  it('re-anchors an agent-opened thread too', async () => {
+    await startThreadAnchorWatch({ broadcast: (c) => broadcasts.push(c) })
+    writeFileSync(file, ['// one', ...LINES].join('\n'))
+    const change = addAgentThread({ id: 't_agent1', sessionId: 's1', worktreePath: wt, anchor: anchor(), messageId: 'm_agent11', body: 'look' })
+    noteAnchorChanges([change])
+    await reanchorFile(file)
+    expect(getThread('t_agent1')?.anchor.startLine).toBe(5)
+  })
+
+  it('leaves a thread on a directory alone instead of orphaning it', async () => {
+    const { change } = applyThreadOp({
+      kind: 'add-thread',
+      thread: { id: 't_dir111', sessionId: 's1', worktreePath: wt, anchor: { ...anchor(), path: 'src' } },
+      message: { id: 'm_dir1111', body: 'why?' },
+    })
+    await startThreadAnchorWatch({ broadcast: (c) => broadcasts.push(c) })
+    noteAnchorChanges([change!])
+    await reanchorFile(join(wt, 'src'))
+    expect(getThread('t_dir111')?.anchor.orphaned).toBeUndefined()
+    expect(broadcasts).toHaveLength(0)
+  })
+
   it('stops following a removed thread', async () => {
     addThread('t_aaaaaa')
     await startThreadAnchorWatch({ broadcast: (c) => broadcasts.push(c) })
@@ -128,5 +158,15 @@ describe('set-anchor', () => {
     expect(change?.thread?.anchor.orphaned).toBe(true)
     expect(change?.thread?.updatedAt).toBe(added.thread?.updatedAt)
     expect(setThreadAnchor('t_missing1', anchor())).toBeNull()
+  })
+})
+
+describe('assertKnownWorktree', () => {
+  const op = { kind: 'add-thread', thread: { id: 't_aaaaaa', sessionId: 's1', worktreePath: '/repo/wt', anchor: anchor() }, message: { id: 'm_aaaaaa1', body: 'x' } } as const
+
+  it("refuses a client's thread outside the window's worktrees", () => {
+    expect(() => assertKnownWorktree(op, ['/repo/main', '/repo/wt/'])).not.toThrow()
+    expect(() => assertKnownWorktree(op, ['/repo/main'])).toThrow()
+    expect(() => assertKnownWorktree({ kind: 'remove-thread', threadId: 't_aaaaaa' }, [])).not.toThrow()
   })
 })

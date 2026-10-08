@@ -128,6 +128,20 @@ function changed(threadId: string): ThreadChange {
   return { threadId, thread: getThread(threadId), rev }
 }
 
+function withoutTrailingSlash(path: string): string {
+  return path.replace(/\/+$/, '')
+}
+
+/**
+ * A client's new thread must sit in one of its window's worktrees: main
+ * watches the file it names, and keeps doing so across restarts.
+ */
+export function assertKnownWorktree(op: AgentThreadOp, worktreePaths: readonly string[]): void {
+  if (op.kind !== 'add-thread') return
+  const path = withoutTrailingSlash(op.thread.worktreePath)
+  if (!worktreePaths.some((w) => withoutTrailingSlash(w) === path)) throw new Error('Thread outside this window\'s worktrees')
+}
+
 export interface OpResult {
   /** Null when the op changed nothing (a replay, or a thread that's gone). */
   change: ThreadChange | null

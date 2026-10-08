@@ -19,7 +19,7 @@ import {
   getActiveTerminalIds,
   getTerminalBacklog
 } from './pty'
-import type { PtySpawnOptions } from '../shared/ipc-types'
+import type { PtySpawnOptions, WorktreeInfo } from '../shared/ipc-types'
 import {
   listDirectory, listAllFiles, readFile, writeFile,
   createFile, createDirectory, renamePath, deletePath,
@@ -94,7 +94,7 @@ import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } from './agent-bus'
 import { initAgentWake, noteUserInput, userKeys } from './agent-wake'
-import { applyThreadOp, loadThreads, reassignSession, removeSessionThreads } from './agent-threads-store'
+import { applyThreadOp, assertKnownWorktree, loadThreads, reassignSession, removeSessionThreads } from './agent-threads-store'
 import { noteAnchorChanges, startThreadAnchorWatch, stopThreadAnchorWatch } from './thread-anchor-watch'
 import { forceSend, initThreadDelivery, moveSession, noteThreadStatus, noteThreadUserInput, requestSend, retryMessage } from './thread-delivery'
 import { parseMessageIdRequest, parseThreadOp, type ThreadChange } from '../shared/agent-threads'
@@ -228,7 +228,7 @@ function hubFor(sender: RemoteClient): ClientHub {
 // Let the MCP bridge resolve a window's worktree list (for hook cwd→worktree
 // matching and open_worktree/show_diff validation) without exposing the
 // per-window repo map. Registered once at module load.
-setWorktreeResolver(async (webContentsId) => {
+async function worktreesForWindow(webContentsId: number): Promise<WorktreeInfo[]> {
   const repos = getReposForSender(webContentsId)
   if (repos.length === 0) return []
   const lists = await Promise.all(
@@ -238,7 +238,8 @@ setWorktreeResolver(async (webContentsId) => {
   // and distinct bare repos never share a worktree directory.
   const seen = new Set<string>()
   return lists.flat().filter((w) => (seen.has(w.path) ? false : (seen.add(w.path), true)))
-})
+}
+setWorktreeResolver(worktreesForWindow)
 
 // Fallback for the bridge's hook handler: when a tracked cwd matches none of
 // the window's known worktrees, resolve the bare repo it belongs to, register
@@ -1090,8 +1091,10 @@ function registerAllHandlers(): void {
 
   handleInvoke('agent-threads:load', () => loadThreads())
 
-  handleInvoke('agent-threads:op', (_event, raw: unknown) => {
-    const { change, queued } = applyThreadOp(parseThreadOp(raw))
+  handleInvoke('agent-threads:op', async (event, raw: unknown) => {
+    const op = parseThreadOp(raw)
+    if (op.kind === 'add-thread') assertKnownWorktree(op, (await worktreesForWindow(event.sender.id)).map((w) => w.path))
+    const { change, queued } = applyThreadOp(op)
     if (change) broadcastThreadChanges([change])
     if (queued) requestSend(queued.sessionId)
     return change
