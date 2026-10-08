@@ -135,6 +135,10 @@ export function attachEditorThreads(
   const open = new Map<string, Zone>()
   let composer: Zone | null = null
   let current: ThreadGlyph[] = []
+  /** The glyphs last passed to `set`, before any are held back for unsaved edits. */
+  let requested: ThreadGlyph[] = []
+  /** Some of `requested` are held back until the save. */
+  let held = false
   /** A thread just started here, shown once its glyph arrives. */
   let pending: string | null = null
 
@@ -242,11 +246,50 @@ export function attachEditorThreads(
     composer = mine
   }
 
-  function refresh(): void {
+  function updateCommentable(): void {
     const on = commentable()
     glyphs.setCommentable(on && !dirty())
     // Kept on while dirty, so ⌘⇧M can say why it won't comment.
     canComment.set(on)
+  }
+
+  function refresh(): void {
+    updateCommentable()
+    // Saved: show the threads held back meanwhile. The rest keep their tracked lines until the next `set`.
+    if (held && !dirty()) apply(true)
+  }
+
+  /**
+   * Shows `requested`. With `keepTracked`, a thread already shown stays where
+   * Monaco tracked it through the edits. While dirty, a thread not shown yet
+   * is held back: its stored line is a line on disk, which in an unsaved
+   * buffer may hold other code.
+   */
+  function apply(keepTracked: boolean): void {
+    const frozen = dirty()
+    let next = requested
+    if (keepTracked) {
+      const out: ThreadGlyph[] = []
+      for (const g of requested) {
+        const line = glyphs.lineOf(g.threadId)
+        if (line !== undefined) out.push({ ...g, line, endLine: line + (g.endLine - g.line) })
+        else if (!frozen) out.push(g)
+      }
+      next = out
+    }
+    held = next.length < requested.length
+    current = next
+    glyphs.set(next)
+    updateCommentable()
+    for (const [id, zone] of [...open]) {
+      const g = next.find((x) => x.threadId === id)
+      if (!g) close(id)
+      else if (!keepTracked && zoneLine(g) !== zone.line) zone.move(zoneLine(g))
+    }
+    if (pending && next.some((g) => g.threadId === pending)) {
+      show(pending)
+      pending = null
+    }
   }
 
   function reset(): void {
@@ -271,25 +314,8 @@ export function attachEditorThreads(
 
   return {
     set(next) {
-      const frozen = dirty()
-      if (frozen) {
-        next = next.map((g) => {
-          const line = glyphs.lineOf(g.threadId)
-          return line === undefined ? g : { ...g, line, endLine: line + (g.endLine - g.line) }
-        })
-      }
-      current = next
-      glyphs.set(next)
-      refresh()
-      for (const [id, zone] of [...open]) {
-        const g = next.find((x) => x.threadId === id)
-        if (!g) close(id)
-        else if (!frozen && zoneLine(g) !== zone.line) zone.move(zoneLine(g))
-      }
-      if (pending && next.some((g) => g.threadId === pending)) {
-        show(pending)
-        pending = null
-      }
+      requested = next
+      apply(dirty())
     },
     /** Shows a thread that has a glyph here, scrolled into view. False when it has none. */
     open(threadId) {
