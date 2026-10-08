@@ -60,8 +60,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderPanel(onopen = vi.fn()) {
-  return { onopen, ...render(ThreadsPanel, { sessionId: 's1', onopen, onclose: vi.fn() }) }
+function renderPanel(onopen = vi.fn(), visible = true) {
+  return { onopen, ...render(ThreadsPanel, { sessionId: 's1', visible, onopen, onclose: vi.fn() }) }
 }
 
 describe('ThreadsPanel', () => {
@@ -85,6 +85,14 @@ describe('ThreadsPanel', () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('agent-threads:op', { kind: 'mark-read', threadId: 't_aaaaaaaa', at: '2026-10-08T10:01:00.000Z' }),
     )
+  })
+
+  it("doesn't mark an expanded thread read while its workspace is hidden", async () => {
+    put(thread('t_aaaaaaaa', [user('m_1'), agent('m_2', 'done')]))
+    renderPanel(vi.fn(), false)
+    await fireEvent.click(screen.getByRole('button', { name: 'Expand thread' }))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(invoke).not.toHaveBeenCalledWith('agent-threads:op', expect.objectContaining({ kind: 'mark-read' }))
   })
 
   it('opens a thread created from Discuss with Agent expanded', async () => {
