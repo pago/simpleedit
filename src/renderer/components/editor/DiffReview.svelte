@@ -208,6 +208,24 @@
       : [],
   )
 
+  // A commit thread opened from the panel: select its file here, where its
+  // glyph is; the editor shows it and takes the signal.
+  let inlineThread = $derived.by(() => {
+    const id = agentThreadsStore.inlineFor(workspaceKey)
+    const t = id ? agentThreadsStore.get(id) : undefined
+    const ctx = t?.anchor.context
+    if (!t || !ctx || ctx === 'file' || ctx.commit !== commitHash) return null
+    if (t.worktreePath !== worktreePath.replace(/\/+$/, '')) return null
+    return t
+  })
+
+  $effect(() => {
+    const t = inlineThread
+    if (!t || loading || selectedFile === t.anchor.path) return
+    if (files.some((f) => f.path === t.anchor.path)) void selectFile(t.anchor.path)
+    else agentThreadsStore.takeInline(workspaceKey, t.id)
+  })
+
   // New threads belong to this workspace's session, as from Discuss with Agent;
   // threadAnchorFor turns away the diffs that can't take one (branch changes).
   let threadHost = $derived.by((): ThreadHost | null => {
@@ -446,6 +464,8 @@
             ondiscusswithagent={handleDiscussWithAgent}
             {threadGlyphs}
             {threadHost}
+            showThread={inlineThread && inlineThread.anchor.path === selectedFile ? inlineThread.id : null}
+            onthreadshown={(id) => agentThreadsStore.takeInline(workspaceKey, id)}
           />
         </div>
       {:else}

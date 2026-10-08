@@ -100,7 +100,7 @@ function svelteZone(
 export function attachEditorThreads(
   editor: monaco.editor.IStandaloneCodeEditor,
   host: () => ThreadHost | null,
-): { set(glyphs: ThreadGlyph[]): void; comment(): void; reset(): void; dispose(): void } {
+): { set(glyphs: ThreadGlyph[]): void; open(threadId: string): boolean; comment(): void; reset(): void; dispose(): void } {
   const open = new Map<string, Zone>()
   let composer: Zone | null = null
   let current: ThreadGlyph[] = []
@@ -234,6 +234,14 @@ export function attachEditorThreads(
         show(pending)
         pending = null
       }
+    },
+    /** Shows a thread that has a glyph here, scrolled into view. False when it has none. */
+    open(threadId) {
+      const g = current.find((x) => x.threadId === threadId)
+      if (!g) return false
+      show(threadId)
+      editor.revealLineInCenterIfOutsideViewport(zoneLine(g))
+      return true
     },
     comment: () => compose(),
     reset,

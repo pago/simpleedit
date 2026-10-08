@@ -2,6 +2,7 @@ import * as monaco from 'monaco-editor'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { waitFor } from '@testing-library/svelte'
+import './ignore-monaco-cancellation'
 import { attachEditorThreads, type ThreadHost } from '../thread-zones'
 import { threadGlyphsFor } from '../thread-glyphs'
 import { agentThreadsStore, initAgentThreadsListeners, _resetAgentThreadsForTests } from '../../stores/agentThreads.svelte'
@@ -57,6 +58,7 @@ async function clickGlyph(selector: string): Promise<void> {
   await userEvent.click(el)
 }
 
+
 beforeEach(() => {
   invoke = vi.fn(async (channel: string, op?: AgentThreadOp) => {
     if (channel === 'agent-threads:load') return { threads: [], rev: 0 }
@@ -90,8 +92,9 @@ beforeEach(() => {
 
 afterEach(() => {
   threads.dispose()
-  editor.getModel()?.dispose()
+  const model = editor.getModel()
   editor.dispose()
+  model?.dispose()
   document.body.innerHTML = ''
   dispose()
   _resetAgentThreadsForTests()
@@ -154,6 +157,14 @@ describe('inline threads', () => {
     })
     reveal.click()
     expect(agentThreadsStore.focusFor('s1')).toBe('t_aaaaaaaa')
+  })
+
+  it('opens a thread on request only where it has a glyph', async () => {
+    put(thread('t_aaaaaaaa'))
+    sync()
+    expect(threads.open('t_missing')).toBe(false)
+    expect(threads.open('t_aaaaaaaa')).toBe(true)
+    await waitFor(() => expect(document.querySelector('[data-inline-thread="t_aaaaaaaa"]')).not.toBeNull())
   })
 
   it('drops its zones when the model changes or the editor goes', async () => {
