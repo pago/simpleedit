@@ -352,6 +352,7 @@ export function openAgentThread(
   input: { worktreePath: string; anchor: ThreadAnchor; body: string },
 ): { ok: true; threadId: string } | { ok: false; error: string } {
   if (!deps) return { ok: false, error: 'Agent threads are unavailable in this SimpleEdit session.' }
+  if (!deps.provider(sessionId)) return { ok: false, error: 'Only a running agent session in SimpleEdit can open threads.' }
   if (!input.body.trim()) return { ok: false, error: 'open_thread needs a non-empty `body`.' }
   if (input.body.length > MAX_BODY) return { ok: false, error: `open_thread's \`body\` is over ${MAX_BODY} characters.` }
   if (unansweredAgentThreads(sessionId) >= MAX_UNANSWERED_AGENT_THREADS) {

@@ -1,7 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
 import { randomBytes, randomUUID } from 'crypto'
 import { readFile, realpath } from 'fs/promises'
-import { dirname, isAbsolute, relative } from 'path'
+import { dirname, isAbsolute, relative, sep } from 'path'
 import type { RemoteClient } from './client-hub'
 import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
@@ -30,6 +30,7 @@ import { sendAgentStatus } from './agent-status'
 import { beginThreadStop, endThreadStop, noteThreadSignal, openAgentThread, replyToThread } from './thread-delivery'
 import { noteTurnStarted } from './remote/push'
 import { anchorLines } from '../shared/thread-anchor-lines'
+import { MAX_SNIPPET } from '../shared/agent-threads'
 
 interface BridgeInstance {
   server: Server
@@ -636,7 +637,7 @@ async function openThreadTool(
   } catch {
     return { error: `Cannot read ${path}.` }
   }
-  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return { error: `${path} is not in a git worktree SimpleEdit can show.` }
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return { error: `${path} is not in a git worktree SimpleEdit can show.` }
 
   const lines = text.split(/\r?\n/)
   if (startLine < 1 || endLine < startLine || endLine > lines.length) {
@@ -647,7 +648,11 @@ async function openThreadTool(
     { getLineCount: () => lines.length, getLineContent: (l) => lines[l - 1] ?? '' },
     { startLineNumber: startLine, endLineNumber: endLine, endColumn: Number.MAX_SAFE_INTEGER },
   )
-  const result = openAgentThread(terminalId, { worktreePath, anchor: { path: rel, ...anchored, context: 'file' }, body })
+  if (anchored.snippet.length > MAX_SNIPPET) return { error: 'Those lines are too long to anchor a thread on; pick fewer or shorter lines.' }
+  // Context is only a re-anchoring aid, so an oversized one (a minified line) is dropped rather than refused.
+  const context = (text: string): string => (text.length > MAX_SNIPPET ? '' : text)
+  const anchor = { path: rel, ...anchored, before: context(anchored.before), after: context(anchored.after), context: 'file' as const }
+  const result = openAgentThread(terminalId, { worktreePath, anchor, body })
   return result.ok ? { threadId: result.threadId } : { error: result.error }
 }
 

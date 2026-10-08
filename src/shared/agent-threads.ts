@@ -91,7 +91,7 @@ export interface ThreadChange {
 const ID = /^[tm]_[A-Za-z0-9-]{6,64}$/
 export const MAX_BODY = 32 * 1024
 const MAX_PATH = 4096
-const MAX_SNIPPET = 8 * 1024
+export const MAX_SNIPPET = 8 * 1024
 const MAX_SESSION = 256
 
 export function isThreadId(v: unknown): v is string {
