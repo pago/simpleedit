@@ -7,10 +7,14 @@
   import PaneTabBar from './PaneTabBar.svelte'
   import TabContainer from './TabContainer.svelte'
   import RepoPicker from './RepoPicker.svelte'
+  import MemoryHealthBadge from '../memory/MemoryHealthBadge.svelte'
+  import MemoryHealthList from '../memory/MemoryHealthList.svelte'
+  import MemoryEmptyState from '../memory/MemoryEmptyState.svelte'
+  import { memoryViewStore } from '../../stores/memoryView.svelte'
   import { openDiffTab, openTourTab } from '../../stores/diffReview.svelte'
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
-  import { sessionsStore } from '../../stores/sessions.svelte'
+  import { sessionsStore, viewRootFor } from '../../stores/sessions.svelte'
   import { providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import {
@@ -33,6 +37,48 @@
 
   let session = $derived(sessionsStore.get(sessionId))
   let worktreePath = $derived(session?.worktreePath ?? '')
+
+  // ── Claude memory view ───────────────────────────────────────────────────
+  // An overlay: the tree, memory-file editors and git log show the memory
+  // dir, while everything that acts on the session (agent spawn, cwd-follow,
+  // composed panels) keeps using `worktreePath`.
+  let memoryView = $derived(session?.memoryView)
+  let viewRoot = $derived(session ? viewRootFor(session) : '')
+  let launchDir = $derived(session?.launchDir ?? '')
+  let heldMemoryDir = $derived(memoryView?.exists ? memoryView.memoryDir : null)
+
+  $effect(() => {
+    const dir = heldMemoryDir
+    const from = launchDir
+    if (!dir) return
+    return memoryViewStore.acquire(dir, from)
+  })
+
+  // Directory creation, `git init` and a first commit raise no watcher event
+  // (the dir isn't watched while missing, `.git` is ignored), so the visible
+  // view re-resolves on a timer until there's nothing left to wait for.
+  let isActiveSession = $derived(sessionsStore.activeSessionId() === sessionId)
+  let memoryPollMs = $derived(
+    !memoryView ? 0 : !memoryView.exists ? 5_000 : memoryView.git === null ? 30_000 : 0,
+  )
+  $effect(() => {
+    const ms = memoryPollMs
+    const from = launchDir
+    if (!isActiveSession || ms === 0) return
+    const timer = setInterval(() => void memoryViewStore.reresolve(from), ms)
+    return () => clearInterval(timer)
+  })
+
+  function leaveMemory(): void {
+    sessionsStore.leaveMemoryThen(sessionId, () => {})
+  }
+
+  // Memory files that blocked the last leave and are still unsaved.
+  let blockedMemoryFiles = $derived(
+    memoryView?.leaveBlocked?.files.filter((p) =>
+      tabs.some((t) => t.kind === 'file' && t.path === p && t.modified),
+    ) ?? [],
+  )
 
   // Reactive view of this session's tab list (tabsStore keyed by session id).
   let tabs = $derived(tabsStore.list(sessionId))
@@ -372,16 +418,29 @@
              repos this agent has worked across; "Open another…" falls back to
              the directory dialog. -->
         <RepoPicker {repoPath} onpickother={pickRepo} />
-        <button
-          bind:this={worktreeButtonEl}
-          class="max-w-[220px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-          onclick={() => (worktreePopoverOpen = !worktreePopoverOpen)}
-          aria-haspopup="dialog"
-          aria-expanded={worktreePopoverOpen}
-          title="Worktree this workspace is pointed at — click to switch or manage"
-        >
-          {worktreeBranch} ▾
-        </button>
+        {#if memoryView}
+          {#if memoryView.exists}
+            <MemoryHealthBadge {sessionId} memoryDir={memoryView.memoryDir} />
+          {/if}
+          <button
+            class="max-w-[220px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+            onclick={leaveMemory}
+            title="Leave Claude memory and return to the worktree"
+          >
+            ← Back to {worktreeBranch}
+          </button>
+        {:else}
+          <button
+            bind:this={worktreeButtonEl}
+            class="max-w-[220px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+            onclick={() => (worktreePopoverOpen = !worktreePopoverOpen)}
+            aria-haspopup="dialog"
+            aria-expanded={worktreePopoverOpen}
+            title="Worktree this workspace is pointed at — click to switch or manage"
+          >
+            {worktreeBranch} ▾
+          </button>
+        {/if}
         <button
           class="rounded px-1.5 py-0.5 text-[10px] {viewerOpen ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
           onclick={() => setViewerOpen(!viewerOpen)}
@@ -390,7 +449,7 @@
           Files
         </button>
 
-        {#if worktreePopoverOpen}
+        {#if worktreePopoverOpen && !memoryView}
           <div
             bind:this={worktreePopoverEl}
             class="absolute right-0 top-full z-30 mt-1 max-h-96 w-72 overflow-y-auto rounded border border-zinc-700 bg-zinc-900 px-3 pb-2 shadow-xl"
@@ -402,6 +461,35 @@
         {/if}
       </div>
     </div>
+
+    {#if memoryView?.leaveBlocked && blockedMemoryFiles.length > 0}
+      <div
+        role="alert"
+        class="flex flex-none flex-wrap items-center gap-x-2 gap-y-1 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200"
+      >
+        <span>
+          Save or close {blockedMemoryFiles.length} unsaved memory {blockedMemoryFiles.length === 1 ? 'file' : 'files'} first{memoryView
+            .leaveBlocked.agentRepoint
+            ? ' — the agent asked to open a worktree and was not switched'
+            : ''}:
+        </span>
+        {#each blockedMemoryFiles as file (file)}
+          <button
+            class="rounded px-1 font-mono text-[11px] underline decoration-amber-500/50 hover:bg-amber-500/20"
+            onclick={() => openFile(file)}
+          >
+            {file.slice(memoryView.memoryDir.length + 1)}
+          </button>
+        {/each}
+        <button
+          class="ml-auto rounded px-1.5 text-amber-300 hover:bg-amber-500/20"
+          onclick={() => sessionsStore.dismissMemoryLeaveBlocked(sessionId)}
+          aria-label="Dismiss"
+        >
+          ×
+        </button>
+      </div>
+    {/if}
 
     {#if viewerOpen}
       <!-- Top: editor/diff + right column (file tree over git log) -->
@@ -424,6 +512,7 @@
               tab={activeTab}
               workspaceKey={sessionId}
               {worktreePath}
+              memoryDir={memoryView?.memoryDir}
               terminals={agentTargets}
               onclose={() => closeTab(activeTab!.id)}
               onFileModified={markModified}
@@ -463,25 +552,42 @@
             style:width="{rightColumnWidth}px"
           >
             <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-              <FileTree
-                rootPath={worktreePath}
-                {activeFilePath}
-                onselect={openFile}
-                oncollapse={toggleFileTree}
-              />
+              {#if memoryView && !memoryView.exists}
+                <MemoryEmptyState memoryDir={memoryView.memoryDir} />
+              {:else}
+                <FileTree
+                  rootPath={viewRoot}
+                  {activeFilePath}
+                  onselect={openFile}
+                  oncollapse={toggleFileTree}
+                />
+              {/if}
             </div>
-            <div
-              class="border-t border-zinc-800 bg-zinc-900 px-3 {gitLogCollapsed
-                ? 'flex-none pb-1'
-                : 'min-h-0 flex-1 overflow-y-auto pb-2'}"
-            >
-              <GitLog
-                workspaceKey={sessionId}
-                worktreePath={worktreePath || null}
-                collapsed={gitLogCollapsed}
-                ontoggle={toggleGitLog}
-              />
-            </div>
+            {#if memoryView && !memoryView.git}
+              <!-- No git history for this memory dir: its health list takes
+                   the git log's slot. -->
+              <div class="min-h-0 flex-1 overflow-y-auto border-t border-zinc-800 bg-zinc-900 px-3 pb-2">
+                <div class="sticky top-0 z-10 -mx-3 bg-zinc-900 px-4 pb-1 pt-2">
+                  <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Memory health</span>
+                </div>
+                <MemoryHealthList {sessionId} memoryDir={memoryView.memoryDir} />
+              </div>
+            {:else}
+              <div
+                class="border-t border-zinc-800 bg-zinc-900 px-3 {gitLogCollapsed
+                  ? 'flex-none pb-1'
+                  : 'min-h-0 flex-1 overflow-y-auto pb-2'}"
+              >
+                <GitLog
+                  workspaceKey={sessionId}
+                  worktreePath={memoryView?.git ? memoryView.git.root : worktreePath || null}
+                  pathspec={memoryView?.git?.pathspec ?? null}
+                  variant={memoryView ? 'memory' : 'worktree'}
+                  collapsed={gitLogCollapsed}
+                  ontoggle={toggleGitLog}
+                />
+              </div>
+            {/if}
           </div>
         {/if}
       </div>

@@ -42,7 +42,20 @@
     return repo.replace(/\/[^/]*\.git$/, '').split('/').pop() ?? '—'
   }
 
-  let currentLabel = $derived(currentRepo ? repoName(currentRepo) : '—')
+  // Claude's auto-memory is per project, so only a Claude session offers it.
+  let canShowMemory = $derived(activeSession?.provider === 'claude')
+  let memoryActive = $derived(!!activeSession?.memoryView)
+
+  let currentLabel = $derived(memoryActive ? 'Claude memory' : currentRepo ? repoName(currentRepo) : '—')
+
+  function showMemory(): void {
+    open = false
+    const session = sessionsStore.activeSession()
+    if (!session) return
+    sessionsStore.openMemoryView(session.id).catch((err: unknown) => {
+      console.warn('[memory] could not open the memory view:', err)
+    })
+  }
 
   async function selectRepo(repo: string): Promise<void> {
     open = false
@@ -101,7 +114,7 @@
       aria-label="Repositories"
     >
       {#each repos as repo (repo)}
-        {@const isCurrent = repo === currentRepo}
+        {@const isCurrent = !memoryActive && repo === currentRepo}
         {@const isAgentHere = repo === agentRepo && repo !== currentRepo}
         <button
           class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] {isCurrent
@@ -121,6 +134,20 @@
           <span class="flex-1 truncate" title={repo}>{repoName(repo)}</span>
         </button>
       {/each}
+
+      {#if canShowMemory}
+        <button
+          class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] {memoryActive
+            ? 'bg-zinc-700 text-zinc-100'
+            : 'text-zinc-300 hover:bg-zinc-800'}"
+          role="menuitem"
+          onclick={showMemory}
+          title="Browse what Claude remembers about this project"
+        >
+          <span class="h-2 w-2 shrink-0 rounded-full {memoryActive ? 'bg-green-400' : 'bg-violet-500/60'}"></span>
+          <span class="flex-1 truncate">Claude memory</span>
+        </button>
+      {/if}
 
       <div class="my-1 border-t border-zinc-800" role="separator"></div>
 

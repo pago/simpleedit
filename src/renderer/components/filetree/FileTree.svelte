@@ -25,7 +25,14 @@
   let revealRequest = $state<{ path: string; nonce: number } | null>(null)
 
   async function loadRoot(): Promise<void> {
-    entries = await window.api.invoke('fs:list', rootPath)
+    try {
+      entries = await window.api.invoke('fs:list', rootPath)
+    } catch (err) {
+      // The root can vanish under us (a deleted memory dir); the owner swaps
+      // the tree out once it notices.
+      console.warn('[FileTree] could not list', rootPath, err)
+      entries = []
+    }
   }
 
   // Reload when rootPath changes
