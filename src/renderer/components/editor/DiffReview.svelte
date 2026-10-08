@@ -10,6 +10,8 @@
   import { tourStore, tourKey, triggerTour } from '../../stores/tourStore.svelte'
   import { openTourTab } from '../../stores/diffReview.svelte'
   import type { MemoryScope } from '../../stores/tabsStore.svelte'
+  import { agentThreadsStore } from '../../stores/agentThreads.svelte'
+  import { threadGlyphsFor } from '../../lib/thread-glyphs'
 
   interface Props {
     /** null means staging/uncommitted changes */
@@ -196,6 +198,12 @@
     await tick() // let Svelte flush the model-update effect before scrolling
     highlightLines = lineRange
   }
+
+  let threadGlyphs = $derived(
+    selectedFile
+      ? threadGlyphsFor(agentThreadsStore.forSession(workspaceKey), { worktreePath, path: selectedFile, commit: commitHash })
+      : [],
+  )
 
   function handleDiscussWithAgent(ctx: AgentContext, pos: { x: number; y: number }): void {
     if (ctx.kind === 'diff') {
@@ -408,6 +416,8 @@
             filePath={selectedFile}
             {highlightLines}
             ondiscusswithagent={handleDiscussWithAgent}
+            {threadGlyphs}
+            onopenthread={(id) => agentThreadsStore.reveal(workspaceKey, id)}
           />
         </div>
       {:else}

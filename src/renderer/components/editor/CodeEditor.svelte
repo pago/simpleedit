@@ -2,6 +2,8 @@
   import * as monaco from 'monaco-editor'
   import type { AgentContext } from '../../lib/agent-message'
   import { anchorLines } from '../../lib/thread-anchor'
+  import { attachThreadGlyphs, threadGlyphsFor } from '../../lib/thread-glyphs'
+  import { agentThreadsStore } from '../../stores/agentThreads.svelte'
   import { lspClientManager } from '../../lsp/client-manager'
   import {
     applyReveal,
@@ -50,6 +52,9 @@
   let isDirty = false
   let fileStaleDirty = $state(false)
   let watchedPath: string | null = null
+  let threadGlyphs: ReturnType<typeof attachThreadGlyphs> | undefined
+  /** Bumped on every load: a new model, or new content, drops the glyphs. */
+  let loaded = $state<{ path: string; n: number } | null>(null)
 
   const extensionToLanguage: Record<string, string> = {
     '.ts': 'typescript',
@@ -115,6 +120,7 @@
       }
 
       currentFilePath = path
+      loaded = { path, n: (loaded?.n ?? 0) + 1 }
       setEditorLoadedPath(editor, workspaceKey, path)
       isDirty = false
       fileStaleDirty = false
@@ -228,6 +234,8 @@
       },
     })
 
+    threadGlyphs = attachThreadGlyphs(editor, (threadId) => agentThreadsStore.reveal(workspaceKey, threadId))
+
     oneditorready?.(editor)
 
     editor.onDidChangeModelContent(() => {
@@ -259,6 +267,8 @@
         watchedPath = null
       }
       unbindOpener()
+      threadGlyphs?.dispose()
+      threadGlyphs = undefined
       if (editor) unregisterLoadedEditor(editor)
       if (currentFilePath && worktreeRoot) {
         const language = getLanguage(currentFilePath)
@@ -269,6 +279,18 @@
       editor = undefined
       model?.dispose()
     }
+  })
+
+  $effect(() => {
+    const path = loaded?.path
+    if (!path || !threadGlyphs) return
+    const root = worktreeRoot?.replace(/\/+$/, '')
+    const threads = agentThreadsStore.forSession(workspaceKey)
+    threadGlyphs.set(
+      root && path.startsWith(`${root}/`)
+        ? threadGlyphsFor(threads, { worktreePath: root, path: path.slice(root.length + 1), commit: null })
+        : [],
+    )
   })
 
   // Only reload when the path actually changes. The effect can re-fire on

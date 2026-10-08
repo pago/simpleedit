@@ -88,7 +88,7 @@
     'prose prose-invert prose-sm max-w-none text-[12px] leading-relaxed text-zinc-300 prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-pre:my-1 prose-code:text-[11px]'
 </script>
 
-<li class="border-b border-zinc-800 {thread.status === 'resolved' ? 'opacity-70' : ''}">
+<li data-thread-id={thread.id} class="border-b border-zinc-800 {thread.status === 'resolved' ? 'opacity-70' : ''}">
   <div class="flex items-center gap-1 py-0.5 pl-1 pr-2">
     <button
       class="flex h-6 w-6 flex-none items-center justify-center rounded text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"

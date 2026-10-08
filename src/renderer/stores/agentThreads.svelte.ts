@@ -115,6 +115,10 @@ export const agentThreadsStore = {
     return window.api.invoke('agent-threads:force-send', sessionId)
   },
 
+  /** Show a thread in its session's panel, expanded: from a thread's glyph in an editor. */
+  reveal(sessionId: string, threadId: string): void {
+    _focus = { sessionId, threadId }
+  },
   /** The thread a session's panel should open on, once. */
   focusFor(sessionId: string): string | null {
     return _focus?.sessionId === sessionId ? _focus.threadId : null
