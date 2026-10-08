@@ -10,6 +10,7 @@
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
   import { initAgentMailListeners } from './stores/agent-mail.svelte'
+  import { initAgentThreadsListeners } from './stores/agentThreads.svelte'
   import { initAgentCapabilities } from './stores/agent-capabilities.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners, createSessionFromDefaults } from './stores/sessions.svelte'
@@ -37,6 +38,7 @@
     const unsubMail = initAgentMailListeners()
     const unsubSessions = initSessionListeners()
     const unsubScreenPrs = initScreenPrsListeners()
+    const unsubThreads = initAgentThreadsListeners()
     // Cache every provider's capabilities up front: the session store reads
     // them synchronously when naming and labelling a new session.
     void initAgentCapabilities()
@@ -47,6 +49,7 @@
       unsubMail()
       unsubSessions()
       unsubScreenPrs()
+      unsubThreads()
       window.removeEventListener('beforeunload', flushSessionSave)
     }
   })
