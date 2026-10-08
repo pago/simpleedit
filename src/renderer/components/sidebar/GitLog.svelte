@@ -12,12 +12,20 @@
     collapsed?: boolean
     /** Toggle the collapsed/expanded state. */
     ontoggle?: () => void
+    /** Limit the log, status and watch to this path inside `worktreePath`. */
+    pathspec?: string | null
+    /** 'memory': a Claude memory dir's history — diffs open memory-scoped and
+     * tours are hidden (they would cover the whole enclosing repo). */
+    variant?: 'worktree' | 'memory'
   }
 
-  let { workspaceKey, worktreePath, collapsed = false, ontoggle }: Props = $props()
+  let { workspaceKey, worktreePath, collapsed = false, ontoggle, pathspec = null, variant = 'worktree' }: Props = $props()
+
+  let isMemory = $derived(variant === 'memory')
+  let diffOpts = $derived(isMemory ? { memoryScope: { pathspec } } : {})
 
   let selectedCommitHash = $derived(
-    worktreePath ? activeDiffHash(workspaceKey, worktreePath) : undefined
+    worktreePath ? activeDiffHash(workspaceKey, worktreePath, isMemory) : undefined
   )
 
   let commits = $state<GitCommitInfo[]>([])
@@ -56,17 +64,18 @@
       loading = true
     }
     error = null
+    const scope = pathspec ?? undefined
     try {
-      commits = await window.api.invoke('git:log', path)
-      const stagingFiles = await window.api.invoke('git:staging-files', path)
+      commits = await window.api.invoke('git:log', path, undefined, scope)
+      const stagingFiles = await window.api.invoke('git:staging-files', path, scope)
       hasStagingChanges = stagingFiles.length > 0
 
       // If we were viewing staging but there are no more uncommitted changes,
       // auto-select the newest commit so the view stays useful
       if (isRefresh && path) {
-        const currentHash = activeDiffHash(workspaceKey, path)
+        const currentHash = activeDiffHash(workspaceKey, path, isMemory)
         if (currentHash === null && !hasStagingChanges && commits.length > 0) {
-          openDiffTab(workspaceKey, path, commits[0].hash, commits[0].message)
+          openDiffTab(workspaceKey, path, commits[0].hash, commits[0].message, diffOpts)
         }
       }
     } catch (err: unknown) {
@@ -79,11 +88,11 @@
   }
 
   function selectStaging(): void {
-    if (worktreePath) openDiffTab(workspaceKey, worktreePath, null, 'Uncommitted changes', { peek: true })
+    if (worktreePath) openDiffTab(workspaceKey, worktreePath, null, 'Uncommitted changes', { peek: true, ...diffOpts })
   }
 
   function selectCommit(commit: GitCommitInfo): void {
-    if (worktreePath) openDiffTab(workspaceKey, worktreePath, commit.hash, commit.message, { peek: true })
+    if (worktreePath) openDiffTab(workspaceKey, worktreePath, commit.hash, commit.message, { peek: true, ...diffOpts })
   }
 
   function startBranchTour(): void {
@@ -111,6 +120,7 @@
   }
 
   $effect(() => {
+    void pathspec
     if (worktreePath) {
       fetchLog(worktreePath)
     } else {
@@ -122,9 +132,10 @@
   // Watch git refs for commit/staging changes and auto-refresh
   $effect(() => {
     const path = worktreePath
+    const scope = pathspec ?? undefined
     if (!path) return
 
-    window.api.invoke('git:watch', path)
+    window.api.invoke('git:watch', path, scope)
 
     let timer: ReturnType<typeof setTimeout>
 
@@ -146,7 +157,7 @@
       clearTimeout(timer)
       unsubStatus()
       unsubRefs()
-      window.api.invoke('git:unwatch', path)
+      window.api.invoke('git:unwatch', path, scope)
     }
   })
 </script>
@@ -164,14 +175,16 @@
     </button>
     <div class="flex items-center gap-1">
       {#if worktreePath}
-        <button
-          class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
-          onclick={startBranchTour}
-          title="Generate a guided tour of all changes on this branch"
-        >
-          <TabIcon kind="tour" class="h-3 w-3" />
-          Tour Branch
-        </button>
+        {#if !isMemory}
+          <button
+            class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
+            onclick={startBranchTour}
+            title="Generate a guided tour of all changes on this branch"
+          >
+            <TabIcon kind="tour" class="h-3 w-3" />
+            Tour Branch
+          </button>
+        {/if}
         <button
           class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
           onclick={() => worktreePath && fetchLog(worktreePath)}
@@ -233,21 +246,23 @@
               <span class="shrink-0">{relativeDate(commit.date)}</span>
             </span>
           </button>
-          <button
-            type="button"
-            data-testid="gitlog-tour-icon"
-            data-has-tour={String(hasTour)}
-            title="Tour"
-            aria-label="Open tour for this commit"
-            class="absolute right-1 top-1.5 rounded p-1 shadow-sm transition-opacity backdrop-blur-sm
-              {hasTour
-                ? 'text-sky-400 bg-zinc-800/85 hover:bg-zinc-600 hover:text-sky-300'
-                : 'text-zinc-300 bg-zinc-700/90 opacity-0 hover:bg-zinc-600 hover:text-zinc-100 group-hover:opacity-100 focus:opacity-100'}
-              {isSelected && !hasTour ? 'opacity-100' : ''}"
-            onclick={(e) => handleTourIconClick(e, commit)}
-          >
-            <TabIcon kind="tour" class="h-3.5 w-3.5" />
-          </button>
+          {#if !isMemory}
+            <button
+              type="button"
+              data-testid="gitlog-tour-icon"
+              data-has-tour={String(hasTour)}
+              title="Tour"
+              aria-label="Open tour for this commit"
+              class="absolute right-1 top-1.5 rounded p-1 shadow-sm transition-opacity backdrop-blur-sm
+                {hasTour
+                  ? 'text-sky-400 bg-zinc-800/85 hover:bg-zinc-600 hover:text-sky-300'
+                  : 'text-zinc-300 bg-zinc-700/90 opacity-0 hover:bg-zinc-600 hover:text-zinc-100 group-hover:opacity-100 focus:opacity-100'}
+                {isSelected && !hasTour ? 'opacity-100' : ''}"
+              onclick={(e) => handleTourIconClick(e, commit)}
+            >
+              <TabIcon kind="tour" class="h-3.5 w-3.5" />
+            </button>
+          {/if}
         </div>
       {/each}
 
