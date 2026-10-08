@@ -137,7 +137,7 @@ describe('thread delivery', () => {
     noteThreadSignal('s1', { eventName: 'PermissionRequest', toolName: 'Bash', toolUseId: 'tu1' })
     comment()
     noteThreadUserInput('s1')
-    noteThreadSignal('s1', { eventName: 'Notification', notificationType: 'idle_prompt' })
+    noteThreadSignal('s1', { eventName: 'Notification', notificationType: 'permission_prompt' })
     vi.advanceTimersByTime(SEND_SETTLE_MS * 2)
     expect(writes).toEqual([])
     expect(heldReason()).toBe('dialog')
@@ -209,6 +209,65 @@ describe('thread delivery', () => {
     expect(getThread('t_aaaaaa')!.messages.at(-1)?.body).toBe('final')
   })
 
+  it('a denied permission fires no hook, so the idle-prompt reminder clears the dialog', () => {
+    stop()
+    noteThreadSignal('s1', { eventName: 'PermissionRequest', toolName: 'Bash', toolUseId: 'tu1' })
+    comment()
+    expect(heldReason()).toBe('dialog')
+    noteThreadSignal('s1', { eventName: 'Notification', notificationType: 'idle_prompt' })
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    expect(writes).toHaveLength(1)
+  })
+
+  it('a notification that asks nothing of the user is no dialog', () => {
+    stop()
+    noteThreadSignal('s1', { eventName: 'Notification', notificationType: 'agent_completed' })
+    comment()
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    expect(writes).toHaveLength(1)
+  })
+
+  it('settles a comment as unanswered when an Esc-interrupted turn goes idle', () => {
+    stop()
+    comment()
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    submitted()
+    noteThreadStatus('s1', 'idle')
+    noteThreadSignal('s1', { eventName: 'Notification', notificationType: 'idle_prompt' })
+    expect(delivery()).toBe('unanswered')
+    expect(retryMessage('s1', 'm_aaaaaa1')).toBe(true)
+  })
+
+  it('takes a confirmation that arrives after the timeout', () => {
+    stop()
+    comment()
+    vi.advanceTimersByTime(SEND_SETTLE_MS + CONFIRM_MS)
+    expect(delivery()).toBe('failed')
+    submitted()
+    expect(delivery()).toBe('delivered')
+  })
+
+  it('keeps keys typed after our write as a draft, even once our prompt is confirmed', () => {
+    stop()
+    comment()
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    noteThreadUserInput('s1')
+    submitted()
+    stop()
+    comment('t_bbbbbb', 's1', 'm_bbbbbb1')
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    expect(writes).toHaveLength(1)
+    expect(heldReason('t_bbbbbb')).toBe('draft')
+  })
+
+  it('sends to a Codex session that has been idle since before this run', () => {
+    providers.c1 = 'codex'
+    noteThreadStatus('c1', 'idle')
+    comment('t_cccccc', 'c1', 'm_cccccc1')
+    vi.advanceTimersByTime(SEND_SETTLE_MS)
+    expect(writes.map((w) => w.id)).toEqual(['c1'])
+  })
+
   it("rejects a reply from a session that doesn't own the thread", () => {
     comment()
     expect(replyToThread('s2', 't_aaaaaa', 'hi')).toEqual({ ok: false, error: expect.stringContaining('belongs to another session') })
@@ -224,6 +283,19 @@ describe('thread delivery', () => {
     expect(heldReason('t_bbbbbb')).toBe('not-running')
   })
 
+  it('recovers when OpenCode refuses a push', async () => {
+    noteThreadStatus('o1', 'idle')
+    pushResult = false
+    comment('t_oooooo', 'o1', 'm_oooooo1')
+    await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS)
+    expect(delivery('t_oooooo')).toBe('failed')
+    pushResult = true
+    retryMessage('o1', 'm_oooooo1')
+    await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS)
+    expect(pushes).toHaveLength(2)
+    expect(delivery('t_oooooo')).toBe('delivered')
+  })
+
   it("pushes to OpenCode over its own API, which a draft can't clobber", async () => {
     noteThreadStatus('o1', 'running')
     stop('o1')
@@ -233,5 +305,25 @@ describe('thread delivery', () => {
     expect(writes).toEqual([])
     expect(pushes).toHaveLength(1)
     expect(delivery('t_oooooo')).toBe('delivered')
+  })
+})
+
+describe('thread delivery without a database', () => {
+  it('stays inert, so keystrokes and hooks are never affected', () => {
+    resetThreadDelivery()
+    const broken = openDb(':memory:')
+    broken.close()
+    useDbForTests(broken)
+    expect(() =>
+      initThreadDelivery({ provider: () => 'claude', write: () => {}, push: () => null, broadcast: () => {} }),
+    ).toThrow()
+    expect(() => {
+      noteThreadUserInput('s1')
+      noteThreadSignal('s1', { eventName: 'UserPromptSubmit', prompt: 'x' })
+      beginThreadStop('s1')
+      endThreadStop('s1', { continued: false, lastAssistantMessage: 'x' })
+      noteThreadStatus('s1', 'idle')
+    }).not.toThrow()
+    useDbForTests(null)
   })
 })

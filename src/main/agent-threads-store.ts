@@ -270,6 +270,19 @@ export function messagesInState(sessionId: string, states: readonly DeliveryStat
   return out.sort((a, b) => a.message.at.localeCompare(b.message.at))
 }
 
+/** Whether a session has a user message in the given states: an indexed check, cheap enough for every keystroke. */
+export function hasMessagesInState(sessionId: string, states: readonly DeliveryState[]): boolean {
+  const marks = states.map(() => '?').join(', ')
+  return (
+    getDb()
+      .prepare(
+        `SELECT 1 FROM thread_messages m JOIN threads t ON t.id = m.thread_id
+         WHERE t.session_id = ? AND m.author = 'user' AND m.delivery IN (${marks}) LIMIT 1`,
+      )
+      .get(sessionId, ...states) !== undefined
+  )
+}
+
 /** Sessions that have user messages in the given states. */
 export function sessionsWithMessagesIn(states: readonly DeliveryState[]): string[] {
   const marks = states.map(() => '?').join(', ')
