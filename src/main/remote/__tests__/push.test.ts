@@ -591,6 +591,23 @@ describe('the file on disk', () => {
     expect(status.vapidPublicKey).toBe(keys.publicKey)
     expect(status.devices).toHaveLength(1)
   })
+
+  it('keeps a pair stored with a 31-byte private key, and its devices', () => {
+    const ecdh = createECDH('prime256v1')
+    ecdh.setPrivateKey(Buffer.concat([Buffer.from([0]), Buffer.alloc(31, 0x42)]))
+    const publicKey = toBase64Url(ecdh.getPublicKey())
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        vapid: { publicKey, privateKey: toBase64Url(ecdh.getPrivateKey()) },
+        subscriptions: [{ endpoint: phone.endpoint, p256dh: phone.keys.p256dh, auth: phone.keys.auth }],
+      }),
+    )
+    resetPushState()
+    const status = getPushStatus()
+    expect(status.vapidPublicKey).toBe(publicKey)
+    expect(status.devices).toHaveLength(1)
+  })
 })
 
 describe('encryptPayload, at the size this feature actually sends', () => {
