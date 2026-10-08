@@ -53,13 +53,32 @@ function substantial(snippet: string[]): boolean {
   return snippet.join('').replace(/\s/g, '').length >= MIN_SNIPPET_CHARS
 }
 
-function locate(file: string[], snippet: string[], anchor: ThreadAnchor): number | null {
+/**
+ * The context still surrounds the code at `at`. Context cut off by the start
+ * or end of the file counts as matching: the edge explains it.
+ */
+function contextHolds(file: string[], at: number, length: number, before: string[], after: string[]): boolean {
+  const above = before.slice(Math.max(0, before.length - at))
+  const end = at + length
+  const below = after.slice(0, Math.max(0, file.length - end))
+  return matchesAt(file, above, at - above.length) && matchesAt(file, below, end)
+}
+
+/**
+ * Where the snippet is now. The stored range is trusted only with its context
+ * around it: a short snippet such as `}` easily lands on an identical line
+ * after an edit above it, and would otherwise read as unchanged.
+ */
+function locate(file: string[], snippet: string[], anchor: ThreadAnchor, stored: number): number | null {
   const before = contextLines(anchor.before)
   const after = contextLines(anchor.after)
+  const inPlace = matchesAt(file, snippet, stored)
+  if (inPlace && contextHolds(file, stored, snippet.length, before, after)) return stored
   if (before.length || after.length) {
     const at = uniqueMatch(file, [...before, ...snippet, ...after])
     if (at !== null) return at + before.length
   }
+  if (inPlace) return stored
   return substantial(snippet) ? uniqueMatch(file, snippet) : null
 }
 
@@ -76,7 +95,7 @@ export function reanchor(anchor: ThreadAnchor, content: string | null): ThreadAn
   const file = splitLines(content)
   const snippet = splitLines(anchor.snippet)
   const stored = anchor.startLine - 1
-  const start = matchesAt(file, snippet, stored) ? stored : locate(file, snippet, anchor)
+  const start = locate(file, snippet, anchor, stored)
   if (start === null) return orphan(anchor)
 
   const { orphaned: _, ...placed } = anchor
