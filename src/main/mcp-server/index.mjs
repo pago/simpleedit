@@ -644,8 +644,9 @@ server.registerTool(
       'should see while reading those exact lines: an assumption you made there, a choice you want',
       'confirmed, a risk you could not resolve. Do not use it for summaries, progress reports or',
       'praise, and not for anything that is not about particular lines; say those in your reply.',
-      'At most a few per task. The user answers in the thread and their answer reaches you as a',
-      'thread prompt, which you answer with reply_to_thread.',
+      'At most a few per task; you can have at most 5 open threads the user has not answered yet.',
+      'The user answers in the thread and their answer reaches you as a thread prompt, which you',
+      'answer with reply_to_thread.',
     ].join('\n'),
     inputSchema: {
       path: z.string().min(1).describe('Absolute path of the file.'),
