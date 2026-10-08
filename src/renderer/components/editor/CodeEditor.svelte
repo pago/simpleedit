@@ -2,7 +2,13 @@
   import * as monaco from 'monaco-editor'
   import type { AgentContext } from '../../lib/agent-message'
   import { lspClientManager } from '../../lsp/client-manager'
-  import { applyReveal, bindEditorOpener, consumePendingReveal } from '../../lsp/editor-opener'
+  import {
+    applyReveal,
+    bindEditorOpener,
+    consumePendingReveal,
+    setEditorLoadedPath,
+    unregisterLoadedEditor,
+  } from '../../lsp/editor-opener'
 
   interface Props {
     filePath: string | null
@@ -106,6 +112,7 @@
       }
 
       currentFilePath = path
+      setEditorLoadedPath(editor, path)
       isDirty = false
       fileStaleDirty = false
       onModified?.(path, false)
@@ -248,6 +255,7 @@
         watchedPath = null
       }
       unbindOpener()
+      if (editor) unregisterLoadedEditor(editor)
       if (currentFilePath && worktreeRoot) {
         const language = getLanguage(currentFilePath)
         lspClientManager.closeDocument(currentFilePath, language, worktreeRoot)

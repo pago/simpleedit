@@ -36,6 +36,14 @@ export const markdownViewStore = {
     _lastChosen = mode
   },
 
+  /**
+   * Set one file's mode without making it the default for unseen files — for
+   * programmatic switches the user didn't choose (e.g. revealing a marker).
+   */
+  setFor(path: string, mode: MarkdownViewMode): void {
+    _modes.set(path, mode)
+  },
+
   /** Drop a file's stored mode (e.g. when its tab closes). */
   forget(path: string): void {
     _modes.delete(path)
