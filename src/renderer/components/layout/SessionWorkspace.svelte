@@ -249,12 +249,16 @@
     setViewerOpen(true)
   })
 
-  function toggleThreads(): void {
-    if (threadsOpen && viewerOpen) {
-      threadsOpen = false
+  // Files and Threads pick what the viewer's right column shows. Choosing the
+  // one already shown hides the viewer, so either button closes what it opened.
+  let dock = $derived<'files' | 'threads' | null>(viewerOpen ? (threadsOpen ? 'threads' : 'files') : null)
+
+  function showDock(next: 'files' | 'threads'): void {
+    if (dock === next) {
+      setViewerOpen(false)
       return
     }
-    threadsOpen = true
+    threadsOpen = next === 'threads'
     setViewerOpen(true)
   }
 
@@ -484,27 +488,34 @@
             {worktreeBranch} ▾
           </button>
         {/if}
-        <button
-          class="rounded px-1.5 py-0.5 text-[10px] {viewerOpen ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
-          onclick={() => setViewerOpen(!viewerOpen)}
-          title={viewerOpen ? 'Hide files, git log and editor' : 'Show files, git log and editor'}
-        >
-          Files
-        </button>
-        <button
-          class="relative rounded px-1.5 py-0.5 text-[10px] {threadsOpen && viewerOpen ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
-          onclick={toggleThreads}
-          aria-pressed={threadsOpen && viewerOpen}
-          title={threadsUnread ? `Threads: ${threadsUnread} with unread replies` : 'Threads with this session\'s agent'}
-        >
-          Threads
-          {#if threadsUnread > 0}
-            <span
-              class="ml-0.5 rounded-full bg-blue-500 px-1 text-[9px] font-semibold text-white"
-              aria-label="{threadsUnread} unread"
-            >{threadsUnread}</span>
-          {/if}
-        </button>
+        <div class="flex overflow-hidden rounded border border-zinc-700" role="group" aria-label="Viewer panel">
+          <button
+            class="px-1.5 py-0.5 text-[10px] {dock === 'files' ? 'text-zinc-200 bg-zinc-700' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
+            onclick={() => showDock('files')}
+            aria-pressed={dock === 'files'}
+            title={dock === 'files' ? 'Hide files, git log and editor' : 'Show files, git log and editor'}
+          >
+            Files
+          </button>
+          <button
+            class="relative border-l border-zinc-700 px-1.5 py-0.5 text-[10px] {dock === 'threads' ? 'text-zinc-200 bg-zinc-700' : 'text-zinc-500'} hover:bg-zinc-700 hover:text-zinc-300"
+            onclick={() => showDock('threads')}
+            aria-pressed={dock === 'threads'}
+            title={dock === 'threads'
+              ? 'Hide threads and editor'
+              : threadsUnread
+                ? `Threads: ${threadsUnread} with unread replies`
+                : "Threads with this session's agent"}
+          >
+            Threads
+            {#if threadsUnread > 0}
+              <span
+                class="ml-0.5 rounded-full bg-blue-500 px-1 text-[9px] font-semibold text-white"
+                aria-label="{threadsUnread} unread"
+              >{threadsUnread}</span>
+            {/if}
+          </button>
+        </div>
 
         {#if worktreePopoverOpen && !memoryView}
           <div
@@ -609,7 +620,7 @@
             style:width="{rightColumnWidth}px"
           >
             {#if threadsOpen}
-              <ThreadsPanel {sessionId} visible={isActiveSession} onopen={openThreadAnchor} onclose={() => (threadsOpen = false)} />
+              <ThreadsPanel {sessionId} visible={isActiveSession} onopen={openThreadAnchor} />
             {/if}
             <!-- Hidden, not unmounted, under the threads: the tree keeps its expanded folders. -->
             <div class="min-h-0 flex-1 flex-col {threadsOpen ? 'hidden' : 'flex'}">

@@ -8,10 +8,9 @@
     sessionId: string
     visible: boolean
     onopen: (thread: AgentThread) => void
-    onclose: () => void
   }
 
-  let { sessionId, visible, onopen, onclose }: Props = $props()
+  let { sessionId, visible, onopen }: Props = $props()
 
   let threads = $derived(agentThreadsStore.forSession(sessionId))
   let open = $derived(threads.filter((t) => t.status === 'open'))
@@ -37,8 +36,6 @@
   <div class="flex flex-none items-center gap-2 border-b border-zinc-800 px-3 py-1.5">
     <span class="text-xs font-medium uppercase tracking-wider text-zinc-400">Threads</span>
     <span class="text-[11px] text-zinc-600">{open.length} open</span>
-    <span class="flex-1"></span>
-    <button class="text-xs text-zinc-500 hover:text-zinc-300" aria-label="Close threads" onclick={onclose}>×</button>
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto">

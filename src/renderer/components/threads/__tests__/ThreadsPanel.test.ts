@@ -61,7 +61,7 @@ afterEach(() => {
 })
 
 function renderPanel(onopen = vi.fn(), visible = true) {
-  return { onopen, ...render(ThreadsPanel, { sessionId: 's1', visible, onopen, onclose: vi.fn() }) }
+  return { onopen, ...render(ThreadsPanel, { sessionId: 's1', visible, onopen }) }
 }
 
 describe('ThreadsPanel', () => {
