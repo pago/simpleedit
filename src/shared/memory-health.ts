@@ -168,7 +168,10 @@ function proseLines(lines: string[]): string[] {
 }
 
 const WIKI_LINK = /\[\[([^\]|#\n]+)(?:[|#][^\]]*)?\]\]/g
-const MD_LINK = /\[[^\]\n]*\]\(\s*(<[^>\n]*>|[^)\s]*)(?:\s+[^)\n]*)?\)/g
+// The optional part after the destination is a CommonMark title only ("…",
+// '…' or (…)); anything else means the text isn't a link at all, so
+// `[x](my note.md)` is not a link to "my".
+const MD_LINK = /\[[^\]\n]*\]\(\s*(<[^>\n]*>|[^)\s]*)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?\s*\)/g
 
 interface Hit {
   line: number

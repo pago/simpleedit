@@ -79,6 +79,19 @@ describe('analyzeMemory: index', () => {
     expect(analyzeMemory(files)).toEqual([])
   })
 
+  it('accepts CommonMark titles after a link, and no other trailing text', () => {
+    const files = [
+      f('MEMORY.md', '[a](a.md "A") [b](b.md \'B\') [c](c.md (C)) [gone](gone.md "G") [x](my note.md)'),
+      f('a.md'),
+      f('b.md'),
+      f('c.md'),
+      f('my note.md'),
+    ]
+    // `[x](my note.md)` is plain text, so it neither breaks on "my" nor indexes the file.
+    expect(kinds(files)).toEqual(['index-missing-file:MEMORY.md', 'unindexed-file:my note.md'])
+    expect(analyzeMemory(files)[0]!.message).toContain('gone.md')
+  })
+
   it('ignores external and anchor links', () => {
     const files = [f('MEMORY.md', '[x](https://e.com/a.md) [y](mailto:a@b) [z](#here)')]
     expect(analyzeMemory(files)).toEqual([])
