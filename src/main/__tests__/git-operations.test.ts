@@ -90,12 +90,11 @@ describe('git watcher keying', () => {
     await watchGitRefs(repo, scoped, PATHSPEC)
 
     writeFileSync(join(repo, 'another-outside.txt'), 'o')
-    triggerStatusCheck(repo, PATHSPEC)
-    await new Promise((r) => setTimeout(r, 300))
+    await triggerStatusCheck(repo, PATHSPEC)
     expect(send).not.toHaveBeenCalledWith('git:status-changed', expect.anything())
 
     writeFileSync(join(repo, 'projects', 'x', 'memory', 'another.md'), 'i')
-    triggerStatusCheck(repo, PATHSPEC)
-    await vi.waitFor(() => expect(send).toHaveBeenCalledWith('git:status-changed', { worktreePath: repo }))
+    await triggerStatusCheck(repo, PATHSPEC)
+    expect(send).toHaveBeenCalledWith('git:status-changed', { worktreePath: repo })
   })
 })
