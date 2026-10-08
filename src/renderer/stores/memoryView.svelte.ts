@@ -123,6 +123,9 @@ function acquireUntracked(memoryDir: string, launchDir: string): () => void {
     holder = { refs: 1, launchDirs: new Map([[launchDir, 1]]), seq: 0 }
     holders.set(memoryDir, holder)
     ensureListener()
+    // The palette may have listed the dir while no one held it, so no
+    // `memory:changed` reached its cache since.
+    invalidateMemoryFileCache(memoryDir)
     watch(memoryDir, holder)
     void fetchHealth(memoryDir)
   }
@@ -179,6 +182,7 @@ export const memoryViewStore = {
     const reveal = (): void => {
       const active = tabsStore.active(sessionId)
       revealInEditor(
+        sessionId,
         path,
         { startLineNumber: issue.line, startColumn: issue.column, endLineNumber: issue.line, endColumn: issue.endColumn },
         {

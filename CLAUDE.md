@@ -289,7 +289,8 @@ health problems as Monaco markers and a badge.
   existing of: main worktree root, git toplevel, launch dir. `CLAUDE_CONFIG_DIR`
   / `CLAUDE_CODE_PROJECT_DIR_NAME` come from the login shell the CLI runs in
   (`claudeShellEnv`), not main's env. `memory:resolve` refuses `/`, `$HOME`,
-  its ancestors and the config dir; the other `memory:*` channels only accept
+  its ancestors and the config dir (answering `refused`, which the empty state
+  explains and which stops the poll); the other `memory:*` channels only accept
   dirs it handed out (the phone can reach them).
 - **Git mode** only when the dir is tracked, not ignored, and HEAD exists.
   GitLog then runs on the repo root with a pathspec (log, status poll, watch —
@@ -306,7 +307,8 @@ health problems as Monaco markers and a badge.
 - **Revealing an issue** switches a 'rendered' Markdown file to 'hybrid'
   (`markdownViewStore.setFor`) and uses `revealInEditor`, which tracks the path
   each editor has LOADED — one editor instance is reused across tabs, and
-  re-opening the active tab never runs `loadFile`.
+  re-opening the active tab never runs `loadFile`. It is scoped per workspace
+  key: hidden sessions stay mounted, and must neither take nor consume a reveal.
 
 ### Diff review flow
 GitLog (in the session workspace) → click commit → `openDiffTab`

@@ -24,14 +24,23 @@ import * as monaco from 'monaco-editor'
 
 type OpenHandler = (path: string) => void
 
-const handlersByEditor = new WeakMap<monaco.editor.ICodeEditor, OpenHandler>()
-const pendingRevealsByPath = new Map<string, monaco.IPosition | monaco.IRange>()
+/**
+ * Everything here is per scope — the workspace (session) that owns the
+ * editor. Hidden workspaces stay mounted, so a global registry would reveal in
+ * another session's editor, or let it consume a reveal meant for this one.
+ */
+const handlersByEditor = new WeakMap<monaco.editor.ICodeEditor, { scope: string; handler: OpenHandler }>()
+const pendingReveals = new Map<string, monaco.IPosition | monaco.IRange>()
 
 // Keyed by the path an editor has LOADED, not the one it was mounted for:
 // TabContainer reuses one editor instance across tabs, so a mount-time key
 // would point at whichever file it showed first.
 const editorsByLoadedPath = new Map<string, Set<monaco.editor.IStandaloneCodeEditor>>()
-const loadedPathByEditor = new Map<monaco.editor.IStandaloneCodeEditor, string>()
+const loadedKeyByEditor = new Map<monaco.editor.IStandaloneCodeEditor, string>()
+
+function key(scope: string, path: string): string {
+  return `${scope}\0${path}`
+}
 
 let openerRegistered = false
 
@@ -50,14 +59,14 @@ function ensureOpenerRegistered(): void {
         return false
       }
 
-      const handler = handlersByEditor.get(source)
-      if (!handler) return false
+      const bound = handlersByEditor.get(source)
+      if (!bound) return false
       if (resource.scheme !== 'file') return false
       const path = resource.fsPath
       if (selectionOrPosition) {
-        pendingRevealsByPath.set(path, selectionOrPosition)
+        pendingReveals.set(key(bound.scope, path), selectionOrPosition)
       }
-      handler(path)
+      bound.handler(path)
       return true
     },
   })
@@ -65,63 +74,73 @@ function ensureOpenerRegistered(): void {
 
 export function bindEditorOpener(
   editor: monaco.editor.ICodeEditor,
+  scope: string,
   handler: OpenHandler,
 ): () => void {
   ensureOpenerRegistered()
-  handlersByEditor.set(editor, handler)
+  handlersByEditor.set(editor, { scope, handler })
   return () => {
     handlersByEditor.delete(editor)
   }
 }
 
 export function consumePendingReveal(
+  scope: string,
   path: string,
 ): monaco.IPosition | monaco.IRange | null {
-  const r = pendingRevealsByPath.get(path)
+  const k = key(scope, path)
+  const r = pendingReveals.get(k)
   if (r === undefined) return null
-  pendingRevealsByPath.delete(path)
+  pendingReveals.delete(k)
   return r
 }
 
-/** Record the file `editor` now shows (call after every successful load). */
-export function setEditorLoadedPath(editor: monaco.editor.IStandaloneCodeEditor, path: string): void {
+/** Record the file `editor` (owned by `scope`) now shows — call after every successful load. */
+export function setEditorLoadedPath(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  scope: string,
+  path: string,
+): void {
   unregisterLoadedEditor(editor)
-  loadedPathByEditor.set(editor, path)
-  let set = editorsByLoadedPath.get(path)
+  const k = key(scope, path)
+  loadedKeyByEditor.set(editor, k)
+  let set = editorsByLoadedPath.get(k)
   if (!set) {
     set = new Set()
-    editorsByLoadedPath.set(path, set)
+    editorsByLoadedPath.set(k, set)
   }
   set.add(editor)
 }
 
 export function unregisterLoadedEditor(editor: monaco.editor.IStandaloneCodeEditor): void {
-  const prev = loadedPathByEditor.get(editor)
+  const prev = loadedKeyByEditor.get(editor)
   if (prev === undefined) return
-  loadedPathByEditor.delete(editor)
+  loadedKeyByEditor.delete(editor)
   const set = editorsByLoadedPath.get(prev)
   set?.delete(editor)
   if (set?.size === 0) editorsByLoadedPath.delete(prev)
 }
 
 /**
- * Reveal `target` in `path`. Applied directly only when `path` is the
- * session's active tab and an editor has it loaded; otherwise queued and the
- * file opened via `open` — the editor that loads it consumes the reveal.
- * (Re-opening an already-active tab never runs `loadFile`, which is why the
- * direct path exists.)
+ * Reveal `target` in `path` in `scope`'s editor. Applied directly only when
+ * `path` is the scope's active tab and one of ITS editors has it loaded;
+ * otherwise queued for the scope and the file opened via `open` — the scope's
+ * editor that loads it consumes the reveal. (Re-opening an already-active tab
+ * never runs `loadFile`, which is why the direct path exists.)
  */
 export function revealInEditor(
+  scope: string,
   path: string,
   target: monaco.IPosition | monaco.IRange,
   opts: { isActiveTab: boolean; open: () => void },
 ): void {
-  const editors = editorsByLoadedPath.get(path)
+  const k = key(scope, path)
+  const editors = editorsByLoadedPath.get(k)
   if (opts.isActiveTab && editors && editors.size > 0) {
     for (const editor of editors) applyReveal(editor, target)
     return
   }
-  pendingRevealsByPath.set(path, target)
+  pendingReveals.set(k, target)
   opts.open()
 }
 

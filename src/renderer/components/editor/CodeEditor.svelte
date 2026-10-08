@@ -12,6 +12,8 @@
 
   interface Props {
     filePath: string | null
+    /** The owning workspace (session) — scopes reveals and the LSP opener to it. */
+    workspaceKey: string
     worktreeRoot: string | null
     onModified?: (path: string, modified: boolean) => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
@@ -27,7 +29,7 @@
     oneditorready?: (editor: monaco.editor.IStandaloneCodeEditor) => void
   }
 
-  let { filePath, worktreeRoot, onModified, ondiscusswithagent, onOpenFile, oncontentchange, oneditorready }: Props = $props()
+  let { filePath, workspaceKey, worktreeRoot, onModified, ondiscusswithagent, onOpenFile, oncontentchange, oneditorready }: Props = $props()
 
   // Reads through this ref so the opener handler — registered once at editor
   // creation — sees the current onOpenFile prop without re-binding.
@@ -112,13 +114,13 @@
       }
 
       currentFilePath = path
-      setEditorLoadedPath(editor, path)
+      setEditorLoadedPath(editor, workspaceKey, path)
       isDirty = false
       fileStaleDirty = false
       onModified?.(path, false)
       oncontentchange?.(content)
 
-      const reveal = consumePendingReveal(path)
+      const reveal = consumePendingReveal(workspaceKey, path)
       if (reveal) applyReveal(editor, reveal)
 
       if (worktreeRoot) {
@@ -191,7 +193,7 @@
       saveFile()
     })
 
-    const unbindOpener = bindEditorOpener(editor, (target) => {
+    const unbindOpener = bindEditorOpener(editor, workspaceKey, (target) => {
       latestOnOpenFile?.(target)
     })
 
