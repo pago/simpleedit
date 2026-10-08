@@ -4,6 +4,7 @@ import { checkKeyWithServer, installRemoteApi } from './api-shim'
 import { attachParams, loadRememberedProject } from './lib/project'
 import { resolveKey, settleUrlKey } from './lib/remote-key'
 import { initScreenPrsListeners, screenPrsStore } from '../renderer/stores/screenprs.svelte'
+import { agentThreadsStore, initAgentThreadsListeners } from '../renderer/stores/agentThreads.svelte'
 import PocketApp from './PocketApp.svelte'
 import { trackVisualViewport } from './lib/visual-viewport.svelte'
 
@@ -23,13 +24,15 @@ if (keys.candidate) void settleUrlKey(keys.candidate, checkKeyWithServer, (key) 
 // minutes, and a board that only listened while you were looking at it would
 // lose whatever landed while you were reading a session.
 initScreenPrsListeners()
-// Review drafts, the filter and Screen PRs runs are shared with the desktop, and
+initAgentThreadsListeners()
+// Review drafts, the filter, Screen PRs runs and agent threads are shared with the desktop, and
 // a broadcast sent while the socket was down (or switching project) never
 // arrives — so every (re)connect reloads them.
 connection.onIdentity(() => {
   void screenPrsStore.loadDrafts()
   void screenPrsStore.loadFilter()
   void screenPrsStore.loadState()
+  void agentThreadsStore.load()
 })
 
 trackVisualViewport()
