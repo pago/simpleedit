@@ -25,14 +25,6 @@ function emit(filePath: string): void {
   }
 }
 
-/**
- * Subscribe `client` to change events for `filePath`.
- *
- * The subscription key is `client.id`, taken from the client itself rather
- * than passed alongside it: a `ClientHub` is one identity with several
- * transports, and a separately-supplied id could name a different one — which
- * would ref-count one subscriber while pushing to another.
- */
 function ensureWatcher(filePath: string): FileWatchState {
   const existing = watchers.get(filePath)
   if (existing) return existing
@@ -69,6 +61,14 @@ function releaseIfUnused(filePath: string, state: FileWatchState): void {
   watchers.delete(filePath)
 }
 
+/**
+ * Subscribe `client` to change events for `filePath`.
+ *
+ * The subscription key is `client.id`, taken from the client itself rather
+ * than passed alongside it: a `ClientHub` is one identity with several
+ * transports, and a separately-supplied id could name a different one — which
+ * would ref-count one subscriber while pushing to another.
+ */
 export function watchEditorFile(client: RemoteClient, filePath: string): void {
   const webContentsId = client.id
   const state = ensureWatcher(filePath)
