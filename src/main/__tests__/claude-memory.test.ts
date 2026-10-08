@@ -7,6 +7,7 @@ import simpleGit from 'simple-git'
 vi.mock('electron', () => ({ app: {} }))
 
 import { claudeProjectDirName } from '../claude-paths'
+import { MEMORY_MAX_FILE_BYTES, MEMORY_MAX_FILES } from '../../shared/memory-health'
 import {
   _resetHandedOutForTests,
   listMemoryFiles,
@@ -100,7 +101,7 @@ describe('resolveMemoryLocation', () => {
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: dir }))
     const loc = await resolveMemoryLocation(launch, { CLAUDE_CONFIG_DIR: config })
     expect(loc).toMatchObject({ exists: false, git: null })
-    expect(() => memoryHealth(loc.memoryDir)).toThrow(/Not a resolved memory dir/)
+    await expect(memoryHealth(loc.memoryDir)).rejects.toThrow(/Not a resolved memory dir/)
   })
 
   it('refuses the config dir itself', async () => {
@@ -108,15 +109,15 @@ describe('resolveMemoryLocation', () => {
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: config }))
     const loc = await resolveMemoryLocation(launch, { CLAUDE_CONFIG_DIR: config })
     expect(loc.exists).toBe(false)
-    expect(() => listMemoryFiles(loc.memoryDir)).toThrow(/Not a resolved memory dir/)
+    await expect(listMemoryFiles(loc.memoryDir)).rejects.toThrow(/Not a resolved memory dir/)
   })
 })
 
 describe('memory walk + health', () => {
-  it('rejects a dir that was never handed out', () => {
+  it('rejects a dir that was never handed out', async () => {
     const dir = mkdtempSync(join(tmpRoot, 'stray-'))
-    expect(() => memoryHealth(dir)).toThrow(/Not a resolved memory dir/)
-    expect(() => listMemoryFiles(dir)).toThrow(/Not a resolved memory dir/)
+    await expect(memoryHealth(dir)).rejects.toThrow(/Not a resolved memory dir/)
+    await expect(listMemoryFiles(dir)).rejects.toThrow(/Not a resolved memory dir/)
   })
 
   it('lists files and reports issues with absolute paths', async () => {
@@ -131,13 +132,37 @@ describe('memory walk + health', () => {
     writeFileSync(join(memoryDir, 'topics', 'a', 'b', 'c', 'too-deep.md'), 'x')
     await resolveMemoryLocation(launch, { CLAUDE_CONFIG_DIR: config })
 
-    expect(listMemoryFiles(memoryDir)).toEqual(['MEMORY.md', 'one.md', 'stray.md', 'topics/deep.md'])
-    const report = memoryHealth(memoryDir)
+    expect(await listMemoryFiles(memoryDir)).toEqual(['MEMORY.md', 'one.md', 'stray.md', 'topics/deep.md'])
+    const report = await memoryHealth(memoryDir)
     expect(report).toMatchObject({ memoryDir, indexPresent: true, fileCount: 4 })
     expect(report.issues.map((i) => [i.kind, i.file])).toEqual([
       ['index-missing-file', join(memoryDir, 'MEMORY.md')],
       ['broken-link', join(memoryDir, 'one.md')],
       ['unindexed-file', join(memoryDir, 'stray.md')],
     ])
+  })
+
+  it('skips index checks when MEMORY.md is over the size cap', async () => {
+    const { config, launch, memoryDir } = fixture()
+    mkdirSync(memoryDir, { recursive: true })
+    writeFileSync(join(memoryDir, 'MEMORY.md'), `- [gone](gone.md)\n${'x'.repeat(MEMORY_MAX_FILE_BYTES)}`)
+    writeFileSync(join(memoryDir, 'a.md'), 'a')
+    writeFileSync(join(memoryDir, 'b.md'), 'see [[nowhere]]')
+    await resolveMemoryLocation(launch, { CLAUDE_CONFIG_DIR: config })
+
+    const report = await memoryHealth(memoryDir)
+    expect(report).toMatchObject({ indexPresent: true, fileCount: 3 })
+    expect(report.issues.map((i) => [i.kind, i.rel])).toEqual([['broken-link', 'b.md']])
+  })
+
+  it('stops listing at the file cap', async () => {
+    const { config, launch, memoryDir } = fixture()
+    mkdirSync(join(memoryDir, 'many'), { recursive: true })
+    for (let i = 0; i < MEMORY_MAX_FILES + 5; i++) writeFileSync(join(memoryDir, 'many', `${i}.md`), '')
+    writeFileSync(join(memoryDir, 'zz.md'), '')
+    await resolveMemoryLocation(launch, { CLAUDE_CONFIG_DIR: config })
+    const files = await listMemoryFiles(memoryDir)
+    expect(files).toHaveLength(MEMORY_MAX_FILES)
+    expect(files).not.toContain('zz.md')
   })
 })

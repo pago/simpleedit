@@ -95,10 +95,11 @@ export function userAutoMemoryDirectory(env: ClaudeEnv = process.env): string | 
   }
   if (typeof parsed !== 'object' || parsed === null) return null
   const value = (parsed as Record<string, unknown>)['autoMemoryDirectory']
-  if (typeof value !== 'string' || value.trim() === '') return null
-  const trimmed = value.trim()
-  if (trimmed === '~' || trimmed.startsWith('~/')) return join(homedir(), trimmed.slice(1))
-  return isAbsolute(trimmed) ? trimmed : null
+  // Taken verbatim, as the CLI does: no trimming, and only a `~/` prefix expands
+  // (a bare `~` would be the whole home dir).
+  if (typeof value !== 'string' || value === '') return null
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2))
+  return isAbsolute(value) ? value : null
 }
 
 /**
@@ -150,6 +151,11 @@ function resolveOverCapKey(projectsRoot: string, key: string): string | null {
 }
 
 const PROJECT_DIR_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/
+const WINDOWS_RESERVED_NAME_RE = /^(con|prn|aux|nul|com\d|lpt\d)$/i
+
+function isValidProjectDirName(name: string): boolean {
+  return PROJECT_DIR_NAME_RE.test(name) && !WINDOWS_RESERVED_NAME_RE.test(name)
+}
 
 /**
  * The auto-memory directory Claude Code uses for a session launched in
@@ -169,7 +175,7 @@ export async function claudeMemoryDir(launchDir: string, env: ClaudeEnv): Promis
   const memoryFor = (key: string): string => join(projectsRoot, key, 'memory')
 
   const dirName = env.CLAUDE_CODE_PROJECT_DIR_NAME
-  if (env.CLAUDE_CONFIG_DIR && dirName && PROJECT_DIR_NAME_RE.test(dirName)) {
+  if (env.CLAUDE_CONFIG_DIR && dirName && isValidProjectDirName(dirName)) {
     return realpathOr(memoryFor(dirName))
   }
 

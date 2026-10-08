@@ -4,8 +4,14 @@
  * add/unlink/change and for directories appearing or vanishing; the latter
  * are `structural`, telling the renderer to re-resolve (the memory dir's own
  * `unlinkDir` means it is gone).
+ *
+ * A dir that is gone has no watch: its own `unlinkDir` flushes and disposes
+ * the state, and watching a missing dir is a no-op. The renderer holds a dir
+ * only while `memory:resolve` says it exists, so it watches again once the
+ * dir comes back.
  */
 import { watch, type FSWatcher } from 'chokidar'
+import { statSync } from 'fs'
 import { dirname, relative, sep } from 'path'
 import type { RemoteClient } from './client-hub'
 import { MEMORY_MAX_DEPTH } from '../shared/memory-health'
@@ -22,9 +28,7 @@ interface MemoryWatchState {
 
 const watchers = new Map<string, MemoryWatchState>()
 
-function flush(memoryDir: string): void {
-  const state = watchers.get(memoryDir)
-  if (!state) return
+function flush(memoryDir: string, state: MemoryWatchState): void {
   const payload = { memoryDir, dirs: [...state.pendingDirs], structural: state.pendingStructural }
   state.pendingDirs.clear()
   state.pendingStructural = false
@@ -37,9 +41,25 @@ function isInsideGitDir(memoryDir: string, p: string): boolean {
   return relative(memoryDir, p).split(sep).includes('.git')
 }
 
-/** Subscribe `client` to `memory:changed` for `memoryDir`. */
-export function watchMemoryDir(client: RemoteClient, memoryDir: string): void {
+function isDirectory(p: string): boolean {
+  try {
+    return statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Subscribe `client` to `memory:changed` for `memoryDir`. Returns false, and
+ * subscribes nothing, when the dir doesn't exist.
+ */
+export function watchMemoryDir(client: RemoteClient, memoryDir: string): boolean {
   let state = watchers.get(memoryDir)
+  if (!isDirectory(memoryDir)) {
+    // Gone before chokidar told us: a subscriber added now would never hear from it again.
+    if (state) dispose(memoryDir, state)
+    return false
+  }
 
   if (!state) {
     const watcher = watch(memoryDir, {
@@ -62,14 +82,21 @@ export function watchMemoryDir(client: RemoteClient, memoryDir: string): void {
       if (s.debounceTimer) clearTimeout(s.debounceTimer)
       s.debounceTimer = setTimeout(() => {
         s.debounceTimer = null
-        flush(memoryDir)
+        flush(memoryDir, s)
       }, DEBOUNCE_MS)
     }
     watcher.on('all', (event, path) => {
+      // A closed watcher can still deliver queued events; they belong to no one now.
+      if (watchers.get(memoryDir) !== s) return
       if (event === 'add' || event === 'unlink') s.pendingDirs.add(dirname(path))
       if (event === 'addDir' || event === 'unlinkDir') {
         s.pendingStructural = true
         if (path !== memoryDir) s.pendingDirs.add(dirname(path))
+      }
+      if (event === 'unlinkDir' && path === memoryDir) {
+        flush(memoryDir, s)
+        dispose(memoryDir, s)
+        return
       }
       schedule()
     })
@@ -84,12 +111,14 @@ export function watchMemoryDir(client: RemoteClient, memoryDir: string): void {
   } else {
     state.subscribers.set(client.id, { refCount: 1, webContents: client })
   }
+  return true
 }
 
 function dispose(memoryDir: string, state: MemoryWatchState): void {
   if (state.debounceTimer) clearTimeout(state.debounceTimer)
+  state.debounceTimer = null
   void state.watcher.close()
-  watchers.delete(memoryDir)
+  if (watchers.get(memoryDir) === state) watchers.delete(memoryDir)
 }
 
 export function unwatchMemoryDir(webContentsId: number, memoryDir: string): void {

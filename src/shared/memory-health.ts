@@ -38,8 +38,11 @@ export interface MemoryHealthReport {
 export interface MemoryFile {
   /** Path relative to the memory dir, `/`-separated. */
   rel: string
-  /** File text; empty for files not read (non-markdown, over the size cap). */
-  content: string
+  /**
+   * File text, or null when it was not read (non-markdown, over the size cap,
+   * unreadable). A null index means its links are unknown, not absent.
+   */
+  content: string | null
 }
 
 export function memoryIssueSeverity(kind: MemoryHealthIssueKind): MemoryHealthSeverity {
@@ -189,7 +192,9 @@ function findAll(lines: string[], re: RegExp): Hit[] {
 function linkTarget(raw: string): string | null {
   let t = raw.trim()
   if (t.startsWith('<') && t.endsWith('>')) t = t.slice(1, -1).trim()
-  if (t === '' || t.startsWith('#') || /^(https?:|mailto:)/i.test(t)) return null
+  if (t === '' || t.startsWith('#') || /^(https?:|mailto:|file:)/i.test(t)) return null
+  // Absolute paths point outside the memory dir; there is nothing to check them against.
+  if (/^([/\\~]|[A-Za-z]:[/\\])/.test(t)) return null
   const cut = t.search(/[#?]/)
   if (cut !== -1) t = t.slice(0, cut)
   try {
@@ -211,7 +216,12 @@ export function findMemoryIndex(files: readonly MemoryFile[]): MemoryFile | unde
 export function analyzeMemory(input: readonly MemoryFile[]): MemoryHealthIssue[] {
   const files = input.slice(0, MEMORY_MAX_FILES)
   const names = new Set(files.map((f) => f.rel))
-  const readable = (f: MemoryFile): boolean => isMarkdown(f.rel) && f.content.length <= MEMORY_MAX_FILE_BYTES
+  const dirs = new Set<string>()
+  for (const f of files) {
+    for (let i = f.rel.indexOf('/'); i !== -1; i = f.rel.indexOf('/', i + 1)) dirs.add(f.rel.slice(0, i))
+  }
+  const readable = (f: MemoryFile): f is MemoryFile & { content: string } =>
+    f.content !== null && isMarkdown(f.rel) && f.content.length <= MEMORY_MAX_FILE_BYTES
 
   const keysByRel = new Map<string, string[]>()
   const knownKeys = new Set<string>(['memory'])
@@ -243,7 +253,7 @@ export function analyzeMemory(input: readonly MemoryFile[]): MemoryHealthIssue[]
   const index = findMemoryIndex(files)
   if (index && readable(index)) {
     const linked = new Set<string>()
-    for (const hit of findAll(toLines(index.content), MD_LINK)) {
+    for (const hit of findAll(proseByRel.get(index.rel) ?? [], MD_LINK)) {
       const target = linkTarget(hit.value)
       if (target === null) continue
       const resolved = names.has(target) ? target : names.has(`${target}.md`) ? `${target}.md` : null
@@ -251,6 +261,7 @@ export function analyzeMemory(input: readonly MemoryFile[]): MemoryHealthIssue[]
         linked.add(resolved)
         continue
       }
+      if (dirs.has(target)) continue
       issues.push({
         kind: 'index-missing-file',
         rel: index.rel,
@@ -268,7 +279,7 @@ export function analyzeMemory(input: readonly MemoryFile[]): MemoryHealthIssue[]
       if (f.rel === index.rel || f.rel.includes('/') || !isMarkdown(f.rel)) continue
       if (linked.has(f.rel)) continue
       if ((keysByRel.get(f.rel) ?? []).some((k) => indexWikiKeys.has(k))) continue
-      const firstLine = toLines(f.content)[0] ?? ''
+      const firstLine = f.content === null ? '' : (toLines(f.content)[0] ?? '')
       issues.push({
         kind: 'unindexed-file',
         rel: f.rel,

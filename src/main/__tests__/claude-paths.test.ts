@@ -152,6 +152,18 @@ describe('claudeMemoryDir', () => {
     expect(await claudeMemoryDir(launch, env)).toBe(join(config, 'projects', claudeProjectDirName(launch), 'memory'))
   })
 
+  it.each([['~'], [` ${tmpRoot}`], ['~user/x'], ['']])(
+    'ignores autoMemoryDirectory %j, as the CLI does (no trim, only ~/ expands)',
+    async (value) => {
+      const config = makeConfig()
+      const launch = mkdtempSync(join(tmpRoot, 'launch-'))
+      writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: value }))
+      expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config })).toBe(
+        join(config, 'projects', claudeProjectDirName(launch), 'memory'),
+      )
+    },
+  )
+
   it('ignores autoMemoryDirectory in project and local settings', async () => {
     const config = makeConfig()
     const launch = mkdtempSync(join(tmpRoot, 'launch-'))
@@ -174,6 +186,11 @@ describe('claudeMemoryDir', () => {
     expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PROJECT_DIR_NAME: '../escape' })).toBe(
       fallback,
     )
+    for (const reserved of ['con', 'NUL', 'Com1', 'lpt9', 'aux', 'prn']) {
+      expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PROJECT_DIR_NAME: reserved })).toBe(
+        fallback,
+      )
+    }
     expect(await claudeMemoryDir(launch, { CLAUDE_CODE_PROJECT_DIR_NAME: 'custom_1' })).toBe(
       join(homedir(), '.claude', 'projects', claudeProjectDirName(launch), 'memory'),
     )

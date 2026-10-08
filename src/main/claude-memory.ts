@@ -7,7 +7,8 @@
  * `resolveMemoryLocation` handed out, and resolve refuses dirs that would
  * expose a whole home or config tree.
  */
-import { readdirSync, readFileSync, realpathSync, statSync } from 'fs'
+import { realpathSync, statSync } from 'fs'
+import { open, readdir } from 'fs/promises'
 import { homedir } from 'os'
 import { isAbsolute, join, relative, sep } from 'path'
 import simpleGit from 'simple-git'
@@ -95,12 +96,12 @@ export function isHandedOutMemoryDir(memoryDir: string): boolean {
 }
 
 /** Files under `memoryDir` (relative, `/`-separated), bounded and skipping `.git`. */
-function walk(memoryDir: string): string[] {
+async function walk(memoryDir: string): Promise<string[]> {
   const out: string[] = []
-  const visit = (dir: string, prefix: string, depth: number): void => {
+  const visit = async (dir: string, prefix: string, depth: number): Promise<void> => {
     let entries
     try {
-      entries = readdirSync(dir, { withFileTypes: true })
+      entries = await readdir(dir, { withFileTypes: true })
     } catch {
       return
     }
@@ -111,37 +112,64 @@ function walk(memoryDir: string): string[] {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
         // Same reach as the watcher's chokidar `depth`: that many subdir levels.
-        if (depth < MEMORY_MAX_DEPTH) visit(join(dir, entry.name), rel, depth + 1)
+        if (depth < MEMORY_MAX_DEPTH) await visit(join(dir, entry.name), rel, depth + 1)
       } else if (entry.isFile()) {
         out.push(rel)
       }
     }
   }
-  visit(memoryDir, '', 0)
+  await visit(memoryDir, '', 0)
   return out
 }
 
-export function listMemoryFiles(memoryDir: string): string[] {
+export async function listMemoryFiles(memoryDir: string): Promise<string[]> {
   assertHandedOut(memoryDir)
   return walk(memoryDir)
 }
 
-function readMemoryFile(abs: string, rel: string): string {
-  if (!/\.md$/i.test(rel)) return ''
+/**
+ * A markdown file's text, or null if it isn't markdown, can't be read, or is
+ * over the size cap. Never reads more than cap + 1 bytes.
+ */
+async function readMemoryFile(abs: string, rel: string): Promise<string | null> {
+  if (!/\.md$/i.test(rel)) return null
+  let handle
   try {
-    if (statSync(abs).size > MEMORY_MAX_FILE_BYTES) return ''
-    return readFileSync(abs, 'utf8')
+    handle = await open(abs, 'r')
+    const { size } = await handle.stat()
+    if (size > MEMORY_MAX_FILE_BYTES) return null
+    // One spare byte detects growth past the cap since the stat.
+    const buf = Buffer.alloc(Math.min(size, MEMORY_MAX_FILE_BYTES) + 1)
+    let total = 0
+    while (total < buf.length) {
+      const { bytesRead } = await handle.read(buf, total, buf.length - total, total)
+      if (bytesRead === 0) break
+      total += bytesRead
+    }
+    // Filled the spare byte: the file grew after the stat, so this read may be partial.
+    if (total === buf.length) return null
+    return buf.toString('utf8', 0, total)
   } catch {
-    return ''
+    return null
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
 }
 
-export function memoryHealth(memoryDir: string): MemoryHealthReport {
+const READ_CONCURRENCY = 8
+
+export async function memoryHealth(memoryDir: string): Promise<MemoryHealthReport> {
   assertHandedOut(memoryDir)
-  const files: MemoryFile[] = walk(memoryDir).map((rel) => ({
-    rel,
-    content: readMemoryFile(join(memoryDir, rel), rel),
-  }))
+  const rels = await walk(memoryDir)
+  const files: MemoryFile[] = rels.map((rel) => ({ rel, content: null }))
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < files.length) {
+      const file = files[next++]!
+      file.content = await readMemoryFile(join(memoryDir, file.rel), file.rel)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, files.length) }, worker))
   return {
     memoryDir,
     indexPresent: findMemoryIndex(files) !== undefined,

@@ -41,42 +41,73 @@ function claudeEnvFrom(source: Record<string, string | undefined>): ClaudeEnv {
   return env
 }
 
-let claudeEnvPromise: Promise<ClaudeEnv> | null = null
+/** How long a failed login-shell read is trusted before the next call retries it. */
+export const CLAUDE_ENV_RETRY_MS = 60_000
 
-/**
- * The Claude-storage env vars as a spawned Claude session sees them. Sessions
- * run through `$SHELL -i -l -c` (`pty.ts`), so a `CLAUDE_CONFIG_DIR` exported
- * from the user's profile applies to the CLI but not to a Dock-launched main
- * process. Read once from a login shell; on any failure fall back to
- * `process.env`.
- *
- * Skipped under E2E for the same reason `pty.ts` drops `-i -l` there: a
- * developer profile must not override the test's temp config dir.
- */
-export function claudeShellEnv(): Promise<ClaudeEnv> {
-  if (claudeEnvPromise) return claudeEnvPromise
-  const shell = process.env['SHELL']
-  if (process.platform === 'win32' || process.env['SIMPLEEDIT_E2E'] === '1' || !shell) {
-    claudeEnvPromise = Promise.resolve(claudeEnvFrom(process.env))
-    return claudeEnvPromise
-  }
+let claudeEnvCached: ClaudeEnv | null = null
+let claudeEnvInflight: Promise<ClaudeEnv> | null = null
+let claudeEnvFailedAt: number | null = null
+
+/** Read the vars from a login shell; null on any failure (error, timeout, garbled output). */
+function readClaudeEnvFromShell(shell: string): Promise<ClaudeEnv | null> {
   // A leading NUL fences off anything the profile prints before our values.
   const script = ["printf '\\0'", ...CLAUDE_ENV_KEYS.map((k) => `printf '%s\\0' "$${k}"`)].join('; ')
-  claudeEnvPromise = new Promise((resolve) => {
+  return new Promise((resolve) => {
     execFile(shell, ['-ilc', script], { encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
       if (err) {
         console.warn('[SimpleEdit] Failed to read Claude env from login shell:', err)
-        resolve(claudeEnvFrom(process.env))
+        resolve(null)
         return
       }
       const fields = stdout.split('\0')
       const values = fields.slice(-CLAUDE_ENV_KEYS.length - 1, -1)
       if (values.length !== CLAUDE_ENV_KEYS.length) {
-        resolve(claudeEnvFrom(process.env))
+        resolve(null)
         return
       }
       resolve(claudeEnvFrom(Object.fromEntries(CLAUDE_ENV_KEYS.map((k, i) => [k, values[i]]))))
     })
   })
-  return claudeEnvPromise
+}
+
+/**
+ * The Claude-storage env vars as a spawned Claude session sees them. Sessions
+ * run through `$SHELL -i -l -c` (`pty.ts`), so a `CLAUDE_CONFIG_DIR` exported
+ * from the user's profile applies to the CLI but not to a Dock-launched main
+ * process. A successful login-shell read is cached for good; a failed one
+ * falls back to `process.env` and is retried after `CLAUDE_ENV_RETRY_MS`, so
+ * one slow shell start doesn't pin the wrong config dir until restart.
+ *
+ * Skipped under E2E for the same reason `pty.ts` drops `-i -l` there: a
+ * developer profile must not override the test's temp config dir.
+ */
+export function claudeShellEnv(): Promise<ClaudeEnv> {
+  if (claudeEnvCached) return Promise.resolve(claudeEnvCached)
+  if (claudeEnvInflight) return claudeEnvInflight
+  const shell = process.env['SHELL']
+  if (process.platform === 'win32' || process.env['SIMPLEEDIT_E2E'] === '1' || !shell) {
+    claudeEnvCached = claudeEnvFrom(process.env)
+    return Promise.resolve(claudeEnvCached)
+  }
+  if (claudeEnvFailedAt !== null && Date.now() - claudeEnvFailedAt < CLAUDE_ENV_RETRY_MS) {
+    return Promise.resolve(claudeEnvFrom(process.env))
+  }
+  claudeEnvInflight = readClaudeEnvFromShell(shell).then((env) => {
+    claudeEnvInflight = null
+    if (env) {
+      claudeEnvCached = env
+      claudeEnvFailedAt = null
+      return env
+    }
+    claudeEnvFailedAt = Date.now()
+    return claudeEnvFrom(process.env)
+  })
+  return claudeEnvInflight
+}
+
+/** Test seam: forget the cached env and any recorded failure. */
+export function _resetClaudeShellEnvForTests(): void {
+  claudeEnvCached = null
+  claudeEnvInflight = null
+  claudeEnvFailedAt = null
 }
