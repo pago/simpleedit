@@ -10,10 +10,19 @@
  * `-foo--bar` not `-foo-bar`. Verified against the CLI.
  */
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync } from 'fs'
-import { tmpdir } from 'os'
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync, writeFileSync } from 'fs'
+import { homedir, tmpdir } from 'os'
 import { join } from 'path'
-import { claudeProjectDirName, claudeProjectsDir } from '../claude-paths'
+import simpleGit from 'simple-git'
+import {
+  claudeConfigDir,
+  claudeKeyHash,
+  claudeMemoryDir,
+  claudeProjectDirName,
+  claudeProjectsDir,
+  encodeProjectKey,
+  PROJECT_KEY_MAX,
+} from '../claude-paths'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'simpleedit-claude-paths-test-'))
 
@@ -84,9 +93,159 @@ describe('claudeProjectDirName', () => {
 describe('claudeProjectsDir', () => {
   it('joins HOME + .claude/projects + encoded-cwd', () => {
     const dir = mkdtempSync(join(tmpRoot, 'pd-'))
-    const projects = claudeProjectsDir(dir)
+    const projects = claudeProjectsDir(dir, {})
     expect(projects).toMatch(/\.claude\/projects\//)
     expect(projects).toMatch(new RegExp(`${claudeProjectDirName(dir)}$`))
+  })
+
+  it('honours CLAUDE_CONFIG_DIR', () => {
+    const dir = mkdtempSync(join(tmpRoot, 'pd-'))
+    expect(claudeConfigDir({ CLAUDE_CONFIG_DIR: '/cfg' })).toBe('/cfg')
+    expect(claudeConfigDir({})).toBe(join(homedir(), '.claude'))
+    expect(claudeProjectsDir(dir, { CLAUDE_CONFIG_DIR: '/cfg' })).toBe(join('/cfg', 'projects', claudeProjectDirName(dir)))
+  })
+})
+
+describe('encodeProjectKey (over-cap keys)', () => {
+  it('matches Java String.hashCode in base 36', () => {
+    // "hello".hashCode() === 99162322; a negative hash is made absolute.
+    expect(claudeKeyHash('hello')).toBe((99162322).toString(36))
+    expect(claudeKeyHash('polygenelubricants')).toBe((2147483648).toString(36))
+  })
+
+  it('truncates to 200 chars and appends the hash of the unencoded path', () => {
+    const long = '/' + 'a'.repeat(250)
+    const key = encodeProjectKey(long)
+    expect(key).toBe(`-${'a'.repeat(PROJECT_KEY_MAX - 1)}-${claudeKeyHash(long)}`)
+    expect(encodeProjectKey('/short/path')).toBe('-short-path')
+  })
+})
+
+describe('claudeMemoryDir', () => {
+  const makeConfig = (): string => mkdtempSync(join(tmpRoot, 'cfg-'))
+  const seedMemory = (config: string, key: string): string => {
+    const dir = join(config, 'projects', key, 'memory')
+    mkdirSync(dir, { recursive: true })
+    return realpathSync(dir)
+  }
+
+  it('defaults to projects/<launchDir key>/memory, even when missing', async () => {
+    const config = makeConfig()
+    const launch = mkdtempSync(join(tmpRoot, 'launch-'))
+    expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config })).toBe(
+      join(config, 'projects', claudeProjectDirName(launch), 'memory'),
+    )
+  })
+
+  it('reads autoMemoryDirectory from user settings, expanding ~/ and ignoring relative paths', async () => {
+    const config = makeConfig()
+    const launch = mkdtempSync(join(tmpRoot, 'launch-'))
+    const env = { CLAUDE_CONFIG_DIR: config }
+    const custom = mkdtempSync(join(tmpRoot, 'custom-mem-'))
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: custom }))
+    expect(await claudeMemoryDir(launch, env)).toBe(realpathSync(custom))
+
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: '~/some-memory-dir-xyz' }))
+    expect(await claudeMemoryDir(launch, env)).toBe(join(homedir(), 'some-memory-dir-xyz'))
+
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: 'relative/dir' }))
+    expect(await claudeMemoryDir(launch, env)).toBe(join(config, 'projects', claudeProjectDirName(launch), 'memory'))
+  })
+
+  it('ignores autoMemoryDirectory in project and local settings', async () => {
+    const config = makeConfig()
+    const launch = mkdtempSync(join(tmpRoot, 'launch-'))
+    mkdirSync(join(launch, '.claude'))
+    const evil = mkdtempSync(join(tmpRoot, 'evil-'))
+    writeFileSync(join(launch, '.claude', 'settings.json'), JSON.stringify({ autoMemoryDirectory: evil }))
+    writeFileSync(join(launch, '.claude', 'settings.local.json'), JSON.stringify({ autoMemoryDirectory: evil }))
+    expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config })).toBe(
+      join(config, 'projects', claudeProjectDirName(launch), 'memory'),
+    )
+  })
+
+  it('uses CLAUDE_CODE_PROJECT_DIR_NAME only with CLAUDE_CONFIG_DIR and a valid name', async () => {
+    const config = makeConfig()
+    const launch = mkdtempSync(join(tmpRoot, 'launch-'))
+    const fallback = join(config, 'projects', claudeProjectDirName(launch), 'memory')
+    expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PROJECT_DIR_NAME: 'custom_1' })).toBe(
+      join(config, 'projects', 'custom_1', 'memory'),
+    )
+    expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PROJECT_DIR_NAME: '../escape' })).toBe(
+      fallback,
+    )
+    expect(await claudeMemoryDir(launch, { CLAUDE_CODE_PROJECT_DIR_NAME: 'custom_1' })).toBe(
+      join(homedir(), '.claude', 'projects', claudeProjectDirName(launch), 'memory'),
+    )
+  })
+
+  describe('in a git work tree', () => {
+    async function makeRepo(): Promise<{ main: string; linked: string; sub: string }> {
+      const root = mkdtempSync(join(tmpRoot, 'repo-'))
+      const main = join(root, 'main')
+      await simpleGit(root).raw(['init', '--initial-branch=main', main])
+      const git = simpleGit(main)
+      await git.addConfig('user.email', 'test@example.com')
+      await git.addConfig('user.name', 'Test')
+      mkdirSync(join(main, 'sub'))
+      writeFileSync(join(main, 'sub', 'f'), 'x')
+      await git.add('.')
+      await git.commit('init')
+      const linked = join(root, 'linked')
+      await git.raw(['worktree', 'add', '-b', 'feature', linked])
+      return { main: realpathSync(main), linked: realpathSync(linked), sub: realpathSync(join(main, 'sub')) }
+    }
+
+    it('prefers the main worktree root when nothing exists yet', async () => {
+      const config = makeConfig()
+      const { main, linked } = await makeRepo()
+      expect(await claudeMemoryDir(linked, { CLAUDE_CONFIG_DIR: config })).toBe(
+        join(config, 'projects', encodeProjectKey(main), 'memory'),
+      )
+    })
+
+    it('probes candidates in order: main root, toplevel, launchDir', async () => {
+      const env = { CLAUDE_CONFIG_DIR: makeConfig() }
+      const { main, linked } = await makeRepo()
+      const launch = join(linked, 'sub')
+      const own = seedMemory(env.CLAUDE_CONFIG_DIR, encodeProjectKey(launch))
+      expect(await claudeMemoryDir(launch, env)).toBe(own)
+      const top = seedMemory(env.CLAUDE_CONFIG_DIR, encodeProjectKey(linked))
+      expect(await claudeMemoryDir(launch, env)).toBe(top)
+      const mainMem = seedMemory(env.CLAUDE_CONFIG_DIR, encodeProjectKey(main))
+      expect(await claudeMemoryDir(launch, env)).toBe(mainMem)
+    })
+  })
+
+  describe('over-cap project keys', () => {
+    function longLaunchDir(): string {
+      let dir = mkdtempSync(join(tmpRoot, 'long-'))
+      while (realpathSync(dir).length <= PROJECT_KEY_MAX + 10) {
+        dir = join(dir, 'x'.repeat(40))
+        mkdirSync(dir)
+      }
+      return realpathSync(dir)
+    }
+
+    it('finds the hashed key', async () => {
+      const config = makeConfig()
+      const launch = longLaunchDir()
+      const mem = seedMemory(config, encodeProjectKey(launch))
+      expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config })).toBe(mem)
+    })
+
+    it('falls back to a unique entry with the truncated prefix', async () => {
+      const config = makeConfig()
+      const launch = longLaunchDir()
+      const prefix = encodeProjectKey(launch).slice(0, PROJECT_KEY_MAX)
+      const mem = seedMemory(config, `${prefix}-otherhash`)
+      expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config })).toBe(mem)
+
+      seedMemory(config, `${prefix}-secondhash`)
+      expect(await claudeMemoryDir(launch, { CLAUDE_CONFIG_DIR: config })).toBe(
+        join(config, 'projects', encodeProjectKey(launch), 'memory'),
+      )
+    })
   })
 })
 
