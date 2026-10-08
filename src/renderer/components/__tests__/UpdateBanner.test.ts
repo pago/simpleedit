@@ -57,6 +57,17 @@ describe('UpdateBanner', () => {
     )
   })
 
+  it('comes back after a dismiss when the update is announced again', async () => {
+    render(UpdateBanner)
+    emit('update:available', { version: '1.2.3' })
+    await fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(/Downloading update/)).not.toBeInTheDocument()
+
+    emit('update:available', { version: '1.2.3' })
+
+    await waitFor(() => expect(screen.getByText(/Downloading update 1\.2\.3/)).toBeInTheDocument())
+  })
+
   it('pads the message clear of the macOS traffic lights', async () => {
     const { container } = render(UpdateBanner)
 

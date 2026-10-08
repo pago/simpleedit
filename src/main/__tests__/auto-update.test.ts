@@ -25,12 +25,15 @@ const homebrew = {
 vi.mock('../homebrew', () => homebrew)
 
 const openPath = vi.fn()
+const showMessageBox = vi.fn().mockResolvedValue({ response: 0 })
 
 vi.mock('electron', () => ({
   app: electronApp,
   shell: { openPath },
+  dialog: { showMessageBox },
   autoUpdater: squirrel,
   BrowserWindow: {
+    getFocusedWindow: () => null,
     getAllWindows: () => [{
       isDestroyed: () => false,
       webContents: { isDestroyed: () => false, send: (channel: string, data: unknown) => sent.push({ channel, data }) }
@@ -56,6 +59,11 @@ async function initOn(platform: string): Promise<void> {
   mod.initAutoUpdater()
 }
 
+async function checkFromMenu(): Promise<void> {
+  const mod = await import('../auto-update')
+  await mod.checkForUpdatesFromMenu()
+}
+
 function channels(): string[] {
   return sent.map((entry) => entry.channel)
 }
@@ -69,6 +77,8 @@ beforeEach(() => {
   sent.length = 0
   handlers.clear()
   openPath.mockClear()
+  showMessageBox.mockClear()
+  updater.checkForUpdates.mockReset().mockResolvedValue(null)
   electronApp.quit.mockClear()
   for (const fn of Object.values(homebrew)) fn.mockClear()
   homebrew.isHomebrewManaged.mockReturnValue(false)
@@ -345,5 +355,81 @@ describe('reporting a failed background upgrade', () => {
     await vi.advanceTimersByTimeAsync(5_000)
 
     expect(homebrew.takeUpgradeResult).not.toHaveBeenCalled()
+  })
+})
+
+describe('periodic update checks', () => {
+  const FOUR_HOURS = 4 * 60 * 60 * 1000
+
+  it('checks again while the app keeps running', async () => {
+    await initOn('linux')
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(FOUR_HOURS)
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops checking once an update is pending', async () => {
+    await initOn('darwin')
+    await vi.advanceTimersByTimeAsync(5_000)
+    updater.emit('update-available', { version: '2.0.0' })
+
+    await vi.advanceTimersByTimeAsync(FOUR_HOURS)
+
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Check for Updates from the menu', () => {
+  it("says so when there's nothing new", async () => {
+    await initOn('linux')
+    updater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: false })
+
+    await checkFromMenu()
+
+    expect(showMessageBox).toHaveBeenCalledWith(expect.objectContaining({ message: "You're up to date." }))
+  })
+
+  it('reports a failed check', async () => {
+    await initOn('linux')
+    updater.checkForUpdates.mockRejectedValue(new Error('offline'))
+
+    await checkFromMenu()
+
+    expect(showMessageBox).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', detail: 'offline' })
+    )
+  })
+
+  it('leaves a found update to the banner', async () => {
+    await initOn('linux')
+    updater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true })
+
+    await checkFromMenu()
+
+    expect(showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('re-announces a pending update instead of checking again', async () => {
+    await initOn('linux')
+    updater.emit('update-available', { version: '2.0.0' })
+    updater.emit('update-downloaded', { version: '2.0.0' })
+    sent.length = 0
+
+    await checkFromMenu()
+
+    expect(updater.checkForUpdates).not.toHaveBeenCalled()
+    expect(channels()).toEqual(['update:available', 'update:downloaded'])
+  })
+
+  it('does not claim a download that has not finished', async () => {
+    await initOn('linux')
+    updater.emit('update-available', { version: '2.0.0' })
+    sent.length = 0
+
+    await checkFromMenu()
+
+    expect(channels()).toEqual(['update:available'])
   })
 })

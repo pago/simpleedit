@@ -63,6 +63,7 @@
       }
       updateVersion = info.version
       homebrew = info.managedByHomebrew === true
+      dismissed = false
     })
     const offDownloaded = window.api.on('update:downloaded', (info) => {
       updateVersion = info.version

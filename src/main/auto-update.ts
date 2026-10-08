@@ -1,4 +1,4 @@
-import { app, autoUpdater as squirrel, shell } from 'electron'
+import { app, BrowserWindow, dialog, autoUpdater as squirrel, shell } from 'electron'
 import { broadcastToWindows } from './window-broadcast'
 import { handleInvoke } from './ipc-registry'
 import { autoUpdater } from 'electron-updater'
@@ -19,6 +19,10 @@ const isMac = process.platform === 'darwin'
 // late stage still wins — it clears the reported error.
 const STAGING_TIMEOUT_MS = 120_000
 
+// SimpleEdit stays open for days, so a check on launch alone can miss a
+// release by as long as the app keeps running.
+const RECHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
+
 // On macOS, electron-updater dispatches `update-downloaded` the moment its proxy
 // server starts listening (MacUpdater.dispatchUpdateDownloaded, before it asks
 // Squirrel to fetch), so at that point Squirrel has neither fetched nor
@@ -29,6 +33,7 @@ const STAGING_TIMEOUT_MS = 120_000
 // Squirrel reports the bundle staged. Other platforms don't use Squirrel.
 let staged = !isMac
 let pending: UpdateInfo | null = null
+let downloadAnnounced = false
 let stagingTimer: NodeJS.Timeout | undefined
 let homebrewManaged = false
 
@@ -38,6 +43,11 @@ function toUpdateInfo(info: { version: string; releaseNotes?: unknown }): Update
     releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
     managedByHomebrew: homebrewManaged || undefined
   }
+}
+
+function announceDownloaded(info: UpdateInfo): void {
+  downloadAnnounced = true
+  broadcastToWindows('update:downloaded', info)
 }
 
 function reportError(message: string, phase: UpdateErrorPhase): void {
@@ -58,6 +68,7 @@ export function initAutoUpdater(): void {
     // A fresh cycle: the previously staged bundle says nothing about this one.
     clearTimeout(stagingTimer)
     staged = !isMac
+    downloadAnnounced = false
     pending = toUpdateInfo(info)
     broadcastToWindows('update:available', pending)
   })
@@ -66,7 +77,7 @@ export function initAutoUpdater(): void {
     clearTimeout(stagingTimer)
     pending = toUpdateInfo(info)
     if (staged) {
-      broadcastToWindows('update:downloaded', pending)
+      announceDownloaded(pending)
       return
     }
     stagingTimer = setTimeout(() => {
@@ -84,7 +95,7 @@ export function initAutoUpdater(): void {
     squirrel.on('update-downloaded', () => {
       staged = true
       clearTimeout(stagingTimer)
-      if (pending) broadcastToWindows('update:downloaded', pending)
+      if (pending) announceDownloaded(pending)
     })
   }
 
@@ -134,6 +145,52 @@ export function initAutoUpdater(): void {
       console.error('[AutoUpdate] Initial check failed:', err.message)
     })
   }, 5_000)
+
+  // Once an update is pending there is nothing new to say, and a repeat
+  // `update-available` would reset the macOS staging state the banner waits on.
+  setInterval(() => {
+    if (pending) return
+    autoUpdater.checkForUpdates().catch((err: Error) => {
+      console.error('[AutoUpdate] Periodic check failed:', err.message)
+    })
+  }, RECHECK_INTERVAL_MS)
+}
+
+function showMessage(options: Electron.MessageBoxOptions): void {
+  const parent = BrowserWindow.getFocusedWindow()
+  void (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options))
+}
+
+/**
+ * "Check for Updates…" from the app menu. A found update is announced through
+ * the banner like any other; only the outcomes the banner has no way to show
+ * (nothing new, or the check failing) get a dialog.
+ */
+export async function checkForUpdatesFromMenu(): Promise<void> {
+  if (pending) {
+    // The banner may have been dismissed — announcing again brings it back.
+    broadcastToWindows('update:available', pending)
+    if (downloadAnnounced) broadcastToWindows('update:downloaded', pending)
+    return
+  }
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    if (!result) {
+      showMessage({ type: 'info', message: 'Updates are only checked in packaged builds.' })
+    } else if (!result.isUpdateAvailable) {
+      showMessage({
+        type: 'info',
+        message: "You're up to date.",
+        detail: `SimpleEdit ${app.getVersion()} is the latest version.`
+      })
+    }
+  } catch (err) {
+    showMessage({
+      type: 'error',
+      message: 'Could not check for updates.',
+      detail: err instanceof Error ? err.message : String(err)
+    })
+  }
 }
 
 /**

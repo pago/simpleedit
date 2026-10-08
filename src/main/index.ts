@@ -87,7 +87,7 @@ import {
 import { inheritShellPath } from './shell-path'
 import { listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent, resetPrompt, revealTarget } from './prompts/overrides'
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
-import { initAutoUpdater } from './auto-update'
+import { checkForUpdatesFromMenu, initAutoUpdater } from './auto-update'
 import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
 import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } from './agent-bus'
@@ -1316,12 +1316,17 @@ app.whenReady().then(() => {
     accelerator: 'CmdOrCtrl+,',
     click: () => createSettingsWindow()
   }
+  const checkForUpdatesItem: Electron.MenuItemConstructorOptions = {
+    label: 'Check for Updates…',
+    click: () => void checkForUpdatesFromMenu()
+  }
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac
       ? [{
           label: app.name,
           submenu: [
             { role: 'about' as const },
+            checkForUpdatesItem,
             { type: 'separator' as const },
             settingsItem,
             { type: 'separator' as const },
@@ -1343,7 +1348,7 @@ app.whenReady().then(() => {
           accelerator: 'CmdOrCtrl+Shift+N',
           click: () => createWindow()
         },
-        ...(isMac ? [] : [{ type: 'separator' as const }, settingsItem]),
+        ...(isMac ? [] : [{ type: 'separator' as const }, settingsItem, checkForUpdatesItem]),
         { type: 'separator' as const },
         isMac ? { role: 'close' as const } : { role: 'quit' as const }
       ]
