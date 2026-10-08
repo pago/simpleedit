@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import SessionScreen from '../SessionScreen.svelte'
 import type { RemoteConnection } from '../api-shim'
 import type { WindowSession } from '../../shared/ipc-types'
+import { initAgentThreadsListeners, _resetAgentThreadsForTests } from '../../renderer/stores/agentThreads.svelte'
+import type { ThreadChange } from '../../shared/agent-threads'
 
 /**
  * The screen's second pane.
@@ -155,6 +157,50 @@ describe('SessionScreen', () => {
     // The same pane, so the repo/worktree/commit the reader picked survives
     // and the reads that produced it are not re-issued per visit.
     expect(screen.getByTestId('changes-pane')).toBe(pane)
+  })
+
+  it("counts the session's unread threads on the Threads tab and builds the pane on first visit", async () => {
+    const api = (window as unknown as { api: { on: unknown } }).api
+    let changed: (c: ThreadChange) => void = () => {}
+    api.on = (channel: string, cb: (c: ThreadChange) => void) => {
+      if (channel === 'agent-threads:changed') changed = cb
+      return () => {}
+    }
+    const dispose = initAgentThreadsListeners()
+    try {
+      render(SessionScreen, { props: { session, connection } })
+      expect(screen.queryByTestId('threads-unread')).toBeNull()
+      changed({
+        threadId: 't_aaaaaaaa',
+        rev: 5,
+        thread: {
+          id: 't_aaaaaaaa',
+          sessionId: session.terminalId,
+          worktreePath: WORKTREE,
+          anchor: { path: 'src/a.ts', startLine: 3, endLine: 3, snippet: 'x', before: '', after: '', context: 'file' },
+          status: 'open',
+          messages: [{ id: 'm_aaaaaaaa', author: 'agent', body: 'Fixed.', at: '2026-10-08T10:00:00.000Z' }],
+          lastReadAt: null,
+          createdAt: '2026-10-08T10:00:00.000Z',
+          updatedAt: '2026-10-08T10:00:00.000Z',
+        },
+      })
+      expect((await screen.findByTestId('threads-unread')).textContent).toBe('1')
+
+      expect(screen.queryByTestId('threads-pane')).toBeNull()
+      await fireEvent.click(screen.getByTestId('pane-threads'))
+      expect(await screen.findByText('src/a.ts:3')).toBeInTheDocument()
+      expect(screen.getByTestId('mobile-terminal').closest('.hidden')).toBeTruthy()
+    } finally {
+      dispose()
+      _resetAgentThreadsForTests()
+    }
+  })
+
+  it('offers no Threads tab on a plain terminal', () => {
+    const shell: WindowSession = { ...session, kind: 'terminal', provider: undefined }
+    render(SessionScreen, { props: { session: shell, connection } })
+    expect(screen.queryByTestId('pane-threads')).toBeNull()
   })
 
   it('lets Back leave with typed text, but holds for a recording in progress', async () => {
