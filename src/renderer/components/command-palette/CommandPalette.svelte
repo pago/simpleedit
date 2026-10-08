@@ -21,7 +21,7 @@
     return {
       activeSessionId: sessionsStore.activeSessionId(),
       worktreePath: session?.worktreePath ?? null,
-      ...(memoryView ? { memory: { dir: memoryView.memoryDir, git: memoryView.git } } : {}),
+      ...(memoryView ? { memory: { dir: memoryView.memoryDir, git: memoryView.git, refused: !!memoryView.refused } } : {}),
     }
   })
 

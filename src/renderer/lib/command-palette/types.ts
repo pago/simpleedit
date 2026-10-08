@@ -23,7 +23,8 @@ export interface PaletteContext {
    * the memory dir, and git-backed providers (commits, tours, reviews) are
    * skipped — they would act on the worktree the user isn't looking at.
    */
-  memory?: { dir: string; git: MemoryGit | null }
+  /** `refused`: main won't list the dir, so there are no files to offer. */
+  memory?: { dir: string; git: MemoryGit | null; refused?: boolean }
 }
 
 export interface PaletteProvider {

@@ -100,7 +100,7 @@ describe('resolveMemoryLocation', () => {
     const { config, launch } = fixture()
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: dir }))
     const loc = await resolveMemoryLocation(launch, { CLAUDE_CONFIG_DIR: config })
-    expect(loc).toMatchObject({ exists: false, git: null })
+    expect(loc).toMatchObject({ exists: false, git: null, refused: true })
     await expect(memoryHealth(loc.memoryDir)).rejects.toThrow(/Not a resolved memory dir/)
   })
 
@@ -108,7 +108,7 @@ describe('resolveMemoryLocation', () => {
     const { config, launch } = fixture()
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ autoMemoryDirectory: config }))
     const loc = await resolveMemoryLocation(launch, { CLAUDE_CONFIG_DIR: config })
-    expect(loc.exists).toBe(false)
+    expect(loc).toMatchObject({ exists: false, refused: true })
     await expect(listMemoryFiles(loc.memoryDir)).rejects.toThrow(/Not a resolved memory dir/)
   })
 })

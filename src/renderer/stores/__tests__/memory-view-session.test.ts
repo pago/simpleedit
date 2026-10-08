@@ -117,6 +117,18 @@ describe('memory view on a session', () => {
     expect(mv.git?.pathspec).toBe('projects/-proj/memory')
   })
 
+  it('carries a refused dir through open and re-resolve, and clears it once allowed', async () => {
+    const id = createAgentSession()
+    location = { memoryDir: '/', exists: false, git: null, refused: true }
+    await sessionsStore.openMemoryView(id)
+    expect(sessionsStore.get(id)!.memoryView).toMatchObject({ memoryDir: '/', exists: false, refused: true })
+
+    sessionsStore.applyMemoryLocation('/proj', { memoryDir: MEMORY, exists: true, git: null })
+    const mv = sessionsStore.get(id)!.memoryView!
+    expect(mv.refused).toBeUndefined()
+    expect(mv.memoryDir).toBe(MEMORY)
+  })
+
   it('memory file and memory diff tabs are never serialized', async () => {
     const id = createAgentSession()
     sessionsStore.update(id, { providerSessionId: 'uuid-1' })

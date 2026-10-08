@@ -46,14 +46,18 @@
   let canShowMemory = $derived(activeSession?.provider === 'claude')
   let memoryActive = $derived(!!activeSession?.memoryView)
 
+  let memoryError = $state<string | null>(null)
+
   let currentLabel = $derived(memoryActive ? 'Claude memory' : currentRepo ? repoName(currentRepo) : '—')
 
   function showMemory(): void {
     open = false
     const session = sessionsStore.activeSession()
     if (!session) return
+    memoryError = null
     sessionsStore.openMemoryView(session.id).catch((err: unknown) => {
       console.warn('[memory] could not open the memory view:', err)
+      memoryError = `Couldn't open Claude memory: ${err instanceof Error ? err.message : String(err)}`
     })
   }
 
@@ -98,13 +102,27 @@
   <button
     bind:this={buttonEl}
     class="max-w-[160px] truncate rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200"
-    onclick={() => (open = !open)}
+    onclick={() => {
+      open = !open
+      memoryError = null
+    }}
     aria-haspopup="menu"
     aria-expanded={open}
     title="Repository this workspace is viewing — switch between the repos this agent has worked in"
   >
     {currentLabel} ▾
   </button>
+
+  {#if memoryError && !open}
+    <div
+      class="absolute right-0 top-full z-30 mt-1 flex w-64 items-start gap-2 rounded-md border border-amber-500/30 bg-zinc-900 px-2.5 py-1.5 text-[11px] text-amber-200 shadow-xl"
+      role="alert"
+      data-testid="memory-open-error"
+    >
+      <span class="min-w-0 flex-1 break-words">{memoryError}</span>
+      <button class="flex-none text-amber-300/80 hover:text-amber-100" title="Dismiss" onclick={() => (memoryError = null)}>×</button>
+    </div>
+  {/if}
 
   {#if open}
     <div
