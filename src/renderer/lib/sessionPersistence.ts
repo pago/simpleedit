@@ -13,16 +13,19 @@ import type {
   SerializedTab,
 } from '../../shared/ipc-types'
 import { worktreeList, projectRoot, refreshWorktreesFor } from '../stores/worktrees.svelte'
-import { sessionsStore } from '../stores/sessions.svelte'
+import { sessionsStore, isInMemoryDir } from '../stores/sessions.svelte'
 import { tabsStore, type Tab } from '../stores/tabsStore.svelte'
 
 const SAVE_VERSION = 4
 
-function serializeTab(tab: Tab): SerializedTab | null {
+/** `memoryDir`: the session's open memory view, whose tabs are never saved. */
+function serializeTab(tab: Tab, memoryDir: string | undefined): SerializedTab | null {
   switch (tab.kind) {
     case 'file':
+      if (memoryDir && isInMemoryDir(tab.path, memoryDir)) return null
       return { kind: 'file', id: tab.id, path: tab.path }
     case 'diff':
+      if (tab.memoryScope) return null
       return {
         kind: 'diff',
         id: tab.id,
@@ -63,7 +66,7 @@ export function serializeSession(repoPath: string): SerializedSession {
 
     const tabs = tabsStore
       .list(session.id)
-      .map(serializeTab)
+      .map((t) => serializeTab(t, session.memoryView?.memoryDir))
       .filter((t): t is SerializedTab => t !== null)
     const unread = tabs
       .filter((t) => tabsStore.isUnread(session.id, t.id))

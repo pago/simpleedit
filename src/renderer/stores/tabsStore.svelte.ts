@@ -39,6 +39,16 @@ export interface DiffTab {
   commitMessage: string
   /** Optional first sub-view hint for DiffReview. */
   initialTab?: 'files' | 'findings'
+  /**
+   * Present on a Claude-memory diff: `worktreePath` is the repo that tracks
+   * the memory dir and the diff is limited to `pathspec` (null = the whole
+   * repo is the memory dir). Never persisted.
+   */
+  memoryScope?: MemoryScope
+}
+
+export interface MemoryScope {
+  pathspec: string | null
 }
 
 export interface TourTab {
@@ -103,15 +113,17 @@ function setState(worktreePath: string, next: WorktreeTabState): void {
 export function tabIdFor(
   spec:
     | { kind: 'file'; path: string }
-    | { kind: 'diff'; worktreePath: string; commitHash: string | null }
+    | { kind: 'diff'; worktreePath: string; commitHash: string | null; memoryScope?: MemoryScope }
     | { kind: 'tour'; worktreePath: string; commitHash: string | null }
     | { kind: 'composed'; id: string },
 ): string {
   switch (spec.kind) {
     case 'file':
       return `file:${spec.path}`
-    case 'diff':
-      return `diff:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
+    case 'diff': {
+      const base = `diff:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
+      return spec.memoryScope ? `${base}:memory:${spec.memoryScope.pathspec ?? ''}` : base
+    }
     case 'tour':
       return `tour:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
     case 'composed':
