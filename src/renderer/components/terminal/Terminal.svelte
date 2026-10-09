@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveDropPath } from '../../lib/dropped-paths'
   import type { AgentProviderId } from '../../../shared/ipc-types'
   import { Terminal } from '@xterm/xterm'
   import { FitAddon } from '@xterm/addon-fit'
@@ -305,13 +306,6 @@
       case 'newline-list': return paths.join('\n')
       case 'shell-escaped': return paths.map(shellEscape).join(' ')
     }
-  }
-
-  async function resolveDropPath(file: File): Promise<string> {
-    const path = window.api.getPathForFile(file)
-    if (path) return path
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    return window.api.invoke('app:save-dropped-blob', file.name || 'paste', bytes)
   }
 
   function handleDragEnter(e: DragEvent): void {
