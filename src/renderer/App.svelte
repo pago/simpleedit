@@ -11,6 +11,9 @@
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
   import { initAgentMailListeners } from './stores/agent-mail.svelte'
   import { initAgentThreadsListeners } from './stores/agentThreads.svelte'
+  import { backlogStore, initBacklogListeners } from './stores/backlog.svelte'
+  import BacklogView from './components/backlog/BacklogView.svelte'
+  import BacklogArrivalNotice from './components/backlog/BacklogArrivalNotice.svelte'
   import { initAgentCapabilities } from './stores/agent-capabilities.svelte'
   import { isPaletteOpen, togglePalette } from './stores/commandPalette.svelte'
   import { sessionsStore, initSessionListeners, createSessionFromDefaults } from './stores/sessions.svelte'
@@ -39,6 +42,7 @@
     const unsubSessions = initSessionListeners()
     const unsubScreenPrs = initScreenPrsListeners()
     const unsubThreads = initAgentThreadsListeners()
+    const unsubBacklog = initBacklogListeners()
     // Cache every provider's capabilities up front: the session store reads
     // them synchronously when naming and labelling a new session.
     void initAgentCapabilities()
@@ -50,6 +54,7 @@
       unsubSessions()
       unsubScreenPrs()
       unsubThreads()
+      unsubBacklog()
       window.removeEventListener('beforeunload', flushSessionSave)
     }
   })
@@ -67,6 +72,7 @@
     }
     repoPath = path
     setProjectRoot(path)
+    void backlogStore.load()
     sessionsStore.reset()
     await refreshWorktrees()
     const saved = await window.api.invoke('session:load', path)
@@ -219,11 +225,14 @@
       <main class="flex-1 overflow-hidden bg-zinc-950">
         {#if uiView.current() === 'screenprs'}
           <ScreenPrsView />
+        {:else if uiView.current() === 'backlog'}
+          <BacklogView />
         {:else}
           <WorkspaceManager />
         {/if}
       </main>
     </div>
+    <BacklogArrivalNotice />
   </div>
 {:else}
   <div class="flex h-full flex-col">

@@ -1,9 +1,10 @@
 /**
  * Which global surface fills the main area. Sessions render through
- * WorkspaceManager; Screen PRs is an org-wide view that temporarily takes over
- * the main area (it isn't a session). Selecting a session returns to 'workspace'.
+ * WorkspaceManager; Screen PRs (org-wide) and the backlog (the project's
+ * prepared sessions) temporarily take over the main area — neither is a
+ * session. Selecting a session returns to 'workspace'.
  */
-export type UiView = 'workspace' | 'screenprs'
+export type UiView = 'workspace' | 'screenprs' | 'backlog'
 
 let _view = $state<UiView>('workspace')
 
