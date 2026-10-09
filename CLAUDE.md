@@ -77,6 +77,8 @@ main-process module:
   `claude-stream.ts`, `pty.ts`)
 - `memory:` — Claude auto-memory dir: resolve, health, file list, watch
   (`claude-memory.ts`, `memory-watcher.ts`)
+- `backlog:` — the project's session backlog (`backlog-store.ts`,
+  `backlog-start.ts`)
 
 ### Claude Code integration (provider architecture)
 The "✦ Claude" button in terminal tabs spawns `claude --output-format stream-json`
@@ -553,6 +555,72 @@ Its security rule, which `server.ts`'s header states in full:
 - **Push carries no key** (`withoutKey`): the subscription and the worker's
   `/app/` scope don't depend on it, so push survives a key change.
 
+### Session backlog
+Per project, an ordered list of prepared session prompts (prompt + optional
+label and `InteractiveTarget`) that the user starts later from the desk or the
+phone. A started session runs in the main worktree with the provider's default
+reasoning effort: items carry neither (main strips any effort it is sent).
+Agents add and curate items with `list_backlog`/`edit_backlog` ("add this to
+our backlog"); there is deliberately **no start tool** — when work runs is the
+user's call.
+- **Per project, never per repo.** The key is the window's primary repo
+  (`getRepoForSenderOrThrow`), resolved by main from the caller — no channel or
+  tool takes one. An agent that roamed into another repo still adds to its
+  project's backlog, because the session an item becomes launches at the
+  project root and must share that project's Claude memory.
+- **Main owns it**, in the app database (migration 2: `backlog_items`,
+  `backlog_tombstones`). Clients and agents send op batches
+  (`shared/backlog.ts`, validated by `parseBacklogOps`), applied all or nothing
+  in one transaction; main broadcasts `backlog:changed` snapshots. The client
+  mirror (`stores/backlog.svelte.ts`, desktop + phone) never applies ops
+  locally, like agent threads. An `update` carries `baseVersion` and is refused
+  with the current item when stale; removed/started ids are tombstoned (newest
+  500 per project) so a retried add can't resurrect one.
+- **Start = exactly one session** (`backlog-start.ts`). It goes through
+  `createSessionOnce` (requestId `backlog:<requestId>`), but keeps its own requestId
+  map too, because after a success the item is gone and a replay couldn't even
+  rebuild the request. The item is locked (`starting`, edits refused) while a
+  start is in flight; a failure keeps it with `lastStart: failed`, an
+  unwitnessed create keeps it `unconfirmed` ("may have started").
+- **An item needs a title or a prompt**, checked by main on add and on the
+  patched result of an update. Start needs a prompt: main refuses a blank one
+  before creating anything (no `lastStart` recorded), and both UIs disable
+  Start for it.
+- **The prompt is sent as written** (bar the brief's usual trim): no `@path` or
+  other provider syntax is ever injected; dropped files become absolute paths.
+- Agents' flat `provider`/`model` fields are translated by `backlog-agent.ts`;
+  on update, fields left out keep the item's values.
+- **Desktop UI** (`BacklogView` list + `BacklogItemDetail`, the Screen PRs
+  shape): the first item is shown by default (`backlogStore.selectedId`, which
+  the arrival notice's Edit also sets); Start selects the next. The detail
+  **autosaves** (600 ms debounce) only the changed fields against its
+  `baseVersion`, and saves before a switch, a Start or unmount; a refused save
+  shows Keep mine / Take theirs (Save as new when the item is gone) and holds
+  the switch. A broadcast is adopted only while nothing is unsaved. "+ New"
+  pre-mints the id and adds the item only once its title or prompt has text.
+  Saved state is always main's copy from the op's snapshot, never what was
+  sent. Every selection change goes through `backlogStore.requestSelect`,
+  which waits for the open detail to save and holds on failure. A save
+  refused because the item is `starting` waits for it to settle.
+- **Unsaved text lives in one place: the store's per-item draft**
+  (`putDraft`), written as the user types and kept per viewer in
+  `localStorage`, one key per project + item so windows on one project don't
+  clobber each other (they see each other's via `storage` events). A reload,
+  a closed window, a conflict or a failed save never loses it. Only main's snapshot clears it
+  (`settleDraft`, when it holds exactly the draft's text) or the user's
+  Discard; a failed save writes nothing, so it can't overwrite newer typing.
+  An item's saves run one after another (`queueSave`), and an editor catches up
+  with a save a closed editor landed, so it never conflicts with itself. A
+  draft whose item is gone (or was never added) gets its own list row; a
+  never-added one is not added just by opening it (Add it / Discard). Start on
+  a row with a draft opens that item and saves the draft first, then starts;
+  if the save fails the item stays open saying why. Delete drops the draft.
+- **The model picker** (desktop and phone) is "Default" plus the Settings →
+  Models allowlist (`loadAllowlistedModels`, the sidebar's new-session menu
+  too). The config has no change event, so it is reread on picker focus and
+  at most every 30 s on window focus; concurrent loads share one, since
+  discovery spawns CLIs.
+
 ### Layout
 The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
 that session's `SessionWorkspace` (all others stay mounted but hidden). A
@@ -565,13 +633,13 @@ tree and git log docked on the right, over a bottom terminal strip.
 ├─ Sidebar ──┬─ SessionWorkspace (active session) ─────────┤
 │ Sessions   │ Editor tabs (PaneTabBar + TabContainer)  │ F │
 │ (grouped)  │ ──── file tree / git log docked right ─── │ T │
-│ + Screen   │ ════════════ resize ════════════════════  │ + │
-│   PRs view │ Terminal (full-bleed until viewer opens)   │Git│
+│ + Backlog, │ ════════════ resize ════════════════════  │ + │
+│ Screen PRs │ Terminal (full-bleed until viewer opens)   │Git│
 └────────────┴─────────────────────────────────────────────┘
 ```
 File tree is on the right (unusual but intentional — editor is the primary focus).
-All splits are user-resizable. (`ScreenPrsView` replaces the workspace area when
-the screen-PRs view is active — `uiView` store.)
+All splits are user-resizable. (`ScreenPrsView` and `BacklogView` replace the
+workspace area when their view is active — `uiView` store.)
 
 ## File structure
 
@@ -594,6 +662,8 @@ src/
     agent-wake.ts      ← Prompts an idle session with mail to call check_inbox
     db.ts              ← The app's SQLite database (node:sqlite), migrations
     agent-threads-store.ts ← Agent threads: ops, persistence, broadcast
+    backlog-store.ts, backlog-start.ts ← Session backlog: ops + persistence; start-once
+    backlog-agent.ts   ← list_backlog / edit_backlog shape ↔ backlog ops
     thread-delivery.ts ← When a thread comment may be typed in; confirm, arm, answer
     prompt-model.ts    ← Draft-in-the-prompt model fed by the user's keys
     thread-reanchor.ts, thread-anchor-watch.ts ← Move threads with their code
@@ -656,6 +726,7 @@ src/
         FileTree.svelte, FileNode.svelte, FileTreeContextMenu.svelte
       composed/               ← Gen-UI composed panels (agent-authored) + registry
       screenprs/              ← ScreenPrsView, PrDetail, ReviewComposer, OverviewCard, …
+      backlog/                ← BacklogView (list), BacklogItemDetail (autosave), PromptField (Monaco + file drop)
       settings/               ← SettingsWindow, ModelsPane, DefaultModelPane, …
       command-palette/        ← CommandPalette + input/results
       memory/                 ← Memory health badge/list + empty state
@@ -667,6 +738,7 @@ src/
       claude-status.svelte.ts ← Per-session Claude status + touched files
       agentTerminals.svelte.ts ← "Discuss with Agent" targets (live Claude sessions)
       screenprs.svelte.ts, reviewStore.svelte.ts ← Screen-PRs + review state
+      backlog.svelte.ts       ← Mirror of the project's backlog (desktop + phone)
       uiView.svelte.ts, commandPalette.svelte.ts, tourStore.svelte.ts
       markdownView.svelte.ts, fsRefresh.svelte.ts
       memoryView.svelte.ts    ← Open memory dirs: watch, health, markers, re-resolve
