@@ -5,6 +5,7 @@ import { attachParams, loadRememberedProject } from './lib/project'
 import { resolveKey, settleUrlKey } from './lib/remote-key'
 import { initScreenPrsListeners, screenPrsStore } from '../renderer/stores/screenprs.svelte'
 import { agentThreadsStore, initAgentThreadsListeners } from '../renderer/stores/agentThreads.svelte'
+import { backlogStore, initBacklogListeners } from '../renderer/stores/backlog.svelte'
 import PocketApp from './PocketApp.svelte'
 import { trackVisualViewport } from './lib/visual-viewport.svelte'
 
@@ -25,7 +26,8 @@ if (keys.candidate) void settleUrlKey(keys.candidate, checkKeyWithServer, (key) 
 // lose whatever landed while you were reading a session.
 initScreenPrsListeners()
 initAgentThreadsListeners()
-// Review drafts, the filter, Screen PRs runs and agent threads are shared with the desktop, and
+initBacklogListeners()
+// Review drafts, the filter, Screen PRs runs, agent threads and the backlog are shared with the desktop, and
 // a broadcast sent while the socket was down (or switching project) never
 // arrives — so every (re)connect reloads them.
 connection.onIdentity(() => {
@@ -33,6 +35,8 @@ connection.onIdentity(() => {
   void screenPrsStore.loadFilter()
   void screenPrsStore.loadState()
   void agentThreadsStore.load()
+  // The project's backlog: a reconnect may also be a switch to another project.
+  void backlogStore.load()
 })
 
 trackVisualViewport()

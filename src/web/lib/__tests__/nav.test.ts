@@ -191,6 +191,13 @@ it('leaving a window drops its sessions from both tabs, and keeps the PRs', () =
   expect(stackOf(next, 'prs').map((e) => e.kind)).toEqual(['pr'])
 })
 
+it("leaving a window keeps the backlog sheet: the backlog is the project's, not the window's", () => {
+  let state = push(selectTab(build(), 'backlog'), { kind: 'backlog-item', itemId: null }).state
+  expect(isOverlay(topOf(state))).toBe(true)
+  state = leaveWindow(state)
+  expect(stackOf(state, 'backlog').map((e) => e.kind)).toEqual(['backlog-item'])
+})
+
 describe('a popstate', () => {
   it('pops what Back left', () => {
     const state = build(session('a'), { kind: 'changes-diff', terminalId: 'a' })

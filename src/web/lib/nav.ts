@@ -14,7 +14,9 @@
  */
 import type { PrRef } from '../../shared/screenprs'
 
-export type TabId = 'sessions' | 'prs'
+export type TabId = 'sessions' | 'prs' | 'backlog'
+
+const TAB_IDS: readonly TabId[] = ['sessions', 'prs', 'backlog']
 
 export type NavLayer =
   | {
@@ -38,6 +40,8 @@ export type NavLayer =
   | { kind: 'projects' }
   /** Discuss with Agent's model picker, over the PR it discusses. */
   | { kind: 'discuss'; url: string }
+  /** The backlog's add/edit sheet: an item's id, or null for a new one. */
+  | { kind: 'backlog-item'; itemId: string | null }
 
 export type NavEntry = NavLayer & {
   id: number
@@ -56,7 +60,7 @@ export interface NavState {
 }
 
 export function initialNav(tab: TabId = 'sessions'): NavState {
-  return { tab, stacks: { sessions: [], prs: [] }, nextId: 1 }
+  return { tab, stacks: { sessions: [], prs: [], backlog: [] }, nextId: 1 }
 }
 
 export function stackOf(state: NavState, tab: TabId = state.tab): readonly NavEntry[] {
@@ -76,7 +80,8 @@ export function isOverlay(entry: NavEntry | null): boolean {
       entry.kind === 'compose' ||
       entry.kind === 'confirm-submit' ||
       entry.kind === 'projects' ||
-      entry.kind === 'discuss')
+      entry.kind === 'discuss' ||
+      entry.kind === 'backlog-item')
   )
 }
 
@@ -143,7 +148,7 @@ export function selectTab(state: NavState, tab: TabId): NavState {
 /** Drop entries wherever they are — a session that closed, a sheet that finished. */
 export function removeWhere(state: NavState, doomed: (entry: NavEntry) => boolean): NavState {
   let next = state
-  for (const tab of ['sessions', 'prs'] as const) {
+  for (const tab of TAB_IDS) {
     const stack = state.stacks[tab]
     const kept = stack.filter((entry) => !doomed(entry))
     if (kept.length !== stack.length) next = withStack(next, tab, kept)
@@ -162,14 +167,16 @@ export function clearStack(state: NavState, tab: TabId): NavState {
 /**
  * Everything that belongs to the window a phone is leaving: the Sessions tab,
  * and any session opened over a PR, which sits on the PRs tab but is still a
- * session of that window. The PRs themselves are not a window's and stay.
+ * session of that window. The PRs themselves are not a window's and stay. The
+ * Backlog tab is the PROJECT's, not the window's: it goes only when the
+ * project does (the host decides, since only it knows the repo).
  */
 export function leaveWindow(state: NavState): NavState {
   return removeWhere(clearStack(state, 'sessions'), (e) => e.kind === 'session' || e.kind === 'changes-diff')
 }
 
 export function contains(state: NavState, id: number): boolean {
-  return state.stacks.sessions.some((e) => e.id === id) || state.stacks.prs.some((e) => e.id === id)
+  return TAB_IDS.some((tab) => state.stacks[tab].some((e) => e.id === id))
 }
 
 /**
