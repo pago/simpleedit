@@ -45,6 +45,8 @@
   import PrBoard from './PrBoard.svelte'
   import PrDetail from './PrDetail.svelte'
   import ProjectSheet from './ProjectSheet.svelte'
+  import BacklogScreen from './BacklogScreen.svelte'
+  import BacklogSheet from './BacklogSheet.svelte'
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
   import { AttachSequence, attachNotice, loadRememberedProject, rememberProject, type RememberedProject } from './lib/project'
   import PairScreen from './PairScreen.svelte'
@@ -67,6 +69,7 @@
   const TABS: Tab[] = [
     { id: 'sessions', label: 'Sessions', icon: '◆' },
     { id: 'prs', label: 'PRs', icon: '⑂' },
+    { id: 'backlog', label: 'Backlog', icon: '☰' },
   ]
 
   type SessionEntry = Extract<NavEntry, { kind: 'session' }>
@@ -141,6 +144,7 @@
   let lastShown: RememberedProject | null = null
   const attaches = new AttachSequence()
   let projectSheet = $state<ProjectSheet | undefined>()
+  let backlogSheet = $state<BacklogSheet | undefined>()
 
   function initialPending(): PendingSession | null {
     const terminalId = sessionFromUrl(window.location.href)
@@ -219,6 +223,9 @@
     const { chosen } = judged
     projects = list
     const landed = list.find((p) => p.windowId === windowId) ?? null
+    // The backlog is the project's: a reopened window of the same repo keeps
+    // the sheet and its text. Another project's would save into the wrong one.
+    if (lastShown && landed?.repoPath !== lastShown.repoPath) closeBacklogSheet()
     const remembered = loadRememberedProject()
     projectNotice = attachNotice({ expected: remembered ?? (chosen ? null : lastShown), previous: lastShown, landed, chosen })
     if (landed) {
@@ -255,6 +262,9 @@
       }
       if (entry.kind === 'new-session' && newSheet?.atRisk() === 'draft') out.push('the new session’s brief')
     }
+    if (nav.stack('backlog').some((e) => e.kind === 'backlog-item') && backlogSheet?.atRisk()) {
+      out.push('your unsaved backlog item')
+    }
     return out
   }
 
@@ -270,6 +280,8 @@
     projectNotice = null
     attaches.expectPick()
     leaveWindow()
+    // Picked by the user, after confirming what it discards.
+    if (project.repoPath !== currentProject?.repoPath) closeBacklogSheet()
     // Let the screens that just came off unmount first, so whatever they
     // release on the way out (watchers, a terminal's size claim) goes over
     // this socket, to the window that holds it.
@@ -401,6 +413,21 @@
     nav.push({ kind: 'new-session' }, () => newSheet?.holdForDraft() ?? false)
   }
 
+  function closeBacklogSheet(): void {
+    nav.removeWhere((e) => e.kind === 'backlog-item')
+  }
+
+  function openBacklogItem(itemId: string | null): void {
+    nav.push({ kind: 'backlog-item', itemId }, () => backlogSheet?.holdForDraft() ?? false)
+  }
+
+  /** A backlog item became a session: say so where sessions are, as `+` does. */
+  function startedFromBacklog(created: SessionCreateResult): void {
+    nav.selectTab('sessions')
+    startedNote = created
+    deepLinkProblem = null
+  }
+
   const tab = $derived(nav.tab)
   const top = $derived(nav.top())
   // Live while the sheet is up: a review post that lands or a recording that
@@ -416,6 +443,7 @@
     nav.stack('prs').filter((e): e is SessionEntry => e.kind === 'session'),
   )
   const newSessionEntry = $derived(nav.stack('sessions').find((e) => e.kind === 'new-session') ?? null)
+  const backlogItemEntry = $derived(nav.stack('backlog').find((e) => e.kind === 'backlog-item') ?? null)
   const sessionScreen = $derived(nav.screen('sessions'))
   const prScreen = $derived(nav.screen('prs'))
 
@@ -496,6 +524,15 @@
         onclick={openNewSession}
         aria-label="New session"
         data-testid="new-session"
+        class="flex min-h-9 min-w-9 flex-none items-center justify-center rounded-md text-lg
+               text-zinc-300 active:bg-zinc-800"
+      >+</button>
+    {:else if !screen && tab === 'backlog'}
+      <button
+        type="button"
+        onclick={() => openBacklogItem(null)}
+        aria-label="Add to backlog"
+        data-testid="new-backlog-item"
         class="flex min-h-9 min-w-9 flex-none items-center justify-center rounded-md text-lg
                text-zinc-300 active:bg-zinc-800"
       >+</button>
@@ -608,6 +645,21 @@
       {#each prSessionEntries as entry (entry.id)}
         {@render sessionView(entry, 'prs', prScreen)}
       {/each}
+    </div>
+
+    <div class={tab === 'backlog' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'} data-testid="tab-backlog">
+      <BacklogScreen connected={connState === 'open'} onopen={(id) => openBacklogItem(id)} onstarted={startedFromBacklog} />
+      {#if backlogItemEntry}
+        {@const sheetId = backlogItemEntry.id}
+        {#key sheetId}
+          <BacklogSheet
+            bind:this={backlogSheet}
+            itemId={backlogItemEntry.kind === 'backlog-item' ? backlogItemEntry.itemId : null}
+            connected={connState === 'open'}
+            onclose={() => nav.close(sheetId)}
+          />
+        {/key}
+      {/if}
     </div>
   </main>
 
