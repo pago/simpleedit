@@ -1,5 +1,25 @@
 # simpleedit
 
+## 0.24.0
+
+### Minor Changes
+
+- [#212](https://github.com/pago/simpleedit/pull/212) [`f99c04f`](https://github.com/pago/simpleedit/commit/f99c04fb10227cd993545cfb60a1c048e5623aec) Thanks [@pago](https://github.com/pago)! - Agent threads: comment on a line in the editor, a session diff or on the phone, and the session's agent answers in that thread. Comments are typed into the session only when it is idle with an empty prompt and no dialog open, otherwise they wait. Threads follow their code through edits, show as gutter icons and inline, notify the phone on replies, and the agent can open a thread itself with the `open_thread` MCP tool.
+
+- [#208](https://github.com/pago/simpleedit/pull/208) [`720255b`](https://github.com/pago/simpleedit/commit/720255b19ca9e5e9bfd19ef1339ccc7a210e890c) Thanks [@pago](https://github.com/pago)! - Browse a Claude session's auto-memory from the repo picker ("Claude memory"): the memory files open in the file tree and editor, broken index links, unindexed memories and unresolved `[[wiki]]` links show as editor markers and in a health list, and a git-tracked memory dir gets its own scoped git log.
+
+- [#188](https://github.com/pago/simpleedit/pull/188) [`26fcb3d`](https://github.com/pago/simpleedit/commit/26fcb3dbfa0c9496f2d263c540d871ffdd44774f) Thanks [@pago](https://github.com/pago)! - Add a session backlog: prepared session prompts per project that you start later, from the desk or the phone. Ask an agent to "add this to our backlog" and it writes the prompt for you to review; Start turns an item into a session.
+
+### Patch Changes
+
+- [#213](https://github.com/pago/simpleedit/pull/213) [`5541130`](https://github.com/pago/simpleedit/commit/5541130f10a6739e1c6dcade02d14ae17bd57289) Thanks [@pago](https://github.com/pago)! - Screen PRs "Discuss with Agent" now offers the same models as everywhere else, on the desk and the phone: "Default" plus the models ticked in Settings → Models, including OpenCode and local Ollama models. When no models are ticked, the Discuss and backlog pickers say where to pick them.
+
+- [#206](https://github.com/pago/simpleedit/pull/206) [`727a50f`](https://github.com/pago/simpleedit/commit/727a50fe3fde9656c0f40956e6d9739e336e0efd) Thanks [@pago](https://github.com/pago)! - A Homebrew update no longer leaves a stray half-hour `sleep` running in the background after it finishes. The upgrade helper's timeout watchdog now ends by itself once brew exits, and the helper waits for it before exiting.
+
+- [#209](https://github.com/pago/simpleedit/pull/209) [`eac8d20`](https://github.com/pago/simpleedit/commit/eac8d20d37949ecfb0e2fa53708c56b26dacee3d) Thanks [@pago](https://github.com/pago)! - Notice new releases while SimpleEdit stays open: the app now checks for updates every four hours, not only at launch, and the app menu has a "Check for Updates…" item that also brings back a dismissed update banner.
+
+- [#211](https://github.com/pago/simpleedit/pull/211) [`3e302f6`](https://github.com/pago/simpleedit/commit/3e302f6e1ceaed921fe915813f257b0866d6195c) Thanks [@pago](https://github.com/pago)! - Fix phone push notifications occasionally unregistering every device: about one in 256 generated signing keys was saved one byte short, rejected as invalid on the next load, and replaced along with all subscriptions. Keys already saved that way are now repaired on load, so those phones stay registered.
+
 ## 0.23.1
 
 ### Patch Changes
