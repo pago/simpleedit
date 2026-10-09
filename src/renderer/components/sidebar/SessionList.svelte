@@ -10,6 +10,7 @@
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
+  import { loadAllowlistedModels } from '../../lib/agentModels'
 
   let sessions = $derived(sessionsStore.sessions())
   let activeId = $derived(sessionsStore.activeSessionId())
@@ -131,49 +132,13 @@
   let modelMenuRefs: Map<string, InteractiveTarget> = $state(new Map())
 
   /**
-   * Resolve the persisted submenu allowlist against the live catalogs into
-   * "start a session with model X" entries. A Claude catalog entry's key is its
-   * anthropic model id; an installed Ollama model's key is its name (tool-capable
-   * ones only — review-only models can't drive the interactive agent). Keys that
-   * no longer resolve (uninstalled / dropped from the catalog) are skipped; falls
-   * back to the two defaults if the fetch fails.
+   * The Settings → Models allowlist as "start a session with model X" entries
+   * (`loadAllowlistedModels`); just the defaults if the catalogs can't be read.
    */
   async function buildNewMenu(): Promise<void> {
     try {
-      const [config, claudeModels, codexModels, openCodeModels, installed] = await Promise.all([
-        window.api.invoke('models:config-get'),
-        window.api.invoke('models:claude'),
-        window.api.invoke('models:codex').catch(() => []),
-        window.api.invoke('models:opencode').catch(() => []),
-        window.api.invoke('models:installed'),
-      ])
-
-      const resolver = new Map<string, { ref: InteractiveTarget; label: string }>()
-      for (const m of claudeModels) {
-        resolver.set(m.model, { ref: { provider: 'claude', model: { provider: 'anthropic', model: m.model } }, label: `Claude · ${m.displayName}` })
-      }
-      for (const m of codexModels) {
-        resolver.set(m.model, { ref: { provider: 'codex', model: m.model }, label: `Codex · ${m.displayName}` })
-      }
-      for (const m of openCodeModels) {
-        resolver.set(m.model, { ref: { provider: 'opencode', model: m.model }, label: `OpenCode · ${m.displayName}` })
-      }
-      // Tool-capable local models are startable interactively now that the
-      // Ollama #13949 hang is fixed (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).
-      for (const m of installed) {
-        if (!m.toolCapable) continue
-        resolver.set(m.name, { ref: { provider: 'claude', model: { provider: 'ollama', model: m.name } }, label: `Claude · ${m.name}` })
-      }
-
-      const refs = new Map<string, InteractiveTarget>()
-      const resolved = config.submenuAllowlist.flatMap((key) => {
-        const hit = resolver.get(key)
-        if (!hit) return []
-        refs.set(key, hit.ref)
-        return [{ key, label: hit.label }]
-      })
-
-      modelMenuRefs = refs
+      const resolved = await loadAllowlistedModels()
+      modelMenuRefs = new Map(resolved.map((m) => [m.key, m.target]))
       modelMenuItems = resolved.map((m, i) => ({
         id: `model:${m.key}`,
         label: `New session · ${m.label}`,
