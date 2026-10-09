@@ -22,7 +22,7 @@
  * retry of the latter must return the same uncertainty rather than spawn again.
  */
 import { randomUUID } from 'crypto'
-import { SESSION_BRIEF_MAX, labelFromBrief } from '../shared/brief'
+import { SESSION_BRIEF_MAX, cleanSessionLabel, labelFromBrief } from '../shared/brief'
 import { SESSION_CREATE_REUSED, SESSION_CREATE_UNWITNESSED, isReasoningEffort } from '../shared/ipc-types'
 import type {
   InteractiveTarget,
@@ -101,8 +101,7 @@ export function parseCreateTarget(raw: unknown): InteractiveTarget {
 export function parseCreateLabel(raw: unknown): string | undefined {
   if (raw === undefined) return undefined
   if (typeof raw !== 'string') throw new Error('A session name must be text.')
-  // eslint-disable-next-line no-control-regex
-  const label = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const label = cleanSessionLabel(raw)
   if (!label) return undefined
   if (label.length > LABEL_MAX) throw new Error(`That session name is ${label.length} characters; the limit is ${LABEL_MAX}.`)
   return label

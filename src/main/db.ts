@@ -46,6 +46,28 @@ const MIGRATIONS: string[] = [
     at TEXT NOT NULL
   ) STRICT;
   `,
+  `
+  CREATE TABLE backlog_items (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    label TEXT,
+    target TEXT,
+    version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_by_session TEXT,
+    last_start TEXT
+  ) STRICT;
+  CREATE INDEX backlog_items_by_project ON backlog_items(project, position);
+  CREATE TABLE backlog_tombstones (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    at TEXT NOT NULL
+  ) STRICT;
+  `,
 ]
 
 let db: Db | null = null

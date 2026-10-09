@@ -304,15 +304,29 @@ starting is the user's decision.
 
 ## Delivery
 
-Two feature PRs, not a long stack, after a small prerequisite:
-0. **App DB** (prerequisite, small): `db.ts` split out of agent threads, plus
-   `closeDb()` on quit. Needed only by the store, so the rest of Core can start
-   before it lands.
-1. **Core:** shared types and ops, the store, the IPC, the `session:create`
-   extension, and the MCP tools. Usable straight away by Claude, with the desktop
-   showing a minimal list.
-2. **UI:** the full desktop view and editor, the extracted picker and drop
-   helpers, and the phone tab.
+One PR (#188), not two: Core and UI share the IPC types, the store and
+`index.ts`, and the plan doc must leave in the PR's last commit. `db.ts` arrived
+with agent threads, so no separate DB PR was needed.
+
+- [x] **Core:** shared types, the store and its migration, the start flow,
+  `session:create` with `worktreePath`, the `backlog:` IPC, the MCP tools,
+  `closeDb()` on quit.
+- [ ] **Client store** shared by desktop and phone.
+- [ ] **Desktop UI:** view, Monaco editor, extracted picker and drop helpers,
+  the "Added to backlog" toast.
+- [ ] **Phone tab.**
+- [ ] CLAUDE.md, changeset, E2E spec; delete this plan.
+
+**Implementation notes (Core):**
+- An item stores `target: InteractiveTarget` and validates it with the same
+  `parseCreateTarget` the phone's Discuss uses, not separate provider/model
+  fields. Agents still send flat `provider`/`model`/`reasoning_effort`;
+  `backlog-agent.ts` translates.
+- A start uses `requestId` `backlog:<id>` in `createSessionOnce`'s cache, so it
+  can't collide with a phone's own `session:create` ids. `backlog-start.ts` keeps
+  its own requestId map because the item is gone after a success.
+- OpenCode items start without the model-catalog check (main can't list
+  OpenCode's models). Claude and Codex items are checked as phone starts are.
 
 ## Open questions
 

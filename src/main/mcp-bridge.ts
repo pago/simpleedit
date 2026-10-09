@@ -31,6 +31,9 @@ import { beginThreadStop, endThreadStop, noteThreadSignal, openAgentThread, repl
 import { noteTurnStarted } from './remote/push'
 import { anchorLines } from '../shared/thread-anchor-lines'
 import { MAX_SNIPPET } from '../shared/agent-threads'
+import { fromAgentOps, toAgentItem, type ClaudeModelResolver } from './backlog-agent'
+import type { Origin } from './backlog-store'
+import type { BacklogOpResult, BacklogSnapshot } from '../shared/backlog'
 
 interface BridgeInstance {
   server: Server
@@ -60,6 +63,65 @@ async function resolveWorktrees(webContentsId: number): Promise<WorktreeInfo[]> 
     return await worktreeResolver(webContentsId)
   } catch {
     return []
+  }
+}
+
+/**
+ * The window's project backlog, for `list_backlog` / `edit_backlog`.
+ * Registered by index.ts, which owns the window → project map and the
+ * broadcast. The tools always act on the WINDOW's project, wherever the
+ * calling agent works: an agent that roamed into another repo still belongs
+ * to the project it was started in.
+ */
+export interface BacklogTools {
+  load(webContentsId: number): BacklogSnapshot
+  edit(webContentsId: number, ops: unknown, origin: Origin): Promise<BacklogOpResult>
+  resolveClaudeModel: ClaudeModelResolver
+}
+let backlogTools: BacklogTools | null = null
+
+export function setBacklogTools(tools: BacklogTools): void {
+  backlogTools = tools
+}
+
+function projectName(project: string): string {
+  return project.replace(/\/+$/, '').split('/').pop()?.replace(/\.git$/, '') ?? project
+}
+
+function backlogBody(snapshot: BacklogSnapshot): Record<string, unknown> {
+  return {
+    ok: true,
+    project: projectName(snapshot.project),
+    items: snapshot.items.map((item, i) => toAgentItem(item, i)),
+  }
+}
+
+async function backlogTool(
+  tool: 'list_backlog' | 'edit_backlog',
+  args: Record<string, unknown>,
+  terminalId: string,
+  webContentsId: number,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  if (!backlogTools) return { status: 400, body: { error: 'The backlog is not available in this window.' } }
+  try {
+    if (tool === 'list_backlog') return { status: 200, body: backlogBody(backlogTools.load(webContentsId)) }
+    const { ops, added } = await fromAgentOps(args['ops'], backlogTools.resolveClaudeModel, backlogTools.load(webContentsId).items)
+    const caller = getPeer(terminalId)?.label
+    const result = await backlogTools.edit(webContentsId, ops, { createdBy: 'agent', ...(caller ? { createdBySession: caller } : {}) })
+    if (!result.ok) {
+      const { id, current } = result.conflict
+      return {
+        status: 409,
+        body: {
+          error: current
+            ? `Item ${id} changed since you listed it (now version ${current.version}${current.starting ? ', being started' : ''}). Nothing was applied; call list_backlog and try again.`
+            : `Item ${id} is no longer in the backlog. Nothing was applied; call list_backlog and try again.`,
+        },
+      }
+    }
+    return { status: 200, body: { ...backlogBody(result.snapshot), added } }
+  } catch (err) {
+    return { status: 400, body: { error: err instanceof Error ? err.message : String(err) } }
   }
 }
 
@@ -583,6 +645,10 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
   if (tool === 'open_thread') {
     const result = await openThreadTool(args, terminalId, webContents.id)
     return 'error' in result ? { status: 400, body: { error: result.error } } : { status: 200, body: { ok: true, thread_id: result.threadId } }
+  }
+
+  if (tool === 'list_backlog' || tool === 'edit_backlog') {
+    return backlogTool(tool, args, terminalId, webContents.id)
   }
 
   if (tool === 'check_inbox') {

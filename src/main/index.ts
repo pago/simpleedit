@@ -48,7 +48,7 @@ import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnap
 import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
-import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer } from './mcp-bridge'
+import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer, setBacklogTools } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, everyClient, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
@@ -101,11 +101,15 @@ import { parseMessageIdRequest, parseThreadOp, type ThreadChange } from '../shar
 import { getPeer } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
 import { createSessionOnce, resolveSessionCreate, type ModelCatalog } from './session-create'
+import { applyBacklogOps, loadBacklog, parseBacklogOps, type Origin } from './backlog-store'
+import { parseStartRequest, startBacklogItem } from './backlog-start'
+import { closeDb } from './db'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
 import type { PrContext, PrRef } from '../shared/screenprs'
+import type { BacklogOpResult } from '../shared/backlog'
 import { handleSubmitReview } from './github/review'
 
 // Privileged schemes must be registered before the app is ready.
@@ -331,6 +335,38 @@ const allClients = everyClient(
     return liveWindowContents().filter((wc) => wc !== settings)
   },
 )
+
+// ── Session backlog ─────────────────────────────────────
+// One backlog per project: the window's primary repo, never a repo a session
+// merely works in. Callers never name it; it comes from their window.
+
+function broadcastBacklog(project: string): void {
+  broadcastToAllClients('backlog:changed', loadBacklog(project))
+}
+
+async function editBacklog(webContentsId: number, raw: unknown, origin: Origin): Promise<BacklogOpResult> {
+  const project = getRepoForSenderOrThrow(webContentsId)
+  const ops = parseBacklogOps(raw)
+  const { result, changed } = applyBacklogOps(project, ops, origin)
+  if (changed) broadcastBacklog(project)
+  return result
+}
+
+/**
+ * The models a session started for someone other than the desk may use.
+ * OpenCode has no catalog main can list, so its sessions are started unchecked,
+ * as at the desk.
+ */
+function catalogFor(request: SessionCreateRequest): ModelCatalog | undefined {
+  return request.target?.provider === 'opencode' ? undefined : MODEL_CATALOG
+}
+
+setBacklogTools({
+  load: (webContentsId) => loadBacklog(getRepoForSenderOrThrow(webContentsId)),
+  edit: editBacklog,
+  resolveClaudeModel: async (model) =>
+    (await MODEL_CATALOG.ollama().catch((): string[] => [])).includes(model) ? { provider: 'ollama', model } : { provider: 'anthropic', model },
+})
 
 function broadcastToAllClients<K extends keyof EventMap>(channel: K, data: EventMap[K]): void {
   allClients.send(channel, data)
@@ -1118,6 +1154,22 @@ function registerAllHandlers(): void {
     }
   })
 
+  handleInvoke('backlog:load', (event) => loadBacklog(getRepoForSenderOrThrow(event.sender.id)))
+
+  handleInvoke('backlog:op', (event, ops: unknown) =>
+    editBacklog(event.sender.id, ops, { createdBy: event.sender.clientKey !== undefined ? 'phone' : 'desktop' })
+  )
+
+  handleInvoke('backlog:start', (event, raw: unknown) => {
+    const window = getWindowForContents(event.sender.id)
+    if (!window) throw new Error('That SimpleEdit window is gone.')
+    const project = getRepoForSenderOrThrow(event.sender.id)
+    return startBacklogItem(project, parseStartRequest(raw), {
+      createSession: (request) => createSessionOnce(request, window.webContents, catalogFor(request)),
+      changed: () => broadcastBacklog(project),
+    })
+  })
+
   handleInvoke('screenprs:filter-get', () => loadFilter())
 
   handleInvoke('screenprs:filter-set', (_event, filter: unknown) => {
@@ -1445,6 +1497,12 @@ app.whenReady().then(() => {
     // would silence Claude Code's own push indefinitely.
     startPresenceTracking()
   })
+})
+
+// Last of all, not in `before-quit`: shutdown work after that (terminals
+// exiting, windows closing) still reaches the database, and would reopen it.
+process.on('exit', () => {
+  try { closeDb() } catch { /* ignore */ }
 })
 
 app.on('before-quit', () => {

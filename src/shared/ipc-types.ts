@@ -8,6 +8,7 @@ import type { Spec } from './gen-ui-catalog'
 import type { PrRef, PrContext, ScreenPrCard, DeepLensId, DeepFinding, DeepReviewStatus, DeepReviewState, DeepLensStatus, PrReviewDraft, ReviewFolds } from './screenprs'
 import type { DraftOpResult, DraftsSnapshot, PrReviewDraftOp } from './review-drafts'
 import type { AgentThreadOp, ThreadChange, ThreadsSnapshot } from './agent-threads'
+import type { BacklogOpResult, BacklogSnapshot } from './backlog'
 import type { OverviewFacts, OverviewState, OverviewStatus } from './pr-overview'
 import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-filter'
 import type { MemoryHealthReport } from './memory-health'
@@ -931,6 +932,33 @@ export interface SessionEventMap {
   }
 }
 
+// ── Session backlog ───────────────────────────────────────
+// No channel names a project: main takes it from the caller's window, so a
+// client can't write to another project's backlog by mistake.
+export interface BacklogInvokeMap {
+  /** The caller's project backlog — what a client's mirror starts from. */
+  'backlog:load': { args: []; result: BacklogSnapshot }
+  /**
+   * Apply a batch of ops, all or nothing (`BacklogOp[]`, validated by main).
+   * Main persists and broadcasts `backlog:changed`.
+   */
+  'backlog:op': { args: [ops: unknown]; result: BacklogOpResult }
+  /**
+   * Start an item: a session with its prompt and settings, and the item leaves
+   * the backlog. `requestId` names the user's intent, as for `session:create`,
+   * so a replayed Start returns the session it already made.
+   */
+  'backlog:start': {
+    args: [request: { id: string; requestId: string }]
+    result: SessionCreateResult
+  }
+}
+
+export interface BacklogEventMap {
+  /** A project's backlog changed — sent to every window and phone; each keeps only its own project's. */
+  'backlog:changed': BacklogSnapshot
+}
+
 // ── Models (local Ollama + cloud Claude) ──────────────────
 /**
  * Which brain a session runs against. `anthropic` uses normal cloud auth (no
@@ -1641,7 +1669,8 @@ export type InvokeMap = WorktreeInvokeMap &
   RemoteInvokeMap &
   PushInvokeMap &
   SttInvokeMap &
-  AgentBusInvokeMap
+  AgentBusInvokeMap &
+  BacklogInvokeMap
 
 export type SendMap = LspSendMap
 
@@ -1660,4 +1689,5 @@ export type EventMap = WorktreeEventMap &
   MemoryEventMap &
   RemoteEventMap &
   SessionEventMap &
-  ModelsEventMap
+  ModelsEventMap &
+  BacklogEventMap
