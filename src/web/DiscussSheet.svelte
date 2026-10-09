@@ -1,16 +1,20 @@
 <script lang="ts" module>
-  const MODEL_KEY = 'simpleedit.discussModel'
+  import type { InteractiveTarget } from '../shared/ipc-types'
 
-  function rememberedModel(): string | null {
+  /** The last pick as a `targetKey`: `''` is Default. */
+  const MODEL_KEY = 'simpleedit.discussTarget'
+
+  function rememberedTarget(): InteractiveTarget | null {
     try {
-      return localStorage.getItem(MODEL_KEY)
+      const key = localStorage.getItem(MODEL_KEY)
+      return key ? (JSON.parse(key) as InteractiveTarget) : null
     } catch {
       return null
     }
   }
-  function rememberModel(id: string): void {
+  function rememberTarget(key: string): void {
     try {
-      localStorage.setItem(MODEL_KEY, id)
+      localStorage.setItem(MODEL_KEY, key)
     } catch {
       // Private mode or blocked storage: the pick just isn't remembered.
     }
@@ -30,7 +34,7 @@
    * a deliberate "start another anyway" once main says the outcome is unknown.
    */
   import { onMount } from 'svelte'
-  import { loadAgentModels, type AgentModel } from '../renderer/lib/agentModels'
+  import { loadAllowlistedModels, refreshAllowlistedModelsOnFocus, targetKey, targetLabel, type AllowlistedModel } from '../renderer/lib/agentModels'
   import { SESSION_CREATE_UNWITNESSED, type SessionCreateRequest, type SessionCreateResult } from '../shared/ipc-types'
 
   interface Props {
@@ -48,9 +52,10 @@
 
   let { prLabel, label, focus, connected, brief, oncreated, onclose }: Props = $props()
 
-  let models = $state<AgentModel[]>([])
+  let models = $state<AllowlistedModel[]>([])
   let loadError = $state<string | null>(null)
-  let selectedId = $state<string | null>(null)
+  /** null = Default. A remembered pick the allowlist no longer lists stays picked, and listed. */
+  let target = $state<InteractiveTarget | null>(rememberedTarget())
   let starting = $state(false)
   let error = $state<string | null>(null)
   /** Main may hold an outcome nobody saw, so a retry returns the same answer. */
@@ -62,42 +67,46 @@
    */
   let intent: SessionCreateRequest | null = null
 
-  const selected = $derived(models.find((m) => m.id === selectedId) ?? null)
-  const cloud = $derived(models.filter((m) => m.tier === 'cloud'))
-  const local = $derived(models.filter((m) => m.tier === 'local'))
+  const selectedKey = $derived(targetKey(target))
+  const selectedLabel = $derived(targetLabel(target, models))
+  const entries = $derived([
+    { key: '', label: 'Default', target: null },
+    ...(target && !models.some((m) => targetKey(m.target) === selectedKey) ? [{ key: selectedKey, label: selectedLabel, target }] : []),
+    ...models.map((m) => ({ key: targetKey(m.target), label: m.label, target: m.target })),
+  ])
 
-  onMount(() => {
-    loadAgentModels()
-      .then((list) => {
+  // Settings → Models on the Mac has no change event: reread it each time the
+  // sheet opens, and when the app comes back. The old list stays up meanwhile.
+  function takeModels(load: Promise<AllowlistedModel[]> | null): void {
+    load
+      ?.then((list) => {
         models = list
-        const remembered = rememberedModel()
-        // The desk's default for this button: Sonnet, else the first cloud model.
-        selectedId =
-          list.find((m) => m.id === remembered)?.id ??
-          list.find((m) => m.id === 'anthropic:sonnet')?.id ??
-          list.find((m) => m.tier === 'cloud')?.id ??
-          list[0]?.id ??
-          null
+        loadError = null
       })
       .catch((err: unknown) => {
         loadError = err instanceof Error ? err.message : String(err)
       })
+  }
+  const onWindowFocus = (): void => takeModels(refreshAllowlistedModelsOnFocus())
+
+  onMount(() => {
+    takeModels(loadAllowlistedModels())
+    window.addEventListener('focus', onWindowFocus)
+    return () => window.removeEventListener('focus', onWindowFocus)
   })
 
   function mintRequestId(): string {
     return globalThis.crypto?.randomUUID?.() ?? `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   }
 
-  function pick(id: string): void {
-    if (id !== selectedId) intent = null
-    selectedId = id
-    rememberModel(id)
+  function pick(key: string, next: InteractiveTarget | null): void {
+    if (key !== selectedKey) intent = null
+    target = next
+    rememberTarget(key)
   }
 
   async function attempt(): Promise<void> {
-    const m = selected
-    if (!m) return
-    intent ??= { requestId: mintRequestId(), brief: brief(), target: $state.snapshot(m.target), label }
+    intent ??= { requestId: mintRequestId(), brief: brief(), ...(target ? { target: $state.snapshot(target) } : {}), label }
     starting = true
     error = null
     try {
@@ -181,34 +190,27 @@
     <div class="min-h-0 flex-1 overflow-y-auto" role="radiogroup" aria-label="Model">
       {#if loadError}
         <p class="py-3 text-xs text-red-300" data-testid="discuss-models-error">Couldn’t list the models: {loadError}</p>
-      {:else if models.length === 0}
-        <p class="py-3 text-xs text-zinc-500">Loading models…</p>
       {/if}
-      {#each [{ title: 'Cloud', list: cloud }, { title: 'Local', list: local }] as group (group.title)}
-        {#if group.list.length}
-          <h3 class="mb-1 mt-2 px-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{group.title}</h3>
-          <ul class="space-y-1">
-            {#each group.list as m (m.id)}
-              <li>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={m.id === selectedId}
-                  onclick={() => pick(m.id)}
-                  disabled={starting || unwitnessed}
-                  data-testid="discuss-model"
-                  data-model={m.id}
-                  class="flex min-h-11 w-full items-center gap-2 rounded-lg border px-3 text-left text-[13px]
-                    {m.id === selectedId ? 'border-blue-500 bg-blue-500/10 text-zinc-100' : 'border-zinc-800 bg-zinc-900 text-zinc-300'}"
-                >
-                  <span class="min-w-0 flex-1 truncate">{m.label}</span>
-                  {#if m.id === selectedId}<span class="flex-none text-blue-300">✓</span>{/if}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      {/each}
+      <ul class="space-y-1">
+        {#each entries as m (m.key)}
+          <li>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={m.key === selectedKey}
+              onclick={() => pick(m.key, m.target)}
+              disabled={starting || unwitnessed}
+              data-testid="discuss-model"
+              data-model={m.key}
+              class="flex min-h-11 w-full items-center gap-2 rounded-lg border px-3 text-left text-[13px]
+                {m.key === selectedKey ? 'border-blue-500 bg-blue-500/10 text-zinc-100' : 'border-zinc-800 bg-zinc-900 text-zinc-300'}"
+            >
+              <span class="min-w-0 flex-1 truncate">{m.label}</span>
+              {#if m.key === selectedKey}<span class="flex-none text-blue-300">✓</span>{/if}
+            </button>
+          </li>
+        {/each}
+      </ul>
     </div>
 
     <div class="mt-3 flex-none">
@@ -230,10 +232,10 @@
       <button
         type="button"
         onclick={start}
-        disabled={!selected || starting || !connected}
+        disabled={starting || !connected}
         data-testid="discuss-start"
         class="min-h-11 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white active:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-500"
-      >{starting ? 'Starting…' : selected ? `Start with ${selected.label}` : 'Start'}</button>
+      >{starting ? 'Starting…' : `Start with ${selectedLabel}`}</button>
     </div>
   </div>
 </div>

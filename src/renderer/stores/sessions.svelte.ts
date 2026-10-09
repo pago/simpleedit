@@ -9,7 +9,7 @@
  */
 import { untrack } from 'svelte'
 import { capabilitiesFor, providerForModelBrand, providerLabel } from './agent-capabilities.svelte'
-import type { AgentPeer, AgentProviderId, InteractiveTarget, MemoryGit, MemoryLocation, ModelConfig, ModelRef, NativeModelAgentId, ReasoningEffort, SessionRepoTrail, WindowSessionInput } from '../../shared/ipc-types'
+import type { AgentPeer, AgentProviderId, InteractiveTarget, MemoryGit, MemoryLocation, ModelConfig, ModelDescriptor, ModelRef, NativeModelAgentId, ReasoningEffort, SessionRepoTrail, WindowSessionInput } from '../../shared/ipc-types'
 import { clearAgentStatusForTerminal, getAgentStatusForTerminal } from './agent-status.svelte'
 import { tabsStore } from './tabsStore.svelte'
 import {
@@ -21,7 +21,6 @@ import {
   projectRoot,
   mainWorktree,
 } from './worktrees.svelte'
-import { loadAgentModels } from '../lib/agentModels'
 
 export type SessionKind = 'agent' | 'agents' | 'terminal'
 
@@ -1250,8 +1249,8 @@ async function spawnSessionFromAgent(
   } else {
     let model: ModelRef | undefined = caller?.model
     if (data.model) {
-      const agentModels = await loadAgentModels().catch(() => [])
-      model = agentModels.find((m) => m.ref?.model === data.model || m.id === data.model)?.ref ?? { provider: 'anthropic', model: data.model }
+      const installed = await window.api.invoke('models:installed').catch(() => [] as ModelDescriptor[])
+      model = { provider: installed.some((m) => m.toolCapable && m.name === data.model) ? 'ollama' : 'anthropic', model: data.model }
     }
     target = { provider: 'claude', ...(model ? { model } : {}) }
   }

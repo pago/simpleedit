@@ -34,6 +34,7 @@
 
 <script lang="ts">
   import { onMount } from 'svelte'
+  import type { InteractiveTarget } from '../../../shared/ipc-types'
   import type { ScreenPrCard, PrContext, TriageFinding, DeepFinding, DeepSeverity, PrReviewComment } from '../../../shared/screenprs'
   import { DEEP_LENS_ORDER, DEEP_LENS_LABEL, anchorState, baseWarning, parseLineRange } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
@@ -47,35 +48,50 @@
   import InlineCommentEditor from './InlineCommentEditor.svelte'
   import { SOURCE_CLASS } from './commentSource'
   import SplitButton from '../SplitButton.svelte'
-  import { loadAgentModels, type AgentModel } from '../../lib/agentModels'
+  import { loadAllowlistedModels, refreshAllowlistedModelsOnFocus, type AllowlistedModel } from '../../lib/agentModels'
   import { uiView } from '../../stores/uiView.svelte'
-  import { sessionsStore } from '../../stores/sessions.svelte'
+  import { sessionsStore, createSessionFromDefaults } from '../../stores/sessions.svelte'
   import { projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
 
   let { context, card }: { context: PrContext; card?: ScreenPrCard } = $props()
 
-  // ── Discuss with Agent: spawn a primed Claude session in the sidebar ────────
-  let agentModels = $state<AgentModel[]>([])
-  let discussModelId = $state<string | null>(null)
-  onMount(async () => {
-    agentModels = await loadAgentModels()
-    discussModelId =
-      discussModelId ??
-      agentModels.find((m) => m.id === 'anthropic:sonnet')?.id ??
-      agentModels.find((m) => m.tier === 'cloud')?.id ??
-      agentModels[0]?.id ??
-      null
+  // ── Discuss with Agent: spawn a primed agent session in the sidebar ─────────
+  let agentModels = $state<AllowlistedModel[]>([])
+  let discussTarget = $state<InteractiveTarget | null>(null)
+
+  // Settings → Models has no change event: reread it when the menu opens or
+  // the window comes back. The old list stays up meanwhile.
+  function takeModels(load: Promise<AllowlistedModel[]> | null): void {
+    load?.then((list) => (agentModels = list)).catch(() => {})
+  }
+  const refreshModels = (): void => takeModels(loadAllowlistedModels())
+  const onWindowFocus = (): void => takeModels(refreshAllowlistedModelsOnFocus())
+
+  onMount(() => {
+    refreshModels()
+    window.addEventListener('focus', onWindowFocus)
+    return () => window.removeEventListener('focus', onWindowFocus)
   })
 
-  function discuss(m: AgentModel, focus?: OverviewLookIntoItem): void {
+  async function discuss(target: InteractiveTarget | null, focus?: OverviewLookIntoItem): Promise<void> {
     const wt = mainWorktree()
     const root = projectRoot() ?? wt?.path
     if (!root || !wt) return
-    const id = sessionsStore.createAgent(m.target, root, wt.path, {
-      ...(m.target.provider === 'claude' && m.target.model ? { model: m.target.model } : {}),
+    const opts = {
       initialPrompt: buildPrBrief({ context, triage: card?.findings, overview: overview?.text, deep: deep?.findings, focus }),
       label: prSessionLabel(context),
-    })
+    }
+    let id: string
+    if (target) {
+      const t = $state.snapshot(target)
+      id = sessionsStore.createAgent(t, root, wt.path, {
+        ...(t.provider === 'claude' && t.model ? { model: t.model } : {}),
+        ...opts,
+      })
+    } else {
+      const config = await window.api.invoke('models:config-get').catch(() => null)
+      id = createSessionFromDefaults(config, root, wt.path, opts)
+    }
     uiView.show('workspace')
     sessionsStore.requestTerminalFocus(id)
   }
@@ -143,8 +159,7 @@
     })
   }
   function discussItem(item: OverviewLookIntoItem): void {
-    const m = agentModels.find((a) => a.id === discussModelId) ?? agentModels[0]
-    if (m) discuss(m, item)
+    void discuss(discussTarget, item)
   }
   function runOverview(): void {
     void screenPrsStore.startOverview(context)
@@ -302,9 +317,7 @@
       {#if overview?.status === 'running'}
         <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancelOverview(context.url)}>Stop</button>
       {/if}
-      {#if agentModels.length}
-        <SplitButton label="Discuss" icon="✦" models={agentModels} bind:selectedId={discussModelId} onstart={discuss} />
-      {/if}
+      <SplitButton label="Discuss" icon="✦" models={agentModels} bind:selected={discussTarget} onopen={refreshModels} onstart={(t) => void discuss(t)} />
     </div>
   </div>
 
@@ -316,7 +329,7 @@
     {/if}
     {#if overviewActive && overview}
       <div class="mx-4 mt-4">
-        <OverviewCard {context} {overview} onref={showRef} onreview={addOverviewComment} ondiscuss={agentModels.length ? discussItem : undefined} />
+        <OverviewCard {context} {overview} onref={showRef} onreview={addOverviewComment} ondiscuss={discussItem} />
       </div>
     {/if}
     {#if triageInProgress}

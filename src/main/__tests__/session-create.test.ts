@@ -338,6 +338,7 @@ describe('models a remote client names', () => {
   const catalog: ModelCatalog = {
     claude: async () => ['opus', 'sonnet'],
     codex: async () => ['gpt-5.5'],
+    opencode: async () => ['opencode/big-pickle'],
     ollama: async () => ['qwen3:8b'],
   }
 
@@ -347,13 +348,15 @@ describe('models a remote client names', () => {
     expect(await unknownModelReason({ provider: 'claude' }, catalog)).toBeNull()
     expect(await unknownModelReason({ provider: 'codex', model: 'gpt-5.5' }, catalog)).toBeNull()
     expect(await unknownModelReason({ provider: 'codex' }, catalog)).toBeNull()
+    expect(await unknownModelReason({ provider: 'opencode', model: 'opencode/big-pickle' }, catalog)).toBeNull()
+    expect(await unknownModelReason({ provider: 'opencode' }, catalog)).toBeNull()
   })
 
   it('refuses a model that is not there, saying which', async () => {
     expect(await unknownModelReason({ provider: 'claude', model: { provider: 'anthropic', model: 'claude-9' } }, catalog)).toMatch(/doesn't offer the model “claude-9”/)
     expect(await unknownModelReason({ provider: 'claude', model: { provider: 'ollama', model: 'llama9' } }, catalog)).toMatch(/isn't an installed local model/)
     expect(await unknownModelReason({ provider: 'codex', model: 'gpt-0' }, catalog)).toMatch(/Codex doesn't offer/)
-    expect(await unknownModelReason({ provider: 'opencode', model: 'opencode/x' }, catalog)).toMatch(/can't be started from the phone/)
+    expect(await unknownModelReason({ provider: 'opencode', model: 'opencode/x' }, catalog)).toMatch(/OpenCode doesn't offer the model “opencode\/x”/)
   })
 
   it('refuses before asking the renderer, and the reason reaches the caller', async () => {

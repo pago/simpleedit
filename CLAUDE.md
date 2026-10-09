@@ -509,9 +509,13 @@ Discuss with Agent sends one brief from both clients (`shared/pr-brief.ts`). The
 phone starts it through `session:create` with an explicit `target` and fixed
 `label`, which main validates (`parseCreateTarget`, `parseCreateLabel`; a Claude
 model never carries an Ollama endpoint from a socket) under the same
-exactly-once `requestId` rule as the `+` sheet. A named model must be one the
-picker offers (`unknownModelReason` against main's own catalogs), so a bad id
-is refused where the phone sees why rather than dying at launch. A remembered
+exactly-once `requestId` rule as the `+` sheet. Both pickers (desk
+`SplitButton`, phone `DiscussSheet`) offer "Default" plus the Settings → Models
+allowlist, as the backlog's does; Default sends no `target`, so main starts what
+a plain new session would, and a pick the allowlist dropped stays picked. A
+named model must be in main's own catalogs (`unknownModelReason`: Claude,
+Codex, OpenCode, Ollama), so a bad id is refused where the phone sees why
+rather than dying at launch. A remembered
 `requestId` that comes back with a different request (fingerprint of brief,
 target, label) is refused (`SESSION_CREATE_REUSED`), so a client resends an
 intent unchanged. On a project switch the phone drops the old window's
@@ -617,7 +621,7 @@ user's call.
   if the save fails the item stays open saying why. Delete drops the draft.
 - **The model picker** (desktop and phone) is "Default" plus the Settings →
   Models allowlist (`loadAllowlistedModels`, the sidebar's new-session menu
-  too). The config has no change event, so it is reread on picker focus and
+  and Discuss with Agent too). The config has no change event, so it is reread on picker focus and
   at most every 30 s on window focus; concurrent loads share one, since
   discovery spawns CLIs.
 
