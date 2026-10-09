@@ -282,9 +282,8 @@ test('Discuss with Agent opens the new session over the PR, and Back returns to 
 
   await page.getByTestId('discuss').click()
   await expect(page.getByTestId('discuss-sheet')).toBeVisible()
-  // The fake Claude CLI answers the catalog, so a Claude model is on offer.
-  const claudeModel = page.locator('[data-testid="discuss-model"][data-model^="anthropic:"]').first()
-  await claudeModel.click({ timeout: 15_000 })
+  // Default needs no catalog or allowlist: main starts what a plain new session would.
+  await page.locator('[data-testid="discuss-model"][data-model=""]').click({ timeout: 15_000 })
   await page.getByTestId('discuss-start').click()
 
   await expect(page.getByTestId('discuss-sheet')).toHaveCount(0, { timeout: 20_000 })

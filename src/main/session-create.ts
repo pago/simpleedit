@@ -124,14 +124,16 @@ interface Remembered {
 }
 
 /**
- * The models a remote client may start, as main lists them: the same Claude
- * catalog, Codex catalog and installed tool-capable Ollama models the phone's
- * picker is built from. A shape check alone would accept a model that is not
- * there, and the session would die at launch where the phone can't see why.
+ * The models a remote client may start, as main lists them: the same Claude,
+ * Codex and OpenCode catalogs and installed tool-capable Ollama models the
+ * pickers resolve the Settings → Models allowlist against. A shape check alone
+ * would accept a model that is not there, and the session would die at launch
+ * where the phone can't see why.
  */
 export interface ModelCatalog {
   claude(): Promise<string[]>
   codex(): Promise<string[]>
+  opencode(): Promise<string[]>
   ollama(): Promise<string[]>
 }
 
@@ -146,11 +148,9 @@ export async function unknownModelReason(target: InteractiveTarget, catalog: Mod
       ? `“${model}” isn't an installed local model that can drive an agent.`
       : `Claude Code doesn't offer the model “${model}”.`
   }
-  if (target.provider === 'codex') {
-    if (!target.model || (await catalog.codex()).includes(target.model)) return null
-    return `Codex doesn't offer the model “${target.model}”.`
-  }
-  return `${target.provider} sessions can't be started from the phone; pick a model from the list.`
+  if (!target.model || (await catalog[target.provider]()).includes(target.model)) return null
+  const agent = target.provider === 'codex' ? 'Codex' : 'OpenCode'
+  return `${agent} doesn't offer the model “${target.model}”.`
 }
 
 /** Canonical JSON: the same request from any client gives the same string, whatever its key order. */

@@ -8,6 +8,7 @@ import { nav } from '../lib/nav.svelte'
 import { tick } from 'svelte'
 import type { PrReviewDraft, ScreenPrCard } from '../../shared/screenprs'
 import { applyDraftOp, type PrReviewDraftOp } from '../../shared/review-drafts'
+import { _resetAllowlistedModelsForTests, targetKey } from '../../renderer/lib/agentModels'
 
 /**
  * The one invariant this screen exists to hold:
@@ -764,21 +765,36 @@ describe('PR detail — base warning', () => {
 describe('PR detail — Discuss with Agent', () => {
   const TEXT = '## What changed\nTightens it.\n## Why\nB\n## Impact\nC\n## Look into\n1. Is the gate inverted? `src/gate.ts:11`'
   let created: unknown
+  let allowlist: string[]
+  let ollamaDown: boolean
+
+  const SONNET = targetKey({ provider: 'claude', model: { provider: 'anthropic', model: 'sonnet' } })
+  const OPUS = targetKey({ provider: 'claude', model: { provider: 'anthropic', model: 'opus' } })
+  const GPT = targetKey({ provider: 'codex', model: 'gpt-5.5' })
 
   beforeEach(() => {
     localStorage.clear()
+    _resetAllowlistedModelsForTests()
+    allowlist = ['sonnet', 'opus', 'gpt-5.5', 'opencode/big-pickle', 'qwen3:8b']
+    ollamaDown = false
     screenPrsStore._onOverviewStatus(URL_, 'idle')
     created = { terminalId: 'agent-claude-1', label: 'review acme/widgets#7' }
     const base = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
     invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'models:config-get') return { defaults: {}, submenuAllowlist: allowlist }
       if (channel === 'models:claude') {
         return [
           { provider: 'anthropic', model: 'opus', displayName: 'Opus' },
           { provider: 'anthropic', model: 'sonnet', displayName: 'Sonnet' },
+          { provider: 'anthropic', model: 'haiku', displayName: 'Haiku' },
         ]
       }
       if (channel === 'models:codex') return [{ model: 'gpt-5.5', displayName: 'GPT-5.5' }]
-      if (channel === 'models:installed') return []
+      if (channel === 'models:opencode') return [{ model: 'opencode/big-pickle', displayName: 'Big Pickle' }]
+      if (channel === 'models:installed') {
+        if (ollamaDown) throw new Error('connect ECONNREFUSED 127.0.0.1:11434')
+        return [{ name: 'qwen3:8b', toolCapable: true }]
+      }
       if (channel === 'session:create') return created
       return base(channel, ...args)
     })
@@ -787,15 +803,46 @@ describe('PR detail — Discuss with Agent', () => {
   function createCalls(): { requestId: string; brief: string; target?: unknown; label?: string }[] {
     return invoke.mock.calls.filter(([ch]) => ch === 'session:create').map(([, req]) => req)
   }
+  function modelLabels(): string[] {
+    return screen.getAllByTestId('discuss-model').map((el) => el.textContent!.replace('✓', '').trim())
+  }
+  function modelEntry(key: string): HTMLElement {
+    return screen.getAllByTestId('discuss-model').find((el) => el.dataset.model === key)!
+  }
+
+  it('offers Default plus the Settings → Models allowlist, OpenCode and local included', async () => {
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() =>
+      expect(modelLabels()).toEqual([
+        'Default',
+        'Claude · Sonnet',
+        'Claude · Opus',
+        'Codex · GPT-5.5',
+        'OpenCode · Big Pickle',
+        'Claude · qwen3:8b',
+      ]),
+    )
+    expect(screen.getByTestId('discuss-start')).toHaveTextContent('Start with Default')
+  })
+
+  it('still lists the cloud models while Ollama is down', async () => {
+    ollamaDown = true
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() =>
+      expect(modelLabels()).toEqual(['Default', 'Claude · Sonnet', 'Claude · Opus', 'Codex · GPT-5.5', 'OpenCode · Big Pickle']),
+    )
+    expect(screen.queryByTestId('discuss-models-error')).toBeNull()
+  })
 
   it('starts a review session on the picked model, named for the PR', async () => {
     const onstarted = vi.fn()
     render(PrDetail, { pr: CARD, connected: true, onstarted })
     await fireEvent.click(screen.getByTestId('discuss'))
     const sheet = await screen.findByTestId('discuss-sheet')
-    // Sonnet, as at the desk, until another is picked.
-    await waitFor(() => expect(within(sheet).getByTestId('discuss-start')).toHaveTextContent('Sonnet'))
-    await fireEvent.click(within(sheet).getAllByTestId('discuss-model').find((el) => el.dataset.model === 'openai:gpt-5.5')!)
+    await waitFor(() => expect(within(sheet).getAllByTestId('discuss-model')).toHaveLength(6))
+    await fireEvent.click(modelEntry(GPT))
     await fireEvent.click(within(sheet).getByTestId('discuss-start'))
 
     await waitFor(() => expect(onstarted).toHaveBeenCalledWith(created))
@@ -806,6 +853,35 @@ describe('PR detail — Discuss with Agent', () => {
     expect(request.brief).toContain(`PR: ${URL_}`)
     expect(screen.queryByTestId('discuss-sheet')).toBeNull()
     expect(nav.stack()).toEqual([])
+  })
+
+  it('starts an OpenCode pick on its target', async () => {
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() => expect(modelLabels()).toContain('OpenCode · Big Pickle'))
+    await fireEvent.click(screen.getAllByTestId('discuss-model').find((el) => el.textContent?.includes('Big Pickle'))!)
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0].target).toEqual({ provider: 'opencode', model: 'opencode/big-pickle' })
+  })
+
+  it('remembers the pick, and keeps it when the allowlist no longer lists it', async () => {
+    const first = render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() => expect(modelLabels()).toContain('Claude · Opus'))
+    await fireEvent.click(modelEntry(OPUS))
+    first.unmount()
+    nav.reset()
+
+    allowlist = ['sonnet']
+    _resetAllowlistedModelsForTests()
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() => expect(modelLabels()).toEqual(['Default', 'Claude · opus', 'Claude · Sonnet']))
+    expect(modelEntry(OPUS)).toHaveAttribute('aria-checked', 'true')
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0].target).toEqual({ provider: 'claude', model: { provider: 'anthropic', model: 'opus' } })
   })
 
   it('starts from a Look-into question, carrying it in the brief', async () => {
@@ -819,7 +895,8 @@ describe('PR detail — Discuss with Agent', () => {
     await fireEvent.click(screen.getByTestId('discuss-start'))
     await waitFor(() => expect(createCalls()).toHaveLength(1))
     expect(createCalls()[0].brief).toContain('dig into this question from the overview first:\nIs the gate inverted?')
-    expect(createCalls()[0].target).toEqual({ provider: 'claude', model: { provider: 'anthropic', model: 'sonnet' } })
+    // Default: main starts what a plain new session would.
+    expect(createCalls()[0]).not.toHaveProperty('target')
   })
 
   it('retries the same intent after a failure, so it can only ever make one session', async () => {
@@ -850,7 +927,8 @@ describe('PR detail — Discuss with Agent', () => {
     })
     render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
     await fireEvent.click(screen.getByTestId('discuss'))
-    await waitFor(() => expect(screen.getByTestId('discuss-start')).toBeEnabled())
+    await waitFor(() => expect(modelLabels()).toContain('Claude · Opus'))
+    await fireEvent.click(modelEntry(SONNET))
     await fireEvent.click(screen.getByTestId('discuss-start'))
     await screen.findByTestId('discuss-error')
 
@@ -860,7 +938,7 @@ describe('PR detail — Discuss with Agent', () => {
     await waitFor(() => expect(createCalls()).toHaveLength(2))
     expect(createCalls()[1]).toEqual(createCalls()[0])
 
-    await fireEvent.click(screen.getAllByTestId('discuss-model').find((el) => el.dataset.model === 'anthropic:opus')!)
+    await fireEvent.click(modelEntry(OPUS))
     fail = false
     await fireEvent.click(screen.getByTestId('discuss-start'))
     await waitFor(() => expect(createCalls()).toHaveLength(3))

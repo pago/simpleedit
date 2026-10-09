@@ -316,10 +316,11 @@ function broadcastServeStatus(status: TailscaleServeStatus): void {
   broadcastToWindows('remote:serve-changed', status)
 }
 
-/** What a phone's Discuss picker is built from (`loadAgentModels`), so main refuses whatever it doesn't offer. */
+/** What the model pickers resolve the allowlist against (`loadAllowlistedModels`), so main refuses whatever they can't offer. */
 const MODEL_CATALOG: ModelCatalog = {
   claude: async () => (await listClaudeModels()).map((m) => m.model),
   codex: async () => (await listCodexModels()).map((m) => m.model),
+  opencode: async () => (await getOpenCodeModels()).map((m) => m.model),
   ollama: async () => (await listInstalledModels()).filter((m) => m.toolCapable).map((m) => m.name),
 }
 
@@ -350,15 +351,6 @@ async function editBacklog(webContentsId: number, raw: unknown, origin: Origin):
   const { result, changed } = applyBacklogOps(project, ops, origin)
   if (changed) broadcastBacklog(project)
   return result
-}
-
-/**
- * The models a session started for someone other than the desk may use.
- * OpenCode has no catalog main can list, so its sessions are started unchecked,
- * as at the desk.
- */
-function catalogFor(request: SessionCreateRequest): ModelCatalog | undefined {
-  return request.target?.provider === 'opencode' ? undefined : MODEL_CATALOG
 }
 
 setBacklogTools({
@@ -1165,7 +1157,7 @@ function registerAllHandlers(): void {
     if (!window) throw new Error('That SimpleEdit window is gone.')
     const project = getRepoForSenderOrThrow(event.sender.id)
     return startBacklogItem(project, parseStartRequest(raw), {
-      createSession: (request) => createSessionOnce(request, window.webContents, catalogFor(request)),
+      createSession: (request) => createSessionOnce(request, window.webContents, MODEL_CATALOG),
       changed: () => broadcastBacklog(project),
     })
   })
