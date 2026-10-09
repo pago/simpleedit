@@ -272,6 +272,15 @@ test('switching tabs keeps the other tab\'s screen, and Back never switches tabs
 })
 
 test('Discuss with Agent opens the new session over the PR, and Back returns to the PR', async ({ window, browser }) => {
+  // The fake Claude CLI answers the catalog; allowlisting one of its models puts
+  // it in the picker, and an explicit pick goes through main's model check.
+  const claude = await window.evaluate(async () => {
+    const api = (window as unknown as { api: Api }).api
+    const [first] = (await api.invoke('models:claude')) as { model: string; displayName: string }[]
+    await api.invoke('models:config-set', { submenuAllowlist: [first.model] })
+    return first
+  })
+
   const url = await phoneUrl(window)
   const { page, socket } = await openPhone(browser, url)
 
@@ -282,8 +291,8 @@ test('Discuss with Agent opens the new session over the PR, and Back returns to 
 
   await page.getByTestId('discuss').click()
   await expect(page.getByTestId('discuss-sheet')).toBeVisible()
-  // Default needs no catalog or allowlist: main starts what a plain new session would.
-  await page.locator('[data-testid="discuss-model"][data-model=""]').click({ timeout: 15_000 })
+  await page.getByTestId('discuss-model').filter({ hasText: `Claude · ${claude.displayName}` }).click({ timeout: 15_000 })
+  await expect(page.getByTestId('discuss-start')).toHaveText(`Start with Claude · ${claude.displayName}`)
   await page.getByTestId('discuss-start').click()
 
   await expect(page.getByTestId('discuss-sheet')).toHaveCount(0, { timeout: 20_000 })

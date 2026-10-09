@@ -133,7 +133,8 @@ interface Remembered {
 export interface ModelCatalog {
   claude(): Promise<string[]>
   codex(): Promise<string[]>
-  opencode(): Promise<string[]>
+  /** null when the catalog couldn't be listed: the launch decides then. */
+  opencode(): Promise<string[] | null>
   ollama(): Promise<string[]>
 }
 
@@ -148,9 +149,14 @@ export async function unknownModelReason(target: InteractiveTarget, catalog: Mod
       ? `“${model}” isn't an installed local model that can drive an agent.`
       : `Claude Code doesn't offer the model “${model}”.`
   }
-  if (!target.model || (await catalog[target.provider]()).includes(target.model)) return null
-  const agent = target.provider === 'codex' ? 'Codex' : 'OpenCode'
-  return `${agent} doesn't offer the model “${target.model}”.`
+  if (target.provider === 'codex') {
+    if (!target.model || (await catalog.codex()).includes(target.model)) return null
+    return `Codex doesn't offer the model “${target.model}”.`
+  }
+  if (!target.model) return null
+  const known = await catalog.opencode()
+  if (!known || known.includes(target.model)) return null
+  return `OpenCode doesn't offer the model “${target.model}”.`
 }
 
 /** Canonical JSON: the same request from any client gives the same string, whatever its key order. */

@@ -621,7 +621,9 @@ user's call.
   if the save fails the item stays open saying why. Delete drops the draft.
 - **The model picker** (desktop and phone) is "Default" plus the Settings →
   Models allowlist (`loadAllowlistedModels`, the sidebar's new-session menu
-  and Discuss with Agent too). The config has no change event, so it is reread on picker focus and
+  and Discuss with Agent too); an allowlist that resolves to nothing leaves
+  just Default plus a hint pointing to Settings → Models (not in the sidebar
+  menu). The config has no change event, so it is reread on picker focus and
   at most every 30 s on window focus; concurrent loads share one, since
   discovery spawns CLIs.
 

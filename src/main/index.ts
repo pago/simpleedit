@@ -107,7 +107,7 @@ import { closeDb } from './db'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
-import { getOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
+import { getOpenCodeModels, listOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
 import type { PrContext, PrRef } from '../shared/screenprs'
 import type { BacklogOpResult } from '../shared/backlog'
 import { handleSubmitReview } from './github/review'
@@ -320,7 +320,7 @@ function broadcastServeStatus(status: TailscaleServeStatus): void {
 const MODEL_CATALOG: ModelCatalog = {
   claude: async () => (await listClaudeModels()).map((m) => m.model),
   codex: async () => (await listCodexModels()).map((m) => m.model),
-  opencode: async () => (await getOpenCodeModels()).map((m) => m.model),
+  opencode: async () => (await listOpenCodeModels())?.map((m) => m.model) ?? null,
   ollama: async () => (await listInstalledModels()).filter((m) => m.toolCapable).map((m) => m.name),
 }
 

@@ -57,12 +57,18 @@
 
   // ── Discuss with Agent: spawn a primed agent session in the sidebar ─────────
   let agentModels = $state<AllowlistedModel[]>([])
+  let modelsLoaded = $state(false)
   let discussTarget = $state<InteractiveTarget | null>(null)
 
   // Settings → Models has no change event: reread it when the menu opens or
   // the window comes back. The old list stays up meanwhile.
   function takeModels(load: Promise<AllowlistedModel[]> | null): void {
-    load?.then((list) => (agentModels = list)).catch(() => {})
+    load
+      ?.then((list) => {
+        agentModels = list
+        modelsLoaded = true
+      })
+      .catch(() => {})
   }
   const refreshModels = (): void => takeModels(loadAllowlistedModels())
   const onWindowFocus = (): void => takeModels(refreshAllowlistedModelsOnFocus())
@@ -317,7 +323,7 @@
       {#if overview?.status === 'running'}
         <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancelOverview(context.url)}>Stop</button>
       {/if}
-      <SplitButton label="Discuss" icon="✦" models={agentModels} bind:selected={discussTarget} onopen={refreshModels} onstart={(t) => void discuss(t)} />
+      <SplitButton label="Discuss" icon="✦" models={agentModels} bind:selected={discussTarget} onopen={refreshModels} noModels={modelsLoaded && agentModels.length === 0} onstart={(t) => void discuss(t)} />
     </div>
   </div>
 

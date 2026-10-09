@@ -352,6 +352,13 @@ describe('models a remote client names', () => {
     expect(await unknownModelReason({ provider: 'opencode' }, catalog)).toBeNull()
   })
 
+  it('leaves an OpenCode model to the launch when its catalog cannot be listed', async () => {
+    const unlisted: ModelCatalog = { ...catalog, opencode: async () => null }
+    expect(await unknownModelReason({ provider: 'opencode', model: 'opencode/x' }, unlisted)).toBeNull()
+    const empty: ModelCatalog = { ...catalog, opencode: async () => [] }
+    expect(await unknownModelReason({ provider: 'opencode', model: 'opencode/x' }, empty)).toMatch(/OpenCode doesn't offer/)
+  })
+
   it('refuses a model that is not there, saying which', async () => {
     expect(await unknownModelReason({ provider: 'claude', model: { provider: 'anthropic', model: 'claude-9' } }, catalog)).toMatch(/doesn't offer the model “claude-9”/)
     expect(await unknownModelReason({ provider: 'claude', model: { provider: 'ollama', model: 'llama9' } }, catalog)).toMatch(/isn't an installed local model/)

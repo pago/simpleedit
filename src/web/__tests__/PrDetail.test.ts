@@ -826,6 +826,21 @@ describe('PR detail — Discuss with Agent', () => {
     expect(screen.getByTestId('discuss-start')).toHaveTextContent('Start with Default')
   })
 
+  it('offers only Default with an empty allowlist, pointing to Settings → Models', async () => {
+    allowlist = []
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    expect(await screen.findByTestId('models-hint')).toHaveTextContent('Pick models for this list in Settings → Models.')
+    expect(modelLabels()).toEqual(['Default'])
+  })
+
+  it('shows no Settings hint while the allowlist lists models', async () => {
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() => expect(modelLabels()).toContain('Claude · Opus'))
+    expect(screen.queryByTestId('models-hint')).toBeNull()
+  })
+
   it('still lists the cloud models while Ollama is down', async () => {
     ollamaDown = true
     render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
