@@ -42,6 +42,16 @@ export function wordCount(brief: string): number {
 }
 
 /**
+ * A session name as main stores it: control characters and runs of whitespace
+ * become one space, trimmed. An editor compares against this, or a name main
+ * tidied would read as an unsaved edit forever.
+ */
+export function cleanSessionLabel(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  return raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/**
  * The sidebar name for a session started from a brief: its first clause.
  *
  * Returns null when there is nothing worth naming, so the caller falls back to

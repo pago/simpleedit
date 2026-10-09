@@ -505,6 +505,92 @@ server.registerTool(
   },
 )
 
+// ── Session backlog ────────────────────────────────────────────────────────
+
+const backlogTargetFields = {
+  provider: z
+    .enum(['claude', 'codex', 'opencode', 'default'])
+    .optional()
+    .describe('Agent to start. Omit (on add) or "default" (on update) for the user\'s default at start time. Required with `model` on add.'),
+  model: z.string().optional().describe('Model id for that agent. Omit for the agent\'s default. On update, fields you omit keep their value.'),
+}
+
+server.registerTool(
+  'list_backlog',
+  {
+    description: [
+      'List this project\'s session backlog in SimpleEdit: prepared session prompts the user will start later, in priority order.',
+      'Each item has an `id`, its `position`, the `prompt`, optional `label`, `provider`/`model`, and a `version`.',
+      'Call this before updating, removing or reordering items, so you act on the current list.',
+    ].join('\n'),
+    inputSchema: {},
+  },
+  async () => {
+    const result = await postToBridge('list_backlog', {})
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    const items = result.data?.items ?? []
+    if (items.length === 0) return okResult(`The backlog of project "${result.data?.project}" is empty.`)
+    return okResult(JSON.stringify({ project: result.data?.project, items }, null, 2))
+  },
+)
+
+server.registerTool(
+  'edit_backlog',
+  {
+    description: [
+      'Change this project\'s session backlog in SimpleEdit: prepared session prompts the user starts later, from the desk or the phone.',
+      'Use it when the user says "add this to our backlog", "put that on the backlog", "save this for later", or otherwise wants work prepared but not started now.',
+      'This is the alternative to spawn_session when the work should WAIT: spawn_session starts a session immediately; a backlog item waits until the user starts it, and the user can edit your prompt first.',
+      'You cannot start items; starting is the user\'s decision.',
+      '',
+      'Write each `prompt` as the opening message of a FRESH session that knows nothing of this conversation: what to do, why, and pointers to the current state (files, plan docs, PRs, issues). It is sent verbatim. Do not paste file contents or diffs; reference where things are.',
+      'The backlog belongs to the project this SimpleEdit window was opened on, even if you are working in another repository right now.',
+      '',
+      'Ops apply in order, all or nothing:',
+      '- add: { op: "add", prompt?, label?, provider?, model?, position? } — position 0 is the top; default the end.',
+      'An item needs a label or a prompt; one without a prompt can\'t be started until it has one, so write the prompt whenever you can.',
+      '- update: { op: "update", id, base_version?, prompt?, label?, provider?, model? } — pass base_version from list_backlog to avoid overwriting the user\'s edit.',
+      '- remove: { op: "remove", id }',
+      '- reorder: { op: "reorder", ids } — listed ids first in that order; the rest keep their order after them.',
+      'Call list_backlog first before update, remove or reorder.',
+    ].join('\n'),
+    inputSchema: {
+      ops: z
+        .array(
+          z.discriminatedUnion('op', [
+            z.object({
+              op: z.literal('add'),
+              prompt: z.string().optional().describe('The new session\'s opening message, self-contained.'),
+              label: z.string().optional().describe('Short sidebar name for the session.'),
+              ...backlogTargetFields,
+              position: z.number().int().min(0).optional(),
+            }),
+            z.object({
+              op: z.literal('update'),
+              id: z.string(),
+              base_version: z.number().int().optional(),
+              prompt: z.string().optional(),
+              label: z.string().optional(),
+              ...backlogTargetFields,
+            }),
+            z.object({ op: z.literal('remove'), id: z.string() }),
+            z.object({ op: z.literal('reorder'), ids: z.array(z.string()) }),
+          ]),
+        )
+        .min(1),
+    },
+  },
+  async ({ ops }) => {
+    const result = await postToBridge('edit_backlog', { ops })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    const added = result.data?.added ?? []
+    const head = added.length
+      ? `Added ${added.length} item(s) to the backlog of project "${result.data?.project}" (ids: ${added.join(', ')}). The user can edit and start them in SimpleEdit.`
+      : `Updated the backlog of project "${result.data?.project}".`
+    return okResult(`${head}\n\n${JSON.stringify(result.data?.items ?? [], null, 2)}`)
+  },
+)
+
 // ── Agent-to-agent messaging ───────────────────────────────────────────────
 
 server.registerTool(
