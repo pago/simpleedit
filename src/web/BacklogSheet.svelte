@@ -12,7 +12,7 @@
   import VoiceComposer from './VoiceComposer.svelte'
   import DiscardConfirm from './DiscardConfirm.svelte'
   import { backlogStore } from '../renderer/stores/backlog.svelte'
-  import { loadAllowlistedModels, refreshAllowlistedModelsOnFocus, targetKey, targetLabel, type AllowlistedModel } from '../renderer/lib/agentModels'
+  import { ALLOWLIST_HINT, loadAllowlistedModels, refreshAllowlistedModelsOnFocus, targetKey, targetLabel, type AllowlistedModel } from '../renderer/lib/agentModels'
   import { draftAtRisk } from './lib/nav'
   import { SESSION_BRIEF_MAX } from '../shared/brief'
   import { newBacklogItemId, type BacklogItem } from '../shared/backlog'
@@ -38,6 +38,7 @@
   let text = $state(opened?.prompt ?? '')
   let target = $state<InteractiveTarget | null>(opened?.target ?? null)
   let models = $state<AllowlistedModel[]>([])
+  let modelsLoaded = $state(false)
   let conflict = $state<{ current: BacklogItem | null } | null>(null)
   let confirmingDiscard = $state(false)
   let confirmingDelete = $state(false)
@@ -49,7 +50,12 @@
   // Settings → Models on the Mac has no change event: reread it when the
   // picker gets focus or the app comes back. The old list stays up meanwhile.
   function takeModels(load: Promise<AllowlistedModel[]> | null): void {
-    load?.then((list) => (models = list)).catch(() => {})
+    load
+      ?.then((list) => {
+        models = list
+        modelsLoaded = true
+      })
+      .catch(() => {})
   }
   const refreshModels = (): void => takeModels(loadAllowlistedModels())
   const onWindowFocus = (): void => takeModels(refreshAllowlistedModelsOnFocus())
@@ -188,6 +194,9 @@
         {#each models as m (m.key)}<option value={targetKey(m.target)}>{m.label}</option>{/each}
       </select>
     </label>
+    {#if modelsLoaded && models.length === 0}
+      <p class="-mt-1 mb-2 text-[11px] text-zinc-500" data-testid="models-hint">{ALLOWLIST_HINT}</p>
+    {/if}
 
     <VoiceComposer bind:this={composer} bind:text onsend={save} sendLabel="Save" placeholder="What should the session do?" />
     {#if tooLong}

@@ -9,6 +9,7 @@
   import { newBacklogItemId, type BacklogItem } from '../../../shared/backlog'
 
   let models = $state<AllowlistedModel[]>([])
+  let modelsLoaded = $state(false)
   /** A new item's id while it is being written and not added yet. */
   let newId = $state<string | null>(null)
   /** The detail holds edits main doesn't have. */
@@ -28,7 +29,12 @@
   // Settings → Models has no change event: reread it when the picker or the
   // window gets focus. The old list stays up meanwhile.
   function takeModels(load: Promise<AllowlistedModel[]> | null): void {
-    load?.then((list) => (models = list)).catch((err: unknown) => console.warn('[backlog] loading the models failed:', err))
+    load
+      ?.then((list) => {
+        models = list
+        modelsLoaded = true
+      })
+      .catch((err: unknown) => console.warn('[backlog] loading the models failed:', err))
   }
   const refreshModels = (): void => takeModels(loadAllowlistedModels())
   const onWindowFocus = (): void => takeModels(refreshAllowlistedModelsOnFocus())
@@ -258,6 +264,7 @@
             id={selectedId}
             item={backlogStore.get(selectedId)}
             {models}
+            noModels={modelsLoaded && models.length === 0}
             focus={selectedId === newId}
             onmodelsfocus={refreshModels}
             oncreated={() => (newId = null)}

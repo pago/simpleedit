@@ -34,7 +34,7 @@
    * a deliberate "start another anyway" once main says the outcome is unknown.
    */
   import { onMount } from 'svelte'
-  import { loadAllowlistedModels, refreshAllowlistedModelsOnFocus, targetKey, targetLabel, type AllowlistedModel } from '../renderer/lib/agentModels'
+  import { ALLOWLIST_HINT, loadAllowlistedModels, refreshAllowlistedModelsOnFocus, targetKey, targetLabel, type AllowlistedModel } from '../renderer/lib/agentModels'
   import { SESSION_CREATE_UNWITNESSED, type SessionCreateRequest, type SessionCreateResult } from '../shared/ipc-types'
 
   interface Props {
@@ -53,6 +53,7 @@
   let { prLabel, label, focus, connected, brief, oncreated, onclose }: Props = $props()
 
   let models = $state<AllowlistedModel[]>([])
+  let modelsLoaded = $state(false)
   let loadError = $state<string | null>(null)
   /** null = Default. A remembered pick the allowlist no longer lists stays picked, and listed. */
   let target = $state<InteractiveTarget | null>(rememberedTarget())
@@ -81,6 +82,7 @@
     load
       ?.then((list) => {
         models = list
+        modelsLoaded = true
         loadError = null
       })
       .catch((err: unknown) => {
@@ -211,6 +213,9 @@
           </li>
         {/each}
       </ul>
+      {#if modelsLoaded && models.length === 0}
+        <p class="px-1 pt-2 text-[11px] text-zinc-500" data-testid="models-hint">{ALLOWLIST_HINT}</p>
+      {/if}
     </div>
 
     <div class="mt-3 flex-none">

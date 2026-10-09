@@ -13,7 +13,7 @@ const resolveOpenCodePathMock = vi.hoisted(() => vi.fn(() => Promise.resolve('op
 vi.mock('child_process', () => ({ spawn: spawnMock }))
 vi.mock('../../lib/shell-path', () => ({ resolveOpenCodePath: resolveOpenCodePathMock }))
 
-import { parseOpenCodeModels, getOpenCodeModels, cancelOpenCodeDiscovery } from '../opencode-catalog'
+import { parseOpenCodeModels, getOpenCodeModels, listOpenCodeModels, cancelOpenCodeDiscovery } from '../opencode-catalog'
 
 const REAL = readFileSync(join(__dirname, 'fixtures-opencode-models.txt'), 'utf-8')
 
@@ -127,6 +127,51 @@ describe('OpenCode model discovery lifecycle', () => {
 
     await expect(models).resolves.toEqual([])
     expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('gives up on a run that never finishes, and says the catalog is unavailable', async () => {
+    vi.useFakeTimers()
+    try {
+      const proc = makeFakeProc()
+      spawnMock.mockReturnValueOnce(proc)
+      const models = listOpenCodeModels()
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(proc.kill).toHaveBeenCalledWith('SIGKILL')
+      await expect(models).resolves.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tells a missing binary apart from an empty catalog', async () => {
+    const missing = makeFakeProc()
+    spawnMock.mockReturnValueOnce(missing)
+    const unavailable = listOpenCodeModels()
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1))
+    missing.emit('error', Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' }))
+    await expect(unavailable).resolves.toBeNull()
+
+    const empty = makeFakeProc()
+    spawnMock.mockReturnValueOnce(empty)
+    const listed = listOpenCodeModels()
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2))
+    empty.stdout.end('')
+    empty.emit('close', 0)
+    await expect(listed).resolves.toEqual([])
+  })
+
+  it('shares one run between callers while it is in flight', async () => {
+    const proc = makeFakeProc()
+    spawnMock.mockReturnValueOnce(proc)
+    const first = listOpenCodeModels()
+    const second = getOpenCodeModels()
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+    proc.stdout.end('')
+    proc.emit('close', 0)
+    await expect(first).resolves.toEqual([])
+    await expect(second).resolves.toEqual([])
+    expect(spawnMock).toHaveBeenCalledTimes(1)
   })
 
   it('a later discovery spawns normally after an earlier one was cancelled', async () => {

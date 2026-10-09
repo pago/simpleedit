@@ -75,6 +75,21 @@ describe('desktop PR detail — Discuss with Agent model menu', () => {
     )
   })
 
+  it('points to Settings → Models when the allowlist is empty, and only then', async () => {
+    allowlist = []
+    render(PrDetail, { props: { context: CONTEXT } })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('models:config-get'))
+    await waitFor(async () => {
+      expect(await openMenu()).toEqual(['Default'])
+      expect(screen.getByTestId('models-hint')).toHaveTextContent('Pick models for this list in Settings → Models.')
+    })
+
+    allowlist = ['sonnet']
+    _resetAllowlistedModelsForTests()
+    await fireEvent.click(screen.getByRole('button', { name: 'Choose model' }))
+    await waitFor(() => expect(screen.queryByTestId('models-hint')).toBeNull())
+  })
+
   it('still lists the cloud models while Ollama is down', async () => {
     ollamaDown = true
     render(PrDetail, { props: { context: CONTEXT } })

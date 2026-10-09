@@ -2,7 +2,7 @@
   import { onDestroy, onMount, untrack } from 'svelte'
   import PromptField from './PromptField.svelte'
   import { backlogStore } from '../../stores/backlog.svelte'
-  import { targetKey, targetLabel, type AllowlistedModel } from '../../lib/agentModels'
+  import { ALLOWLIST_HINT, targetKey, targetLabel, type AllowlistedModel } from '../../lib/agentModels'
   import { SESSION_BRIEF_MAX, cleanSessionLabel, labelFromBrief } from '../../../shared/brief'
   import { newBacklogItemId, type BacklogItem, type BacklogItemPatch } from '../../../shared/backlog'
   import type { InteractiveTarget } from '../../../shared/ipc-types'
@@ -17,6 +17,8 @@
     item: BacklogItem | undefined
     /** The Settings → Models allowlist, in order. */
     models: readonly AllowlistedModel[]
+    /** The allowlist resolved to nothing: say where to fill it. */
+    noModels?: boolean
     /** Edits main doesn't have yet. The view keeps a gone item on screen while this holds. */
     unsaved?: boolean
     /** Put the cursor in the prompt: the user just asked for a new item. */
@@ -29,7 +31,7 @@
     onreplaced: (id: string) => void
   }
 
-  let { id, item, models, unsaved = $bindable(false), focus = false, onmodelsfocus, oncreated, onreplaced }: Props = $props()
+  let { id, item, models, noModels = false, unsaved = $bindable(false), focus = false, onmodelsfocus, oncreated, onreplaced }: Props = $props()
 
   interface Fields {
     prompt: string
@@ -364,6 +366,10 @@
     </select>
     <span class="w-16 flex-none text-right text-[11px] text-zinc-500" role="status">{status}</span>
   </div>
+
+  {#if noModels}
+    <p class="flex-none px-4 pt-2 text-xs text-zinc-500" data-testid="models-hint">{ALLOWLIST_HINT}</p>
+  {/if}
 
   {#if item?.createdBy === 'agent'}
     <p class="flex-none px-4 pt-2 text-xs text-zinc-500">Prepared by {item.createdBySession ? `“${item.createdBySession}”` : 'an agent'}. Read it before you start it.</p>

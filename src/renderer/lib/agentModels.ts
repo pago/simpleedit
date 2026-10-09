@@ -2,7 +2,10 @@
  * The models an interactive agent session can be started on from a picker:
  * the Settings → Models allowlist, resolved against the live catalogs.
  */
-import type { ClaudeModel, CodexModel, InteractiveTarget, ModelDescriptor, OpenCodeModel } from '../../shared/ipc-types'
+import type { ClaudeModel, CodexModel, InteractiveTarget, ModelDescriptor, ModelRef, OpenCodeModel } from '../../shared/ipc-types'
+
+/** Under a model picker whose allowlist resolved to nothing. */
+export const ALLOWLIST_HINT = 'Pick models for this list in Settings → Models.'
 
 /** A model the user picked in Settings → Models for the new-session menu. */
 export interface AllowlistedModel {
@@ -112,4 +115,31 @@ export function targetLabel(
   const model = target.provider === 'claude' ? target.model?.model : target.model
   const agent = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' }[target.provider]
   return `${agent} · ${model ?? 'default'}`
+}
+
+/**
+ * The Claude session model a `spawn_session` call names: a bare catalog id or
+ * name, or a prefixed id (`anthropic:<model>`, `openai:<model>`,
+ * `ollama:<name>`, `openai:configured-default`). Unknown names are taken as
+ * Anthropic models.
+ */
+export async function resolveSpawnModelRef(model: string): Promise<ModelRef> {
+  const known = await spawnableModels().catch((): { id: string; ref: ModelRef }[] => [])
+  return known.find((m) => m.ref.model === model || m.id === model)?.ref ?? { provider: 'anthropic', model }
+}
+
+async function spawnableModels(): Promise<{ id: string; ref: ModelRef }[]> {
+  const [claude, codex, installed]: [ClaudeModel[], CodexModel[], ModelDescriptor[]] = await Promise.all([
+    window.api.invoke('models:claude'),
+    window.api.invoke('models:codex').catch(() => [] as CodexModel[]),
+    window.api.invoke('models:installed').catch(() => [] as ModelDescriptor[]),
+  ])
+  return [
+    ...claude.map((m) => ({ id: `anthropic:${m.model}`, ref: { provider: 'anthropic' as const, model: m.model } })),
+    { id: 'openai:configured-default', ref: { provider: 'openai' } },
+    ...codex.map((m) => ({ id: `openai:${m.model}`, ref: { provider: 'openai' as const, model: m.model } })),
+    ...installed
+      .filter((m) => m.toolCapable)
+      .map((m) => ({ id: `ollama:${m.name}`, ref: { provider: 'ollama' as const, model: m.name } })),
+  ]
 }

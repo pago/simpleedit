@@ -15,6 +15,8 @@ import { resolveOpenCodePath } from '../lib/shell-path'
 import { openCodeBaseEnv } from '../lib/opencode-env'
 
 let cached: OpenCodeModel[] | null = null
+/** The discovery in flight, shared by its callers. */
+let discovery: Promise<OpenCodeModel[] | null> | null = null
 
 /**
  * Discovery children that haven't exited yet, tracked for the same reason as
@@ -37,6 +39,7 @@ let cancelGeneration = 0
 /** Kill any in-flight model discovery. Wired into the app's quit path. */
 export function cancelOpenCodeDiscovery(): void {
   cancelGeneration++
+  discovery = null
   for (const proc of inflight) {
     // SIGKILL: this is teardown, there is nothing to flush, and a child that
     // ignores SIGTERM would put the shutdown hang right back.
@@ -95,6 +98,8 @@ export function parseOpenCodeModels(output: string): OpenCodeModel[] {
   return models
 }
 
+const DISCOVERY_TIMEOUT_MS = 5000
+
 function runModels(bin: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(bin, ['models', '--verbose'], {
@@ -112,8 +117,15 @@ function runModels(bin: string): Promise<string> {
     let err = ''
     proc.stdout.on('data', (c: Buffer) => { out += c.toString() })
     proc.stderr.on('data', (c: Buffer) => { err += c.toString() })
-    proc.on('error', (e) => { untrack(); reject(e) })
+    // Same bound as Codex's discovery: a wedged or auth-prompting binary would
+    // otherwise hold every caller, `session:create`'s model check included.
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+      reject(new Error('opencode model discovery timed out'))
+    }, DISCOVERY_TIMEOUT_MS)
+    proc.on('error', (e) => { clearTimeout(timer); untrack(); reject(e) })
     proc.on('close', (code) => {
+      clearTimeout(timer)
       untrack()
       if (code === 0) resolve(out)
       else reject(new Error(`opencode models exited with ${code}: ${err.trim().slice(0, 500)}`))
@@ -127,7 +139,26 @@ function runModels(bin: string): Promise<string> {
  * or authenticated OpenCode after launch.
  */
 export async function getOpenCodeModels(): Promise<OpenCodeModel[]> {
-  if (cached) return cached
+  return (await listOpenCodeModels()) ?? []
+}
+
+/**
+ * The catalog, or null when it couldn't be listed (no binary, a failed or
+ * timed-out run) — as opposed to a listed catalog that is empty. Callers
+ * share one discovery while it runs.
+ */
+export function listOpenCodeModels(): Promise<OpenCodeModel[] | null> {
+  if (cached) return Promise.resolve(cached)
+  if (!discovery) {
+    const run: Promise<OpenCodeModel[] | null> = discover().finally(() => {
+      if (discovery === run) discovery = null
+    })
+    discovery = run
+  }
+  return discovery
+}
+
+async function discover(): Promise<OpenCodeModel[] | null> {
   try {
     const generation = cancelGeneration
     const bin = await resolveOpenCodePath()
@@ -136,6 +167,6 @@ export async function getOpenCodeModels(): Promise<OpenCodeModel[]> {
     if (models.length > 0) cached = models
     return models
   } catch {
-    return []
+    return null
   }
 }

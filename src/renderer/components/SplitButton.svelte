@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { targetKey, targetLabel, type AllowlistedModel } from '../lib/agentModels'
+  import { ALLOWLIST_HINT, targetKey, targetLabel, type AllowlistedModel } from '../lib/agentModels'
   import type { InteractiveTarget } from '../../shared/ipc-types'
 
   // Main action starts with the selected model; the caret (or right-click on
@@ -12,6 +12,7 @@
     selected = $bindable(),
     onstart,
     onopen = () => {},
+    noModels = false,
     disabled = false,
     busy = false,
     size = 'md',
@@ -27,6 +28,8 @@
     onstart: (target: InteractiveTarget | null) => void
     /** The menu opened: a chance to reread the allowlist. */
     onopen?: () => void
+    /** The allowlist resolved to nothing: say where to fill it. */
+    noModels?: boolean
     disabled?: boolean
     busy?: boolean
     size?: 'sm' | 'md'
@@ -115,5 +118,6 @@
         {#if m.key === selectedKey}<span class="ml-auto text-emerald-400">✓</span>{/if}
       </button>
     {/each}
+    {#if noModels}<p class="px-2 pb-1 pt-1.5 text-[11px] text-zinc-500" data-testid="models-hint">{ALLOWLIST_HINT}</p>{/if}
   </div>
 {/if}

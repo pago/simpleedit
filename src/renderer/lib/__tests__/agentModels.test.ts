@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { _resetAllowlistedModelsForTests, loadAllowlistedModels, refreshAllowlistedModelsOnFocus, targetKey } from '../agentModels'
+import { _resetAllowlistedModelsForTests, loadAllowlistedModels, refreshAllowlistedModelsOnFocus, resolveSpawnModelRef, targetKey } from '../agentModels'
 
 function stubModels(allowlist: string[], over: Record<string, unknown> = {}): void {
   const answers: Record<string, unknown> = {
@@ -69,5 +69,34 @@ describe('targetKey', () => {
       targetKey({ model: { model: 'x', provider: 'anthropic' }, provider: 'claude' }),
     )
     expect(targetKey(null)).toBe('')
+  })
+})
+
+describe('resolveSpawnModelRef', () => {
+  it('resolves prefixed and bare ids as spawn_session always has', async () => {
+    stubModels([])
+    expect(await resolveSpawnModelRef('anthropic:claude-opus')).toEqual({ provider: 'anthropic', model: 'claude-opus' })
+    expect(await resolveSpawnModelRef('claude-opus')).toEqual({ provider: 'anthropic', model: 'claude-opus' })
+    expect(await resolveSpawnModelRef('ollama:qwen3:8b')).toEqual({ provider: 'ollama', model: 'qwen3:8b' })
+    expect(await resolveSpawnModelRef('qwen3:8b')).toEqual({ provider: 'ollama', model: 'qwen3:8b' })
+    expect(await resolveSpawnModelRef('openai:gpt-5.5')).toEqual({ provider: 'openai', model: 'gpt-5.5' })
+    expect(await resolveSpawnModelRef('gpt-5.5')).toEqual({ provider: 'openai', model: 'gpt-5.5' })
+    expect(await resolveSpawnModelRef('openai:configured-default')).toEqual({ provider: 'openai' })
+  })
+
+  it('takes anything else as an Anthropic model', async () => {
+    stubModels([])
+    // Not tool-capable, so not a local model an agent can run on.
+    expect(await resolveSpawnModelRef('gemma:2b')).toEqual({ provider: 'anthropic', model: 'gemma:2b' })
+    expect(await resolveSpawnModelRef('claude-9')).toEqual({ provider: 'anthropic', model: 'claude-9' })
+  })
+
+  it('keeps the rest when Codex or Ollama is down, and falls back whole when Claude is', async () => {
+    stubModels([], { 'models:codex': new Error('no codex'), 'models:installed': new Error('ollama down') })
+    expect(await resolveSpawnModelRef('anthropic:claude-opus')).toEqual({ provider: 'anthropic', model: 'claude-opus' })
+    expect(await resolveSpawnModelRef('qwen3:8b')).toEqual({ provider: 'anthropic', model: 'qwen3:8b' })
+    stubModels([], { 'models:claude': new Error('claude down') })
+    expect(await resolveSpawnModelRef('qwen3:8b')).toEqual({ provider: 'anthropic', model: 'qwen3:8b' })
+    expect(await resolveSpawnModelRef('gpt-5.5')).toEqual({ provider: 'anthropic', model: 'gpt-5.5' })
   })
 })
