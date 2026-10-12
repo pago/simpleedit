@@ -45,7 +45,7 @@ function claudeEnvFrom(source: Record<string, string | undefined>): ClaudeEnv {
 export const CLAUDE_ENV_RETRY_MS = 60_000
 
 let claudeEnvCached: ClaudeEnv | null = null
-let claudeEnvInflight: Promise<ClaudeEnv> | null = null
+let claudeEnvInflight: Promise<ResolvedClaudeEnv> | null = null
 let claudeEnvFailedAt: number | null = null
 
 /** Read the vars from a login shell; null on any failure (error, timeout, garbled output). */
@@ -82,25 +82,42 @@ function readClaudeEnvFromShell(shell: string): Promise<ClaudeEnv | null> {
  * developer profile must not override the test's temp config dir.
  */
 export function claudeShellEnv(): Promise<ClaudeEnv> {
-  if (claudeEnvCached) return Promise.resolve(claudeEnvCached)
+  return resolveClaudeEnv().then(({ env }) => env)
+}
+
+/**
+ * `claudeShellEnv`, or null while it is only the `process.env` fallback of a
+ * failed shell read — for callers that must not act on a guessed config dir.
+ */
+export function claudeShellEnvIfKnown(): Promise<ClaudeEnv | null> {
+  return resolveClaudeEnv().then(({ env, known }) => (known ? env : null))
+}
+
+interface ResolvedClaudeEnv {
+  env: ClaudeEnv
+  known: boolean
+}
+
+function resolveClaudeEnv(): Promise<ResolvedClaudeEnv> {
+  if (claudeEnvCached) return Promise.resolve({ env: claudeEnvCached, known: true })
   if (claudeEnvInflight) return claudeEnvInflight
   const shell = process.env['SHELL']
   if (process.platform === 'win32' || process.env['SIMPLEEDIT_E2E'] === '1' || !shell) {
     claudeEnvCached = claudeEnvFrom(process.env)
-    return Promise.resolve(claudeEnvCached)
+    return Promise.resolve({ env: claudeEnvCached, known: true })
   }
   if (claudeEnvFailedAt !== null && Date.now() - claudeEnvFailedAt < CLAUDE_ENV_RETRY_MS) {
-    return Promise.resolve(claudeEnvFrom(process.env))
+    return Promise.resolve({ env: claudeEnvFrom(process.env), known: false })
   }
   claudeEnvInflight = readClaudeEnvFromShell(shell).then((env) => {
     claudeEnvInflight = null
     if (env) {
       claudeEnvCached = env
       claudeEnvFailedAt = null
-      return env
+      return { env, known: true }
     }
     claudeEnvFailedAt = Date.now()
-    return claudeEnvFrom(process.env)
+    return { env: claudeEnvFrom(process.env), known: false }
   })
   return claudeEnvInflight
 }

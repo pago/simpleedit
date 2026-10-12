@@ -28,6 +28,7 @@ are first-class features, not afterthoughts.
 - `node-pty` must be rebuilt for Electron after install (`electron-rebuild -f -w node-pty`)
 - Node is pinned in `.tool-versions` to the exact Node bundled by the shipped Electron, so tests run on the runtime's Node. Bump it with every Electron bump; a CI step fails when they drift. The MCP server is the exception: agents launch it with the user's system `node`, so its esbuild target stays `node20`
 - Preload outputs `.mjs` (not `.js`) due to `"type": "module"` in package.json
+- Every process launched for an agent or a terminal (PTYs, bounded runners, model discovery) takes its env from `agentEnv()` (`main/lib/agent-env.ts`), never raw `process.env`: it drops an enclosing Claude Code session's identity vars, which otherwise stop a spawned `claude` from saving its transcript (#204)
 
 ## Architecture layers
 1. **Main process** (`src/main/`) — git, PTY, file-watching, IPC, recent repos

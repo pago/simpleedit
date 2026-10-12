@@ -15,6 +15,7 @@
  * pre-validate inputs.
  */
 import { readdirSync, readFileSync, realpathSync, statSync } from 'fs'
+import { access, readdir } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, isAbsolute, join, resolve } from 'path'
 import simpleGit from 'simple-git'
@@ -185,4 +186,46 @@ export async function claudeMemoryDir(launchDir: string, env: ClaudeEnv): Promis
     if (actual && isDirectory(memoryFor(actual))) return realpathOr(memoryFor(actual))
   }
   return memoryFor(keys[0]!)
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await access(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the CLI saved a transcript for `sessionId`: `missing` only when no
+ * project dir holds `<sessionId>.jsonl`. The launch dir's own key is tried
+ * first; every other project dir is scanned too, so an encoding this module
+ * gets wrong (over-cap hash, `CLAUDE_CODE_PROJECT_DIR_NAME`) can never refuse a
+ * resume the CLI would accept. `unknown` when the projects dir is absent or
+ * unreadable, which more likely means the wrong config dir than a lost
+ * transcript.
+ */
+export async function claudeTranscriptState(
+  sessionId: string,
+  launchDir: string,
+  env: ClaudeEnv,
+): Promise<'found' | 'missing' | 'unknown'> {
+  const file = `${sessionId}.jsonl`
+  const projectsRoot = join(claudeConfigDir(env), 'projects')
+  try {
+    if (await fileExists(join(projectsRoot, claudeProjectDirName(launchDir), file))) return 'found'
+  } catch {
+    // launchDir gone or unresolvable: the scan below still decides.
+  }
+  let entries: string[]
+  try {
+    entries = await readdir(projectsRoot)
+  } catch {
+    return 'unknown'
+  }
+  for (const entry of entries) {
+    if (await fileExists(join(projectsRoot, entry, file))) return 'found'
+  }
+  return 'missing'
 }

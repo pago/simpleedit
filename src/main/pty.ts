@@ -7,6 +7,7 @@ import { getProvider, type AgentProvider, type LaunchContext, type LaunchPlan } 
 import { buildAgentsLaunch } from './agents/claude'
 import { applyAgentSignal } from './mcp-bridge'
 import { sendAgentStatus } from './agent-status'
+import { agentEnv } from './lib/agent-env'
 import './agents/codex'
 import './agents/opencode'
 
@@ -230,7 +231,7 @@ function getPtyOptions(worktreePath: string): pty.IPtyForkOptions {
     cols: 80,
     rows: 24,
     cwd: worktreePath,
-    env: process.env as Record<string, string>,
+    env: agentEnv(),
   }
 }
 
@@ -382,11 +383,12 @@ export async function spawnAgentTerminalForProvider(
   let plan: LaunchPlan
   let killed: boolean
   try {
+    await provider.preflight?.(ctx)
     plan = await provider.buildLaunch(ctx)
   } finally {
-    // Both flags clear here, including when `buildLaunch` throws. A kill
-    // recorded against a launch that then failed would otherwise persist and
-    // abandon the NEXT spawn of that session id — leaving it on 'initializing'
+    // Both flags clear here, including when `preflight` or `buildLaunch`
+    // throws. A kill recorded against a launch that then failed would otherwise
+    // persist and abandon the NEXT spawn of that session id — leaving it on 'initializing'
     // with no PTY and nothing in the terminal buffer to explain it.
     spawning.delete(id)
     killed = killedWhileSpawning.delete(id)

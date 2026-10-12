@@ -133,9 +133,10 @@ export function refreshPresence(present = isPresentNow()): boolean {
  * Point Claude Code at the marker and start maintaining it.
  *
  * The env var is set on the app's own process, not on each spawn, because
- * `pty.ts` hands `process.env` to every terminal it opens — so this covers an
- * agent SimpleEdit launched and a `claude` the user typed into a SimpleEdit
- * shell, with no per-provider wiring to keep in step.
+ * every terminal `pty.ts` opens starts from `process.env` (through `agentEnv`,
+ * which keeps this var) — so this covers an agent SimpleEdit launched and a
+ * `claude` the user typed into a SimpleEdit shell, with no per-provider wiring
+ * to keep in step.
  *
  * A marker left behind by a crash would silence Remote Control indefinitely
  * on the next run, so startup clears it before anything can read it.

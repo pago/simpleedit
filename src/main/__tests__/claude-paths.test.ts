@@ -20,6 +20,7 @@ import {
   claudeMemoryDir,
   claudeProjectDirName,
   claudeProjectsDir,
+  claudeTranscriptState,
   encodeProjectKey,
   PROJECT_KEY_MAX,
 } from '../claude-paths'
@@ -270,4 +271,32 @@ describe('claudeMemoryDir', () => {
 import { afterAll } from 'vitest'
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true })
+})
+
+describe('claudeTranscriptState', () => {
+  const SID = 'abcdef01-2345-6789-abcd-ef0123456789'
+
+  it('is unknown, never missing, when the config dir has no projects dir', async () => {
+    const config = mkdtempSync(join(tmpRoot, 'ts-empty-config-'))
+    const launch = mkdtempSync(join(tmpRoot, 'ts-launch-'))
+    expect(await claudeTranscriptState(SID, launch, { CLAUDE_CONFIG_DIR: config })).toBe('unknown')
+  })
+
+  it('finds the transcript under the launch dir key', async () => {
+    const config = mkdtempSync(join(tmpRoot, 'ts-config-'))
+    const launch = mkdtempSync(join(tmpRoot, 'ts-launch-'))
+    const dir = join(config, 'projects', claudeProjectDirName(launch))
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${SID}.jsonl`), '{}\n')
+    expect(await claudeTranscriptState(SID, launch, { CLAUDE_CONFIG_DIR: config })).toBe('found')
+  })
+
+  it('finds it under another project key and misses a different id', async () => {
+    const config = mkdtempSync(join(tmpRoot, 'ts-config-'))
+    mkdirSync(join(config, 'projects', 'elsewhere'), { recursive: true })
+    writeFileSync(join(config, 'projects', 'elsewhere', `${SID}.jsonl`), '{}\n')
+    const env = { CLAUDE_CONFIG_DIR: config }
+    expect(await claudeTranscriptState(SID, join(tmpRoot, 'gone'), env)).toBe('found')
+    expect(await claudeTranscriptState('other-id', join(tmpRoot, 'gone'), env)).toBe('missing')
+  })
 })

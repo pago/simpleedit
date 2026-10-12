@@ -9,6 +9,9 @@
  *      tab is restored — exercises the renderer hydrate path.
  */
 import { test as base, expect, _electron as electron } from '@playwright/test'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import type { ElectronApplication, Page } from '@playwright/test'
 import { MAIN, launchEnv, spawnClaudeSession, openWorkspaceViewer, createTempRepo, removeTempRepo } from './fixtures'
 
@@ -187,5 +190,37 @@ base.describe('session save/restore — Resume starts the agent again', () => {
 
     await app.close()
     removeTempRepo(repo)
+  })
+})
+
+base.describe('session save/restore — Resume of a session Claude never saved', () => {
+  base('explains the missing transcript instead of launching claude', async () => {
+    const repo = createTempRepo('simpleedit-resume-missing-')
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'simpleedit-resume-missing-config-'))
+    const env = { SIMPLEEDIT_REPO: repo.bareRepoPath, CLAUDE_CONFIG_DIR: configDir }
+
+    let { app, window } = await launch(env)
+    await spawnClaudeSession(window)
+    await window.waitForTimeout(1_200) // let debounced save fire (500ms)
+    await app.close()
+    // What a session that ran with a parent Claude Code session's env left
+    // behind: the projects dir exists, the session's transcript doesn't.
+    const projects = path.join(configDir, 'projects')
+    for (const entry of fs.readdirSync(projects)) fs.rmSync(path.join(projects, entry), { recursive: true, force: true })
+
+    const second = await launch(env)
+    app = second.app
+    window = second.window
+    const resume = window.getByRole('button', { name: /^Resume / }).filter({ visible: true })
+    await expect(resume).toBeVisible({ timeout: 10_000 })
+    await resume.click()
+
+    await expect(
+      window.locator('.xterm-rows').filter({ visible: true }).filter({ hasText: 'No saved conversation' })
+    ).toBeVisible({ timeout: 15_000 })
+
+    await app.close()
+    removeTempRepo(repo)
+    fs.rmSync(configDir, { recursive: true, force: true })
   })
 })

@@ -12,6 +12,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { isReasoningEffort, type OpenCodeModel } from '../../shared/ipc-types'
 import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveOpenCodePath } from '../lib/shell-path'
+import { agentEnv } from '../lib/agent-env'
 import { openCodeBaseEnv } from '../lib/opencode-env'
 
 let cached: OpenCodeModel[] | null = null
@@ -106,7 +107,7 @@ function runModels(bin: string): Promise<string> {
       stdio: ['ignore', 'pipe', 'pipe'],
       // Same pinning argument as the interactive launch: a catalog fetch must
       // not be the thing that silently upgrades the binary out from under it.
-      env: { ...process.env, ...openCodeBaseEnv() } as Record<string, string>,
+      env: { ...agentEnv(), ...openCodeBaseEnv() },
     })
     inflight.add(proc)
     // Untracked on 'error' as well as 'close': a spawn that fails outright

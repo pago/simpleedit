@@ -25,6 +25,21 @@ const PATH_KEY = process.platform === 'win32' ? 'Path' : 'PATH'
 const PATH_SEP = process.platform === 'win32' ? ';' : ':'
 
 /**
+ * One temp Claude config dir per worker process, made on first use and removed
+ * when the worker exits. Per worker, not per test: a test that relaunches the
+ * app (Resume) must find the transcripts its first launch left.
+ */
+let e2eClaudeConfigDir: string | undefined
+function claudeConfigDirForWorker(): string {
+  if (!e2eClaudeConfigDir) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'simpleedit-e2e-claude-config-'))
+    e2eClaudeConfigDir = dir
+    process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }))
+  }
+  return e2eClaudeConfigDir
+}
+
+/**
  * Build an env for `electron.launch` that prepends the e2e fake-binary
  * directory to PATH. Tests that need to spawn Claude PTYs should pass this
  * (merged with their own keys like SIMPLEEDIT_REPO) instead of `process.env`.
@@ -35,6 +50,9 @@ export function launchEnv(extra: Record<string, string> = {}): Record<string, st
   // Render test windows without stealing OS focus (macOS accessory policy +
   // showInactive()), so a local test run isn't disruptive. Handled in main.
   base.SIMPLEEDIT_E2E = '1'
+  // The fake claude writes stub transcripts here (Resume checks for them), so
+  // a run never touches the developer's real ~/.claude.
+  base.CLAUDE_CONFIG_DIR = claudeConfigDirForWorker()
   if (extra.SIMPLEEDIT_REPO) {
     base.SIMPLEEDIT_E2E_MODEL_CONFIG = `${extra.SIMPLEEDIT_REPO}.models.json`
   }
