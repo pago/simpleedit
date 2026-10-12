@@ -50,12 +50,18 @@
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
   import { AttachSequence, attachNotice, loadRememberedProject, rememberProject, type RememberedProject } from './lib/project'
   import PairScreen from './PairScreen.svelte'
+  import UpdateBanner from './UpdateBanner.svelte'
+  import DiscardConfirm from './DiscardConfirm.svelte'
+  import { threadDrafts } from './lib/thread-drafts.svelte'
+  import { loadedBuildId, reloadTarget } from './lib/version-reload'
+  import { VersionCheck } from './lib/version-check.svelte'
+  import { unsavedWork } from './lib/unsaved-work'
   import { storeKey } from './lib/remote-key'
   import { onOpenSession } from './lib/push-client'
   import { sessionFromUrl, threadFromUrl } from './lib/push-payload'
   import { visualViewport } from './lib/visual-viewport.svelte'
   import { nav } from './lib/nav.svelte'
-  import { isOverlay, type NavEntry, type TabId } from './lib/nav'
+  import { initialNav, isOverlay, type NavEntry, type TabId } from './lib/nav'
   import type { ConnectionState, RemoteConnection } from './api-shim'
   import type { RemoteProject, SessionCreateResult, WindowSession } from '../shared/ipc-types'
 
@@ -238,6 +244,50 @@
       lastShown = { repoPath: landed.repoPath, windowId: landed.windowId, name: landed.name }
     }
   }
+
+  /**
+   * What a reload would throw away. Wider than a switch's: the user didn't ask
+   * to leave, so typed replies and comments count, and so does an answer still
+   * owed over this page.
+   */
+  function reloadDiscards(): string[] {
+    const out = switchDiscards()
+    for (const entry of [...nav.stack('sessions'), ...nav.stack('prs')]) {
+      if (entry.kind === 'session' && sessionScreens[entry.id]?.hasUnsentReply()) {
+        out.push(`your reply to ${known[entry.terminalId]?.label ?? 'a session'}`)
+      }
+    }
+    if (threadDrafts.any()) out.push('your unsent comments on a diff')
+    if (newSessionEntry && newSheet?.atRisk() === 'starting') out.push('the result of starting a new session')
+    if (screenPrsStore.posting()) out.push('the result of the review being posted')
+    return [...out, ...unsavedWork()]
+  }
+
+  /** Where a reload lands anyway: the first tab's list, nothing opened. */
+  function atRoot(): boolean {
+    return nav.tab === initialNav().tab && TABS.every((t) => nav.stack(t.id).length === 0)
+  }
+
+  function reload(): void {
+    const target = reloadTarget(window.location.href, connection.key())
+    if (target) window.location.replace(target)
+    else window.location.reload()
+  }
+
+  const versionCheck = new VersionCheck({
+    loaded: loadedBuildId(document),
+    discards: () => untrack(reloadDiscards),
+    atRoot: () => untrack(atRoot),
+    visible: () => document.visibilityState === 'visible',
+    reload,
+  })
+
+  $effect(() => untrack(() => connection.onIdentity(({ build }) => versionCheck.hello(build))))
+  $effect(() => {
+    const onVisible = (): void => versionCheck.shown()
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  })
 
   /** What would block a switch outright: work that cannot be dropped or followed. */
   function switchBlocker(): string | null {
@@ -545,6 +595,10 @@
     ></span>
   </header>
 
+  {#if versionCheck.newer}
+    <UpdateBanner onreload={() => versionCheck.request()} />
+  {/if}
+
   {#if projectNotice}
     <div class="flex-none px-3 pt-3" data-testid="project-notice">
       <div
@@ -696,6 +750,16 @@
         </button>
       {/each}
     </nav>
+  {/if}
+  {#if versionCheck.confirming}
+    {@const discards = reloadDiscards()}
+    <DiscardConfirm
+      title="Reload and discard?"
+      body={discards.length > 0 ? `Reloading throws away ${discards.join(', ')}.` : 'Nothing is unsaved any more.'}
+      testid="reload-discard-confirm"
+      onkeep={() => versionCheck.keep()}
+      ondiscard={() => versionCheck.discard()}
+    />
   {/if}
   {#if pairing}
     <PairScreen {connState} legacy={legacyLink} onKey={adoptKey} />

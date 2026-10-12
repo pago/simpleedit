@@ -275,6 +275,19 @@ describe('api-shim reconnect', () => {
   })
 })
 
+describe('api-shim hello', () => {
+  it('reports the build the Mac ships, and none from a server that does not say', () => {
+    const connection = installRemoteApi(OPTIONS)
+    const seen: (string | undefined)[] = []
+    connection.onIdentity((identity) => seen.push(identity.build))
+    FakeSocket.instances[0].open()
+    FakeSocket.instances[0].deliver({ kind: 'hello', windowId: 1, clientKey: 'w1.1', build: '1.0.0+abc' })
+    FakeSocket.instances[0].deliver({ kind: 'hello', windowId: 1, clientKey: 'w1.2' })
+    FakeSocket.instances[0].deliver({ kind: 'hello', windowId: 1, clientKey: 'w1.3', build: 7 })
+    expect(seen).toEqual(['1.0.0+abc', undefined, undefined])
+  })
+})
+
 describe('api-shim key', () => {
   it('carries the key on the socket URL, not in the page path', () => {
     installRemoteApi(OPTIONS)

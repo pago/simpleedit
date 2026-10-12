@@ -59,6 +59,7 @@ const connection: RemoteConnection = {
   state: () => 'open',
   reconnect: () => {},
   identity: () => ({ windowId: 1, clientKey: 'w1.1' }),
+  key: () => null,
   onStateChange: (fn) => {
     stateWatchers.push(fn)
     return () => { stateWatchers = stateWatchers.filter((w) => w !== fn) }

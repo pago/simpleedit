@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer, MANIFEST_LINK, resolveStatic } from '../server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer, MANIFEST_LINK, resolveStatic, webBuildId } from '../server'
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
 import type { ServerFrame } from '../../../shared/remote-protocol'
@@ -51,11 +51,12 @@ const WEB_ROOT = (() => {
   return root
 })()
 
-async function start(webRoot = WEB_ROOT): Promise<{ url: string; token: string }> {
+async function start(webRoot = WEB_ROOT, buildId?: string): Promise<{ url: string; token: string }> {
   const status = await startRemoteServer({
     host: HOST,
     port: 0,
     webRoot,
+    buildId,
     attachTarget: () => hub,
   })
   if (!status.running || !status.port) throw new Error(status.error ?? 'server did not start')
@@ -339,6 +340,42 @@ describe('remote server', () => {
     expect(odd).not.toContain('<script>')
     const plain = (await (await fetch(`${url}/app/manifest.webmanifest`)).json()) as Record<string, string>
     expect(plain.start_url).toBe('./')
+  })
+
+  it('stamps its build into the page and the hello, escaped', async () => {
+    const build = '1.2.3+"><script>x</script>'
+    const { url, token } = await start(WEB_ROOT, build)
+    const meta = '<meta name="simpleedit-build" content="1.2.3+&#34;&#62;&#60;script&#62;x&#60;/script&#62;" />'
+    const keyed = await (await fetch(`${url}/app/?k=${token}`)).text()
+    expect(keyed).toContain(meta)
+    expect(keyed).toContain(`href="./manifest.webmanifest?k=${token}"`)
+    expect(keyed).not.toContain('<script>')
+    expect(await (await fetch(`${url}/app/`)).text()).toContain(meta)
+
+    const { ws, hello } = await connect(url, token)
+    expect(hello).toMatchObject({ kind: 'hello', build })
+    ws.close()
+  })
+
+  it('stamps a build id holding replacement patterns verbatim', async () => {
+    const { url, token } = await start(WEB_ROOT, "1.0.0+$&$'$`")
+    const page = await (await fetch(`${url}/app/?k=${token}`)).text()
+    expect(page).toContain('content="1.0.0+$&#38;$&#39;$`" /></head>')
+  })
+
+  it('says nothing about a build it was not given', async () => {
+    const { url, token } = await start()
+    expect(await (await fetch(`${url}/app/?k=${token}`)).text()).not.toContain('simpleedit-build')
+    const { ws, hello } = await connect(url, token)
+    expect(hello).not.toHaveProperty('build')
+    ws.close()
+  })
+
+  it('derives the build id from the version and the bundle\'s index.html', () => {
+    const id = webBuildId(WEB_ROOT, '9.9.9')
+    expect(id).toMatch(/^9\.9\.9\+[0-9a-f]{12}$/)
+    expect(webBuildId(WEB_ROOT, '9.9.9')).toBe(id)
+    expect(webBuildId('/nonexistent-web-root', '9.9.9')).toBeUndefined()
   })
 
   it('pins the manifest link the server rewrites to the real index.html', () => {

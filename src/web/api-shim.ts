@@ -54,6 +54,8 @@ export class ConnectionLostError extends Error {
 export interface RemoteIdentity {
   windowId: number
   clientKey: string
+  /** The build the Mac ships, when it says (`lib/version-reload.ts`). */
+  build?: string
 }
 
 /**
@@ -79,6 +81,8 @@ export interface RemoteConnection {
   readonly identity: () => RemoteIdentity | null
   /** Called on every state change, so a UI can show the connection honestly. */
   onStateChange: (fn: (state: ConnectionState) => void) => () => void
+  /** The key the current (or next) socket uses. */
+  readonly key: () => string | null
   /** Called on every `hello`, including a reconnect's. */
   onIdentity: (fn: (identity: RemoteIdentity) => void) => () => void
   /**
@@ -211,6 +215,7 @@ export function installRemoteApi(options: RemoteApiOptions): RemoteConnection {
   function handle(frame: ServerFrame): void {
     if (frame.kind === 'hello') {
       identity = { windowId: frame.windowId, clientKey: frame.clientKey }
+      if (typeof frame.build === 'string' && frame.build) identity.build = frame.build
       for (const fn of identityWatchers) fn(identity)
       return
     }
@@ -383,6 +388,7 @@ export function installRemoteApi(options: RemoteApiOptions): RemoteConnection {
   return {
     state: () => state,
     identity: () => identity,
+    key: () => key,
     onStateChange(fn) {
       stateWatchers.add(fn)
       return () => { stateWatchers.delete(fn) }

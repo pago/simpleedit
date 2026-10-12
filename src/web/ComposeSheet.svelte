@@ -20,6 +20,7 @@
   import DiscardConfirm from './DiscardConfirm.svelte'
   import { untrack } from 'svelte'
   import { draftAtRisk } from './lib/nav'
+  import { holdUnsaved } from './lib/unsaved-work'
 
   interface Props {
     /** What is being commented on: `path:line`, or "Review summary". */
@@ -51,6 +52,10 @@
     confirmingDiscard = true
     return true
   }
+
+  $effect(() =>
+    holdUnsaved(() => (draftAtRisk(text, composer?.dictating() ?? false, initial) ? `your unsaved text for ${title}` : null)),
+  )
 
   function requestClose(): void {
     if (!holdForDraft()) onclose()

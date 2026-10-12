@@ -15,6 +15,7 @@
   import { renderMarkdown } from '../renderer/lib/markdown'
   import { anchorContextLabel, anchorLabel, deliveryInfo, implicitAnswerIds, type DeliveryInfo } from '../renderer/lib/thread-labels'
   import { copyText } from './lib/copy-text'
+  import { holdUnsaved } from './lib/unsaved-work'
 
   interface Props {
     thread: AgentThread
@@ -29,6 +30,7 @@
   let { thread, expanded, visible, ontoggle, onjump }: Props = $props()
 
   let draft = $state('')
+  $effect(() => holdUnsaved(() => (draft.trim() ? 'your reply in a thread' : null)))
   let sending = $state(false)
   let error = $state<string | null>(null)
   let copiedId = $state<string | null>(null)

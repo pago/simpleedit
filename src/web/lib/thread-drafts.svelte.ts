@@ -45,6 +45,10 @@ export const threadDrafts = {
   list(diff: string): SavedDraft[] {
     return [...drafts.values()].filter((d) => d.diff === diff).map(({ at, body }) => ({ at, body }))
   },
+  /** Any unsent comment, in any diff. */
+  any(): boolean {
+    return drafts.size > 0
+  },
   /** The line whose composer is open in `diff`, if any. */
   openLine(diff: string): DraftLine | null {
     return open.get(diff) ?? null

@@ -8,6 +8,9 @@
  * preload bridge, so anything the renderer can call, it calls by name.
  */
 
+/** The `<meta name>` the server stamps its build id into on the served index.html. */
+export const BUILD_META_NAME = 'simpleedit-build'
+
 /** Sent once when a socket has joined a client identity. */
 export interface HelloFrame {
   kind: 'hello'
@@ -15,6 +18,8 @@ export interface HelloFrame {
   windowId: number
   /** This socket's own `PtyClientId`. */
   clientKey: string
+  /** The build the server ships; absent from a server that predates the check. */
+  build?: string
 }
 
 export interface InvokeFrame {
