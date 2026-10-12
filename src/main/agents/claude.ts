@@ -14,7 +14,9 @@ import { tmpdir } from 'os'
 import type { AgentStatus } from '../../shared/ipc-types'
 import { DIALOG_TOOLS } from '../../shared/agent-threads'
 import { extractOscTitles, statusFromTitle } from '../claude-stream'
+import { claudeTranscriptState } from '../claude-paths'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
+import { claudeShellEnvIfKnown } from '../shell-path'
 import { registerProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './provider'
 
 const mcpConfigPaths = new Map<string, string>()
@@ -147,6 +149,25 @@ function makeCleanup(terminalId: string): () => void {
   }
 }
 
+const RESUME_ID_RE = /^[A-Za-z0-9_-]+$/
+
+/**
+ * A resume (or fork) of a conversation the CLI never saved fails with "No
+ * conversation found" and an exit code. That happens whenever a session ran
+ * with a parent Claude Code session's env, so its transcript was never written
+ * (#204). Checked against the config dir the CLI will run with, and only
+ * when that dir is known for certain: a wrong guess must never refuse a resume.
+ */
+async function preflight(ctx: LaunchContext): Promise<void> {
+  const { resumeSessionId, worktreePath } = ctx
+  if (!resumeSessionId || !RESUME_ID_RE.test(resumeSessionId)) return
+  const env = await claudeShellEnvIfKnown()
+  if (!env || (await claudeTranscriptState(resumeSessionId, worktreePath, env)) !== 'missing') return
+  throw new Error(
+    'No saved conversation for this session — Claude never wrote its transcript; start a fresh session instead',
+  )
+}
+
 /**
  * Build the launch plan for a fresh or resumed Claude session.
  *
@@ -198,7 +219,7 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
 
   let sessionId: string
   let sessionArgs: string[]
-  const validResume = !!resumeSessionId && /^[A-Za-z0-9_-]+$/.test(resumeSessionId)
+  const validResume = !!resumeSessionId && RESUME_ID_RE.test(resumeSessionId)
   if (forkSession && validResume) {
     // Fork: fresh id forks the source. NOT the resume/append branch — mixing
     // them up corrupts the parent (see the doc comment above).
@@ -270,6 +291,7 @@ export function buildAgentsLaunch(): Pick<LaunchPlan, 'executable' | 'args'> {
 
 export const claudeProvider = {
   id: 'claude',
+  preflight,
   buildLaunch,
   detectStatus(chunk: string): AgentStatus | null {
     let status: AgentStatus | null = null

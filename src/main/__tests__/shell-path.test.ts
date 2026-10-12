@@ -4,7 +4,7 @@ const execFile = vi.hoisted(() => vi.fn())
 vi.mock('child_process', () => ({ execFile, execFileSync: vi.fn() }))
 vi.mock('electron', () => ({ app: {} }))
 
-import { _resetClaudeShellEnvForTests, CLAUDE_ENV_RETRY_MS, claudeShellEnv } from '../shell-path'
+import { _resetClaudeShellEnvForTests, CLAUDE_ENV_RETRY_MS, claudeShellEnv, claudeShellEnvIfKnown } from '../shell-path'
 
 type Callback = (err: Error | null, stdout: string) => void
 
@@ -65,5 +65,14 @@ describe.skipIf(process.platform === 'win32')('claudeShellEnv', () => {
     const [a, b] = await Promise.all([claudeShellEnv(), claudeShellEnv()])
     expect(a).toEqual(b)
     expect(execFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('claudeShellEnvIfKnown is null while only the fallback is available', async () => {
+    shellReplies(null)
+    expect(await claudeShellEnvIfKnown()).toBeNull()
+    expect(await claudeShellEnvIfKnown()).toBeNull()
+    now += CLAUDE_ENV_RETRY_MS + 1
+    shellReplies('\0/from/shell\0\0')
+    expect(await claudeShellEnvIfKnown()).toEqual({ CLAUDE_CONFIG_DIR: '/from/shell' })
   })
 })

@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
 import * as readline from 'readline'
 import { isReasoningEffort, type CodexModel } from '../../shared/ipc-types'
+import { agentEnv } from '../lib/agent-env'
 import { resolveCodexPath } from '../lib/shell-path'
 
 let cached: CodexModel[] | null = null
@@ -92,7 +93,7 @@ async function discover(): Promise<CodexModel[]> {
   const generation = cancelGeneration
   const bin = await resolveCodexPath()
   if (generation !== cancelGeneration) throw new Error('codex model discovery cancelled')
-  const proc = spawn(bin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
+  const proc = spawn(bin, ['app-server'], { env: agentEnv(), stdio: ['pipe', 'pipe', 'pipe'] })
   inflight.add(proc)
   proc.on('close', () => inflight.delete(proc))
   const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity })

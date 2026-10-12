@@ -5,9 +5,9 @@
 # it.
 #
 # This script emits a startup line (some tests wait on pty:data to detect the
-# terminal id), then idles until told to exit or killed. It ignores all
-# arguments — the tests don't exercise Claude's protocol, they exercise
-# SimpleEdit's session UI.
+# terminal id), then idles until told to exit or killed. Of its arguments it
+# reads only `--session-id` — the tests don't exercise Claude's protocol, they
+# exercise SimpleEdit's session UI.
 #
 # IMPORTANT — must use bash, not /bin/sh: this relies on `read -t`, which dash
 # (Ubuntu's /bin/sh, used by CI) does NOT support. Under dash the read errored
@@ -26,6 +26,13 @@
 #  - Reading "/exit" on stdin exits 0, mirroring the real CLI's slash command.
 #  - Reading an `initialize` control request answers with a one-model catalog,
 #    so the app's model discovery resolves instead of waiting out its timeout.
+#  - `--session-id <id>` with CLAUDE_CONFIG_DIR set: write a stub transcript
+#    where the real CLI would, so Resume and Fork pass SimpleEdit's
+#    transcript check. Never written without CLAUDE_CONFIG_DIR, which would
+#    mean the developer's real ~/.claude.
+#  - SIMPLEEDIT_FAKE_CLAUDE_ENV_DUMP=<file>: write the environment a session
+#    launch (one with `--session-id`) got to <file>. Model discovery passes no
+#    session id, so it never overwrites the dump.
 #  - SIMPLEEDIT_FAKE_CLAUDE_EXIT=<code>: print a message and exit immediately
 #    with that code, simulating a spawn failure/crash (for the exited-state
 #    UI). Used instead of nuking PATH, which would also break Electron's own
@@ -33,6 +40,19 @@
 if [ -n "${SIMPLEEDIT_FAKE_CLAUDE_EXIT:-}" ]; then
   echo "fake claude: simulated spawn failure"
   exit "${SIMPLEEDIT_FAKE_CLAUDE_EXIT}"
+fi
+session_id=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--session-id" ]; then session_id="$arg"; fi
+  prev="$arg"
+done
+if [ -n "$session_id" ] && [ -n "${SIMPLEEDIT_FAKE_CLAUDE_ENV_DUMP:-}" ]; then
+  env > "${SIMPLEEDIT_FAKE_CLAUDE_ENV_DUMP}"
+fi
+if [ -n "$session_id" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  project_dir="${CLAUDE_CONFIG_DIR}/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
+  mkdir -p "$project_dir" && echo '{"type":"fake"}' > "${project_dir}/${session_id}.jsonl"
 fi
 echo "fake claude ready"
 if [ "${SIMPLEEDIT_FAKE_CLAUDE_OSC:-}" = "1" ]; then

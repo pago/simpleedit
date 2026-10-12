@@ -80,6 +80,11 @@ export interface AgentProvider {
    * that need nothing (Claude, Codex) stay synchronous.
    */
   buildLaunch(ctx: LaunchContext): LaunchPlan | Promise<LaunchPlan>
+  /**
+   * Refuse a launch that cannot work, before `buildLaunch` runs its side
+   * effects. The thrown message is what the user sees in the session.
+   */
+  preflight?(ctx: LaunchContext): Promise<void>
   /** Turn a raw PTY output chunk into a status, or null when unrecognised. */
   detectStatus?(chunk: string): AgentStatus | null
   /**

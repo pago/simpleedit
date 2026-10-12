@@ -21,6 +21,7 @@ import type { ModelRef } from '../../shared/ipc-types'
 import { findJsonObjectEnd } from '../lib/json-scanner'
 import { resolveClaudePath } from '../lib/shell-path'
 import { resolveCodexPath, resolveOpenCodePath } from '../lib/shell-path'
+import { agentEnv } from '../lib/agent-env'
 import { openCodeBaseEnv } from '../lib/opencode-env'
 import { chatStream, type ChatMessage } from '../models/ollama'
 
@@ -208,7 +209,7 @@ export class ClaudeCodeRunner implements Runner {
 
     const proc = spawn(claudeBin, args, {
       cwd: this.opts.cwd,
-      env: process.env as Record<string, string>,
+      env: agentEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
@@ -544,7 +545,7 @@ export class OpenCodeRunner implements Runner {
       cwd: this.opts.cwd,
       // `baseEnv` too: the pinning argument for disabling autoupdate applies to
       // every way we invoke the binary, not just the interactive one.
-      env: { ...process.env, ...openCodeBaseEnv(), ...openCodeReadOnlyEnv() } as Record<string, string>,
+      env: { ...agentEnv(), ...openCodeBaseEnv(), ...openCodeReadOnlyEnv() },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const onAbort = (): void => { try { proc.kill() } catch { /* already dead */ } }
@@ -609,7 +610,7 @@ export class CodexRunner implements Runner {
 
     const proc = spawn(codexBin, args, {
       cwd: this.opts.cwd,
-      env: process.env as Record<string, string>,
+      env: agentEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     const onAbort = (): void => { try { proc.kill() } catch { /* already dead */ } }

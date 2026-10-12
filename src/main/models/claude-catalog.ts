@@ -13,6 +13,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { homedir } from 'os'
 import * as readline from 'readline'
 import type { ClaudeModel, ModelRef } from '../../shared/ipc-types'
+import { agentEnv } from '../lib/agent-env'
 import { resolveClaudePath } from '../lib/shell-path'
 
 /**
@@ -129,7 +130,7 @@ async function discover(): Promise<ClaudeModel[]> {
       '--strict-mcp-config',
       '--settings', JSON.stringify({ disableAllHooks: true }),
     ],
-    { cwd: homedir(), stdio: ['pipe', 'pipe', 'ignore'] }
+    { cwd: homedir(), env: agentEnv(), stdio: ['pipe', 'pipe', 'ignore'] }
   )
   inflight.add(proc)
   const untrack = (): boolean => inflight.delete(proc)
