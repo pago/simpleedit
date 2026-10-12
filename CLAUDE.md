@@ -559,6 +559,13 @@ Its security rule, which `server.ts`'s header states in full:
   port.
 - **Push carries no key** (`withoutKey`): the subscription and the worker's
   `/app/` scope don't depend on it, so push survives a key change.
+- **Build check** (#205): main stamps `webBuildId` (app version + hash of
+  `out/web/index.html`) into the served page's `simpleedit-build` meta and every
+  `hello`. On a mismatch the phone reloads only when visible, on the first tab's
+  list and with nothing at risk (`PocketApp` `reloadDiscards`; component-local
+  text registers via `lib/unsaved-work.ts`), else shows a Reload banner; a
+  sessionStorage marker (`lib/version-check.svelte.ts`) stops a second automatic
+  reload for the same build, and the reload URL carries the key in use.
 
 ### Session backlog
 Per project, an ordered list of prepared session prompts (prompt + optional

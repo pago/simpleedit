@@ -185,6 +185,43 @@ test('a stale key shows the stale page, and a new link reconnects without naviga
   await page.close()
 })
 
+// #205: a Mac restarted on a new build used to leave the phone running its old bundle.
+test('a page from an older build reloads once for the Mac\'s, then only offers to', async ({ window, browser }) => {
+  const status = await enableRemote(window)
+  const page = await browser.newPage()
+  // The Mac claims a newer build than the page it served. Done on the socket,
+  // not by rewriting the page: a page Playwright fulfils loses its local
+  // address space, and Chromium's Local Network Access checks then block its
+  // socket to localhost.
+  await page.routeWebSocket(/\/app\/ws/, (ws) => {
+    const server = ws.connectToServer()
+    ws.onMessage((message) => server.send(message))
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { kind: string; build?: string }
+      if (frame.kind === 'hello') {
+        if (!frame.build) throw new Error('the hello carries no build id')
+        frame.build = '999.0.0+newer'
+      }
+      ws.send(JSON.stringify(frame))
+    })
+  })
+  let documents = 0
+  page.on('load', () => { documents++ })
+
+  await page.goto(byName(status.url!))
+  // The first hello reloads the page; the same mismatch after that reload
+  // only raises the banner, so it can never loop.
+  await expect(page.getByTestId('update-banner')).toBeVisible({ timeout: 15_000 })
+  expect(documents).toBe(2)
+
+  // Waited for, so the banner checked next is the new document's.
+  await Promise.all([page.waitForEvent('load'), page.getByTestId('update-reload').click()])
+  await expect(page.getByTestId('update-banner')).toBeVisible({ timeout: 15_000 })
+  expect(documents).toBe(3)
+
+  await page.close()
+})
+
 test('an old /<key>/ link lands on the stale-key page', async ({ window, browser }) => {
   const status = await enableRemote(window)
   const origin = new URL(byName(status.url!)).origin

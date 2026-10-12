@@ -1,6 +1,7 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import ThreadsPane from '../ThreadsPane.svelte'
+import { unsavedWork } from '../lib/unsaved-work'
 import { initAgentThreadsListeners, _resetAgentThreadsForTests } from '../../renderer/stores/agentThreads.svelte'
 import type { AgentThread, ThreadChange, ThreadMessage } from '../../shared/agent-threads'
 
@@ -76,6 +77,17 @@ afterEach(() => {
 })
 
 describe('ThreadsPane', () => {
+  it('reports a typed reply as unsaved work while it is mounted', async () => {
+    put(thread('t_aaaaaaaa', [user('m_1')]))
+    const { unmount } = renderPane()
+    await expand()
+    expect(unsavedWork()).toEqual([])
+    await fireEvent.input(screen.getByLabelText('Reply to thread'), { target: { value: 'and the retry?' } })
+    expect(unsavedWork()).toEqual(['your reply in a thread'])
+    unmount()
+    expect(unsavedWork()).toEqual([])
+  })
+
   it("lists this session's threads by path:line, with an unread dot", () => {
     put(thread('t_aaaaaaaa', [user('m_1'), agent('m_2', 'Because of the lock.')]))
     put(thread('t_bbbbbbbb', [user('m_3')], { sessionId: 's2' }))

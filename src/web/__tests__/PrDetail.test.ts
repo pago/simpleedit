@@ -5,6 +5,7 @@ import { screenPrsStore } from '../../renderer/stores/screenprs.svelte'
 import { unknownOutcome, verdictChoice } from '../lib/prs.svelte'
 import { NotSentError } from '../api-shim'
 import { nav } from '../lib/nav.svelte'
+import { unsavedWork } from '../lib/unsaved-work'
 import { tick } from 'svelte'
 import type { PrReviewDraft, ScreenPrCard } from '../../shared/screenprs'
 import { applyDraftOp, type PrReviewDraftOp } from '../../shared/review-drafts'
@@ -912,6 +913,23 @@ describe('PR detail — Discuss with Agent', () => {
     expect(createCalls()[0].brief).toContain('dig into this question from the overview first:\nIs the gate inverted?')
     // Default: main starts what a plain new session would.
     expect(createCalls()[0]).not.toHaveProperty('target')
+  })
+
+  it('reports a start in flight as unsaved work, since a reload would lose its answer', async () => {
+    let answer: (value: unknown) => void = () => {}
+    const base = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'session:create') return new Promise((resolve) => { answer = resolve })
+      return base(channel, ...args)
+    })
+    render(PrDetail, { pr: CARD, connected: true, onstarted: vi.fn() })
+    await fireEvent.click(screen.getByTestId('discuss'))
+    await waitFor(() => expect(screen.getByTestId('discuss-start')).toBeEnabled())
+    expect(unsavedWork()).toEqual([])
+    await fireEvent.click(screen.getByTestId('discuss-start'))
+    await waitFor(() => expect(unsavedWork()).toEqual(['the result of starting Discuss with Agent']))
+    answer(created)
+    await waitFor(() => expect(unsavedWork()).toEqual([]))
   })
 
   it('retries the same intent after a failure, so it can only ever make one session', async () => {

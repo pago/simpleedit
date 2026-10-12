@@ -85,8 +85,14 @@
     return composer?.dictating() ?? false
   }
 
+  /** Typed and not yet sent. Back may drop it; a reload the user didn't ask for may not. */
+  export function hasUnsentReply(): boolean {
+    return reply.trim() !== ''
+  }
+
   let caps = $state<AgentCapabilities | null>(null)
   let composer = $state<VoiceComposer | undefined>()
+  let reply = $state('')
 
   const ALL_PANES = [
     { id: 'terminal', label: 'Terminal' },
@@ -250,7 +256,7 @@
       {pane === 'terminal' ? '' : 'hidden'}"
   >
     <KeyBar onkey={writeKey} />
-    <VoiceComposer bind:this={composer} onsend={send} placeholder="Reply to {session.label}…" />
+    <VoiceComposer bind:this={composer} bind:text={reply} onsend={send} placeholder="Reply to {session.label}…" />
   </div>
 </div>
 

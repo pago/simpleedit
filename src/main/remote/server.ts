@@ -39,7 +39,7 @@
  *    error, never a silent success.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
-import { randomBytes, timingSafeEqual } from 'crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'fs'
 import { extname, join, resolve, sep } from 'path'
 import type { Socket } from 'net'
@@ -47,7 +47,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { powerSaveBlocker } from 'electron'
 import type { ClientHub, RemoteClient } from '../client-hub'
 import { dispatchInvoke, dispatchSend } from '../ipc-registry'
-import { parseClientFrame, type ServerFrame } from '../../shared/remote-protocol'
+import { BUILD_META_NAME, parseClientFrame, type ServerFrame } from '../../shared/remote-protocol'
 import { parseAttachRequest, type AttachRequest } from './attach-target'
 import type { PtyClientId, RemoteAccessStatus } from '../../shared/ipc-types'
 import { APP_PATH, appLink } from '../../shared/remote-pairing'
@@ -72,6 +72,12 @@ export interface RemoteServerOptions {
    * is; this module deliberately knows nothing about terminals.
    */
   onClientGone?: (clientKey: PtyClientId) => void
+  /**
+   * The build this server ships (`webBuildId`). Stamped into the served
+   * index.html and every `hello`, so a phone still running an older bundle can
+   * tell and reload. Absent: no check either side.
+   */
+  buildId?: string
 }
 
 interface RunningServer {
@@ -279,8 +285,27 @@ const SHELL_HEADERS = {
 export const MANIFEST_LINK = 'href="./manifest.webmanifest"'
 
 /**
- * The two shell files that differ per request, both only by echoing `key` —
- * the request's own, shape-checked, never the server's.
+ * `<app version>+<hash of index.html>`. index.html names the hashed bundle
+ * files, so its hash changes whenever the web code does, even within a version
+ * (a dev rebuild). Undefined when the bundle is missing.
+ */
+export function webBuildId(webRoot: string, appVersion: string): string | undefined {
+  try {
+    const html = readFileSync(join(webRoot, 'index.html'))
+    return `${appVersion}+${createHash('sha256').update(html).digest('hex').slice(0, 12)}`
+  } catch {
+    return undefined
+  }
+}
+
+function escapeAttribute(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+}
+
+/**
+ * The two shell files that differ per request: index.html carries the build id
+ * (the same for everyone) and both echo `key` — the request's own,
+ * shape-checked, never the server's.
  *
  * iOS saves the start URL once, at install, from the manifest the page links.
  * A static `start_url` cannot carry a per-start key, so the page served at
@@ -288,11 +313,16 @@ export const MANIFEST_LINK = 'href="./manifest.webmanifest"'
  * is `/app/?k=K`. The installed app then launches with the key it was
  * installed with; a later in-app rescan supersedes it (`lib/remote-key.ts`).
  */
-function personalise(file: string, body: string, key: string): string {
+function personalise(file: string, body: string, key: string | null, buildId: string | undefined): string {
   if (file.endsWith('index.html')) {
-    return body.replace(MANIFEST_LINK, `href="./manifest.webmanifest?k=${key}"`)
+    let html = key ? body.replace(MANIFEST_LINK, `href="./manifest.webmanifest?k=${key}"`) : body
+    if (buildId) {
+      const meta = `<meta name="${BUILD_META_NAME}" content="${escapeAttribute(buildId)}" />`
+      html = html.replace('</head>', () => `${meta}</head>`)
+    }
+    return html
   }
-  if (file.endsWith('.webmanifest')) {
+  if (key && file.endsWith('.webmanifest')) {
     try {
       const manifest = JSON.parse(body) as Record<string, unknown>
       manifest.start_url = `./?k=${key}`
@@ -304,7 +334,13 @@ function personalise(file: string, body: string, key: string): string {
   return body
 }
 
-function serveStatic(res: ServerResponse, webRoot: string, route: string, key: string | null): void {
+function serveStatic(
+  res: ServerResponse,
+  webRoot: string,
+  route: string,
+  key: string | null,
+  buildId: string | undefined,
+): void {
   const file = resolveStatic(webRoot, route === '/' ? '/index.html' : route)
   if (!file) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
@@ -316,9 +352,9 @@ function serveStatic(res: ServerResponse, webRoot: string, route: string, key: s
     return
   }
   const headers = { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', ...SHELL_HEADERS }
-  if (key && (file.endsWith('index.html') || file.endsWith('.webmanifest'))) {
+  if ((key && file.endsWith('.webmanifest')) || ((key || buildId) && file.endsWith('index.html'))) {
     res.writeHead(200, headers)
-    res.end(personalise(file, readFileSync(file, 'utf8'), key))
+    res.end(personalise(file, readFileSync(file, 'utf8'), key, buildId))
     return
   }
   res.writeHead(200, headers)
@@ -399,7 +435,8 @@ function attachSocket(ws: WebSocket, server: RunningServer, request: AttachReque
   const transport = new SocketTransport(ws, hub.id)
   hub.register(transport)
   server.sockets.add(transport)
-  transport.post({ kind: 'hello', windowId: hub.id, clientKey: transport.clientKey })
+  const { buildId } = server.options
+  transport.post({ kind: 'hello', windowId: hub.id, clientKey: transport.clientKey, ...(buildId ? { build: buildId } : {}) })
   emitStatus(server)
 
   ws.on('message', (raw: Buffer | string) => {
@@ -565,7 +602,7 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
     const first = path.split('/')[1] ?? ''
     if (KEY_SHAPE.test(first)) return redirect(res, `${APP_PATH}?from=legacy`)
     if (!path.startsWith(APP_PATH)) return notFound(res)
-    serveStatic(res, options.webRoot, path.slice(APP_PATH.length - 1), keyParam(req.url))
+    serveStatic(res, options.webRoot, path.slice(APP_PATH.length - 1), keyParam(req.url), options.buildId)
   }
 
   http.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {

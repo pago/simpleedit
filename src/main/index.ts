@@ -52,7 +52,7 @@ import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeReso
 import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, everyClient, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
-import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub, currentRemoteToken } from './remote/server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub, currentRemoteToken, webBuildId } from './remote/server'
 import { capDiffForRemote } from './remote/payload-cap'
 import { getTailscaleStatus } from './remote/tailscale'
 import { applyServe, getServeStatus, reclaimAbandonedServe, stopServeSync } from './remote/serve'
@@ -496,6 +496,7 @@ async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
     host: config.host,
     port: config.port,
     webRoot: remoteWebRoot(),
+    buildId: webBuildId(remoteWebRoot(), app.getVersion()),
     attachTarget: remoteAttachTarget,
     onStatusChange: broadcastRemoteStatus,
     onClientGone: releaseTerminalsOwnedBy,

@@ -1,5 +1,6 @@
 <script lang="ts" module>
   import type { InteractiveTarget } from '../shared/ipc-types'
+  import { holdUnsaved } from './lib/unsaved-work'
 
   /** The last pick as a `targetKey`: `''` is Default. */
   const MODEL_KEY = 'simpleedit.discussTarget'
@@ -146,6 +147,8 @@
     intent = null
     attempt().catch(() => {})
   }
+
+  $effect(() => holdUnsaved(() => (starting ? 'the result of starting Discuss with Agent' : null)))
 
   /** A start in flight can't be cancelled from here, so Back waits for it. */
   export function holdForDraft(): boolean {

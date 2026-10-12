@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import ComposeSheet from '../ComposeSheet.svelte'
+import { unsavedWork } from '../lib/unsaved-work'
 import { encodeWav } from '../lib/audio'
 
 /**
@@ -74,6 +75,15 @@ function mount() {
 const transcribeCalls = (): unknown[][] => invoke.mock.calls.filter((call) => call[0] === 'stt:transcribe')
 
 describe('ComposeSheet', () => {
+  it('reports typed text as unsaved work while it is mounted', async () => {
+    const { unmount } = mount()
+    expect(unsavedWork()).toEqual([])
+    await fireEvent.input(screen.getByTestId('composer-text'), { target: { value: 'needs a guard' } })
+    expect(unsavedWork()).toEqual(['your unsaved text for src/gate.ts:11'])
+    unmount()
+    expect(unsavedWork()).toEqual([])
+  })
+
   it('lets an empty sheet go', () => {
     const { component } = mount()
     expect(component.holdForDraft()).toBe(false)
