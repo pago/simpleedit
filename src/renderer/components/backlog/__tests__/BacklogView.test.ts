@@ -4,10 +4,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('../PromptField.svelte', async () => ({ default: (await import('./StubPromptField.svelte')).default }))
 
 import BacklogView from '../BacklogView.svelte'
+import BacklogList from '../BacklogList.svelte'
+import Backlog from './BacklogSplit.svelte'
 import BacklogArrivalNotice from '../BacklogArrivalNotice.svelte'
 import { backlogStore, initBacklogListeners, _resetBacklogForTests, type BacklogDraft } from '../../../stores/backlog.svelte'
 import { sessionsStore } from '../../../stores/sessions.svelte'
 import { uiView } from '../../../stores/uiView.svelte'
+import { _resetBacklogViewForTests } from '../../../stores/backlogViewState.svelte'
 import { _resetAllowlistedModelsForTests, targetKey } from '../../../lib/agentModels'
 import type { BacklogItem, BacklogOpResult, BacklogSnapshot } from '../../../../shared/backlog'
 
@@ -70,6 +73,7 @@ function applyLikeMain(batch: Array<Record<string, unknown>>): BacklogOpResult {
 
 beforeEach(async () => {
   _resetBacklogForTests()
+  _resetBacklogViewForTests()
   _resetAllowlistedModelsForTests()
   onOp = applyLikeMain
   invoke = vi.fn(answer)
@@ -91,17 +95,17 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('BacklogView list', () => {
+describe('BacklogList', () => {
   it('lists the items in order with their model and what an agent added marked', async () => {
     put([item('b_aaaaaaaa', { createdBy: 'agent', createdBySession: 'parser rewrite' }), item('b_bbbbbbbb')])
-    render(BacklogView)
+    render(BacklogList)
     const rows = await screen.findAllByTestId('backlog-item')
     expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining('Item b_aaaaaaaa'), expect.stringContaining('Item b_bbbbbbbb')])
     expect(rows[0].textContent).toContain('Default · added by parser rewrite')
   })
 
   it('shows the first item by default', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toBe('Do the b_aaaaaaaa work\nwith details'))
     expect((screen.getByLabelText('Session name') as HTMLInputElement).value).toBe('Item b_aaaaaaaa')
     expect((await screen.findAllByTestId('backlog-item'))[0].getAttribute('aria-current')).toBe('true')
@@ -113,7 +117,7 @@ describe('BacklogView list', () => {
     )
     const select = vi.spyOn(sessionsStore, 'select').mockImplementation(() => {})
     uiView.show('backlog')
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(backlogStore.selectedId).toBe('b_aaaaaaaa'))
     await fireEvent.click((await screen.findAllByRole('button', { name: 'Start' }))[0])
     await waitFor(() => expect(select).toHaveBeenCalledWith('agent-1'))
@@ -129,7 +133,7 @@ describe('BacklogView list', () => {
       item('b_bbbbbbbb', { lastStart: { outcome: 'unconfirmed', reason: 'no answer', at: 'now' } }),
       item('b_cccccccc', { starting: true }),
     ])
-    render(BacklogView)
+    render(BacklogList)
     expect(await screen.findByText(/Didn't start: no codex/)).toBeTruthy()
     expect(screen.getByText(/May have started/)).toBeTruthy()
     expect(screen.getByText('Starting…')).toBeTruthy()
@@ -137,7 +141,7 @@ describe('BacklogView list', () => {
   })
 
   it('reorders by drag and drop through main', async () => {
-    render(BacklogView)
+    render(BacklogList)
     const rows = await screen.findAllByTestId('backlog-item')
     await fireEvent.dragStart(rows[2], { dataTransfer: new DataTransfer() })
     await fireEvent.dragOver(rows[0], { dataTransfer: new DataTransfer() })
@@ -146,7 +150,7 @@ describe('BacklogView list', () => {
   })
 
   it('deletes only after confirming', async () => {
-    render(BacklogView)
+    render(BacklogList)
     await fireEvent.click(await screen.findByRole('button', { name: 'Delete Item b_bbbbbbbb' }))
     expect(ops()).toEqual([])
     await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
@@ -165,7 +169,7 @@ describe('BacklogView list', () => {
 
 describe('BacklogItemDetail autosave', () => {
   it('saves typing after a pause, sending only what changed', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'my text' } })
     expect(screen.getByText('Saving…')).toBeTruthy()
@@ -178,7 +182,7 @@ describe('BacklogItemDetail autosave', () => {
   it('sends a picked model, and lists one the picker lacks', async () => {
     const odd = { provider: 'claude' as const, model: { provider: 'ollama' as const, model: 'qwen3:8b' } }
     put([item('b_aaaaaaaa', { target: odd })])
-    render(BacklogView)
+    render(Backlog)
     const select = (await screen.findByLabelText('Model')) as HTMLSelectElement
     await waitFor(() => expect(select.selectedOptions[0]?.textContent).toBe('Claude · qwen3:8b'))
     await waitFor(() => expect(screen.getByRole('option', { name: 'Claude · Opus' })).toBeTruthy())
@@ -193,7 +197,7 @@ describe('BacklogItemDetail autosave', () => {
   })
 
   it('flushes a pending save before switching item', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'typed just now' } })
     await fireEvent.click(screen.getByText('Item b_bbbbbbbb'))
@@ -207,7 +211,7 @@ describe('BacklogItemDetail autosave', () => {
       if (batch[0].baseVersion === 1) return { ok: false, conflict: { id: 'b_aaaaaaaa', current: theirs }, snapshot: snapshot([theirs]) }
       return { ok: true, snapshot: snapshot([{ ...theirs, prompt: 'my text', version: 3 }]) }
     }
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'my text' } })
     await fireEvent.click(screen.getByText('Item b_bbbbbbbb'))
@@ -224,7 +228,7 @@ describe('BacklogItemDetail autosave', () => {
   it('Take theirs replaces the text with theirs', async () => {
     const theirs = item('b_aaaaaaaa', { prompt: 'their text', version: 2 })
     onOp = () => ({ ok: false, conflict: { id: 'b_aaaaaaaa', current: theirs }, snapshot: snapshot([theirs]) })
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'my text' } })
     await fireEvent.click(await screen.findByRole('button', { name: 'Take theirs' }, { timeout: 2000 }))
@@ -232,7 +236,7 @@ describe('BacklogItemDetail autosave', () => {
   })
 
   it("adopts another client's change while nothing is unsaved, and never over typing", async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     put([item('b_aaaaaaaa', { prompt: 'from the phone', version: 2 })])
     await waitFor(() => expect(prompt().value).toBe('from the phone'))
@@ -245,7 +249,7 @@ describe('BacklogItemDetail autosave', () => {
 
 describe('a new item', () => {
   it('creates nothing when left untouched', async () => {
-    render(BacklogView)
+    render(Backlog)
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
     await waitFor(() => expect(prompt().value).toBe(''))
     expect(screen.getByText('New item')).toBeTruthy()
@@ -263,7 +267,7 @@ describe('a new item', () => {
       const added = batch[0].item as BacklogItem
       return { ok: true, snapshot: snapshot([...backlogStore.items, { ...added, version: 1, createdAt: 'a', updatedAt: 'a', createdBy: 'desktop' }]) }
     }
-    render(BacklogView)
+    render(Backlog)
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
     await waitFor(() => expect(prompt().value).toBe(''))
     await fireEvent.input(prompt(), { target: { value: 'later work' } })
@@ -281,7 +285,7 @@ describe('a new item', () => {
       const added = batch[0].item as BacklogItem
       return { ok: true, snapshot: snapshot([...backlogStore.items, { ...added, version: 1, createdAt: 'a', updatedAt: 'a', createdBy: 'desktop' }]) }
     }
-    render(BacklogView)
+    render(Backlog)
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
     await waitFor(() => expect(prompt().value).toBe(''))
     await fireEvent.input(screen.getByLabelText('Session name'), { target: { value: 'Look into flaky CI' } })
@@ -295,7 +299,7 @@ describe('a new item', () => {
 
 describe('saving, in sequence', () => {
   it('saves twice in a row against the version the first save produced', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'one' } })
     await waitFor(() => expect(ops()).toHaveLength(1), { timeout: 2000 })
@@ -307,7 +311,7 @@ describe('saving, in sequence', () => {
   })
 
   it('updates a new item once it was added, rather than adding it again', async () => {
-    render(BacklogView)
+    render(Backlog)
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
     await waitFor(() => expect(prompt().value).toBe(''))
     await fireEvent.input(prompt(), { target: { value: 'first' } })
@@ -319,7 +323,7 @@ describe('saving, in sequence', () => {
   })
 
   it("takes the saved state from main's copy: a tidied name is not an edit", async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(screen.getByLabelText('Session name'), { target: { value: '  spaced   out  ' } })
     await waitFor(() => expect(screen.getByText('Saved')).toBeTruthy(), { timeout: 2000 })
@@ -340,7 +344,7 @@ describe('saving, in sequence', () => {
       }
       return result
     }
-    render(BacklogView)
+    render(Backlog)
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
     await waitFor(() => expect(prompt().value).toBe(''))
     await fireEvent.input(prompt(), { target: { value: 'later work' } })
@@ -354,7 +358,7 @@ describe('saving, in sequence', () => {
   })
 
   it('Save as new keeps the text of an item that left the backlog', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'still mine' } })
     put([item('b_bbbbbbbb'), item('b_cccccccc')])
@@ -372,7 +376,7 @@ describe('saving, in sequence', () => {
       return channel === 'backlog:start' ? { terminalId: 'agent-1', label: 'x' } : answer(channel, arg)
     })
     const select = vi.spyOn(sessionsStore, 'select').mockImplementation(() => {})
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'final words' } })
     await fireEvent.click((await screen.findAllByRole('button', { name: 'Start' }))[0])
@@ -393,7 +397,7 @@ describe('a save that meets a start', () => {
 
   it('waits, then saves once the start failed', async () => {
     refuseWhileStarting()
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     put([item('b_aaaaaaaa', { starting: true }), item('b_bbbbbbbb')])
     await fireEvent.input(prompt(), { target: { value: 'mine' } })
@@ -407,7 +411,7 @@ describe('a save that meets a start', () => {
 
   it('offers Save as new once the start made it a session', async () => {
     refuseWhileStarting()
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     put([item('b_aaaaaaaa', { starting: true }), item('b_bbbbbbbb')])
     await fireEvent.input(prompt(), { target: { value: 'mine' } })
@@ -420,7 +424,7 @@ describe('a save that meets a start', () => {
 
 describe('leaving the item', () => {
   it('sends pending typing at once when the window unloads', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'typed before ⌘R' } })
     expect(ops()).toEqual([])
@@ -431,7 +435,7 @@ describe('leaving the item', () => {
   it("holds the arrival notice's Edit while the open item can't be saved", async () => {
     const theirs = item('b_aaaaaaaa', { prompt: 'their text', version: 2 })
     onOp = () => ({ ok: false, conflict: { id: 'b_aaaaaaaa', current: theirs }, snapshot: snapshot(backlogStore.items) })
-    render(BacklogView)
+    render(Backlog)
     render(BacklogArrivalNotice)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'my text' } })
@@ -443,7 +447,7 @@ describe('leaving the item', () => {
   })
 
   it('saves before an outside selection change', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'quick edit' } })
     expect(await backlogStore.requestSelect('b_cccccccc')).toBe(true)
@@ -455,13 +459,13 @@ describe('leaving the item', () => {
     onOp = () => {
       throw new Error('socket closed')
     }
-    const view = render(BacklogView)
+    const view = render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'not lost' } })
     view.unmount()
     await waitFor(() => expect(backlogStore.draft('b_aaaaaaaa')?.prompt).toBe('not lost'))
     onOp = applyLikeMain
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toBe('not lost'))
     await waitFor(() => expect(backlogStore.get('b_aaaaaaaa')?.prompt).toBe('not lost'), { timeout: 2000 })
     await waitFor(() => expect(backlogStore.draft('b_aaaaaaaa')).toBeUndefined())
@@ -470,7 +474,7 @@ describe('leaving the item', () => {
 
 describe('focus and drag', () => {
   it('focuses the prompt for a new item only', async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     expect(document.activeElement).not.toBe(prompt())
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
@@ -478,7 +482,7 @@ describe('focus and drag', () => {
   })
 
   it('drops on the end slot to move an item last', async () => {
-    render(BacklogView)
+    render(BacklogList)
     const rows = await screen.findAllByTestId('backlog-item')
     const end = screen.getByTestId('backlog-drop-end')
     await fireEvent.dragStart(rows[0], { dataTransfer: new DataTransfer() })
@@ -489,7 +493,7 @@ describe('focus and drag', () => {
   })
 
   it('keeps the row target while crossing the gap between rows', async () => {
-    render(BacklogView)
+    render(BacklogList)
     const rows = await screen.findAllByTestId('backlog-item')
     const end = screen.getByTestId('backlog-drop-end')
     await fireEvent.dragStart(rows[2], { dataTransfer: new DataTransfer() })
@@ -530,14 +534,14 @@ describe('drafts', () => {
     onOp = () => {
       throw new Error('socket closed')
     }
-    const view = render(BacklogView)
+    const view = render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'survives a reload' } })
     await waitFor(() => expect(localStorage.getItem(KEY)).toContain('survives a reload'))
     view.unmount()
     await reload()
     onOp = applyLikeMain
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toBe('survives a reload'))
     await waitFor(() => expect(backlogStore.get('b_aaaaaaaa')?.prompt).toBe('survives a reload'), { timeout: 2000 })
     await waitFor(() => expect(localStorage.getItem(KEY)).toBeNull())
@@ -546,7 +550,7 @@ describe('drafts', () => {
   it('keeps text held by a conflict over a reload, and shows the conflict again', async () => {
     const theirs = item('b_aaaaaaaa', { prompt: 'their text', version: 2 })
     onOp = () => ({ ok: false, conflict: { id: 'b_aaaaaaaa', current: theirs }, snapshot: snapshot(backlogStore.items) })
-    const view = render(BacklogView)
+    const view = render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'mine' } })
     expect(await screen.findByText(/changed somewhere else/, undefined, { timeout: 2000 })).toBeTruthy()
@@ -556,7 +560,7 @@ describe('drafts', () => {
       channel === 'backlog:load' ? { project: P, items: [theirs, item('b_bbbbbbbb')], rev: 1 } : answer(channel, arg),
     )
     await reload()
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toBe('mine'))
     expect(await screen.findByText(/changed somewhere else/, undefined, { timeout: 2000 })).toBeTruthy()
   })
@@ -565,14 +569,14 @@ describe('drafts', () => {
     onOp = () => {
       throw new Error('socket closed')
     }
-    const view = render(BacklogView)
+    const view = render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'orphaned text' } })
     view.unmount()
     await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull())
     put([item('b_bbbbbbbb'), item('b_cccccccc')])
     backlogStore.select('b_bbbbbbbb')
-    render(BacklogView)
+    render(Backlog)
     const row = await screen.findByTestId('backlog-draft')
     expect(row.textContent).toContain('Unsaved draft')
     await fireEvent.click(row.querySelector('button')!)
@@ -587,12 +591,12 @@ describe('drafts', () => {
     const first = deferred()
     let calls = 0
     onOp = (batch) => (++calls === 1 ? first.promise.then(() => applyLikeMain(batch)) : applyLikeMain(batch))
-    const view = render(BacklogView)
+    const view = render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'older' } })
     view.unmount()
     expect(ops()).toHaveLength(1)
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toBe('older'))
     await fireEvent.input(prompt(), { target: { value: 'newer' } })
     await new Promise((r) => setTimeout(r, 800))
@@ -611,11 +615,11 @@ describe('drafts', () => {
     const first = deferred()
     let calls = 0
     onOp = (batch) => (++calls === 1 ? first.promise : applyLikeMain(batch))
-    const view = render(BacklogView)
+    const view = render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.input(prompt(), { target: { value: 'older' } })
     view.unmount()
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toBe('older'))
     await fireEvent.input(prompt(), { target: { value: 'newer' } })
     first.reject(new Error('socket closed'))
@@ -625,7 +629,7 @@ describe('drafts', () => {
   })
 
   it("writes each draft under its own key, and picks up another window's", async () => {
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     // Another window on this project keeps a draft of b; ours must not erase it.
     const otherKey = `simpleedit:backlog-draft:${P}\nb_bbbbbbbb`
@@ -652,7 +656,7 @@ describe('drafts', () => {
     })
     const select = vi.spyOn(sessionsStore, 'select').mockImplementation(() => {})
     backlogStore.putDraft('b_bbbbbbbb', draftOf('the newer text', { created: true, baseVersion: 1, saved: { prompt: 'Do the b_bbbbbbbb work\nwith details', label: 'Item b_bbbbbbbb', target: '' }, label: 'Item b_bbbbbbbb' }))
-    render(BacklogView)
+    render(Backlog)
     await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
     await fireEvent.click((await screen.findAllByRole('button', { name: 'Start' }))[1])
     await waitFor(() => expect(order).toEqual(['backlog:op', 'backlog:start']))
@@ -667,7 +671,7 @@ describe('drafts', () => {
       return { ok: true, snapshot: snapshot(backlogStore.items.filter((i) => i.id !== batch[0].id)) }
     }
     backlogStore.putDraft('b_bbbbbbbb', draftOf('doomed', { created: true, baseVersion: 1, saved: { prompt: 'x', label: '', target: '' } }))
-    render(BacklogView)
+    render(Backlog)
     await fireEvent.click(await screen.findByRole('button', { name: 'Delete Item b_bbbbbbbb' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(backlogStore.items.map((i) => i.id)).not.toContain('b_bbbbbbbb'))
@@ -677,7 +681,7 @@ describe('drafts', () => {
 
   it("opening a never-added draft doesn't add it, and offers Add it or Discard", async () => {
     backlogStore.putDraft('b_nnnnnnnn', draftOf('never added'))
-    render(BacklogView)
+    render(Backlog)
     const row = await screen.findByTestId('backlog-draft')
     expect(row.textContent).toContain('Unsaved new item')
     await fireEvent.click(row.querySelector('button')!)
@@ -699,7 +703,7 @@ describe('drafts', () => {
 
   it('Add it adds a never-added draft', async () => {
     backlogStore.putDraft('b_nnnnnnnn', draftOf('never added'))
-    render(BacklogView)
+    render(Backlog)
     await fireEvent.click((await screen.findByTestId('backlog-draft')).querySelector('button')!)
     await fireEvent.click(await screen.findByRole('button', { name: 'Add it' }))
     await waitFor(() => expect(ops()).toEqual([[{ kind: 'add', item: { id: 'b_nnnnnnnn', prompt: 'never added' } }]]))
@@ -718,5 +722,28 @@ describe('switching project', () => {
     await backlogStore.load()
     expect(backlogStore.arrivals).toEqual([])
     expect(backlogStore.selectedId).toBeNull()
+  })
+})
+
+describe('BacklogView', () => {
+  it('shows its own list by default', async () => {
+    render(BacklogView)
+    expect(await screen.findByTestId('backlog-list')).toBeTruthy()
+    await waitFor(() => expect(prompt().value).toBe('Do the b_aaaaaaaa work\nwith details'))
+  })
+
+  it('without its list, shows a hint until something is picked, and + New still opens a new item', async () => {
+    render(BacklogView, { list: false })
+    expect(screen.queryByTestId('backlog-list')).toBeNull()
+    expect(screen.getByText('Pick an item, or add one with + New.')).toBeTruthy()
+    await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
+    await waitFor(() => expect(document.activeElement).toBe(prompt()))
+  })
+})
+
+describe('BacklogList alone', () => {
+  it('selects the first item, so a detail mounted elsewhere has something to show', async () => {
+    render(BacklogList)
+    await waitFor(() => expect(backlogStore.selectedId).toBe('b_aaaaaaaa'))
   })
 })
