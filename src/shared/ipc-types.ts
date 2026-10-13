@@ -1197,14 +1197,14 @@ export interface RemoteAccessConfig {
    */
   sttModelPath: string
   /**
-   * Drive `tailscale serve` while remote access is on.
+   * Which reachability provider publishes the server while remote access is on.
    *
-   * Explicit opt-in, separate from `enabled`, and never implied by it: Serve
-   * publishes this app to every device on the tailnet under a stable HTTPS
-   * name. Turning remote access on is a decision about this Mac; turning Serve
-   * on is a decision about the tailnet.
+   * Explicit opt-in, separate from `enabled`, and never implied by it: a
+   * provider publishes this app beyond this Mac — Serve to every device on the
+   * tailnet under a stable HTTPS name. Turning remote access on is a decision
+   * about this Mac; choosing an exposure is a decision about who can reach it.
    */
-  serveEnabled: boolean
+  exposure: RemoteExposure
   /**
    * The loopback port a serve mapping was last created for, or 0.
    *
@@ -1298,15 +1298,15 @@ export interface RemoteInvokeMap {
   /** Candidate bind addresses, so the pane can offer them instead of a text field. */
   'remote:interfaces': { args: []; result: RemoteInterface[] }
   /**
-   * Opt in to, or out of, `tailscale serve`. Persisted, and applied against
+   * Pick the reachability provider, or none. Persisted, and applied against
    * the running server's current port.
    */
-  'remote:set-serve-enabled': { args: [enabled: boolean]; result: TailscaleServeStatus }
+  'remote:set-exposure': { args: [exposure: RemoteExposure]; result: TunnelStatus }
   /** The windows with a repo — the projects a phone can attach to. */
   'remote:projects': { args: []; result: RemoteProject[] }
   /** Probe the Tailscale CLI. Spawns a subprocess, so it is called on demand. */
   'tailscale:status': { args: []; result: TailscaleStatus }
-  'tailscale:serve-status': { args: []; result: TailscaleServeStatus }
+  'remote:tunnel-status': { args: []; result: TunnelStatus }
 }
 
 /**
@@ -1339,20 +1339,24 @@ export interface TailscaleStatus {
   hint: string | null
 }
 
+/** The reachability providers, by the id `RemoteAccessConfig.exposure` stores. */
+export const REMOTE_EXPOSURES = ['off', 'tailscale-serve'] as const
+export type RemoteExposure = (typeof REMOTE_EXPOSURES)[number]
+
 /**
- * The serve mapping this app owns.
+ * The public mapping the active reachability provider owns.
  *
  * Its lifetime is the remote server's: created when the server starts,
  * re-pointed when the ephemeral port changes, removed when it stops.
  */
-export interface TailscaleServeStatus {
+export interface TunnelStatus {
   /** A mapping exists and is published. */
   active: boolean
   /** The loopback port we are responsible for, whether or not it published. */
   port: number | null
-  /** The HTTPS URL Serve publishes, token included. Null unless active. */
+  /** The public URL the provider publishes, token included. Null unless active. */
   url: string | null
-  /** A serve or an unserve is in flight. */
+  /** A publish or an unpublish is in flight. */
   busy: boolean
   /**
    * Where to switch Serve on for the tailnet.
@@ -1376,7 +1380,7 @@ export interface RemoteInterface {
 
 export interface RemoteEventMap {
   'remote:status-changed': RemoteAccessStatus
-  'remote:serve-changed': TailscaleServeStatus
+  'remote:tunnel-changed': TunnelStatus
   /** A window with a repo opened or closed, or a window picked its repo. */
   'remote:projects-changed': RemoteProject[]
   'push:status-changed': PushStatus

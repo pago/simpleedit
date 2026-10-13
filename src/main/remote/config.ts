@@ -9,11 +9,11 @@
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { configDir } from '../config-dir'
-import type { RemoteAccessConfig } from '../../shared/ipc-types'
+import { REMOTE_EXPOSURES, type RemoteAccessConfig, type RemoteExposure } from '../../shared/ipc-types'
 import { REMOTE_DEFAULT_HOST } from './interfaces'
 
 function defaults(): RemoteAccessConfig {
-  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0, sttModelPath: '', serveEnabled: false, servePort: 0 }
+  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0, sttModelPath: '', exposure: 'off', servePort: 0 }
 }
 
 function filePath(): string {
@@ -23,8 +23,25 @@ function filePath(): string {
   return join(configDir(), 'remote.json')
 }
 
-function isConfig(value: unknown): value is Partial<RemoteAccessConfig> {
+/** What the file may hold: this shape, or one written before `exposure` existed. */
+type StoredConfig = Partial<RemoteAccessConfig> & { serveEnabled?: unknown }
+
+function isConfig(value: unknown): value is StoredConfig {
   return typeof value === 'object' && value !== null
+}
+
+function isExposure(value: unknown): value is RemoteExposure {
+  return REMOTE_EXPOSURES.some((exposure) => exposure === value)
+}
+
+/**
+ * An id this build does not know — a newer build's provider, say — reads as
+ * `off`: publishing is opt-in, so an unreadable choice must not become one.
+ */
+function exposureOf(parsed: StoredConfig): RemoteExposure {
+  if (isExposure(parsed.exposure)) return parsed.exposure
+  if (parsed.exposure === undefined && parsed.serveEnabled === true) return 'tailscale-serve'
+  return 'off'
 }
 
 export function getRemoteConfig(): RemoteAccessConfig {
@@ -47,7 +64,7 @@ export function getRemoteConfig(): RemoteAccessConfig {
       // when dictation runs, not on read. A model on an unmounted volume must
       // not silently erase the preference on the next write.
       sttModelPath: typeof parsed.sttModelPath === 'string' ? parsed.sttModelPath : base.sttModelPath,
-      serveEnabled: typeof parsed.serveEnabled === 'boolean' ? parsed.serveEnabled : base.serveEnabled,
+      exposure: exposureOf(parsed),
       // A claim ticket for a mapping inside tailscaled, not a preference. A
       // corrupt value here would strand a real mapping, so it falls back to
       // "we own nothing" rather than to something plausible.

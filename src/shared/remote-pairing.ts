@@ -11,7 +11,7 @@
  *    likely to be wrong.
  *  - **Nothing when remote access is off.** No server, no token, no code.
  *
- * The preference order is HTTPS-over-Serve first: `getUserMedia` needs a
+ * The preference order is the provider's HTTPS tunnel first: `getUserMedia` needs a
  * secure context, so dictation only exists on that URL.
  */
 
@@ -42,8 +42,8 @@ export interface PairingInput {
   directUrl: string | null
   /** True when the bound address belongs to the Tailscale interface. */
   boundToTailscale: boolean
-  /** The HTTPS URL `tailscale serve` publishes, key included, when active. */
-  serveUrl: string | null
+  /** The URL the active reachability provider publishes, key included, when active. */
+  tunnelUrl: string | null
 }
 
 export interface PairingTarget {
@@ -79,8 +79,8 @@ export function pairingTarget(input: PairingInput): PairingTarget {
   if (!input.running) {
     return { url: null, secure: false, note: null }
   }
-  if (input.serveUrl && isPhoneReachable(input.serveUrl)) {
-    return { url: input.serveUrl, secure: input.serveUrl.startsWith('https://'), note: null }
+  if (input.tunnelUrl && isPhoneReachable(input.tunnelUrl)) {
+    return { url: input.tunnelUrl, secure: input.tunnelUrl.startsWith('https://'), note: null }
   }
   if (input.directUrl && input.boundToTailscale && isPhoneReachable(input.directUrl)) {
     return {
