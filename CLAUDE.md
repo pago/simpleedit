@@ -544,9 +544,73 @@ Its security rule, which `server.ts`'s header states in full:
   `/app/?from=legacy`. Shell responses forbid framing (`X-Frame-Options`,
   `frame-ancestors`) and cross-origin no-cors loads (`CORP: same-origin`), so
   another site can neither frame the scanner nor probe for SimpleEdit.
-- Origin: any `Origin` must name the host the request addressed (forwarded
-  headers trusted from loopback only, for `tailscale serve`); the upgrade must
-  carry one. Bind rules: explicit host, loopback by default, never `0.0.0.0`.
+- Origin: any `Origin` must name the host the request addressed; the upgrade
+  must carry one. Forwarded headers are believed only from loopback, and only
+  while the chosen provider declares its proxy trusted (`proxyTrust`, below).
+  Bind rules: explicit host, loopback by default, never `0.0.0.0`.
+- **Reachability providers** (`remote/reachability.ts`) put the loopback server
+  on an HTTPS name: Tailscale Serve (`serve.ts`, the default and recommended)
+  or OpenTunnel (`opentunnel.ts`, experimental). `RemoteAccessConfig.exposure`
+  picks one; `syncTunnel` (`index.ts`) applies it on every server start, stop
+  and rebind, and only for a loopback bind (`remote:set-exposure` refuses
+  otherwise, desktop only). `apply` returns on acceptance (`busy`); outcomes,
+  progress and errors arrive via `onChange` → `remote:tunnel-changed`, which is
+  the pane's only status source.
+  - **Server stopped ≠ provider deselected.** `apply(null)` means "still chosen,
+    no server" (remote access off; quit is `stopSync`); `withdraw()` means the
+    exposure moved away. Serve treats both as removal (the mapping names an
+    ephemeral port). OpenTunnel only closes its connection on `apply(null)`, so
+    the URL (and a phone's installed app) survives restarts, and deletes the
+    tunnel on the relay only on `withdraw()` or at launch
+    (`reclaimAbandoned(exposure)`) when an identity is on disk while another
+    exposure is chosen. The delete is our own `DELETE /api/tunnel/:id` with the
+    stored token, full or half-provisioned identity alike (the SDK's `remove`
+    skips the latter). A failed delete keeps everything on disk and shows in the
+    pane under any exposure (`TunnelStatus.elsewhere`); it is tried again by the
+    next withdrawal, i.e. the next launch or the next time remote access starts,
+    stops, rebinds or changes exposure — there is no timer, and withdrawals
+    collapse into one queued removal. The notice offers "Forget without
+    deleting" (`remote:forget-tunnel`, desktop only).
+  - **Restarts close first.** `applyRemoteConfigNow` syncs right after the
+    server stops, so no provider routes to the freed port while the new server
+    starts. Provisioning is aborted by a withdrawal or quit and bounded to
+    3 minutes, but never between the relay creating a tunnel and its token
+    reaching disk (the abort is held until `requesting-certificate`). That
+    span includes the SDK's `POST /api/tunnel`, which we cannot bound without
+    risking a tunnel whose token we never see: it retries up to 6 times on
+    connect errors and on HTTP 429, 503, 521, 522, 523 and 525, each attempt
+    limited only by Node fetch's 300 s headers timeout, so the true worst case
+    before an abort or timeout takes effect is the SDK's own (tens of minutes
+    against a hanging relay).
+    The exposure choice stays usable meanwhile; the withdrawal it queues runs
+    after. A connection the relay ends while still wanted is retried with
+    backoff (5 s doubling to 5 min).
+  - **Trusted proxy flag.** Each provider declares `trustsForwardedHeaders`.
+    Serve: true. OpenTunnel: false, because every visitor arrives as peer
+    127.0.0.1 and its own `x-forwarded-*` reach us verbatim. The server asks
+    `proxyTrust(exposure)` per request: with OpenTunnel it ignores forwarded
+    headers and instead treats the tunnel's own host as `https` (TLS ends in our
+    process; the SDK forwards plain HTTP and adds no headers). An untrusted
+    provider counts while chosen AND while it could still deliver visitors (a
+    bridge live, attaching or still closing, or a port held) after a switch, so
+    its queued close can't open a window; a removal retrying against a dead
+    relay doesn't count, or it would keep refusing Serve's phone socket.
+  - **OpenTunnel's trust model:** no access control in front of us. Anyone with
+    the URL reaches the sign-in page, so the key is the only boundary. The URL
+    is `https://<route>.<tunnel host>`; the route is 16 random hex chars,
+    persisted beside the identity, and never in Certificate Transparency logs
+    (the certificate is for the host + wildcard). No auth rate limit or lockout
+    (all visitors share 127.0.0.1, so a lockout would lock the owner out); wrong
+    keys are logged, throttled to one line a minute (`noteRefusedKey`). Choosing
+    it needs a one-time acknowledgement (`openTunnelAcknowledged`, enforced by
+    main). Leaving it while a published address is on record
+    (`TunnelStatus.kept`) asks first, since that deletes the address; a first
+    provisioning that never published one is let go without asking. The SDK
+    (`@opentunnel/client`, pinned exactly, plus `effect`) is bundled into a
+    lazily imported chunk and stores token + key 0600 under
+    `configDir('opentunnel')`; first provisioning takes ~40–60 s, a reconnect
+    about a second. `opentunnel-contract.test.ts` runs against the real service
+    with `SIMPLEEDIT_OPENTUNNEL_CONTRACT=1`.
 - **Recovery is in-app.** On iOS the Camera opens Safari, whose storage is
   separate from the Home Screen app's, and leaving the scope opens an in-app
   browser — so the app keeps its key in its own `localStorage`
@@ -555,8 +619,8 @@ Its security rule, which `server.ts`'s header states in full:
   so an old bookmark or a planted link can't knock a device off) and
   `PairScreen` scans (BarcodeDetector, else jsQR) or takes a pasted link, then
   `connection.setKey` reconnects without navigating. Only same-origin links are
-  accepted, so recovery needs a stable origin: Serve's HTTPS name, or a fixed
-  port.
+  accepted, so recovery needs a stable origin: a provider's HTTPS name, or a
+  fixed port.
 - **Push carries no key** (`withoutKey`): the subscription and the worker's
   `/app/` scope don't depend on it, so push survives a key change.
 - **Build check** (#205): main stamps `webBuildId` (app version + hash of
@@ -703,6 +767,8 @@ src/
     config-dir.ts      ← `userData/config[/sub]` helper for persisted state
     lsp-manager.ts     ← Language-server management
     remote/server.ts   ← Phone companion server: public shell under /app/, key-gated socket
+    remote/reachability.ts ← Reachability provider seam: apply/withdraw, proxy trust, reclaim
+    remote/serve.ts, remote/opentunnel.ts ← Tailscale Serve and OpenTunnel providers
     session-store.ts   ← Session persistence (durable sessions)
     recent-repos.ts    ← Recently opened repos (persisted JSON)
   preload/
