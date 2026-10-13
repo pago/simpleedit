@@ -5,6 +5,7 @@ import { refreshWorktrees } from '../../../stores/worktrees.svelte'
 import { openDiffTab, openTourTab } from '../../../stores/diffReview.svelte'
 import { triggerTour, loadCachedTour, tourStore } from '../../../stores/tourStore.svelte'
 import { sidebarRail } from '../../../stores/sidebarRail.svelte'
+import { IS_MAC } from '../../viewShortcuts'
 
 interface ActionDef {
   id: string
@@ -100,7 +101,7 @@ const actions: ActionDef[] = [
   {
     id: 'action:show-sessions',
     label: 'Show Sessions',
-    description: '⌘1',
+    description: `${IS_MAC ? '⌘' : 'Ctrl+'}1`,
     keywords: 'sessions sidebar workspace agents terminals',
     inMemoryView: true,
     execute() {
@@ -110,7 +111,7 @@ const actions: ActionDef[] = [
   {
     id: 'action:show-backlog',
     label: 'Show Backlog',
-    description: '⌘2',
+    description: `${IS_MAC ? '⌘' : 'Ctrl+'}2`,
     keywords: 'backlog sidebar prepared sessions queue',
     inMemoryView: true,
     execute() {
@@ -120,7 +121,7 @@ const actions: ActionDef[] = [
   {
     id: 'action:show-screenprs',
     label: 'Show Screen PRs',
-    description: '⌘3',
+    description: `${IS_MAC ? '⌘' : 'Ctrl+'}3`,
     keywords: 'screen prs pull requests review sidebar',
     inMemoryView: true,
     execute() {
@@ -130,7 +131,7 @@ const actions: ActionDef[] = [
   {
     id: 'action:toggle-sidebar',
     label: 'Toggle Sidebar',
-    description: navigator.platform.startsWith('Mac') ? '⌘B' : 'Ctrl+B',
+    description: IS_MAC ? '⌘B' : 'Ctrl+B',
     keywords: 'toggle collapse expand sidebar rail icons hide',
     inMemoryView: true,
     execute() {

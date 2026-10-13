@@ -8,7 +8,7 @@
   import CommandPalette from './components/command-palette/CommandPalette.svelte'
   import { uiView } from './stores/uiView.svelte'
   import { clampSidebarWidth, loadSidebarWidths, saveSidebarWidth } from './lib/sidebarWidth'
-  import { viewForShortcut } from './lib/viewShortcuts'
+  import { IS_MAC, sidebarShortcutsBlocked, viewForShortcut } from './lib/viewShortcuts'
   import { isToggleSidebarShortcut, SIDEBAR_RAIL_WIDTH } from './lib/sidebarCollapse'
   import { sidebarRail } from './stores/sidebarRail.svelte'
   import { initScreenPrsListeners } from './stores/screenprs.svelte'
@@ -34,7 +34,6 @@
   let sidebarWidths = $state(loadSidebarWidths())
   let sidebarWidth = $derived(sidebarWidths[uiView.current()])
   let sidebarCollapsed = $derived(sidebarRail.collapsed())
-  const isMac = navigator.platform.startsWith('Mac')
   let isResizing = $state(false)
   let repoPath = $state<string | null>(null)
   let sessionReady = $state(false)
@@ -151,16 +150,13 @@
       togglePalette()
       return
     }
-    const view = viewForShortcut(e)
-    if (view) {
-      e.preventDefault()
-      sidebarRail.showSection(view)
-      return
-    }
     const target = e.target as HTMLElement | null
-    if (isToggleSidebarShortcut(e, isMac, !!target?.classList.contains('xterm-helper-textarea'))) {
+    const view = viewForShortcut(e, IS_MAC)
+    const toggle = isToggleSidebarShortcut(e, IS_MAC, !!target?.classList.contains('xterm-helper-textarea'))
+    if ((view || toggle) && !sidebarShortcutsBlocked(e)) {
       e.preventDefault()
-      sidebarRail.toggleCollapsed()
+      if (view) sidebarRail.showSection(view)
+      else sidebarRail.toggleCollapsed()
       return
     }
     // ⌘T / Ctrl+T — new Claude session, focusing its terminal. Fires even while
@@ -235,7 +231,7 @@
           class="ml-auto flex h-5 w-5 flex-none items-center justify-center rounded text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
           aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-pressed={sidebarCollapsed}
-          title="{sidebarCollapsed ? 'Expand' : 'Collapse'} sidebar ({isMac ? '⌘B' : 'Ctrl+B'})"
+          title="{sidebarCollapsed ? 'Expand' : 'Collapse'} sidebar ({IS_MAC ? '⌘B' : 'Ctrl+B'})"
           onclick={() => sidebarRail.toggleCollapsed()}
         >
           <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">

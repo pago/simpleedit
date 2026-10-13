@@ -6,11 +6,12 @@ vi.mock('../PromptField.svelte', async () => ({ default: (await import('./StubPr
 import BacklogView from '../BacklogView.svelte'
 import BacklogList from '../BacklogList.svelte'
 import Backlog from './BacklogSplit.svelte'
+import BacklogRemount from './BacklogRemount.svelte'
 import BacklogArrivalNotice from '../BacklogArrivalNotice.svelte'
 import { backlogStore, initBacklogListeners, _resetBacklogForTests, type BacklogDraft } from '../../../stores/backlog.svelte'
 import { sessionsStore } from '../../../stores/sessions.svelte'
 import { uiView } from '../../../stores/uiView.svelte'
-import { _resetBacklogViewForTests } from '../../../stores/backlogViewState.svelte'
+import { backlogView, _resetBacklogViewForTests } from '../../../stores/backlogViewState.svelte'
 import { _resetAllowlistedModelsForTests, targetKey } from '../../../lib/agentModels'
 import type { BacklogItem, BacklogOpResult, BacklogSnapshot } from '../../../../shared/backlog'
 
@@ -469,6 +470,43 @@ describe('leaving the item', () => {
     await waitFor(() => expect(prompt().value).toBe('not lost'))
     await waitFor(() => expect(backlogStore.get('b_aaaaaaaa')?.prompt).toBe('not lost'), { timeout: 2000 })
     await waitFor(() => expect(backlogStore.draft('b_aaaaaaaa')).toBeUndefined())
+  })
+})
+
+describe('switching sections', () => {
+  it('lets go of everything when the backlog closes, and takes it up again when it reopens', async () => {
+    const added = vi.spyOn(window, 'addEventListener')
+    const removed = vi.spyOn(window, 'removeEventListener')
+    const focusListeners = (): number =>
+      added.mock.calls.filter(([type]) => String(type) === 'focus').length -
+      removed.mock.calls.filter(([type]) => String(type) === 'focus').length
+    try {
+      uiView.show('backlog')
+      render(BacklogRemount)
+      await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
+      // The list and the view both watch the models; the window has one listener.
+      expect(focusListeners()).toBe(1)
+      backlogView.setStartError('b_bbbbbbbb', 'already being started')
+
+      uiView.show('workspace')
+      await screen.findByText('Sessions')
+      expect(focusListeners()).toBe(0)
+      expect(backlogView.startError('b_bbbbbbbb')).toBeUndefined()
+      expect(backlogView.unsaved).toBe(false)
+      // The editor is detached: nothing is left to flush.
+      expect(await backlogView.flushEditor()).toBe(true)
+      expect(ops()).toEqual([])
+
+      uiView.show('backlog')
+      await waitFor(() => expect(prompt().value).toContain('b_aaaaaaaa'))
+      expect(focusListeners()).toBe(1)
+      await fireEvent.input(prompt(), { target: { value: 'after the switch' } })
+      // The new editor is the one attached: flushing saves its text.
+      expect(await backlogView.flushEditor()).toBe(true)
+      expect(ops()).toEqual([[{ kind: 'update', id: 'b_aaaaaaaa', baseVersion: 1, patch: { prompt: 'after the switch' } }]])
+    } finally {
+      uiView.show('workspace')
+    }
   })
 })
 
