@@ -69,8 +69,15 @@ describe('sessionAttention', () => {
     expect(isUnseen('t1')).toBe(true)
   })
 
-  it('marks after initializing → idle too', () => {
+  it('does not mark a fresh session reaching its empty prompt', () => {
     status('t1', 'initializing')
+    status('t1', 'idle')
+    expect(isUnseen('t1')).toBe(false)
+  })
+
+  it('marks a session that started with a prompt and finished it', () => {
+    status('t1', 'initializing')
+    status('t1', 'running')
     status('t1', 'idle')
     expect(isUnseen('t1')).toBe(true)
   })
