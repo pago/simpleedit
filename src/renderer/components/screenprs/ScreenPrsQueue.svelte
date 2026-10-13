@@ -90,10 +90,10 @@
         {selectedKey === c.url ? 'border-blue-500' : sub ? 'border-emerald-500/25' : 'border-zinc-800 hover:border-zinc-700'}"
       onclick={() => screenPrsStore.select(c.url)}
     >
-      <div class="flex items-baseline gap-2 pr-6">
+      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pr-6">
         {#if order}<span class="flex-none rounded bg-violet-500/15 px-1 text-[9px] font-bold tabular-nums text-violet-300">{order.n}/{order.of}</span>{/if}
         <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-300">{c.repo}</b>#{c.number}</span>
-        <span class="flex-1 text-[12.5px] font-medium leading-snug {sub ? 'text-zinc-400' : 'text-zinc-100'}">{c.title}</span>
+        <span class="min-w-[8rem] flex-1 text-[12.5px] font-medium leading-snug [overflow-wrap:anywhere] {sub ? 'text-zinc-400' : 'text-zinc-100'}">{c.title}</span>
       </div>
       <div class="hidden flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] @[13rem]:flex">
         <span class="tabular-nums text-zinc-400"><b class="text-emerald-400">+{c.additions}</b> <b class="text-red-400">−{c.deletions}</b> <span class="text-zinc-600">·</span> {c.changedFiles}f</span>
@@ -147,9 +147,9 @@
       {@const running = pending.filter((p) => p.phase === 'running').length}
       <div class="mb-5">
         <div class="mb-2 flex items-center gap-2">
-          <span class="h-3 w-3 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>
-          <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Screening…</span>
-          <span class="rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{pending.length}</span>
+          <span class="h-3 w-3 flex-none animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>
+          <span class="whitespace-nowrap text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Screening…</span>
+          <span class="flex-none rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{pending.length}</span>
           <span class="min-w-0 truncate text-[10px] text-zinc-600">{running} triaging · {pending.length - running} scheduled</span>
         </div>
         <div class="flex flex-col gap-2">
@@ -164,9 +164,9 @@
               title={p.context ? 'Open — diff is ready, triage still running' : 'Gathering context…'}
               onclick={() => screenPrsStore.select(p.ref.url)}
             >
-              <div class="flex items-baseline gap-2">
+              <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-400">{p.ref.repo}</b>#{p.ref.number}</span>
-                <span class="flex-1 text-[12.5px] leading-snug {isRun ? 'text-zinc-100' : 'text-zinc-300'}">{p.ref.title}</span>
+                <span class="min-w-[8rem] flex-1 text-[12.5px] leading-snug [overflow-wrap:anywhere] {isRun ? 'text-zinc-100' : 'text-zinc-300'}">{p.ref.title}</span>
               </div>
               <div class="flex items-center gap-2 text-[10.5px]">
                 {#if p.context}
@@ -194,16 +194,16 @@
       {#if cards.length > 0}
         <div class="mb-5">
           <div class="mb-2 flex items-center gap-2">
-            <span class="h-3.5 w-[3px] rounded-sm {BUCKETS[b].stripe}"></span>
-            <span class="text-[11px] font-semibold uppercase tracking-wider {BUCKETS[b].head}">{BUCKETS[b].label}</span>
-            <span class="rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{cards.length}</span>
+            <span class="h-3.5 w-[3px] flex-none rounded-sm {BUCKETS[b].stripe}"></span>
+            <span class="min-w-0 truncate whitespace-nowrap text-[11px] font-semibold uppercase tracking-wider {BUCKETS[b].head}">{BUCKETS[b].label}</span>
+            <span class="flex-none rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{cards.length}</span>
             <span class="hidden min-w-0 truncate text-[10px] italic text-zinc-600 @2xs:inline">{BUCKETS[b].sub}</span>
           </div>
           <div class="flex flex-col gap-2">
             {#each groupStacks(cards) as g (g.cards[0].url)}
               {#if g.stackId}
                 <div class="rounded-r-md border-l-2 border-violet-500/70 pl-2">
-                  <div class="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-violet-300">⛓ stack · review top → bottom</div>
+                  <div class="mb-1 truncate whitespace-nowrap text-[10px] uppercase tracking-wider text-violet-300">⛓ stack · review top → bottom</div>
                   <div class="flex flex-col gap-1.5">
                     {#each g.cards as c, i (c.url)}
                       {@render prCard(c, { n: i + 1, of: g.cards.length })}
