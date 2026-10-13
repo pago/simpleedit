@@ -13,6 +13,7 @@ import { backlogStore, initBacklogListeners, _resetBacklogForTests, type Backlog
 import { sessionsStore } from '../../../stores/sessions.svelte'
 import { uiView } from '../../../stores/uiView.svelte'
 import { backlogView, _resetBacklogViewForTests } from '../../../stores/backlogViewState.svelte'
+import { _resetSidebarRailForTests } from '../../../stores/sidebarRail.svelte'
 import { _resetAllowlistedModelsForTests, targetKey } from '../../../lib/agentModels'
 import type { BacklogItem, BacklogOpResult, BacklogSnapshot } from '../../../../shared/backlog'
 
@@ -772,6 +773,20 @@ describe('BacklogView', () => {
     expect(screen.getByText('Pick an item, or add one with + New.')).toBeTruthy()
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
     await waitFor(() => expect(document.activeElement).toBe(prompt()))
+  })
+
+  it('carries + New in its own header only while the sidebar is collapsed to the rail', async () => {
+    _resetSidebarRailForTests(false)
+    render(BacklogView)
+    expect(screen.queryByRole('button', { name: '+ New' })).toBeNull()
+
+    _resetSidebarRailForTests(true)
+    try {
+      await fireEvent.click(await screen.findByRole('button', { name: '+ New' }))
+      await waitFor(() => expect(document.activeElement).toBe(prompt()))
+    } finally {
+      _resetSidebarRailForTests(false)
+    }
   })
 })
 

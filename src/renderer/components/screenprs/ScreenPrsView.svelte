@@ -3,16 +3,13 @@
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { triageModel } from '../../stores/triageModel.svelte'
   import PrDetail from './PrDetail.svelte'
+  import ScreenPrsButton from './ScreenPrsButton.svelte'
+  import { sidebarRail } from '../../stores/sidebarRail.svelte'
   import { CUTOFF_DAYS, isCutoffDays, type ScreenPrsFilterPrefs } from '../../../shared/screenprs-filter'
 
-  let status = $derived(screenPrsStore.status())
-  let byBucket = $derived(screenPrsStore.byBucket())
-  let total = $derived(screenPrsStore.total())
   let selectedKey = $derived(screenPrsStore.selectedKey())
   let selectedCard = $derived(screenPrsStore.selectedCard())
   let selectedContext = $derived(screenPrsStore.selectedContext())
-
-  let done = $derived([...Object.values(byBucket)].reduce((n, arr) => n + arr.length, 0))
 
   // The org field is a draft of the saved filter: it follows the saved value
   // (another window or the phone may change it) except while it is being typed in.
@@ -56,10 +53,8 @@
         Screen PRs <span class="ml-1.5 text-[13px] font-normal text-zinc-500">review-requested · @me</span>
       </h1>
       <div class="flex-1"></div>
-      {#if status === 'running'}
-        <span class="text-[11px] text-zinc-500">
-          {total === undefined ? 'finding PRs…' : `screening ${done}/${total}`}
-        </span>
+      {#if sidebarRail.collapsed()}
+        <ScreenPrsButton />
       {/if}
     </div>
     <div class="mt-2.5 flex items-center gap-2 text-[11px]">

@@ -726,10 +726,12 @@ one drag handle, but each section remembers its own width
   nothing; counts in the tooltip) and the ✦ Agent / + Term buttons with the
   new-session menu (`NewSessionButtons`).
 - **So do the other headers' actions**: Backlog's + New (`BacklogNewButton`)
-  and Screen PRs' Screen / Re-screen / Stop (`ScreenPrsButton`) sit in their
-  section header, and in the rail overlay's header, never in the main area,
-  which only shows them while that section is already open. + New and Screen
-  bring their section forward; Stop doesn't.
+  and Screen PRs' Screen / Re-screen / Stop (`ScreenPrsButton`, with the
+  screening's done/total beside Stop) sit in their section header and the rail
+  overlay's header. The main-area view header (`BacklogView`, `ScreenPrsView`)
+  shows them too, but only while the sidebar is collapsed to the rail, where
+  the overlay is usually closed. + New and Screen bring their section forward;
+  Stop doesn't.
 - **Finished, unseen** (`stores/sessionAttention.svelte.ts`): an agent session
   that goes from `running` to `idle` while not on screen (active session,
   view `'workspace'`, window focused) gets a blue dot until it is shown; a

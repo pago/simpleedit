@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
   import BacklogItemDetail from './BacklogItemDetail.svelte'
+  import BacklogNewButton from './BacklogNewButton.svelte'
+  import { sidebarRail } from '../../stores/sidebarRail.svelte'
   import { backlogStore } from '../../stores/backlog.svelte'
   import { backlogView } from '../../stores/backlogViewState.svelte'
 
@@ -19,6 +21,9 @@
         Prepared sessions for {projectName || 'this project'}. Agents add here when you say “add this to our backlog”.
       </p>
     </div>
+    {#if sidebarRail.collapsed()}
+      <BacklogNewButton />
+    {/if}
   </header>
 
   <div class="min-h-0 flex-1">
