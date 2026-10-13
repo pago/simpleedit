@@ -160,6 +160,9 @@ the entries to the command palette too.
   title block keeps a minimum of 78px plus the repo name instead of following the rail's
   width.
 - **Tests:** a browser test for open/pin/close and hover-intent timing, using fake timers.
+- **Wrap-up (the branch's final commit):** fold the durable parts into CLAUDE.md (Layout
+  section, file structure, the unseen state's rules) and delete this plan, so the PR's net
+  diff never contains it.
 
 ## Out of scope
 - `WorkspaceManager` unmounting while Backlog or Screen PRs is shown (`App.svelte:226-232`).
