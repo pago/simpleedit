@@ -2,6 +2,7 @@
   import { onDestroy, onMount, untrack } from 'svelte'
   import PromptField from './PromptField.svelte'
   import { backlogStore } from '../../stores/backlog.svelte'
+  import { backlogView } from '../../stores/backlogViewState.svelte'
   import { ALLOWLIST_HINT, targetKey, targetLabel, type AllowlistedModel } from '../../lib/agentModels'
   import { SESSION_BRIEF_MAX, cleanSessionLabel, labelFromBrief } from '../../../shared/brief'
   import { newBacklogItemId, type BacklogItem, type BacklogItemPatch } from '../../../shared/backlog'
@@ -286,13 +287,8 @@
     onreplaced(fresh)
   }
 
-  /** Save now: before the view switches item or starts this one. */
-  export function flush(): Promise<boolean> {
-    return save()
-  }
-
   /** Drop what is unsaved, e.g. because the item is being deleted. */
-  export function discard(): void {
+  function discard(): void {
     clearTimeout(timer)
     held = false
     conflict = null
@@ -312,8 +308,10 @@
   }
 
   let unguard: (() => void) | undefined
+  let detach: (() => void) | undefined
   onMount(() => {
     unguard = backlogStore.guardSelection(save)
+    detach = backlogView.attachEditor({ flush: save, discard })
     window.addEventListener('beforeunload', onUnload)
     if (restored && dirty && !held) edited()
   })
@@ -321,6 +319,7 @@
   // Leaving the view still saves; the draft keeps the text if that fails.
   onDestroy(() => {
     unguard?.()
+    detach?.()
     window.removeEventListener('beforeunload', onUnload)
     keepDraft()
     if (dirty && !conflict) void save()
