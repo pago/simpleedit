@@ -1,5 +1,5 @@
 /**
- * The persisted Screen PRs filter (org + activity cutoff), one JSON file under
+ * The persisted Screen PRs filter (org, activity cutoff, auto-screen interval), one JSON file under
  * `userData/config`. Owned by main, like the review drafts, so desktop windows
  * and phones share one filter across reloads, restarts and devices.
  */
@@ -47,7 +47,7 @@ export function loadFilter(): ScreenPrsFilterSnapshot {
  * no-op isn't broadcast.
  */
 export function setFilter(raw: unknown): ScreenPrsFilterSnapshot & { changed: boolean } {
-  const next = parseFilterPrefs(raw)
+  const next = parseFilterPrefs(raw, load())
   if (sameFilter(next, load())) return { filter: load(), rev, changed: false }
   const path = filePath()
   const tmp = `${path}.tmp`

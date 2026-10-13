@@ -533,6 +533,17 @@ export interface ScreenPrsState {
   deep: Record<string, DeepReviewState>
   /** Every overview started this launch, by PR url. */
   overviews: Record<string, OverviewState>
+  schedule: ScreenPrsSchedule
+}
+
+/**
+ * The auto-screen schedule, epoch ms. `lastAt`: when the last screening began,
+ * whoever started it. `nextAt`: when the next scheduled one is due; absent while
+ * auto-screening is off.
+ */
+export interface ScreenPrsSchedule {
+  lastAt?: number
+  nextAt?: number
 }
 
 /**
@@ -628,7 +639,8 @@ export type SubmitReviewResult =
 
 export interface ScreenPrsEventMap {
   /** The queue is known (right after search): seed placeholders before gathering. */
-  'screenprs:queued': { refs: PrRef[] }
+  /** The run's queue. `keep` (a refresh): the PRs whose last card stays until replaced. */
+  'screenprs:queued': { refs: PrRef[]; keep?: string[] }
   /** A PR's context is gathered; the placeholder gains size/CI/reviewers (and is
    *  now "scheduled" — waiting for the triage model). */
   'screenprs:screening': { context: PrContext }
@@ -636,7 +648,8 @@ export interface ScreenPrsEventMap {
   'screenprs:triaging': { url: string }
   /** A PR finished triage — full card with its derived bucket. */
   'screenprs:card': { card: ScreenPrCard }
-  'screenprs:status': { status: ScreenPrsRunStatus; error?: string; total?: number }
+  /** `refresh` (with `running`): the schedule started it, so the board is kept, not cleared. */
+  'screenprs:status': { status: ScreenPrsRunStatus; error?: string; total?: number; refresh?: boolean }
   /** Per-lens progress for a PR's deep review (keyed by the PR url). */
   'screenprs:deep-lens': { url: string; lens: DeepLensId; status: DeepLensStatus }
   /** The synthesized, curated deep-review findings for a PR, plus the head they
@@ -654,6 +667,7 @@ export interface ScreenPrsEventMap {
   'agent-threads:changed': ThreadChange
   /** The saved filter changed, from any client — sent to every window and phone. */
   'screenprs:filter-changed': ScreenPrsFilterSnapshot
+  'screenprs:schedule-changed': ScreenPrsSchedule
 }
 
 export interface TourEventMap {

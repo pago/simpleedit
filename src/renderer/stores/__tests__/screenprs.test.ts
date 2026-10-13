@@ -15,6 +15,7 @@ type Handlers = {
   'screenprs:overview-result'?: (d: EventMap['screenprs:overview-result']) => void
   'screenprs:overview-status'?: (d: EventMap['screenprs:overview-status']) => void
   'screenprs:draft-changed'?: (d: EventMap['screenprs:draft-changed']) => void
+  'screenprs:schedule-changed'?: (d: EventMap['screenprs:schedule-changed']) => void
 }
 
 let handlers: Handlers
@@ -152,7 +153,7 @@ describe('screenPrsStore ingestion', () => {
 
 describe('runs shared by every client', () => {
   function state(over: Partial<ScreenPrsState> = {}): ScreenPrsState {
-    return { run: { status: 'idle', entries: [], triaging: [] }, deep: {}, overviews: {}, ...over }
+    return { run: { status: 'idle', entries: [], triaging: [] }, deep: {}, overviews: {}, schedule: {}, ...over }
   }
   function answer(replies: Record<string, unknown>): void {
     ;(window.api.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (channel: string) => replies[channel])
@@ -168,6 +169,45 @@ describe('runs shared by every client', () => {
 
     expect(screenPrsStore.status()).toBe('running')
     expect(screenPrsStore.entries()).toEqual([])
+  })
+
+  it('keeps the board through a scheduled refresh, dropping only PRs that left the queue', () => {
+    const a = ctx({ number: 1, url: 'u1' })
+    const b = ctx({ number: 2, url: 'u2' })
+    handlers['screenprs:card']!({ card: card(a, 'high') })
+    handlers['screenprs:card']!({ card: card(b, 'low') })
+    handlers['screenprs:status']!({ status: 'done', total: 2 })
+
+    handlers['screenprs:status']!({ status: 'running', refresh: true })
+    expect(screenPrsStore.entries()).toHaveLength(2)
+    handlers['screenprs:queued']!({ refs: [a], keep: [a.url] })
+
+    expect(screenPrsStore.entries().map((e) => e.card?.url)).toEqual(['u1'])
+    expect(screenPrsStore.pending()).toEqual([])
+    expect(screenPrsStore.attentionCount()).toBe(1)
+
+    // Re-judged after a push: the old findings go with the old diff.
+    handlers['screenprs:screening']!({ context: { ...a, headSha: 'new' } })
+    expect(screenPrsStore.entries()).toEqual([{ ref: a, context: expect.objectContaining({ headSha: 'new' }) }])
+  })
+
+  it('keeps only the cards main names on a refresh', () => {
+    const a = ctx({ number: 1, url: 'u1' })
+    const b = ctx({ number: 2, url: 'u2' })
+    handlers['screenprs:card']!({ card: card(a, 'low') })
+    handlers['screenprs:card']!({ card: card(b, 'low') })
+    handlers['screenprs:status']!({ status: 'done', total: 2 })
+    handlers['screenprs:status']!({ status: 'running', refresh: true })
+    handlers['screenprs:queued']!({ refs: [a, b], keep: [a.url] })
+    expect(screenPrsStore.entries()).toEqual([expect.objectContaining({ card: expect.anything() }), { ref: b }])
+  })
+
+  it('mirrors the schedule main reports', async () => {
+    handlers['screenprs:schedule-changed']!({ lastAt: 1, nextAt: 2 })
+    expect(screenPrsStore.schedule()).toEqual({ lastAt: 1, nextAt: 2 })
+    answer({ 'screenprs:state': state({ schedule: { lastAt: 5 } }) })
+    await screenPrsStore.loadState()
+    expect(screenPrsStore.schedule()).toEqual({ lastAt: 5 })
   })
 
   it('catches up from main when its start joined a screening already running', async () => {
@@ -542,7 +582,7 @@ describe('screening with the saved filter', () => {
       return Promise.resolve(undefined)
     })
     vi.stubGlobal('api', { invoke, on: () => () => {} })
-    const saving = screenPrsStore.setFilter({ owner: 'bad', cutoffDays: 30 }).catch(() => {})
+    const saving = screenPrsStore.setFilter({ owner: 'bad', cutoffDays: 30, autoScreenHours: 0 }).catch(() => {})
     const started = screenPrsStore.start()
     refuse(new Error('refused'))
     await saving

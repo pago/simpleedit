@@ -10,10 +10,15 @@ import type { ScreenPrsFilters } from './ipc-types'
 export const CUTOFF_DAYS = [7, 30, 90] as const
 export type CutoffDays = (typeof CUTOFF_DAYS)[number]
 
+/** How often main screens on its own, in hours; 0 = never. */
+export const AUTO_SCREEN_HOURS = [0, 1, 2, 4, 16] as const
+export type AutoScreenHours = (typeof AUTO_SCREEN_HOURS)[number]
+
 export interface ScreenPrsFilterPrefs {
   /** GitHub org or user to scope to; `''` = every org where you're a reviewer. */
   owner: string
   cutoffDays: CutoffDays
+  autoScreenHours: AutoScreenHours
 }
 
 /** The filter main holds, and the revision it stands at. */
@@ -22,7 +27,7 @@ export interface ScreenPrsFilterSnapshot {
   rev: number
 }
 
-export const DEFAULT_FILTER_PREFS: ScreenPrsFilterPrefs = { owner: '', cutoffDays: 30 }
+export const DEFAULT_FILTER_PREFS: ScreenPrsFilterPrefs = { owner: '', cutoffDays: 30, autoScreenHours: 0 }
 
 /** GitHub's own rule for a login or org name: alphanumerics and single inner hyphens, at most 39. */
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/
@@ -36,23 +41,33 @@ export function isCutoffDays(value: unknown): value is CutoffDays {
   return typeof value === 'number' && (CUTOFF_DAYS as readonly number[]).includes(value)
 }
 
+export function isAutoScreenHours(value: unknown): value is AutoScreenHours {
+  return typeof value === 'number' && (AUTO_SCREEN_HOURS as readonly number[]).includes(value)
+}
+
 /**
  * A filter from outside — a phone, or the file on disk. Throws with a reason a
  * client can show. The owner is passed to `gh` as an argument, so it is held to
  * GitHub's name rule rather than merely trimmed.
+ *
+ * A missing interval takes `current`'s: files written before it existed, and
+ * phone builds that don't send it, must not switch the schedule off.
  */
-export function parseFilterPrefs(raw: unknown): ScreenPrsFilterPrefs {
+export function parseFilterPrefs(raw: unknown, current: ScreenPrsFilterPrefs = DEFAULT_FILTER_PREFS): ScreenPrsFilterPrefs {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('A Screen PRs filter must be an object.')
-  const { owner, cutoffDays } = raw as Record<string, unknown>
+  const { owner, cutoffDays, autoScreenHours = current.autoScreenHours } = raw as Record<string, unknown>
   if (typeof owner !== 'string') throw new Error('The Screen PRs org must be a string.')
   const trimmed = owner.trim()
   if (trimmed && !isOwnerName(trimmed)) throw new Error(`“${trimmed}” isn't a GitHub org or user name.`)
   if (!isCutoffDays(cutoffDays)) throw new Error(`The activity cutoff must be one of ${CUTOFF_DAYS.join(', ')} days.`)
-  return { owner: trimmed, cutoffDays }
+  if (!isAutoScreenHours(autoScreenHours)) {
+    throw new Error(`Auto-screening must be off or every ${AUTO_SCREEN_HOURS.filter(Boolean).join(', ')} hours.`)
+  }
+  return { owner: trimmed, cutoffDays, autoScreenHours }
 }
 
 export function sameFilter(a: ScreenPrsFilterPrefs, b: ScreenPrsFilterPrefs): boolean {
-  return a.owner === b.owner && a.cutoffDays === b.cutoffDays
+  return a.owner === b.owner && a.cutoffDays === b.cutoffDays && a.autoScreenHours === b.autoScreenHours
 }
 
 /** What `screenprs:start` takes for these prefs, with the cutoff resolved against `now`. */
@@ -92,4 +107,33 @@ export function parseScreeningFilters(raw: unknown): ScreenPrsFilters {
     ...(updatedSince !== undefined ? { updatedSince } : {}),
     ...(force ? { force } : {}),
   }
+}
+
+function ago(ms: number): string {
+  const min = Math.floor(ms / 60_000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min}m ago`
+  const h = Math.floor(min / 60)
+  return h < 48 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`
+}
+
+function inTime(ms: number): string {
+  const min = Math.ceil(ms / 60_000)
+  if (min <= 1) return 'shortly'
+  if (min < 60) return `in ${min}m`
+  const h = Math.floor(min / 60)
+  const rest = min % 60
+  return rest ? `in ${h}h ${rest}m` : `in ${h}h`
+}
+
+/** "screened 23m ago · next in 37m", for the filter bar of both clients; null with nothing to say. */
+export function scheduleHint(schedule: { lastAt?: number; nextAt?: number }, now: number): string | null {
+  const parts: string[] = []
+  if (schedule.lastAt !== undefined) parts.push(`screened ${ago(now - schedule.lastAt)}`)
+  if (schedule.nextAt !== undefined) parts.push(`next ${inTime(schedule.nextAt - now)}`)
+  return parts.length ? parts.join(' · ') : null
+}
+
+export function autoScreenLabel(hours: AutoScreenHours): string {
+  return hours === 0 ? 'Off' : `Every ${hours}h`
 }

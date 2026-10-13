@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell, Menu } from 'electron'
+import { app, BrowserWindow, dialog, shell, Menu, powerMonitor } from 'electron'
 import { join, basename, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -38,10 +38,11 @@ import {
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
-import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot } from './screenprs'
+import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot, isScreening, onScreeningStarted } from './screenprs'
+import { startScreeningSchedule, stopScreeningSchedule, rescheduleScreening, noteScreeningStarted, screeningSchedule } from './screenprs-schedule'
 import { loadDrafts, applyOp as applyDraftOp } from './screenprs-drafts'
 import { loadFilter, setFilter } from './screenprs-filter'
-import { parseScreeningFilters } from '../shared/screenprs-filter'
+import { parseScreeningFilters, screeningFilters } from '../shared/screenprs-filter'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
 import { parseDraftOpRequest } from '../shared/review-drafts'
 import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnapshot } from './deep-review'
@@ -1116,6 +1117,7 @@ function registerAllHandlers(): void {
   handleInvoke('screenprs:state', (event) => ({
     run: screeningSnapshot(event.sender.clientKey !== undefined),
     deep: deepReviewSnapshot(),
+    schedule: screeningSchedule(),
     overviews: overviewSnapshot(),
   }))
 
@@ -1199,7 +1201,10 @@ function registerAllHandlers(): void {
 
   handleInvoke('screenprs:filter-set', (_event, filter: unknown) => {
     const { changed, ...snapshot } = setFilter(filter)
-    if (changed) broadcastToAllClients('screenprs:filter-changed', snapshot)
+    if (changed) {
+      broadcastToAllClients('screenprs:filter-changed', snapshot)
+      rescheduleScreening()
+    }
     return snapshot
   })
 
@@ -1384,6 +1389,18 @@ app.whenReady().then(() => {
   // A crash mid-transcription skips the cleanup in `transcribe`, leaving
   // somebody's voice in tmpdir. Swept before anything can add more.
   try { sweepAbandonedAudio() } catch { /* nothing better to do at launch */ }
+  onScreeningStarted(noteScreeningStarted)
+  startScreeningSchedule({
+    hours: () => loadFilter().filter.autoScreenHours,
+    running: isScreening,
+    start: () => {
+      console.log('[ScreenPRs] Scheduled screening')
+      void startScreening(screeningFilters(loadFilter().filter), allClients, { refresh: true })
+    },
+    changed: (schedule) => broadcastToAllClients('screenprs:schedule-changed', schedule),
+  })
+  // Timers stall while the Mac sleeps; the schedule re-reads the wall clock.
+  powerMonitor.on('resume', () => rescheduleScreening())
   try {
     startThreadDelivery()
     startThreadAnchorWatch({ broadcast: broadcastThreadChanges }).catch((err) => console.error('[Threads] Re-anchoring at startup failed:', err))
@@ -1537,6 +1554,7 @@ app.on('before-quit', () => {
   try { unwatchAllMemoryDirs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
+  try { stopScreeningSchedule() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { cancelAllOverviews() } catch { /* ignore */ }
@@ -1565,6 +1583,9 @@ app.on('before-quit', () => {
 // It is not silent either: the config still says enabled, and `activate` —
 // reopening a window, the only way back to a usable app on macOS — starts it
 // again.
+//
+// Screening is the exception and keeps going: it needs no window, and the
+// auto-screen schedule exists so the board is fresh when one opens again.
 app.on('window-all-closed', () => {
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
@@ -1574,7 +1595,6 @@ app.on('window-all-closed', () => {
   try { unwatchAllMemoryDirs() } catch { /* ignore */ }
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
-  try { cancelAllScreening() } catch { /* ignore */ }
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { cancelAllOverviews() } catch { /* ignore */ }
   try { stopAllServers() } catch { /* ignore */ }

@@ -7,12 +7,12 @@ import { _resetSidebarRailForTests } from '../../../stores/sidebarRail.svelte'
 
 /** The org and cutoff are main's, saved for every window and phone, not this view's. */
 let invoke: ReturnType<typeof vi.fn>
-let saved: { owner: string; cutoffDays: number }
+let saved: { owner: string; cutoffDays: number; autoScreenHours?: number }
 // The store ignores snapshots older than one it has seen, and it is a module singleton.
 let rev = 2_000
 
 beforeEach(async () => {
-  saved = { owner: 'acme', cutoffDays: 7 }
+  saved = { owner: 'acme', cutoffDays: 7, autoScreenHours: 0 }
   invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
     if (channel === 'screenprs:filter-get') return { filter: saved, rev: ++rev }
     if (channel === 'screenprs:filter-set') {
@@ -45,7 +45,7 @@ describe('ScreenPrsView — the saved filter', () => {
     await fireEvent.focus(field)
     await fireEvent.input(field, { target: { value: 'widgets-inc' } })
     await fireEvent.blur(field)
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:filter-set', { owner: 'widgets-inc', cutoffDays: 7 }))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:filter-set', { owner: 'widgets-inc', cutoffDays: 7, autoScreenHours: 0 }))
 
     await fireEvent.click(screen.getByRole('button', { name: /Screen/ }))
     await vi.waitFor(() =>
@@ -56,7 +56,20 @@ describe('ScreenPrsView — the saved filter', () => {
   it('saves the cutoff on change', async () => {
     render(ScreenPrsView)
     await fireEvent.change(screen.getByTestId('filter-cutoff'), { target: { value: '90' } })
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:filter-set', { owner: 'acme', cutoffDays: 90 }))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:filter-set', { owner: 'acme', cutoffDays: 90, autoScreenHours: 0 }))
+  })
+
+  it('saves the auto-screen interval on change, and says when it screens next', async () => {
+    render(ScreenPrsView)
+    expect(screen.getByTestId('filter-auto')).toHaveValue('0')
+    await fireEvent.change(screen.getByTestId('filter-auto'), { target: { value: '4' } })
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('screenprs:filter-set', { owner: 'acme', cutoffDays: 7, autoScreenHours: 4 }),
+    )
+    expect(screen.queryByTestId('schedule-hint')).toBeNull()
+    // Half a minute off the boundaries: the view's clock was read at mount, a moment before these.
+    screenPrsStore._onSchedule({ lastAt: Date.now() - 23.5 * 60_000, nextAt: Date.now() + 3 * 3_600_000 - 30_000 })
+    expect(await screen.findByTestId('schedule-hint')).toHaveTextContent('screened 23m ago · next in 3h')
   })
 
   it('puts back the saved org when main refuses one', async () => {

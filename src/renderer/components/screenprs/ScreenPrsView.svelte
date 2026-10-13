@@ -5,7 +5,15 @@
   import PrDetail from './PrDetail.svelte'
   import ScreenPrsButton from './ScreenPrsButton.svelte'
   import { sidebarRail } from '../../stores/sidebarRail.svelte'
-  import { CUTOFF_DAYS, isCutoffDays, type ScreenPrsFilterPrefs } from '../../../shared/screenprs-filter'
+  import {
+    AUTO_SCREEN_HOURS,
+    CUTOFF_DAYS,
+    autoScreenLabel,
+    isAutoScreenHours,
+    isCutoffDays,
+    scheduleHint,
+    type ScreenPrsFilterPrefs,
+  } from '../../../shared/screenprs-filter'
 
   let selectedKey = $derived(screenPrsStore.selectedKey())
   let selectedCard = $derived(screenPrsStore.selectedCard())
@@ -41,6 +49,19 @@
     const days = Number(value)
     if (isCutoffDays(days)) void saveFilter({ ...saved, cutoffDays: days })
   }
+
+  function setAuto(value: string): void {
+    const hours = Number(value)
+    if (isAutoScreenHours(hours)) void saveFilter({ ...saved, autoScreenHours: hours })
+  }
+
+  // Ticks so "screened 4m ago" stays true while the view sits open.
+  let now = $state(Date.now())
+  $effect(() => {
+    const id = setInterval(() => (now = Date.now()), 30_000)
+    return () => clearInterval(id)
+  })
+  let hint = $derived(scheduleHint(screenPrsStore.schedule(), now))
 
   onMount(() => void triageModel.refresh())
 </script>
@@ -85,6 +106,19 @@
           {#each CUTOFF_DAYS as d (d)}<option value={String(d)}>{d} days</option>{/each}
         </select>
       </label>
+      <label class="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1" title="Screen in the background, even with no window open">
+        <span class="uppercase tracking-wider text-zinc-500">Auto</span>
+        <select
+          class="bg-transparent text-zinc-200 outline-none"
+          aria-label="Auto-screen"
+          data-testid="filter-auto"
+          value={String(saved.autoScreenHours)}
+          onchange={(e) => setAuto(e.currentTarget.value)}
+        >
+          {#each AUTO_SCREEN_HOURS as h (h)}<option value={String(h)}>{autoScreenLabel(h)}</option>{/each}
+        </select>
+      </label>
+      {#if hint}<span class="text-[10.5px] text-zinc-600" data-testid="schedule-hint">{hint}</span>{/if}
       {#if filterError}<span class="text-[10.5px] text-red-400" data-testid="filter-error">{filterError}</span>{/if}
       <span class="ml-auto text-[10.5px] text-zinc-600">triage · <span class="text-zinc-500">{triageModel.label}</span></span>
     </div>
