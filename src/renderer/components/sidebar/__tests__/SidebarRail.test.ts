@@ -7,10 +7,23 @@ import { uiView } from '../../../stores/uiView.svelte'
 import { sidebarRail, HOVER_OPEN_MS, HOVER_CLOSE_MS, _resetSidebarRailForTests } from '../../../stores/sidebarRail.svelte'
 import { backlogStore, _resetBacklogForTests } from '../../../stores/backlog.svelte'
 import { screenPrsStore } from '../../../stores/screenprs.svelte'
+import { sessionsStore } from '../../../stores/sessions.svelte'
+import type { ScreenPrCard } from '../../../../shared/screenprs'
 import { refreshWorktrees } from '../../../stores/worktrees.svelte'
 import { _resetBacklogViewForTests } from '../../../stores/backlogViewState.svelte'
 
 const WIDTHS = { workspace: 260, backlog: 340, screenprs: 380 }
+
+function card(number: number): ScreenPrCard {
+  return {
+    owner: 'acme', repo: 'acme/widgets', url: `https://github.com/acme/widgets/pull/${number}`,
+    title: `PR ${number}`, author: 'dana', updatedAt: '2026-08-01T00:00:00Z',
+    headSha: `sha${number}`, additions: 1, deletions: 0, changedFiles: 1,
+    baseRefName: 'main', headRefName: `feat-${number}`, ci: 'green', ciFailing: [],
+    reviewers: [], approvedByOther: false, body: '', diff: '',
+    impact: 'low', findings: [], bucket: 'quick', number,
+  }
+}
 
 function icon(name: string): HTMLElement {
   return screen.getByRole('button', { name })
@@ -155,6 +168,7 @@ describe('SidebarRail', () => {
 
     await fireEvent.keyDown(overlay()!, { key: 'Escape' })
     expect(overlay()).toBeNull()
+    await tick()
     expect(icon('Screen PRs')).toHaveFocus()
   })
 
@@ -191,6 +205,65 @@ describe('SidebarRail', () => {
     await waitFor(() => expect(overlay()).toBeNull())
     expect(backlogStore.selectedId).toBe('b_bbbbbbbb')
     expect(uiView.current()).toBe('backlog')
+  })
+
+  it('closes on a click of the item already shown, bringing its view forward', async () => {
+    render(SidebarRail, { widths: WIDTHS })
+    await fireEvent.click(icon('Backlog'))
+    await waitFor(() => expect(backlogStore.selectedId).toBe('b_aaaaaaaa'))
+    await fireEvent.click(screen.getByRole('button', { name: /^First/ }))
+    expect(overlay()).toBeNull()
+    expect(uiView.current()).toBe('backlog')
+    expect(backlogStore.selectedId).toBe('b_aaaaaaaa')
+  })
+
+  it('closes on a click of the PR already shown, bringing Screen PRs forward', async () => {
+    screenPrsStore._onCard(card(7))
+    screenPrsStore.select(card(7).url)
+    render(SidebarRail, { widths: WIDTHS })
+    await fireEvent.click(icon('Screen PRs'))
+    await fireEvent.click(screen.getByText('PR 7').closest('button')!)
+    expect(overlay()).toBeNull()
+    expect(uiView.current()).toBe('screenprs')
+    expect(screenPrsStore.selectedKey()).toBe(card(7).url)
+  })
+
+  it('closes when Start in the Backlog overlay opens the session', async () => {
+    const invoke = window.api.invoke as ReturnType<typeof vi.fn>
+    const answer = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) =>
+      channel === 'backlog:start' ? { terminalId: 'agent-1', label: 'x' } : answer(channel, ...args),
+    )
+    vi.spyOn(sessionsStore, 'select').mockImplementation(() => {})
+    render(SidebarRail, { widths: WIDTHS })
+    await fireEvent.click(icon('Backlog'))
+    await waitFor(() => expect(backlogStore.selectedId).toBe('b_aaaaaaaa'))
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Start' })[0])
+    await waitFor(() => expect(overlay()).toBeNull())
+    expect(uiView.current()).toBe('workspace')
+  })
+
+  it('closes any section when the active session changes', async () => {
+    render(SidebarRail, { widths: WIDTHS })
+    await fireEvent.click(icon('Screen PRs'))
+    const id = sessionsStore.createTerminal('/repo/main')
+    try {
+      await waitFor(() => expect(overlay()).toBeNull())
+    } finally {
+      sessionsStore.close(id, { ptyAlreadyDead: true })
+    }
+  })
+
+  it('gives focus back after a pick from an overlay opened by keyboard', async () => {
+    render(SidebarRail, { widths: WIDTHS })
+    icon('Backlog').focus()
+    sidebarRail.showSection('backlog')
+    await waitFor(() => expect(overlay()).toHaveFocus())
+    const second = screen.getByRole('button', { name: /^Second/ })
+    second.focus()
+    await fireEvent.click(second)
+    expect(overlay()).toBeNull()
+    await waitFor(() => expect(icon('Backlog')).toHaveFocus())
   })
 
   it('closes when the view changes, but ⌘1–3 while collapsed opens that section pinned', async () => {

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { triageModel } from '../../stores/triageModel.svelte'
+  import { sidebarRail } from '../../stores/sidebarRail.svelte'
   import type { ScreenPrCard, ScreenPrBucket, PrCiStatus, PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
   import { BUCKET_ORDER, groupStacks, emptyReviewDraft } from '../../../shared/screenprs'
   import MagnifierIcon from './MagnifierIcon.svelte'
@@ -51,6 +52,11 @@
   let quickError = $state<string | null>(null)
   let quickSubmitting = $derived(quickTarget != null && screenPrsStore.isSubmitting(quickTarget.url))
 
+  function pick(url: string): void {
+    screenPrsStore.select(url)
+    sidebarRail.chose('screenprs')
+  }
+
   function quickApprove(c: ScreenPrCard): void {
     quickError = null
     quickDraft = { ...emptyReviewDraft(), verdict: 'approve' }
@@ -88,12 +94,12 @@
     <button
       class="flex w-full flex-col gap-2 rounded-lg border bg-zinc-900 p-3 text-left transition-colors hover:bg-zinc-800/60
         {selectedKey === c.url ? 'border-blue-500' : sub ? 'border-emerald-500/25' : 'border-zinc-800 hover:border-zinc-700'}"
-      onclick={() => screenPrsStore.select(c.url)}
+      onclick={() => pick(c.url)}
     >
       <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pr-6">
         {#if order}<span class="flex-none rounded bg-violet-500/15 px-1 text-[9px] font-bold tabular-nums text-violet-300">{order.n}/{order.of}</span>{/if}
         <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-300">{c.repo}</b>#{c.number}</span>
-        <span class="min-w-[8rem] flex-1 text-[12.5px] font-medium leading-snug [overflow-wrap:anywhere] {sub ? 'text-zinc-400' : 'text-zinc-100'}">{c.title}</span>
+        <span class="min-w-[min(8rem,100%)] flex-1 text-[12.5px] font-medium leading-snug [overflow-wrap:anywhere] {sub ? 'text-zinc-400' : 'text-zinc-100'}">{c.title}</span>
       </div>
       <div class="hidden flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] @[13rem]:flex">
         <span class="tabular-nums text-zinc-400"><b class="text-emerald-400">+{c.additions}</b> <b class="text-red-400">−{c.deletions}</b> <span class="text-zinc-600">·</span> {c.changedFiles}f</span>
@@ -162,11 +168,11 @@
                 {p.context ? '' : 'cursor-default'}"
               disabled={!p.context}
               title={p.context ? 'Open — diff is ready, triage still running' : 'Gathering context…'}
-              onclick={() => screenPrsStore.select(p.ref.url)}
+              onclick={() => pick(p.ref.url)}
             >
               <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-400">{p.ref.repo}</b>#{p.ref.number}</span>
-                <span class="min-w-[8rem] flex-1 text-[12.5px] leading-snug [overflow-wrap:anywhere] {isRun ? 'text-zinc-100' : 'text-zinc-300'}">{p.ref.title}</span>
+                <span class="min-w-[min(8rem,100%)] flex-1 text-[12.5px] leading-snug [overflow-wrap:anywhere] {isRun ? 'text-zinc-100' : 'text-zinc-300'}">{p.ref.title}</span>
               </div>
               <div class="flex items-center gap-2 text-[10.5px]">
                 {#if p.context}
