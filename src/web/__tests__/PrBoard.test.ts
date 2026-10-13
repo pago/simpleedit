@@ -181,7 +181,7 @@ describe('PrBoard — a run that outlives a project switch', () => {
       on: () => () => {},
       invoke: vi.fn(async (channel: string) =>
         channel === 'screenprs:state'
-          ? { run: { status: 'running', total: 1, entries: [{ ref: pr }], triaging: [] }, deep: {}, overviews: {} }
+          ? { run: { status: 'running', total: 1, entries: [{ ref: pr }], triaging: [] }, deep: {}, overviews: {}, schedule: {} }
           : undefined,
       ),
     })

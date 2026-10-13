@@ -4,7 +4,7 @@
  * lands), and derives the bucketed, sorted queue. Bucketing/sorting is the
  * shared pure logic (screenprs.ts), so this store never re-implements the rules.
  */
-import type { ScreenPrsRunEntry, ScreenPrsRunStatus, ScreenPrsStartResult, ScreenPrsState, SubmitReviewResult } from '../../shared/ipc-types'
+import type { ScreenPrsRunEntry, ScreenPrsRunStatus, ScreenPrsSchedule, ScreenPrsStartResult, ScreenPrsState, SubmitReviewResult } from '../../shared/ipc-types'
 import type {
   PrRef,
   PrContext,
@@ -54,6 +54,7 @@ let _selected = $state<string | null>(null)
 let _triaging = $state<Set<string>>(new Set()) // urls the model is actively judging
 let _deep = $state<Map<string, DeepState>>(new Map())
 let _overview = $state<Map<string, OverviewState>>(new Map())
+let _schedule = $state<ScreenPrsSchedule>({})
 
 // ── filter mirror ──
 // Main owns the saved filter (main/screenprs-filter.ts). A local change shows
@@ -254,6 +255,7 @@ function applyState(state: ScreenPrsState): void {
     if (!overviews.has(url)) overviews.set(url, o.status === 'running' ? { ...o, status: 'error', error: INTERRUPTED } : o)
   }
   _overview = overviews
+  _schedule = state.schedule
 }
 
 /** A start that joined a run already going missed its beginning, so it catches up. */
@@ -267,6 +269,8 @@ export const screenPrsStore = {
   total: (): number | undefined => _total,
   /** The saved org + cutoff, as this client last heard it (or is about to save it). */
   filter: (): ScreenPrsFilterPrefs => _filter,
+  /** When the last screening began and the next scheduled one is due. */
+  schedule: (): ScreenPrsSchedule => _schedule,
   selectedKey: (): string | null => _selected,
 
   entries: (): Entry[] => [..._entries.values()],
@@ -330,7 +334,7 @@ export const screenPrsStore = {
     _filter = next
     _filterInFlight++
     const saving = window.api
-      .invoke('screenprs:filter-set', { owner: next.owner, cutoffDays: next.cutoffDays })
+      .invoke('screenprs:filter-set', { owner: next.owner, cutoffDays: next.cutoffDays, autoScreenHours: next.autoScreenHours })
       .then(receiveFilter)
       .finally(() => {
         _filterInFlight--
@@ -544,15 +548,22 @@ export const screenPrsStore = {
   },
 
   // ── event ingestion (wired by initScreenPrsListeners) ──
-  _onQueued(refs: PrRef[]): void {
+  _onQueued(refs: PrRef[], keep: string[] = []): void {
+    const kept = new Set(keep)
     const next = new Map<string, Entry>()
-    for (const ref of refs) next.set(keyOf(ref), { ref })
+    for (const ref of refs) {
+      const cur = kept.has(keyOf(ref)) ? _entries.get(keyOf(ref)) : undefined
+      next.set(keyOf(ref), cur?.card ? { ...cur, ref } : { ref })
+    }
     _entries = next
     _total = refs.length
     _triaging = new Set()
   },
   _onScreening(context: PrContext): void {
-    setEntry(keyOf(context), { context })
+    // Being judged again: a kept card's findings belong to the old diff.
+    const next = new Map(_entries)
+    next.set(keyOf(context), { ref: next.get(keyOf(context))?.ref ?? context, context })
+    _entries = next
   },
   _onTriaging(url: string): void {
     const next = new Set(_triaging)
@@ -569,10 +580,16 @@ export const screenPrsStore = {
       _triaging = next
     }
   },
-  _onStatus(status: ScreenPrsRunStatus, total?: number, error?: string): void {
-    // Another client started a screening: this board is the last run's.
+  _onSchedule(schedule: ScreenPrsSchedule): void {
+    _schedule = schedule
+  },
+  _onStatus(status: ScreenPrsRunStatus, total?: number, error?: string, refresh = false): void {
+    // Another client started a screening: this board is the last run's. A
+    // scheduled refresh keeps it; its queue says what goes.
     if (status === 'running' && _status !== 'running') {
-      _entries = new Map()
+      // Main keeps only the carded entries, so this matches what a client
+      // reconnecting mid-run is told.
+      _entries = refresh ? new Map([..._entries].filter(([, e]) => e.card)) : new Map()
       _triaging = new Set()
       _total = undefined
     }
@@ -584,11 +601,11 @@ export const screenPrsStore = {
 
 /** Subscribe to the `screenprs:*` stream and load the drafts. Call once at app start; returns an unsub. */
 export function initScreenPrsListeners(): () => void {
-  const unsubQueued = window.api.on('screenprs:queued', (d) => screenPrsStore._onQueued(d.refs))
+  const unsubQueued = window.api.on('screenprs:queued', (d) => screenPrsStore._onQueued(d.refs, d.keep))
   const unsubScreening = window.api.on('screenprs:screening', (d) => screenPrsStore._onScreening(d.context))
   const unsubTriaging = window.api.on('screenprs:triaging', (d) => screenPrsStore._onTriaging(d.url))
   const unsubCard = window.api.on('screenprs:card', (d) => screenPrsStore._onCard(d.card))
-  const unsubStatus = window.api.on('screenprs:status', (d) => screenPrsStore._onStatus(d.status, d.total, d.error))
+  const unsubStatus = window.api.on('screenprs:status', (d) => screenPrsStore._onStatus(d.status, d.total, d.error, d.refresh))
   const unsubDeepLens = window.api.on('screenprs:deep-lens', (d) => screenPrsStore._onDeepLens(d.url, d.lens, d.status))
   const unsubDeepResult = window.api.on('screenprs:deep-result', (d) => screenPrsStore._onDeepResult(d.url, d.findings, d.headSha))
   const unsubDeepStatus = window.api.on('screenprs:deep-status', (d) => screenPrsStore._onDeepStatus(d.url, d.status, d.error, d.headSha))
@@ -602,11 +619,13 @@ export function initScreenPrsListeners(): () => void {
     screenPrsStore._onDraftChanged(d.url, { draft: d.draft, rev: d.rev })
   )
   const unsubFilterChanged = window.api.on('screenprs:filter-changed', (d) => receiveFilter(d))
+  const unsubSchedule = window.api.on('screenprs:schedule-changed', (d) => screenPrsStore._onSchedule(d))
   void screenPrsStore.loadDrafts()
   void screenPrsStore.loadFilter()
   void screenPrsStore.loadState()
   return () => {
     unsubFilterChanged()
+    unsubSchedule()
     unsubQueued()
     unsubScreening()
     unsubTriaging()

@@ -21,7 +21,15 @@
   import { BUCKET_ORDER, groupStacks } from '../shared/screenprs'
   import type { ScreenPrBucket, ScreenPrCard, PrRef } from '../shared/screenprs'
   import PrCard from './PrCard.svelte'
-  import { CUTOFF_DAYS, isCutoffDays, type ScreenPrsFilterPrefs } from '../shared/screenprs-filter'
+  import {
+    AUTO_SCREEN_HOURS,
+    CUTOFF_DAYS,
+    autoScreenLabel,
+    isAutoScreenHours,
+    isCutoffDays,
+    scheduleHint,
+    type ScreenPrsFilterPrefs,
+  } from '../shared/screenprs-filter'
 
   interface Props {
     onopen: (pr: PrRef) => void
@@ -76,6 +84,19 @@
     const days = Number(value)
     if (isCutoffDays(days)) void saveFilter({ ...saved, cutoffDays: days })
   }
+
+  function setAuto(value: string): void {
+    const hours = Number(value)
+    if (isAutoScreenHours(hours)) void saveFilter({ ...saved, autoScreenHours: hours })
+  }
+
+  // Ticks so "screened 4m ago" stays true while the board sits open.
+  let now = $state(Date.now())
+  $effect(() => {
+    const id = setInterval(() => (now = Date.now()), 30_000)
+    return () => clearInterval(id)
+  })
+  let hint = $derived(scheduleHint(screenPrsStore.schedule(), now))
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
@@ -160,6 +181,21 @@
       {#each knownOwners as o (o)}<option value={o}></option>{/each}
     </datalist>
   </label>
+  <div class="-mt-2 mb-4 flex items-center gap-2 px-1">
+    <label class="flex flex-none items-center gap-2">
+      <span class="text-[11px] uppercase tracking-wider text-zinc-500">Auto</span>
+      <select
+        value={String(saved.autoScreenHours)}
+        onchange={(e) => setAuto(e.currentTarget.value)}
+        aria-label="Auto-screen"
+        data-testid="filter-auto"
+        class="min-h-10 rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-base text-zinc-300"
+      >
+        {#each AUTO_SCREEN_HOURS as h (h)}<option value={String(h)}>{autoScreenLabel(h)}</option>{/each}
+      </select>
+    </label>
+    {#if hint}<span class="min-w-0 truncate text-xs text-zinc-500" data-testid="schedule-hint">{hint}</span>{/if}
+  </div>
   {#if filterError}
     <p class="-mt-2 mb-3 px-1 text-xs text-red-300" data-testid="filter-error">{filterError}</p>
   {/if}

@@ -496,6 +496,39 @@ That is what lets a phone switch project mid-run.
   connection, so the phone's picker still refuses a switch while one is in
   flight.
 
+### Screen PRs: auto-screening
+The saved filter also holds `autoScreenHours` (Off / 1 / 2 / 4 / 16), and
+`screenprs-schedule.ts` in main starts a screening with the saved filter that
+often. It runs whether or not a window is open: `window-all-closed` leaves
+screening alone (quit still stops it). The only signal is the board itself and
+the sidebar's attention badge; there is no push or OS notification.
+- **The clock is the last screening's start, whoever started it**
+  (`onScreeningStarted` → `noteScreeningStarted`), persisted in
+  `screenprs-schedule.json`. A manual Screen pushes the next run back, and a
+  restart neither re-screens at launch nor forgets an overdue run.
+- **One timer, recomputed from the wall clock** on every filter change, every
+  run start and on `powerMonitor` `resume`, since timers stall during sleep. A
+  due run waits at least `GRACE_MS`, so waking or shortening the interval
+  doesn't fire instantly. A run already going is left alone and the schedule
+  checks back every `BUSY_RETRY_MS`.
+- **A scheduled run is a refresh** (`startScreening(…, { refresh: true })`): it
+  keeps the last board's cards, drops only PRs that left the queue, and replaces
+  each card when its new one lands. A board someone is reading must not empty
+  under them once an hour. The rules, which main and every client apply alike:
+  - `status: running` with `refresh` keeps only carded entries.
+  - A refresh sends its queue only once the metadata is in, and `queued.keep`
+    names the PRs whose card survives. A PR whose metadata failed drops back
+    to a placeholder rather than show a stale card as current.
+  - A PR's `screening` event (it is being judged again) drops its old card,
+    whose findings cite the old diff.
+  - A manual Screen still clears the board, and replaces a running refresh
+    rather than joining it.
+- A missing `autoScreenHours` in a set keeps the stored one (`parseFilterPrefs`
+  takes `current`), so a client that predates it can't switch the schedule off.
+- `screenprs:state` carries `schedule` (`lastAt`, `nextAt`), and
+  `screenprs:schedule-changed` updates it. Both filter bars show it via
+  `scheduleHint`.
+
 ### Screen PRs: the saved filter and Discuss with Agent
 The org + activity cutoff is **one saved filter owned by main**
 (`screenprs-filter.ts`, `userData/config/screenprs-filter.json`), the same
@@ -835,7 +868,8 @@ src/
     github/stack-base.ts ← Stacked-PR base analysis + the review diff
     screenprs.ts, screenprs-cache.ts ← Screen-PRs data + cache
     screenprs-drafts.ts ← Persisted review drafts (main owns them; desktop + phone mirror via ops)
-    screenprs-filter.ts ← Persisted Screen PRs org + cutoff (main owns it; desktop + phone mirror it)
+    screenprs-filter.ts ← Persisted Screen PRs org + cutoff + auto interval (main owns it; desktop + phone mirror it)
+    screenprs-schedule.ts ← Auto-screening timer (last-start clock, wake-aware)
     review.ts, deep-review.ts, tour.ts ← Review/tour features
     pr-overview.ts     ← PR overview run + cache (screen-PRs)
     tasks/, agent-tasks/ ← Bounded agent-task orchestration (gate, runner)

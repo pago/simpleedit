@@ -40,9 +40,18 @@ interface Run {
   error?: string
   entries: Map<string, ScreenPrsRunEntry>
   triaging: Set<string>
+  /** Started by the schedule: the last board stays up while this one replaces it. */
+  refresh: boolean
 }
 
 let run: Run | null = null
+
+let startedListener: (() => void) | null = null
+
+/** Called whenever a screening really begins (not on a join), whoever started it. */
+export function onScreeningStarted(fn: (() => void) | null): void {
+  startedListener = fn
+}
 
 /**
  * The same card/context, with the diff emptied — what a remote client gets.
@@ -67,7 +76,7 @@ function setStatus(r: Run, status: ScreenPrsRunStatus, extra: { error?: string; 
   r.status = status
   if (extra.total !== undefined) r.total = extra.total
   r.error = extra.error
-  r.out.send('screenprs:status', { status, ...extra })
+  r.out.send('screenprs:status', { status, ...extra, ...(status === 'running' && r.refresh ? { refresh: true } : {}) })
 }
 
 /** `local` to each window's renderer, the diff-less `remote` to sockets. */
@@ -133,40 +142,67 @@ function sameFilters(a: ScreenPrsFilters, b: ScreenPrsFilters): boolean {
  * Screen the review queue for every client. A start with the same filters
  * joins the run already going; one with different filters replaces it.
  * Settles when the run it started ends; a join settles at once.
+ *
+ * A `refresh` (the schedule's) keeps the last board's cards on screen: PRs
+ * that left the queue go when the search answers, and the rest keep their old
+ * card until the new one lands. A board someone is reading never empties under
+ * them, and the attention badge doesn't drop to zero once an hour.
  */
-export async function startScreening(filters: ScreenPrsFilters, out: RemoteClient): Promise<ScreenPrsStartResult> {
+export async function startScreening(
+  filters: ScreenPrsFilters,
+  out: RemoteClient,
+  opts: { refresh?: boolean } = {},
+): Promise<ScreenPrsStartResult> {
   if (run?.status === 'running') {
-    if (sameFilters(run.filters, filters)) return { joined: true }
+    // A manual start never joins a scheduled refresh: it asked for a clean board.
+    if (sameFilters(run.filters, filters) && !(run.refresh && !opts.refresh)) return { joined: true }
     // The filter is shared, so a start that differs is the newer intent: it
     // replaces the run, and every client sees the stop and the restart.
     cancelScreening()
   }
-  const r: Run = { controller: new AbortController(), filters, out, status: 'running', entries: new Map(), triaging: new Set() }
+  const refresh = !!opts.refresh
+  const kept = new Map<string, ScreenPrsRunEntry>()
+  if (refresh && run) for (const [url, e] of run.entries) if (e.card) kept.set(url, { ...e })
+  const r: Run = { controller: new AbortController(), filters, out, status: 'running', entries: kept, triaging: new Set(), refresh }
   run = r
   const { signal } = r.controller
   setStatus(r, 'running')
+  startedListener?.()
 
   return withGhSignal(signal, async () => {
     try {
       const handle = await currentHandle()
       const refs = await searchReviewRequestedPrs({ owner: filters.owner, updatedSince: filters.updatedSince })
       if (!live(r)) return { joined: false }
+
+      // Always refetch the cheap metadata (CI/reviews/size/head SHA) — even a cached
+      // PR gets a fresh bucket. The diff + model run are what the cache saves.
+      const fetchMetas = async (): Promise<PrMeta[]> =>
+        (await mapLimit(refs, 5, (ref) => getPrMeta(ref, handle))).filter((m): m is PrMeta => m !== null)
+      // A refresh's board is already up, so its queue can wait for the metadata:
+      // a PR whose metadata failed then loses its old card rather than passing
+      // it off as current.
+      let metas = refresh ? await fetchMetas() : undefined
+      if (!live(r)) return { joined: false }
+      const keep = new Set(metas?.map((m) => m.url))
+
+      // Seed the queue immediately (before the slower context gather) so the UI
+      // shows a "Screening…" placeholder per PR the moment the search returns.
+      const queued = new Set(refs.map((ref) => ref.url))
+      for (const [url, e] of [...r.entries]) {
+        if (!queued.has(url)) r.entries.delete(url)
+        else if (!keep.has(url)) r.entries.set(url, { ref: e.ref })
+      }
+      for (const ref of refs) entry(r, ref).ref = ref
+      r.total = refs.length
+      out.send('screenprs:queued', { refs, ...(refresh ? { keep: [...keep] } : {}) })
+      // After the queue went out: a refresh's kept cards must leave with it.
       if (refs.length === 0) {
         setStatus(r, 'done', { total: 0 })
         return { joined: false }
       }
 
-      // Seed the queue immediately (before the slower context gather) so the UI
-      // shows a "Screening…" placeholder per PR the moment the search returns.
-      for (const ref of refs) entry(r, ref)
-      r.total = refs.length
-      out.send('screenprs:queued', { refs })
-
-      // Always refetch the cheap metadata (CI/reviews/size/head SHA) — even a cached
-      // PR gets a fresh bucket. The diff + model run are what the cache saves.
-      const metas = (await mapLimit(refs, 5, (ref) => getPrMeta(ref, handle))).filter(
-        (m): m is PrMeta => m !== null
-      )
+      metas ??= await fetchMetas()
       if (!live(r)) return { joined: false }
 
       const emitCard = (ctx: PrContext, result: TriageResult): void => {
@@ -200,7 +236,8 @@ export async function startScreening(filters: ScreenPrsFilters, out: RemoteClien
         await mapLimit(toTriage, 5, async (m) => {
           const ctx: PrContext = withReviewDiff(m, await getReviewDiff(m, resolver, metas))
           if (live(r)) {
-            entry(r, ctx).context = ctx
+            // Being judged again: a kept card's findings belong to the old diff.
+            r.entries.set(ctx.url, { ref: entry(r, ctx).ref, context: ctx })
             sendSplit(r, 'screenprs:screening', { context: ctx }, { context: withoutDiff(ctx) })
           }
           return ctx
@@ -283,6 +320,10 @@ export function screeningSnapshot(remote: boolean): ScreenPrsState['run'] {
 export async function reviewDiffFor(pr: { url: string; headSha?: string }): Promise<string> {
   const cached = pr.headSha ? getCachedDiff(pr.url, pr.headSha) : undefined
   return cached ?? getReviewDiffByUrl(pr.url)
+}
+
+export function isScreening(): boolean {
+  return run?.status === 'running'
 }
 
 /** Stop the screening, whoever started it, and tell every client. */

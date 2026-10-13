@@ -11,6 +11,10 @@ import type { PrRef, TriageResult } from '../../shared/screenprs'
 const gate = vi.hoisted(() => ({
   searches: [] as { owner?: string }[],
   waiting: [] as (() => void)[],
+  /** What the search answers; the queue is `[REF]` unless a case changes it. */
+  refs: null as PrRef[] | null,
+  /** PR urls whose metadata fetch fails. */
+  failMeta: new Set<string>(),
   /** Let every search still waiting answer. */
   release(): void {
     for (const resolve of this.waiting.splice(0)) resolve()
@@ -30,9 +34,9 @@ vi.mock('../github/gh', () => ({
   searchReviewRequestedPrs: async (opts: { owner?: string }) => {
     gate.searches.push(opts)
     await new Promise<void>((resolve) => gate.waiting.push(resolve))
-    return [REF]
+    return gate.refs ?? [REF]
   },
-  getPrMeta: async (ref: PrRef) => ({ ...ref, headSha: 'sha1', additions: 1, deletions: 1, changedFiles: 1, baseRefName: 'main', baseRefOid: 'b', headRefName: 'feat', ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '' }),
+  getPrMeta: async (ref: PrRef) => gate.failMeta.has(ref.url) ? null : ({ ...ref, headSha: 'sha1', additions: 1, deletions: 1, changedFiles: 1, baseRefName: 'main', baseRefOid: 'b', headRefName: 'feat', ci: 'green', ciFailing: [], reviewers: [], approvedByOther: false, body: '' }),
 }))
 vi.mock('../github/stack-base', async (importOriginal) => ({
   withReviewDiff: (await importOriginal<typeof import('../github/stack-base')>()).withReviewDiff,
@@ -49,7 +53,7 @@ vi.mock('../screenprs-cache', () => ({
 }))
 
 import { ClientHub, everyClient } from '../client-hub'
-import { startScreening, cancelScreening, screeningSnapshot } from '../screenprs'
+import { startScreening, cancelScreening, screeningSnapshot, onScreeningStarted } from '../screenprs'
 
 const REF: PrRef = {
   owner: 'acme', repo: 'acme/widgets', number: 7, url: 'https://github.com/acme/widgets/pull/7',
@@ -86,6 +90,8 @@ let all: ReturnType<typeof everyClient>
 beforeEach(() => {
   gate.searches = []
   gate.waiting = []
+  gate.refs = null
+  gate.failMeta = new Set()
   windowA = transport(1)
   phoneOnA = transport(1, 'w1.1')
   windowB = transport(2)
@@ -191,6 +197,90 @@ describe('one screening for every client', () => {
     expect(gate.searches).toHaveLength(2)
     gate.release()
     await expect(again).resolves.toEqual({ joined: false })
+  })
+})
+
+describe('a scheduled refresh', () => {
+  const OTHER: PrRef = { ...REF, number: 8, url: 'https://github.com/acme/widgets/pull/8', title: 'Other' }
+
+  async function screenOnce(refresh = false): Promise<void> {
+    const run = startScreening({}, all, { refresh })
+    await settle()
+    gate.release()
+    await run
+  }
+
+  it('keeps the last board up until each PR has its new card', async () => {
+    gate.refs = [REF, OTHER]
+    await screenOnce()
+    windowA.send.mockClear()
+
+    const run = startScreening({}, all, { refresh: true })
+    await settle()
+    expect(windowA.send).toHaveBeenCalledWith('screenprs:status', { status: 'running', refresh: true })
+    // Mid-run, before the search answers: a client that reconnects still sees both cards.
+    expect(screeningSnapshot(false).entries.map((e) => e.card?.url)).toEqual([REF.url, OTHER.url])
+
+    gate.refs = [REF]
+    gate.release()
+    await run
+    expect(windowA.send).toHaveBeenCalledWith('screenprs:queued', { refs: [REF], keep: [REF.url] })
+    // OTHER left the queue, so it left the board.
+    expect(screeningSnapshot(false).entries.map((e) => e.card?.url)).toEqual([REF.url])
+  })
+
+  it('empties the board when the queue is empty', async () => {
+    await screenOnce()
+    gate.refs = []
+    await screenOnce(true)
+    expect(screeningSnapshot(false)).toMatchObject({ status: 'done', entries: [] })
+    expect(windowA.send).toHaveBeenCalledWith('screenprs:queued', { refs: [], keep: [] })
+  })
+
+  it('reports each fresh start, not a join', async () => {
+    const started = vi.fn()
+    onScreeningStarted(started)
+    const run = startScreening({}, all)
+    await settle()
+    await startScreening({}, all)
+    gate.release()
+    await run
+    onScreeningStarted(null)
+    expect(started).toHaveBeenCalledTimes(1)
+  })
+
+  it('turns a kept card back into a placeholder when its metadata fails, rather than pass it off as current', async () => {
+    gate.refs = [REF, OTHER]
+    await screenOnce()
+    gate.failMeta = new Set([OTHER.url])
+    await screenOnce(true)
+    expect(windowA.send).toHaveBeenCalledWith('screenprs:queued', { refs: [REF, OTHER], keep: [REF.url] })
+    expect(screeningSnapshot(false).entries).toEqual([
+      expect.objectContaining({ ref: REF, card: expect.anything() }),
+      { ref: OTHER },
+    ])
+  })
+
+  it('is replaced, not joined, by a manual start', async () => {
+    await screenOnce()
+    const refresh = startScreening({}, all, { refresh: true })
+    await settle()
+    const manual = startScreening({}, all)
+    await settle()
+    expect(screeningSnapshot(false).entries).toEqual([])
+    gate.release()
+    await expect(manual).resolves.toEqual({ joined: false })
+    await refresh
+    expect(gate.searches).toHaveLength(3)
+  })
+
+  it('a manual start still clears the board', async () => {
+    await screenOnce()
+    const run = startScreening({}, all)
+    await settle()
+    expect(screeningSnapshot(false).entries).toEqual([])
+    gate.release()
+    await run
   })
 })
 
