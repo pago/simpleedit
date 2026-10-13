@@ -5,6 +5,7 @@ vi.mock('../PromptField.svelte', async () => ({ default: (await import('./StubPr
 
 import BacklogView from '../BacklogView.svelte'
 import BacklogList from '../BacklogList.svelte'
+import BacklogNewButton from '../BacklogNewButton.svelte'
 import Backlog from './BacklogSplit.svelte'
 import BacklogRemount from './BacklogRemount.svelte'
 import BacklogArrivalNotice from '../BacklogArrivalNotice.svelte'
@@ -766,6 +767,7 @@ describe('switching project', () => {
 describe('BacklogView', () => {
   it('shows a hint until something is picked, and + New still opens a new item', async () => {
     render(BacklogView)
+    render(BacklogNewButton)
     expect(screen.queryByTestId('backlog-list')).toBeNull()
     expect(screen.getByText('Pick an item, or add one with + New.')).toBeTruthy()
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))

@@ -4,7 +4,9 @@
   import NewSessionButtons from './NewSessionButtons.svelte'
   import StatusDot from './StatusDot.svelte'
   import BacklogList from '../backlog/BacklogList.svelte'
+  import BacklogNewButton from '../backlog/BacklogNewButton.svelte'
   import ScreenPrsQueue from '../screenprs/ScreenPrsQueue.svelte'
+  import ScreenPrsButton from '../screenprs/ScreenPrsButton.svelte'
   import SectionIcon from './SectionIcon.svelte'
   import { uiView } from '../../stores/uiView.svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
@@ -47,6 +49,9 @@
         <span class="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-zinc-700 px-1.5 text-[10px] font-bold tabular-nums text-zinc-200">{backlogCount}</span>
       {/if}
     {/snippet}
+    {#snippet actions()}
+      <BacklogNewButton />
+    {/snippet}
     <BacklogList class="min-h-full" />
   </SidebarSection>
 
@@ -58,6 +63,9 @@
       {#if attention > 0}
         <span class="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold tabular-nums text-white">{attention}</span>
       {/if}
+    {/snippet}
+    {#snippet actions()}
+      <ScreenPrsButton />
     {/snippet}
     <ScreenPrsQueue class="min-h-full" />
   </SidebarSection>

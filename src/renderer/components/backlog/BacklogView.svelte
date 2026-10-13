@@ -19,7 +19,6 @@
         Prepared sessions for {projectName || 'this project'}. Agents add here when you say “add this to our backlog”.
       </p>
     </div>
-    <button class="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500" onclick={() => void backlogView.choose('new')}>+ New</button>
   </header>
 
   <div class="min-h-0 flex-1">

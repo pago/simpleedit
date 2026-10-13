@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import ScreenPrsView from '../ScreenPrsView.svelte'
+import ScreenPrsButton from '../ScreenPrsButton.svelte'
 import { screenPrsStore } from '../../../stores/screenprs.svelte'
 
 /** The org and cutoff are main's, saved for every window and phone, not this view's. */
@@ -38,6 +39,7 @@ describe('ScreenPrsView — the saved filter', () => {
 
   it('saves the org when the field is left, and screens with it', async () => {
     render(ScreenPrsView)
+    render(ScreenPrsButton)
     const field = screen.getByTestId('filter-owner')
     await fireEvent.focus(field)
     await fireEvent.input(field, { target: { value: 'widgets-inc' } })
@@ -87,7 +89,7 @@ describe('ScreenPrsView — the saved filter', () => {
       if (channel === 'screenprs:start') throw new Error('gh is not signed in')
       return base(channel, ...args)
     })
-    render(ScreenPrsView)
+    render(ScreenPrsButton)
     await fireEvent.click(screen.getByRole('button', { name: /Screen/ }))
     await vi.waitFor(() => expect(screenPrsStore.status()).toBe('error'))
     expect(screenPrsStore.error()).toBe('gh is not signed in')

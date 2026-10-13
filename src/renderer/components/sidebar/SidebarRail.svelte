@@ -5,7 +5,9 @@
   import StatusDot from './StatusDot.svelte'
   import SectionIcon from './SectionIcon.svelte'
   import BacklogList from '../backlog/BacklogList.svelte'
+  import BacklogNewButton from '../backlog/BacklogNewButton.svelte'
   import ScreenPrsQueue from '../screenprs/ScreenPrsQueue.svelte'
+  import ScreenPrsButton from '../screenprs/ScreenPrsButton.svelte'
   import { uiView, type UiView } from '../../stores/uiView.svelte'
   import { sidebarRail } from '../../stores/sidebarRail.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
@@ -172,6 +174,10 @@
         <span class="min-w-0 flex-1 truncate py-2 text-xs font-medium text-zinc-100">{overlayLabel}</span>
         {#if overlay.view === 'workspace'}
           <NewSessionButtons />
+        {:else if overlay.view === 'backlog'}
+          <BacklogNewButton />
+        {:else}
+          <ScreenPrsButton />
         {/if}
       </div>
       <div class="@container min-h-0 flex-1 overflow-y-auto">
