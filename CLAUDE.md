@@ -720,7 +720,7 @@ one drag handle, but each section remembers its own width
 (`lib/sidebarWidth.ts`, `localStorage`, defaults 260/340/380, clamped
 180–500); the title-bar block follows the current width. Section bodies are
 `@container`s, so cards narrow by container query, never by viewport.
-- **The Sessions header works while collapsed.** It carries the aggregate dot
+- **The Sessions header works while its section is closed.** It carries the aggregate dot
   (`StatusDot` over `currentSessionsAttention()`, most urgent first: red
   crashed/error, amber waiting, blue finished-unseen, green running, grey
   nothing; counts in the tooltip) and the ✦ Agent / + Term buttons with the
@@ -754,11 +754,14 @@ one drag handle, but each section remembers its own width
     menu isn't cut short) pin it; click and keyboard move focus in. Esc
     (unless a menu or modal inside took it: they `preventDefault`), an outside
     click, or a second click on the pinned icon close it.
-  - **Choosing an item closes it**, detected centrally, not per row: the
-    overlay watches `uiView`, the active session, the picked backlog item and
-    the picked PR against a baseline taken when it opened. A pick in the
-    Backlog / Screen PRs overlay also brings that view forward. The backlog
-    list's own auto-select (nothing or a removed item selected) is not a pick.
+  - **Choosing an item closes it.** Rows (session, backlog item, PR card)
+    and Start call `sidebarRail.chose(view)`, which brings that view forward
+    and closes; explicit, because picking the item already shown changes no
+    state. As a catch-all for moves without a row (✦ Agent, + Term, ⌘T, the
+    palette), a change of `uiView` or of the active session since the overlay
+    opened closes any overlay. Closing gives focus back to where it was before
+    a click/keyboard open, but only if it fell to `<body>`, so a pick that
+    focuses something else keeps it.
   - Menus and modals opened inside render inside the overlay's DOM (fixed,
     not portalled), which is what keeps hover and outside-click treating them
     as inside. A portalled one would need its own exemption.

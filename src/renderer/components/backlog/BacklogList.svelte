@@ -4,6 +4,7 @@
   import { backlogView } from '../../stores/backlogViewState.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
   import { uiView } from '../../stores/uiView.svelte'
+  import { sidebarRail } from '../../stores/sidebarRail.svelte'
   import { targetLabel } from '../../lib/agentModels'
   import { labelFromBrief } from '../../../shared/brief'
   import type { BacklogItem } from '../../../shared/backlog'
@@ -31,6 +32,11 @@
     if (id && (id === backlogView.newId || backlogStore.get(id) || backlogView.unsaved || backlogStore.draft(id))) return
     backlogStore.select(items[0]?.id ?? null)
   })
+
+  function pick(id: string): void {
+    void backlogView.choose(id)
+    sidebarRail.chose('backlog')
+  }
 
   function title(item: BacklogItem): string {
     return item.label || labelFromBrief(item.prompt) || item.prompt.split('\n')[0] || 'Untitled'
@@ -65,6 +71,7 @@
       if (shown) await backlogStore.requestSelect(next)
       sessionsStore.select(terminalId)
       uiView.show('workspace')
+      sidebarRail.chose('workspace')
     } catch (err) {
       // A failure main recorded comes back on the item; anything else shows here.
       if (!backlogStore.get(item.id)?.lastStart) backlogView.setStartError(item.id, err instanceof Error ? err.message : String(err))
@@ -145,7 +152,7 @@
         >
           <div class="flex items-start gap-2">
             <span class="mt-0.5 cursor-grab select-none text-zinc-600" aria-hidden="true">⋮⋮</span>
-            <button class="min-w-0 flex-1 text-left" onclick={() => void backlogView.choose(item.id)}>
+            <button class="min-w-0 flex-1 text-left" onclick={() => pick(item.id)}>
               <div class="truncate text-[13px] text-zinc-100">{title(item)}</div>
               <div class="mt-0.5 hidden truncate text-[11px] text-zinc-500 @2xs:block">
                 {[targetLabel(item.target, backlogView.models), origin(item), backlogStore.draft(item.id) ? 'unsaved edits' : ''].filter(Boolean).join(' · ')}
@@ -190,7 +197,7 @@
           data-testid="backlog-draft"
           aria-current={active ? 'true' : undefined}
         >
-          <button class="w-full min-w-0 text-left" onclick={() => void backlogView.choose(id)}>
+          <button class="w-full min-w-0 text-left" onclick={() => pick(id)}>
             <div class="truncate text-[13px] text-zinc-100">{draft.label.trim() || labelFromBrief(draft.prompt) || 'Untitled'}</div>
             <div class="mt-0.5 truncate text-[11px] text-amber-300">
               {draft.created ? 'Unsaved draft — its item was started or removed' : 'Unsaved new item'}

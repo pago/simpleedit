@@ -2,7 +2,7 @@
  * The collapsed sidebar (an icon rail) and the section overlay it opens over
  * the main area. Hovering previews a section's list; a click, a keyboard
  * shortcut or any interaction inside the overlay pins it until Esc, an outside
- * click or choosing an item.
+ * click or choosing an item (`chose`).
  */
 import { uiView, type UiView } from './uiView.svelte'
 import { loadSidebarCollapsed, saveSidebarCollapsed } from '../lib/sidebarCollapse'
@@ -92,6 +92,16 @@ export const sidebarRail = {
     if (!_overlay || _overlay.pinned) return
     clearTimeout(closeTimer)
     _overlay = { ..._overlay, pinned: true }
+  },
+  /**
+   * An item was picked from `view`'s list: bring that view forward and close
+   * its overlay. Rows call this even when the pick changes nothing (the item
+   * already shown), which a watch over the selection can't see.
+   */
+  chose(view: UiView): void {
+    if (!_overlay) return
+    if (uiView.current() !== view) uiView.show(view)
+    this.close()
   },
   close(): void {
     cancelTimers()

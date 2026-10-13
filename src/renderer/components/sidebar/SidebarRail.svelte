@@ -37,7 +37,7 @@
   let returnFocus: HTMLElement | null = null
   let focusedGeneration = -1
 
-  // Opened by click or keyboard: focus moves in, and Esc gives it back. A
+  // Opened by click or keyboard: focus moves in, and closing gives it back. A
   // section switch from inside keeps the original place to return to.
   $effect(() => {
     const ov = overlay
@@ -48,27 +48,35 @@
     void tick().then(() => overlayEl?.focus())
   })
 
-  interface NavState {
-    view: UiView
-    session: string | null
-    backlog: string | null
-    pr: string | null
-  }
-  let baseline: NavState | null = null
+  // Back to where focus came from, unless whatever closed the overlay put it
+  // somewhere (a pick that focuses a terminal): only focus that fell to <body>
+  // with the overlay is given back.
+  let wasOpen = false
+  $effect(() => {
+    if (overlay) {
+      wasOpen = true
+      return
+    }
+    if (!wasOpen) return
+    wasOpen = false
+    const target = returnFocus
+    returnFocus = null
+    if (!target) return
+    void tick().then(() => {
+      const active = document.activeElement
+      if ((!active || active === document.body) && target.isConnected) target.focus()
+    })
+  })
+
+  let baseline: { view: UiView; session: string | null } | null = null
   let baselineGeneration = -1
 
-  // Choosing an item closes the overlay. Rather than wire every row, watch what
-  // the rows change: the view, the active session, the picked backlog item or PR.
-  // A pick in the Backlog or Screen PRs overlay also brings its view forward,
-  // since the overlay can be over another one.
+  // Rows call `sidebarRail.chose` when picked. This catches what moves on
+  // without a row: a new session (✦ Agent, + Term, ⌘T), a palette entry, or
+  // Start, whose active-session change counts in every overlay.
   $effect(() => {
     const ov = overlay
-    const now: NavState = {
-      view: uiView.current(),
-      session: sessionsStore.activeSessionId(),
-      backlog: backlogStore.selectedId,
-      pr: screenPrsStore.selectedKey(),
-    }
+    const now = { view: uiView.current(), session: sessionsStore.activeSessionId() }
     if (!ov) {
       baseline = null
       return
@@ -78,35 +86,18 @@
       baselineGeneration = ov.generation
       return
     }
-    const was = baseline
-    const chosen =
-      now.view !== was.view ||
-      (ov.view === 'workspace' && now.session !== was.session) ||
-      (ov.view === 'backlog' && now.backlog !== was.backlog && pickedBacklogItem(was.backlog, now.backlog)) ||
-      (ov.view === 'screenprs' && now.pr !== was.pr && now.pr !== null)
-    if (!chosen) {
-      baseline = now
-      return
-    }
-    if (now.view === was.view && ov.view !== 'workspace') uiView.show(ov.view)
-    sidebarRail.close()
+    if (now.view !== baseline.view || now.session !== baseline.session) sidebarRail.close()
   })
-
-  /**
-   * The list selects its first item by itself when nothing (or a removed item)
-   * is selected; only a move away from a selection that still exists is a pick.
-   */
-  function pickedBacklogItem(from: string | null, to: string | null): boolean {
-    if (!from || !to) return false
-    return !!(backlogStore.get(from) || backlogStore.draft(from))
-  }
 
   // Context menus and modals opened from the overlay render inside it (fixed,
   // not portalled), so a click on them is inside too.
   $effect(() => {
     if (!overlay) return
     function onPointerDown(e: PointerEvent): void {
-      if (zoneEl && !zoneEl.contains(e.target as Node)) sidebarRail.close()
+      if (zoneEl && zoneEl.contains(e.target as Node)) return
+      // The click puts focus where it wants it.
+      returnFocus = null
+      sidebarRail.close()
     }
     document.addEventListener('pointerdown', onPointerDown)
     return () => document.removeEventListener('pointerdown', onPointerDown)
@@ -115,10 +106,7 @@
   function onWindowKeydown(e: KeyboardEvent): void {
     // Menus and modals inside the overlay take Esc for themselves first.
     if (e.key !== 'Escape' || !overlay || e.defaultPrevented) return
-    const hadFocus = !!zoneEl?.contains(document.activeElement)
     sidebarRail.close()
-    if (hadFocus) returnFocus?.focus()
-    returnFocus = null
   }
 </script>
 

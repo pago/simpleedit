@@ -11,6 +11,7 @@
   import { worktreeList } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import { uiView } from '../../stores/uiView.svelte'
+  import { sidebarRail } from '../../stores/sidebarRail.svelte'
 
   let sessions = $derived(sessionsStore.sessions())
   let activeId = $derived(sessionsStore.activeSessionId())
@@ -258,6 +259,7 @@
     } else {
       sessionsStore.select(session.id)
     }
+    sidebarRail.chose('workspace')
   }
 
   function handleKeydown(e: KeyboardEvent, session: Session): void {
