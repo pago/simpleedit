@@ -10,6 +10,7 @@
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
   import { initAgentMailListeners } from './stores/agent-mail.svelte'
+  import { initSessionAttention } from './stores/sessionAttention.svelte'
   import { initAgentThreadsListeners } from './stores/agentThreads.svelte'
   import { backlogStore, initBacklogListeners } from './stores/backlog.svelte'
   import BacklogView from './components/backlog/BacklogView.svelte'
@@ -39,6 +40,7 @@
     if (isSettingsView) return
     const unsubStatus = initAgentStatusListeners()
     const unsubMail = initAgentMailListeners()
+    const unsubAttention = initSessionAttention()
     const unsubSessions = initSessionListeners()
     const unsubScreenPrs = initScreenPrsListeners()
     const unsubThreads = initAgentThreadsListeners()
@@ -51,6 +53,7 @@
     return () => {
       unsubStatus()
       unsubMail()
+      unsubAttention()
       unsubSessions()
       unsubScreenPrs()
       unsubThreads()

@@ -2,10 +2,12 @@
   import ContextMenu, { type ContextMenuItem } from '../ContextMenu.svelte'
   import PromptModal from '../PromptModal.svelte'
   import HandoffComposer from './HandoffComposer.svelte'
+  import StatusDot from './StatusDot.svelte'
   import { sessionsStore, createSessionFromDefaults, type Session, type SessionGroup } from '../../stores/sessions.svelte'
   import type { AgentProviderId, InteractiveTarget, NativeModelAgentId } from '../../../shared/ipc-types'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
   import { queuedMailCount } from '../../stores/agent-mail.svelte'
+  import { isUnseen, sessionAttentionLevelFor } from '../../stores/sessionAttention.svelte'
   import { capabilitiesFor, knownProviders, providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeList, projectRoot, mainWorktree } from '../../stores/worktrees.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
@@ -542,29 +544,12 @@
     resetDragState()
   }
 
-  /** Status dot styling per session state. */
-  function dotClass(session: Session): string {
-    if (session.exited) return 'bg-red-500'
-    if (session.pendingResume) return 'bg-zinc-600'
-    if (session.kind === 'terminal') return 'bg-zinc-600'
-    const status = getAgentStatusForTerminal(session.id)
-    switch (status) {
-      case 'running':
-        return 'bg-emerald-400 animate-pulse'
-      case 'waiting':
-        return 'bg-amber-400'
-      case 'error':
-        return 'bg-red-500'
-      default:
-        return 'bg-zinc-600'
-    }
-  }
-
   function statusTitle(session: Session): string {
     if (session.exited) return `Process exited with code ${session.exited.exitCode} — output preserved in the terminal`
     if (session.pendingResume) return 'Resumable — click to resume'
     if (session.kind === 'terminal') return 'Terminal'
     const status = getAgentStatusForTerminal(session.id)
+    if (status === 'idle' && isUnseen(session.id)) return 'Finished — not viewed yet'
     switch (status) {
       case 'running':
         return 'Working'
@@ -613,7 +598,7 @@
     title={statusTitle(session)}
   >
     <span class="relative flex h-2 w-2 flex-none">
-      <span class="h-2 w-2 rounded-full {dotClass(session)}"></span>
+      <StatusDot level={sessionAttentionLevelFor(session)} />
     </span>
     <span class="flex-none text-[10px] {session.kind === 'terminal' ? 'text-zinc-500' : 'text-orange-400/70'}">
       {session.kind === 'terminal' ? '$' : '✦'}
