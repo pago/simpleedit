@@ -5,7 +5,7 @@
   import StatusDot from './StatusDot.svelte'
   import BacklogList from '../backlog/BacklogList.svelte'
   import ScreenPrsQueue from '../screenprs/ScreenPrsQueue.svelte'
-  import MagnifierIcon from '../screenprs/MagnifierIcon.svelte'
+  import SectionIcon from './SectionIcon.svelte'
   import { uiView } from '../../stores/uiView.svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { backlogStore } from '../../stores/backlog.svelte'
@@ -23,10 +23,7 @@
 <div class="flex h-full flex-col">
   <SidebarSection label="Sessions" expanded={view === 'workspace'} onexpand={() => uiView.show('workspace')}>
     {#snippet icon()}
-      <svg class="h-4 w-4 flex-none text-zinc-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <rect x="2.5" y="3" width="11" height="10" rx="1.5" />
-        <path d="M5 6.5l2 1.5-2 1.5M8.5 10H11" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <SectionIcon view="workspace" />
     {/snippet}
     {#snippet indicator()}
       <span class="relative flex h-2 w-2 flex-none" title={attentionTooltip(sessionsAttention.counts)} data-testid="sessions-attention">
@@ -43,9 +40,7 @@
 
   <SidebarSection label="Backlog" expanded={view === 'backlog'} onexpand={() => uiView.show('backlog')}>
     {#snippet icon()}
-      <svg class="h-4 w-4 flex-none text-zinc-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <path d="M3 4h10M3 8h10M3 12h6" stroke-linecap="round" />
-      </svg>
+      <SectionIcon view="backlog" />
     {/snippet}
     {#snippet indicator()}
       {#if backlogCount > 0}
@@ -57,7 +52,7 @@
 
   <SidebarSection label="Screen PRs" expanded={view === 'screenprs'} onexpand={() => uiView.show('screenprs')}>
     {#snippet icon()}
-      <MagnifierIcon class="h-4 w-4 flex-none text-zinc-400" />
+      <SectionIcon view="screenprs" />
     {/snippet}
     {#snippet indicator()}
       {#if attention > 0}

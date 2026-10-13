@@ -37,6 +37,7 @@ describe('palette engine', () => {
       'Show Sessions',
       'Show Backlog',
       'Show Screen PRs',
+      'Toggle Sidebar',
     ])
     expect(invoke).not.toHaveBeenCalledWith('git:log', expect.anything(), expect.anything())
 
