@@ -725,6 +725,11 @@ one drag handle, but each section remembers its own width
   crashed/error, amber waiting, blue finished-unseen, green running, grey
   nothing; counts in the tooltip) and the ✦ Agent / + Term buttons with the
   new-session menu (`NewSessionButtons`).
+- **So do the other headers' actions**: Backlog's + New (`BacklogNewButton`)
+  and Screen PRs' Screen / Re-screen / Stop (`ScreenPrsButton`) sit in their
+  section header, and in the rail overlay's header, never in the main area,
+  which only shows them while that section is already open. + New and Screen
+  bring their section forward; Stop doesn't.
 - **Finished, unseen** (`stores/sessionAttention.svelte.ts`): an agent session
   that goes from `running` to `idle` while not on screen (active session,
   view `'workspace'`, window focused) gets a blue dot until it is shown; a
@@ -778,8 +783,8 @@ over a bottom terminal strip.
 │ ▾ Sessions ● ✦ +   │ Editor tabs (PaneTabBar)        │ F │
 │   (grouped list)   │ ── file tree / git log right ── │ T │
 │                    │ ═════════ resize ══════════════ │ + │
-│ ▸ Backlog      3   │ Terminal (full-bleed until the  │Git│
-│ ▸ Screen PRs   1   │ viewer opens)                   │   │
+│ ▸ Backlog  3 + New │ Terminal (full-bleed until the  │Git│
+│ ▸ Screen PRs 1 Scr │ viewer opens)                   │   │
 └────────────────────┴─────────────────────────────────────┘
   open section ≡ uiView: Backlog / Screen PRs open in place,
   and the main area shows their header + detail instead.

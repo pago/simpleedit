@@ -3,7 +3,6 @@
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { triageModel } from '../../stores/triageModel.svelte'
   import PrDetail from './PrDetail.svelte'
-  import MagnifierIcon from './MagnifierIcon.svelte'
   import { CUTOFF_DAYS, isCutoffDays, type ScreenPrsFilterPrefs } from '../../../shared/screenprs-filter'
 
   let status = $derived(screenPrsStore.status())
@@ -47,12 +46,6 @@
   }
 
   onMount(() => void triageModel.refresh())
-
-  async function screen(force = false): Promise<void> {
-    void triageModel.refresh()
-    commitOwner()
-    await screenPrsStore.start({ force })
-  }
 </script>
 
 <div class="flex h-full flex-col bg-zinc-950">
@@ -67,16 +60,6 @@
         <span class="text-[11px] text-zinc-500">
           {total === undefined ? 'finding PRs…' : `screening ${done}/${total}`}
         </span>
-        <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onclick={() => screenPrsStore.cancel()}>Stop</button>
-      {:else}
-        <button
-          class="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700"
-          title={done > 0 ? 'Re-screen (⌥-click to ignore cache and re-run all)' : 'Screen your review queue'}
-          onclick={(e) => void screen(e.altKey)}
-        >
-          <MagnifierIcon class="h-3.5 w-3.5" />
-          {done > 0 ? 'Re-screen' : 'Screen'}
-        </button>
       {/if}
     </div>
     <div class="mt-2.5 flex items-center gap-2 text-[11px]">

@@ -243,6 +243,24 @@ describe('SidebarRail', () => {
     expect(uiView.current()).toBe('workspace')
   })
 
+  it("carries each section's header action in its overlay, which closes once used", async () => {
+    const invoke = window.api.invoke as ReturnType<typeof vi.fn>
+    render(SidebarRail, { widths: WIDTHS })
+    await fireEvent.click(icon('Backlog'))
+    await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
+    await waitFor(() => expect(overlay()).toBeNull())
+    expect(uiView.current()).toBe('backlog')
+    await waitFor(() => expect(backlogStore.selectedId).toMatch(/^b_/))
+    expect(backlogStore.selectedId).not.toBe('b_aaaaaaaa')
+
+    uiView.show('workspace')
+    await fireEvent.click(icon('Screen PRs'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Screen' }))
+    await waitFor(() => expect(overlay()).toBeNull())
+    expect(uiView.current()).toBe('screenprs')
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:start', expect.anything()))
+  })
+
   it('closes any section when the active session changes', async () => {
     render(SidebarRail, { widths: WIDTHS })
     await fireEvent.click(icon('Screen PRs'))

@@ -14,7 +14,7 @@ import { backlogStore, _resetBacklogForTests } from '../../../stores/backlog.sve
 import { screenPrsStore } from '../../../stores/screenprs.svelte'
 import { sessionsStore } from '../../../stores/sessions.svelte'
 import { refreshWorktrees } from '../../../stores/worktrees.svelte'
-import { _resetBacklogViewForTests } from '../../../stores/backlogViewState.svelte'
+import { backlogView, _resetBacklogViewForTests } from '../../../stores/backlogViewState.svelte'
 import type { ScreenPrCard } from '../../../../shared/screenprs'
 
 const NONE: SessionsAttention = { level: 'none', counts: { error: 0, waiting: 0, unseen: 0, running: 0 } }
@@ -123,6 +123,32 @@ describe('Sidebar', () => {
     // Starting a session is the user's, so it brings the workspace forward.
     await fireEvent.click(screen.getByTitle('New terminal'))
     expect(createTerminal).toHaveBeenCalledWith('/repo/main')
+    expect(uiView.current()).toBe('workspace')
+  })
+
+  it('adds a backlog item from the Backlog header while Backlog is collapsed', async () => {
+    render(Sidebar)
+    expect(header('Backlog')).toHaveAttribute('aria-expanded', 'false')
+
+    await fireEvent.click(screen.getByRole('button', { name: '+ New' }))
+    expect(uiView.current()).toBe('backlog')
+    await waitFor(() => expect(backlogStore.selectedId).toMatch(/^b_/))
+    expect(backlogStore.selectedId).toBe(backlogView.newId)
+    expect(await screen.findByText('New item')).toBeInTheDocument()
+  })
+
+  it('screens from the Screen PRs header while Screen PRs is collapsed, and stops from there too', async () => {
+    const invoke = window.api.invoke as ReturnType<typeof vi.fn>
+    render(Sidebar)
+    expect(header('Screen PRs')).toHaveAttribute('aria-expanded', 'false')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Screen' }))
+    expect(uiView.current()).toBe('screenprs')
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:start', expect.anything()))
+
+    uiView.show('workspace')
+    await fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    expect(invoke).toHaveBeenCalledWith('screenprs:cancel')
     expect(uiView.current()).toBe('workspace')
   })
 })
