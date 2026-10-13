@@ -428,10 +428,11 @@ test('a remote client cannot overwrite the window\'s session list', async ({ win
   await page.close()
 })
 
-// Turning Serve on publishes this app to every device on the tailnet. A token
-// holder already has the machine, but widening what the TAILNET reaches is a
-// decision that belongs at the desk, not to whoever holds a link.
-test('a remote client cannot switch on Tailscale Serve', async ({ window, browser }) => {
+// Choosing a provider publishes this app to every device on the tailnet, or to
+// the whole internet. A token holder already has the machine, but widening who
+// can reach it is a decision that belongs at the desk, not to whoever holds a
+// link.
+test('a remote client cannot choose a provider', async ({ window, browser }) => {
   const status = await enableRemote(window)
 
   const page = await browser.newPage()
@@ -439,14 +440,18 @@ test('a remote client cannot switch on Tailscale Serve', async ({ window, browse
   await page.waitForFunction(() => 'api' in window, undefined, { timeout: 15_000 })
 
   const refused = await page.evaluate(async () => {
-    try {
-      await (window as unknown as { api: Api }).api.invoke('remote:set-exposure', 'tailscale-serve')
-      return null
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
+    const answers: (string | null)[] = []
+    for (const exposure of ['tailscale-serve', 'opentunnel'] as const) {
+      try {
+        await (window as unknown as { api: Api }).api.invoke('remote:set-exposure', exposure)
+        answers.push(null)
+      } catch (error) {
+        answers.push(error instanceof Error ? error.message : String(error))
+      }
     }
+    return answers
   })
-  expect(refused).toMatch(/not available to remote clients/)
+  for (const message of refused) expect(message).toMatch(/how this Mac is published is not available to remote clients/)
 
   const config = (await window.evaluate(() =>
     (window as unknown as { api: Api }).api.invoke('remote:config'),

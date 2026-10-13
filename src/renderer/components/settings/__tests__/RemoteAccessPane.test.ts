@@ -1,7 +1,8 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { userEvent } from 'vitest/browser'
 import RemoteAccessPane from '../RemoteAccessPane.svelte'
-import type { RemoteAccessConfig, RemoteAccessStatus, TunnelStatus, TailscaleStatus } from '../../../../shared/ipc-types'
+import type { RemoteAccessConfig, RemoteAccessStatus, RemoteExposure, TunnelStatus, TailscaleStatus } from '../../../../shared/ipc-types'
 
 const TOKEN = '9f3c0a7e5b1d4826aa11cc22dd33ee44ff5566778899aabbccddeeff00112233'
 const TAILSCALE_IP = '100.109.247.56'
@@ -11,7 +12,7 @@ let answers: Answers
 let invoke: ReturnType<typeof vi.fn>
 
 function config(over: Partial<RemoteAccessConfig> = {}): RemoteAccessConfig {
-  return { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', exposure: 'off', servePort: 0, ...over }
+  return { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', exposure: 'off', servePort: 0, openTunnelAcknowledged: false, ...over }
 }
 
 function status(over: Partial<RemoteAccessStatus> = {}): RemoteAccessStatus {
@@ -165,12 +166,16 @@ describe('Tailscale Serve', () => {
     expect(screen.getByText(/Remote access is off, so nothing is published yet/)).toBeInTheDocument()
   })
 
-  it('is not clickable while a serve command is in flight', async () => {
+  it('is not clickable while a provider request is in flight', async () => {
     answers['remote:tunnel-status'] = serve({ busy: true })
     render(RemoteAccessPane)
     await loaded()
 
-    expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeDisabled()
+    const choice = screen.getByRole('radio', { name: 'Tailscale Serve' })
+    expect(choice).toHaveAttribute('aria-disabled', 'true')
+    await fireEvent.click(choice)
+    expect(invoke).not.toHaveBeenCalledWith('remote:set-exposure', expect.anything())
+    expect(screen.getByRole('radio', { name: 'Off' })).toBeChecked()
   })
 
   it('reports main’s refusal instead of leaving the toggle silently on', async () => {
@@ -178,8 +183,8 @@ describe('Tailscale Serve', () => {
     render(RemoteAccessPane)
     await loaded()
 
-    const toggle = screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })
-    await fireEvent.click(toggle)
+    const choice = screen.getByRole('radio', { name: 'Tailscale Serve' })
+    await fireEvent.click(choice)
     await waitFor(() =>
       expect(screen.getByText(/Serve proxies to this Mac over loopback/)).toBeInTheDocument(),
     )
@@ -204,12 +209,12 @@ describe('Tailscale Serve', () => {
     render(RemoteAccessPane)
     await loaded()
 
-    await fireEvent.click(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' }))
+    await fireEvent.click(screen.getByRole('radio', { name: 'Tailscale Serve' }))
     listeners.get('remote:tunnel-changed')?.(serve({ active: true, port: 52123, url }))
     // The acceptance arrives last, still saying busy; it must not win.
     accept(serve({ busy: true }))
 
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Tailscale Serve' })).toBeEnabled())
     expect(qr()).toBeInTheDocument()
   })
 
@@ -223,7 +228,7 @@ describe('Tailscale Serve', () => {
     render(RemoteAccessPane)
     await loaded()
 
-    expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: 'Tailscale Serve' })).toBeDisabled()
     expect(screen.getByText(/No tailscale command was found\./)).toBeInTheDocument()
   })
 
@@ -241,6 +246,289 @@ describe('Tailscale Serve', () => {
     render(RemoteAccessPane)
     await loaded()
 
-    expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: 'Tailscale Serve' })).toBeDisabled()
+  })
+})
+
+describe('choosing how to publish', () => {
+  it('offers Off, Tailscale Serve and an experimental OpenTunnel, with the stored one checked', async () => {
+    answers['remote:config'] = config({ exposure: 'tailscale-serve' })
+    render(RemoteAccessPane)
+    await loaded()
+
+    const group = screen.getByRole('group', { name: 'Publish beyond this Mac' })
+    const choices = Array.from(group.querySelectorAll('input[type="radio"]')).map((el) => el.getAttribute('aria-label'))
+    expect(choices).toEqual(['Off', 'Tailscale Serve', 'OpenTunnel'])
+    expect(screen.getByRole('radio', { name: 'Tailscale Serve' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'OpenTunnel' })).toHaveAccessibleDescription(/^Experimental\./)
+  })
+
+  // Native radios: the browser moves the choice with the arrow keys.
+  it('moves the choice with the arrow keys', async () => {
+    answers['remote:config'] = config({ exposure: 'tailscale-serve' })
+    render(RemoteAccessPane)
+    await loaded()
+    screen.getByRole('radio', { name: 'Tailscale Serve' }).focus()
+    await userEvent.keyboard('{ArrowUp}')
+    expect(invoke).toHaveBeenCalledWith('remote:set-exposure', 'off')
+  })
+
+  it('keeps focus through a change, so two arrow presses move twice', async () => {
+    answers['remote:config'] = config({ openTunnelAcknowledged: true })
+    invoke.mockImplementation((channel: string, value?: unknown) => {
+      if (channel === 'remote:set-exposure' && typeof value === 'string') {
+        answers['remote:config'] = config({ openTunnelAcknowledged: true, exposure: value as RemoteExposure })
+      }
+      return Promise.resolve(answers[channel])
+    })
+    render(RemoteAccessPane)
+    await loaded()
+
+    screen.getByRole('radio', { name: 'Off' }).focus()
+    await userEvent.keyboard('{ArrowDown}')
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Tailscale Serve' })).toHaveAttribute('aria-disabled', 'false'))
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Tailscale Serve' }))
+    await userEvent.keyboard('{ArrowDown}')
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'OpenTunnel' })).toBeChecked())
+    const sent = invoke.mock.calls.filter(([channel]) => channel === 'remote:set-exposure').map(([, value]) => value)
+    expect(sent).toEqual(['tailscale-serve', 'opentunnel'])
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'OpenTunnel' }))
+  })
+
+  it('switches to Off through main', async () => {
+    answers['remote:config'] = config({ exposure: 'tailscale-serve' })
+    render(RemoteAccessPane)
+    await loaded()
+    await fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+    expect(invoke).toHaveBeenCalledWith('remote:set-exposure', 'off')
+  })
+})
+
+describe('OpenTunnel', () => {
+  const ORIGIN = 'https://0123456789abcdef.shmeg77if6cw.opentunnel.xyz'
+
+  it('asks for the one-time acknowledgement before choosing it, and choosing nothing until then', async () => {
+    render(RemoteAccessPane)
+    await loaded()
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'OpenTunnel' }))
+    const ack = screen.getByTestId('opentunnel-ack')
+    expect(ack.textContent).toMatch(/Anyone with the address can reach the sign-in page/)
+    expect(ack.textContent).toMatch(/access key is the only\s+protection/)
+    expect(ack.textContent).toMatch(/no published terms, pricing or uptime/)
+    expect(ack.textContent).toMatch(/deletes the tunnel/)
+    expect(ack.textContent).toMatch(/phone has to scan again/)
+    expect(invoke).not.toHaveBeenCalledWith('remote:set-exposure', 'opentunnel')
+
+    // The radio the click checked goes back until the choice is confirmed.
+    expect(screen.getByRole('radio', { name: 'OpenTunnel' })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Off' })).toBeChecked()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('opentunnel-ack')).toBeNull()
+    expect(invoke).not.toHaveBeenCalledWith('remote:acknowledge-opentunnel')
+  })
+
+  it('records the acknowledgement, then chooses OpenTunnel', async () => {
+    answers['remote:acknowledge-opentunnel'] = config({ openTunnelAcknowledged: true })
+    render(RemoteAccessPane)
+    await loaded()
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'OpenTunnel' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'I understand, use OpenTunnel' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('remote:set-exposure', 'opentunnel'))
+    const calls = invoke.mock.calls.map(([channel]) => channel)
+    expect(calls.indexOf('remote:acknowledge-opentunnel')).toBeLessThan(calls.indexOf('remote:set-exposure'))
+    expect(screen.queryByTestId('opentunnel-ack')).toBeNull()
+  })
+
+  it('does not ask again once acknowledged', async () => {
+    answers['remote:config'] = config({ openTunnelAcknowledged: true })
+    render(RemoteAccessPane)
+    await loaded()
+
+    await fireEvent.click(screen.getByRole('radio', { name: 'OpenTunnel' }))
+    expect(screen.queryByTestId('opentunnel-ack')).toBeNull()
+    expect(invoke).toHaveBeenCalledWith('remote:set-exposure', 'opentunnel')
+  })
+
+  it('says provisioning can take a minute while it is in flight', async () => {
+    answers['remote:config'] = config({ exposure: 'opentunnel', openTunnelAcknowledged: true })
+    answers['remote:tunnel-status'] = serve({ busy: true, progress: 'Waiting for the certificate…' })
+    render(RemoteAccessPane)
+    await loaded()
+
+    const progress = screen.getByTestId('tunnel-progress')
+    expect(progress.textContent).toMatch(/Waiting for the certificate…/)
+    expect(progress.textContent).toMatch(/can take a minute/)
+    // No code yet, and the note names the provider being waited on.
+    expect(qr()).toBeNull()
+    expect(screen.getByTestId('pairing-note').textContent).toMatch(/OpenTunnel has not published an address yet/)
+  })
+
+  // Provisioning can take minutes; switching away is how it is cancelled.
+  it('keeps the choice open while OpenTunnel provisions, and only then', async () => {
+    answers['remote:config'] = config({ exposure: 'opentunnel', openTunnelAcknowledged: true })
+    answers['remote:tunnel-status'] = serve({ busy: true, progress: 'Waiting for the certificate…' })
+    render(RemoteAccessPane)
+    await loaded()
+    expect(screen.getByRole('radio', { name: 'Off' })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: 'Tailscale Serve' })).toBeEnabled()
+  })
+
+  it('still reports a tunnel being deleted, or not, after switching to Tailscale', async () => {
+    answers['remote:config'] = config({ exposure: 'tailscale-serve', openTunnelAcknowledged: true })
+    answers['remote:tunnel-status'] = serve({
+      elsewhere: [
+        {
+          provider: 'opentunnel',
+          busy: false,
+          progress: null,
+          error: 'Could not delete the tunnel on the relay, so it stays on record to try again: the relay answered HTTP 503',
+          forgettable: false,
+        },
+      ],
+    })
+    render(RemoteAccessPane)
+    await loaded()
+    expect(screen.getByTestId('tunnel-elsewhere').textContent).toMatch(/^\s*OpenTunnel: Could not delete the tunnel/)
+    expect(screen.queryByRole('button', { name: 'Forget without deleting' })).toBeNull()
+  })
+
+  it('offers Forget after switching from OpenTunnel to Off with the relay down', async () => {
+    answers['remote:config'] = config({ exposure: 'off', openTunnelAcknowledged: true })
+    answers['remote:tunnel-status'] = serve({
+      elsewhere: [{ provider: 'opentunnel', busy: false, progress: null, error: 'Could not delete the tunnel', forgettable: true }],
+    })
+    render(RemoteAccessPane)
+    await loaded()
+    await fireEvent.click(screen.getByRole('button', { name: 'Forget without deleting' }))
+    expect(invoke).toHaveBeenCalledWith('remote:forget-tunnel', 'opentunnel')
+  })
+
+  it('offers to forget a tunnel the relay will not delete, saying it may remain there', async () => {
+    answers['remote:config'] = config({ exposure: 'tailscale-serve', openTunnelAcknowledged: true })
+    answers['remote:tunnel-status'] = serve({
+      elsewhere: [{ provider: 'opentunnel', busy: false, progress: null, error: 'Could not delete the tunnel', forgettable: true }],
+    })
+    render(RemoteAccessPane)
+    await loaded()
+
+    expect(screen.getByTestId('tunnel-elsewhere').textContent).toMatch(/may then remain\s+on the relay/)
+    await fireEvent.click(screen.getByRole('button', { name: 'Forget without deleting' }))
+    expect(invoke).toHaveBeenCalledWith('remote:forget-tunnel', 'opentunnel')
+  })
+
+  it('shows the public address without the key, the relay state, and pairs on the tunnel URL', async () => {
+    answers['remote:config'] = config({ exposure: 'opentunnel', openTunnelAcknowledged: true })
+    answers['remote:tunnel-status'] = serve({
+      active: true,
+      port: 52123,
+      url: `${ORIGIN}/app/?k=${TOKEN}`,
+      connection: 'reconnecting',
+    })
+    render(RemoteAccessPane)
+    await loaded()
+
+    expect(screen.getByTestId('tunnel-origin').textContent).toBe(ORIGIN)
+    expect(screen.getByTestId('tunnel-connection').textContent?.trim()).toBe('Reconnecting…')
+    await waitFor(() => expect(qr()).not.toBeNull())
+    expect(screen.getByText(/A real HTTPS certificate/)).toBeInTheDocument()
+  })
+
+  it('shows the error the tunnel reports', async () => {
+    answers['remote:config'] = config({ exposure: 'opentunnel', openTunnelAcknowledged: true })
+    answers['remote:tunnel-status'] = serve({ error: 'Lost the connection to the relay: socket hang up' })
+    render(RemoteAccessPane)
+    await loaded()
+    expect(screen.getByText('Lost the connection to the relay: socket hang up')).toBeInTheDocument()
+  })
+
+  describe('switching away from a published tunnel', () => {
+    beforeEach(() => {
+      answers['remote:config'] = config({ exposure: 'opentunnel', openTunnelAcknowledged: true })
+      answers['remote:tunnel-status'] = serve({
+        active: true,
+        port: 52123,
+        url: `${ORIGIN}/app/?k=${TOKEN}`,
+        connection: 'connected',
+        kept: true,
+      })
+    })
+
+    it('asks first, and switches once confirmed', async () => {
+      render(RemoteAccessPane)
+      await loaded()
+      await fireEvent.click(screen.getByRole('radio', { name: 'Tailscale Serve' }))
+
+      const confirm = screen.getByTestId('opentunnel-leave')
+      expect(confirm.textContent).toMatch(/deletes the tunnel/)
+      expect(confirm.textContent).toMatch(/phone will need to scan a new code/)
+      expect(invoke).not.toHaveBeenCalledWith('remote:set-exposure', expect.anything())
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Delete tunnel and switch' }))
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('remote:set-exposure', 'tailscale-serve'))
+      expect(screen.queryByTestId('opentunnel-leave')).toBeNull()
+    })
+
+    it('sends nothing and keeps OpenTunnel selected when cancelled', async () => {
+      render(RemoteAccessPane)
+      await loaded()
+      await fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+      expect(screen.getByRole('radio', { name: 'OpenTunnel' })).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'Off' })).not.toBeChecked()
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Keep OpenTunnel' }))
+      expect(screen.queryByTestId('opentunnel-leave')).toBeNull()
+      expect(screen.getByRole('radio', { name: 'OpenTunnel' })).toBeChecked()
+      expect(invoke).not.toHaveBeenCalledWith('remote:set-exposure', expect.anything())
+    })
+
+    it('asks before an arrow key moves the choice off OpenTunnel', async () => {
+      render(RemoteAccessPane)
+      await loaded()
+      screen.getByRole('radio', { name: 'OpenTunnel' }).focus()
+      await userEvent.keyboard('{ArrowUp}')
+
+      expect(screen.getByTestId('opentunnel-leave').textContent).toMatch(/Switching to Tailscale Serve/)
+      expect(screen.getByRole('radio', { name: 'OpenTunnel' })).toBeChecked()
+      expect(invoke).not.toHaveBeenCalledWith('remote:set-exposure', expect.anything())
+    })
+
+    it('drops the question once the tunnel is gone underneath it', async () => {
+      const listeners = new Map<string, (data: unknown) => void>()
+      vi.stubGlobal('api', {
+        invoke,
+        on: vi.fn((channel: string, listener: (data: unknown) => void) => {
+          listeners.set(channel, listener)
+          return () => {}
+        }),
+      })
+      render(RemoteAccessPane)
+      await loaded()
+      await fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+      expect(screen.getByTestId('opentunnel-leave')).toBeInTheDocument()
+
+      listeners.get('remote:tunnel-changed')?.(serve({ kept: false }))
+      await waitFor(() => expect(screen.queryByTestId('opentunnel-leave')).toBeNull())
+    })
+
+    it('lets a first provisioning be cancelled without asking', async () => {
+      answers['remote:tunnel-status'] = serve({ busy: true, progress: 'Waiting for the certificate…', kept: false })
+      render(RemoteAccessPane)
+      await loaded()
+      await fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+      expect(screen.queryByTestId('opentunnel-leave')).toBeNull()
+      expect(invoke).toHaveBeenCalledWith('remote:set-exposure', 'off')
+    })
+  })
+
+  it('says the address is kept while remote access is off', async () => {
+    answers['remote:config'] = config({ enabled: false, exposure: 'opentunnel', openTunnelAcknowledged: true })
+    answers['remote:status'] = status({ running: false, host: null, port: null, url: null, powerSaveBlocked: false })
+    render(RemoteAccessPane)
+    await loaded()
+    expect(screen.getByText(/The address is kept while it is off/)).toBeInTheDocument()
   })
 })

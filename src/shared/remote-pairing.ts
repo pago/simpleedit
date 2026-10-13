@@ -14,6 +14,14 @@
  * The preference order is the provider's HTTPS tunnel first: `getUserMedia` needs a
  * secure context, so dictation only exists on that URL.
  */
+import type { RemoteExposure } from './ipc-types'
+
+/** How the pane and the pairing notes name each exposure. */
+export const EXPOSURE_LABELS: Record<RemoteExposure, string> = {
+  off: 'Off',
+  'tailscale-serve': 'Tailscale Serve',
+  opentunnel: 'OpenTunnel',
+}
 
 /** Where the shell lives. Fixed, so an installed app's scope survives a restart. */
 export const APP_PATH = '/app/'
@@ -36,6 +44,8 @@ export function withoutKey(url: string): string {
 }
 
 export interface PairingInput {
+  /** The chosen reachability provider, so a note can name it. */
+  exposure: RemoteExposure
   /** Is the server listening right now? */
   running: boolean
   /** The URL the server is bound to, key included. Null when stopped. */
@@ -90,11 +100,18 @@ export function pairingTarget(input: PairingInput): PairingTarget {
         'This is plain HTTP over the tailnet. It works, but a browser will not call it a secure context, so dictation stays unavailable. For an HTTPS address, switch the bind to “This Mac only” and turn on Tailscale Serve: Serve proxies from this Mac, so loopback is the bind it needs.',
     }
   }
+  if (input.exposure !== 'off' && !input.boundToTailscale) {
+    return {
+      url: null,
+      secure: false,
+      note: `${EXPOSURE_LABELS[input.exposure]} has not published an address yet. Its status is shown above.`,
+    }
+  }
   return {
     url: null,
     secure: false,
     note: input.boundToTailscale
       ? 'There is no address a phone can reach yet.'
-      : 'Remote access is bound to this Mac only, so there is nothing for a phone to scan yet. Turn on Tailscale Serve above to publish it at an HTTPS address — Serve proxies from this Mac, so this is the bind it wants. To reach a phone without Serve, pick the Tailscale address above instead; that link is plain HTTP, so dictation will not work over it.',
+      : 'Remote access is bound to this Mac only, so there is nothing for a phone to scan yet. Choose Tailscale Serve or OpenTunnel above to publish it at an HTTPS address — both proxy from this Mac, so this is the bind they want. To reach a phone without either, pick the Tailscale address above instead; that link is plain HTTP, so dictation will not work over it.',
   }
 }

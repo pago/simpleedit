@@ -55,7 +55,7 @@ import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub, currentRemoteToken, webBuildId } from './remote/server'
 import { capDiffForRemote } from './remote/payload-cap'
 import { getTailscaleStatus } from './remote/tailscale'
-import { PROVIDERS, applyExposure, reclaimAbandonedTunnels, stopAllTunnelsSync, tunnelStatus } from './remote/reachability'
+import { PROVIDERS, applyExposure, forgetTunnel, proxyTrust, reclaimAbandonedTunnels, stopAllTunnelsSync, tunnelStatus } from './remote/reachability'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
 import { pairingTarget, withoutKey } from '../shared/remote-pairing'
 import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepAbandonedAudio } from './remote/stt'
@@ -371,6 +371,13 @@ function applyAndBroadcastDraftOp(url: string, op: PrReviewDraftOp): DraftOpResu
 }
 
 /**
+ * The exposure as of the last `syncTunnel`, which runs on every change to it.
+ * The server asks for its proxy trust on every request, and this spares that
+ * a config read each time.
+ */
+let syncedExposure: RemoteExposure = 'off'
+
+/**
  * Point the chosen reachability provider at the server that is running NOW,
  * or remove its mapping entirely. Called on every path that starts, stops or
  * re-binds the server, and by the opt-in toggle.
@@ -379,10 +386,11 @@ function applyAndBroadcastDraftOp(url: string, op: PrReviewDraftOp): DraftOpResu
  *
  *  - **The mapping never outlives its server.** The port is ephemeral, so a
  *    mapping that survives a restart points at a dead port or, worse, at a
- *    recycled one belonging to something else.
+ *    recycled one belonging to something else. (A provider may keep its public
+ *    NAME across restarts — OpenTunnel does — but never a route to a dead port.)
  *  - **A provider only ever proxies a LOOPBACK bind.** Not a style preference:
  *    the tunnel terminates TLS and forwards over plain HTTP, and `originOf`
- *    only honours the forwarded `https` scheme from a loopback peer. Pointed
+ *    only believes a request came in over `https` from a loopback peer. Pointed
  *    at any other address, every subresource would be refused as cross-origin
  *    and the phone would get a blank page. Binding loopback is also strictly
  *    safer: with a tunnel on, nothing answers in the clear off this Mac.
@@ -393,6 +401,7 @@ function applyAndBroadcastDraftOp(url: string, op: PrReviewDraftOp): DraftOpResu
  */
 function syncTunnel(): TunnelStatus {
   const config = getRemoteConfig()
+  syncedExposure = config.exposure
   const status = getRemoteStatus()
   const token = currentRemoteToken()
   const want =
@@ -417,6 +426,7 @@ function pushTargetUrl(): string | null {
   const status = getRemoteStatus()
   const tunnel = tunnelStatus(getRemoteConfig().exposure)
   const { url } = pairingTarget({
+    exposure: getRemoteConfig().exposure,
     running: status.running,
     directUrl: status.url,
     boundToTailscale: listRemoteInterfaces().some((i) => i.isTailscale && i.address === status.host),
@@ -478,17 +488,14 @@ function applyRemoteConfig(): Promise<RemoteAccessStatus> {
 async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
   const config = getRemoteConfig()
   stopRemoteServer()
-  if (!config.enabled) {
-    syncTunnel()
-    return getRemoteStatus()
-  }
+  // Before anything listens again: a provider still routing to the old port
+  // would hand visitors to whatever takes that port next.
+  syncTunnel()
+  if (!config.enabled) return getRemoteStatus()
   // The stored preference is kept verbatim, so this is where a host that is no
   // longer bindable — a Tailscale address with Tailscale down — is caught. It
   // fails closed and SAYS so, rather than quietly binding somewhere else.
-  if (!isAllowedBindHost(config.host)) {
-    syncTunnel()
-    return remoteBindRefused(config.host)
-  }
+  if (!isAllowedBindHost(config.host)) return remoteBindRefused(config.host)
   const status = await startRemoteServer({
     host: config.host,
     port: config.port,
@@ -496,6 +503,7 @@ async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
     buildId: webBuildId(remoteWebRoot(), app.getVersion()),
     attachTarget: remoteAttachTarget,
     onStatusChange: broadcastRemoteStatus,
+    proxyTrust: () => proxyTrust(syncedExposure),
     onClientGone: releaseTerminalsOwnedBy,
   })
   // After the port is known, but not awaited: a provider can take a minute to
@@ -737,25 +745,50 @@ function registerAllHandlers(): void {
 
   handleInvoke('remote:set-exposure', async (event, exposure: RemoteExposure) => {
     // Not reachable over the socket. Every other `remote:*` setter decides what
-    // THIS Mac does; this one decides what the tailnet can reach, and a token
-    // holder must not be able to widen the surface from loopback-only to every
-    // device on the tailnet in a single call. `clientKey` is stamped by main
-    // from the call's origin, so a socket cannot claim to be a window.
+    // THIS Mac does; this one decides who beyond it can reach it, and a token
+    // holder must not be able to widen the surface from loopback-only to the
+    // tailnet, or to the whole internet, in a single call. `clientKey` is
+    // stamped by main from the call's origin, so a socket cannot claim to be a
+    // window.
     if (event.sender.clientKey !== undefined) {
-      throw new Error('Tailscale Serve is not available to remote clients')
+      throw new Error('Changing how this Mac is published is not available to remote clients')
     }
     if (!REMOTE_EXPOSURES.includes(exposure)) throw new Error(`Unknown remote exposure: ${String(exposure)}`)
     const config = getRemoteConfig()
     // Refused up front so the pane can say why, rather than leaving the user
-    // with a toggle that is on and a mapping that never appears. `syncTunnel`
+    // with a choice that is on and a mapping that never appears. `syncTunnel`
     // enforces the same rule at the point of use.
     if (exposure !== 'off' && !isLoopbackHost(config.host)) {
       throw new Error(
-        'Tailscale Serve proxies to this Mac over loopback, so remote access has to be bound to 127.0.0.1. Pick "This Mac only" above — with Serve on, that is also the safer choice: nothing answers in the clear on the tailnet.',
+        'Publishing proxies to this Mac over loopback, so remote access has to be bound to 127.0.0.1. Pick "This Mac only" above — with publishing on, that is also the safer choice: nothing else answers in the clear.',
       )
+    }
+    // The pane asks first; this is what makes the question unskippable.
+    if (exposure === 'opentunnel' && !config.openTunnelAcknowledged) {
+      throw new Error('OpenTunnel puts this Mac on the public internet. Confirm that in Settings first.')
     }
     setRemoteConfig({ ...config, exposure })
     return syncTunnel()
+  })
+
+  handleInvoke('remote:forget-tunnel', async (event, provider: unknown) => {
+    // Leaving a public tunnel in place is the owner's call, never a link holder's.
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('Changing how this Mac is published is not available to remote clients')
+    }
+    if (provider !== 'tailscale-serve' && provider !== 'opentunnel') {
+      throw new Error(`Unknown remote exposure: ${String(provider)}`)
+    }
+    return forgetTunnel(provider, getRemoteConfig().exposure)
+  })
+
+  handleInvoke('remote:acknowledge-opentunnel', async (event) => {
+    if (event.sender.clientKey !== undefined) {
+      throw new Error('Changing how this Mac is published is not available to remote clients')
+    }
+    const next = { ...getRemoteConfig(), openTunnelAcknowledged: true }
+    setRemoteConfig(next)
+    return next
   })
 
   handleInvoke('remote:set-enabled', async (_event, enabled: boolean) => {
@@ -1402,7 +1435,7 @@ app.whenReady().then(() => {
   // A tunnel mapping does NOT survive: the previous run's port is gone, so any
   // mapping recorded against it is removed BEFORE a new server can claim a
   // port — sequenced, or the reclaim would tear down the one just created.
-  void reclaimAbandonedTunnels()
+  void reclaimAbandonedTunnels(getRemoteConfig().exposure)
     .then(() => applyRemoteConfig())
     .catch((err: unknown) => {
       console.error('[SimpleEdit] Failed to start remote access:', err)

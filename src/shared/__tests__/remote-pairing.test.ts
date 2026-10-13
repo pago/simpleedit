@@ -23,12 +23,13 @@ describe('isPhoneReachable', () => {
 describe('pairingTarget', () => {
   it('offers nothing while the server is stopped', () => {
     expect(
-      pairingTarget({ running: false, directUrl: null, boundToTailscale: false, tunnelUrl: null }),
+      pairingTarget({ exposure: 'off', running: false, directUrl: null, boundToTailscale: false, tunnelUrl: null }),
     ).toEqual({ url: null, secure: false, note: null })
   })
 
   it('never offers a loopback URL, even when the caller claims it is on the tailnet', () => {
     const result = pairingTarget({
+      exposure: 'off',
       running: true,
       directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
       boundToTailscale: true,
@@ -39,6 +40,7 @@ describe('pairingTarget', () => {
 
   it('ignores a serve URL that points at this machine', () => {
     const result = pairingTarget({
+      exposure: 'off',
       running: true,
       directUrl: null,
       boundToTailscale: false,
@@ -50,6 +52,7 @@ describe('pairingTarget', () => {
   it('prefers the HTTPS serve URL and marks it secure', () => {
     const tunnelUrl = `https://mac.tail050858.ts.net${TOKEN_PATH}`
     const result = pairingTarget({
+      exposure: 'off',
       running: true,
       directUrl: `http://100.109.247.56:5173${TOKEN_PATH}`,
       boundToTailscale: true,
@@ -61,6 +64,7 @@ describe('pairingTarget', () => {
   it('falls back to the tailnet address, flagged as not a secure context', () => {
     const directUrl = `http://100.109.247.56:5173${TOKEN_PATH}`
     const result = pairingTarget({
+      exposure: 'off',
       running: true,
       directUrl,
       boundToTailscale: true,
@@ -73,6 +77,7 @@ describe('pairingTarget', () => {
 
   it('explains a loopback bind rather than showing a code that cannot work', () => {
     const result = pairingTarget({
+      exposure: 'off',
       running: true,
       directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
       boundToTailscale: false,
@@ -89,21 +94,49 @@ describe('pairingTarget', () => {
     // Tailscale address is offered as the alternative to Serve, not a step
     // toward it.
     const loopback = pairingTarget({
+      exposure: 'off',
       running: true,
       directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
       boundToTailscale: false,
       tunnelUrl: null,
     }).note
-    expect(loopback).toMatch(/Turn on Tailscale Serve above/)
-    expect(loopback).toMatch(/without Serve, pick the Tailscale address/)
+    expect(loopback).toMatch(/Choose Tailscale Serve or OpenTunnel above/)
+    expect(loopback).toMatch(/without either, pick the Tailscale address/)
 
     const overTailnet = pairingTarget({
+      exposure: 'off',
       running: true,
       directUrl: `http://100.109.247.56:5173${TOKEN_PATH}`,
       boundToTailscale: true,
       tunnelUrl: null,
     }).note
     expect(overTailnet).toMatch(/switch the bind to .This Mac only. and turn on Tailscale Serve/)
+  })
+})
+
+describe('pairingTarget while a provider is still publishing', () => {
+  it('names the chosen provider instead of telling the user to choose one', () => {
+    const result = pairingTarget({
+      exposure: 'opentunnel',
+      running: true,
+      directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
+      boundToTailscale: false,
+      tunnelUrl: null,
+    })
+    expect(result.url).toBeNull()
+    expect(result.note).toBe('OpenTunnel has not published an address yet. Its status is shown above.')
+  })
+
+  it('encodes the OpenTunnel URL once there is one', () => {
+    const tunnelUrl = `https://46a58ed880bbfb4a.shmeg77if6cw.opentunnel.xyz${TOKEN_PATH}`
+    const result = pairingTarget({
+      exposure: 'opentunnel',
+      running: true,
+      directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
+      boundToTailscale: false,
+      tunnelUrl,
+    })
+    expect(result).toEqual({ url: tunnelUrl, secure: true, note: null })
   })
 })
 

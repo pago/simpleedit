@@ -30,8 +30,8 @@
  *    REQUEST carried (the manifest's start URL, so an install carries it); they
  *    never read the real one.
  *  - The bind host is always explicit and defaults to loopback. Nothing here
- *    ever passes `0.0.0.0`; reaching the phone is Tailscale's job, and putting
- *    a shell on every interface must stay a deliberate act.
+ *    ever passes `0.0.0.0`; reaching the phone is a reachability provider's
+ *    job, and putting a shell on every interface must stay a deliberate act.
  *  - Cross-origin requests are refused outright, and the WebSocket upgrade
  *    additionally requires an `Origin` naming the host it was sent to — see
  *    `sameOrigin` for what that does and does not stop.
@@ -72,6 +72,12 @@ export interface RemoteServerOptions {
    * is; this module deliberately knows nothing about terminals.
    */
   onClientGone?: (clientKey: PtyClientId) => void
+  /**
+   * What to believe about a loopback request's origin, asked per request
+   * because the chosen provider can change while the server runs. Absent:
+   * forwarded headers are trusted from loopback, the `tailscale serve` case.
+   */
+  proxyTrust?: () => ProxyTrust
   /**
    * The build this server ships (`webBuildId`). Stamped into the served
    * index.html and every `hello`, so a phone still running an older bundle can
@@ -367,6 +373,21 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
   return raw?.split(',')[0]?.trim() || undefined
 }
 
+/**
+ * How far a loopback request may be believed about its own origin.
+ *
+ * `forwardedHeaders`: honour `x-forwarded-host`/`-proto`. Only for a proxy
+ * that sets them itself and that no visitor can talk past.
+ * `httpsHosts`: hosts that only ever reach us through a provider terminating
+ * TLS in this process, which forwards plain HTTP and sets no headers at all.
+ */
+export interface ProxyTrust {
+  forwardedHeaders: boolean
+  httpsHosts: readonly string[]
+}
+
+const TRUST_FORWARDED: ProxyTrust = { forwardedHeaders: true, httpsHosts: [] }
+
 /** Loopback peers only: the reverse proxy runs on this machine. */
 export function isLoopbackPeer(remoteAddress: string | undefined): boolean {
   return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
@@ -391,17 +412,27 @@ export function isLoopbackPeer(remoteAddress: string | undefined): boolean {
  * to name its own scheme or host. That narrowing costs nothing — the two
  * supported deployments are loopback-behind-a-proxy and direct-to-tailnet, and
  * only the first has a proxy to trust.
+ *
+ * A public tunnel breaks the assumption that loopback means "a proxy the user
+ * configured": every OpenTunnel visitor arrives from 127.0.0.1 and its own
+ * forwarded headers reach us verbatim. So `trust` comes from the chosen
+ * provider, and with OpenTunnel the headers are ignored; its public host is
+ * named instead, because its TLS ends in this process and nothing forwards a
+ * scheme.
  */
 export function originOf(
   headers: IncomingMessage['headers'],
   remoteAddress: string | undefined,
+  trust: ProxyTrust = TRUST_FORWARDED,
 ): string | null {
-  const trusted = isLoopbackPeer(remoteAddress)
-  const forwardedHost = trusted ? firstHeaderValue(headers['x-forwarded-host']) : undefined
-  const forwardedProto = trusted ? firstHeaderValue(headers['x-forwarded-proto']) : undefined
+  const loopback = isLoopbackPeer(remoteAddress)
+  const forwarded = loopback && trust.forwardedHeaders
+  const forwardedHost = forwarded ? firstHeaderValue(headers['x-forwarded-host']) : undefined
+  const forwardedProto = forwarded ? firstHeaderValue(headers['x-forwarded-proto']) : undefined
   const host = forwardedHost ?? headers.host
   if (!host) return null
-  return `${forwardedProto === 'https' ? 'https' : 'http'}://${host}`
+  const tunnelled = loopback && trust.httpsHosts.includes(host.toLowerCase())
+  return `${forwardedProto === 'https' || tunnelled ? 'https' : 'http'}://${host}`
 }
 
 /**
@@ -419,10 +450,36 @@ export function originOf(
  * could simply open the real page. The key is the boundary; this is the
  * belt to its braces.
  */
-function sameOrigin(req: IncomingMessage): boolean {
+function sameOrigin(req: IncomingMessage, trust: ProxyTrust): boolean {
   const origin = req.headers.origin
   if (!origin) return true
-  return origin === originOf(req.headers, req.socket.remoteAddress)
+  return origin === originOf(req.headers, req.socket.remoteAddress, trust)
+}
+
+/** How often a wrong key may reach the log at most. */
+const REFUSAL_LOG_INTERVAL_MS = 60_000
+
+let refusedSinceLog = 0
+let refusalLoggedAt = Number.NEGATIVE_INFINITY
+
+/**
+ * A wrong key was presented. Logged, never acted on: the key is 256 bits, so
+ * guessing it is not the threat, and every tunnelled visitor is 127.0.0.1, so
+ * a lockout would let anyone lock the owner's own phone out. Throttled, so a
+ * flood costs one line a minute.
+ */
+export function noteRefusedKey(where: string, now = Date.now()): void {
+  refusedSinceLog += 1
+  if (now - refusalLoggedAt < REFUSAL_LOG_INTERVAL_MS) return
+  console.warn(`[Remote] Refused ${refusedSinceLog} request(s) with a stale or wrong access key; latest at ${where}`)
+  refusedSinceLog = 0
+  refusalLoggedAt = now
+}
+
+/** Test seam: forget the throttle window. */
+export function resetRefusalLogForTests(): void {
+  refusedSinceLog = 0
+  refusalLoggedAt = Number.NEGATIVE_INFINITY
 }
 
 function attachSocket(ws: WebSocket, server: RunningServer, request: AttachRequest | null): void {
@@ -577,9 +634,11 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
     powerSaveBlockerId: null,
   }
 
+  const trust = (): ProxyTrust => options.proxyTrust?.() ?? TRUST_FORWARDED
+
   function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') return notFound(res)
-    if (!sameOrigin(req)) {
+    if (!sameOrigin(req, trust())) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Cross-origin request refused')
       return
@@ -589,7 +648,9 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
 
     if (path === '/app/auth') {
       const key = keyParam(req.url)
-      res.writeHead(key !== null && tokenMatches(key, token) ? 204 : 401, SHELL_HEADERS)
+      const ok = key !== null && tokenMatches(key, token)
+      if (key !== null && !ok) noteRefusedKey('/app/auth')
+      res.writeHead(ok ? 204 : 401, SHELL_HEADERS)
       res.end()
       return
     }
@@ -610,12 +671,13 @@ async function openServer(options: RemoteServerOptions): Promise<RemoteAccessSta
     // name the host the page was loaded from. An upgrade with none is a
     // non-browser client and is refused: nothing we ship connects that way.
     const key = keyParam(req.url)
+    const keyOk = key !== null && tokenMatches(key, token)
+    if (key !== null && !keyOk) noteRefusedKey(`${APP_PATH}ws`)
     if (
       pathOf(req.url) !== `${APP_PATH}ws` ||
-      key === null ||
-      !tokenMatches(key, token) ||
+      !keyOk ||
       !req.headers.origin ||
-      !sameOrigin(req)
+      !sameOrigin(req, trust())
     ) {
       socket.destroy()
       return

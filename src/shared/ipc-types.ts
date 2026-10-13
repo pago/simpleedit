@@ -1201,7 +1201,8 @@ export interface RemoteAccessConfig {
    *
    * Explicit opt-in, separate from `enabled`, and never implied by it: a
    * provider publishes this app beyond this Mac — Serve to every device on the
-   * tailnet under a stable HTTPS name. Turning remote access on is a decision
+   * tailnet, OpenTunnel to the whole internet, each under a stable HTTPS name.
+   * Turning remote access on is a decision
    * about this Mac; choosing an exposure is a decision about who can reach it.
    */
   exposure: RemoteExposure
@@ -1215,6 +1216,12 @@ export interface RemoteAccessConfig {
    * points at exactly that target.
    */
   servePort: number
+  /**
+   * The user has read, once, that OpenTunnel puts this app on the public
+   * internet behind nothing but the access key. `remote:set-exposure` refuses
+   * `'opentunnel'` until this is set.
+   */
+  openTunnelAcknowledged: boolean
 }
 
 // ── Speech to text ────────────────────────────────────────
@@ -1302,6 +1309,14 @@ export interface RemoteInvokeMap {
    * the running server's current port.
    */
   'remote:set-exposure': { args: [exposure: RemoteExposure]; result: TunnelStatus }
+  /**
+   * Forget a provider's leftover that could not be removed (an OpenTunnel
+   * tunnel the relay would not delete), without removing it. Desktop only,
+   * and refused for the chosen exposure.
+   */
+  'remote:forget-tunnel': { args: [provider: Exclude<RemoteExposure, 'off'>]; result: TunnelStatus }
+  /** Record the one-time OpenTunnel acknowledgement. Desktop only, like `remote:set-exposure`. */
+  'remote:acknowledge-opentunnel': { args: []; result: RemoteAccessConfig }
   /** The windows with a repo — the projects a phone can attach to. */
   'remote:projects': { args: []; result: RemoteProject[] }
   /** Probe the Tailscale CLI. Spawns a subprocess, so it is called on demand. */
@@ -1340,14 +1355,15 @@ export interface TailscaleStatus {
 }
 
 /** The reachability providers, by the id `RemoteAccessConfig.exposure` stores. */
-export const REMOTE_EXPOSURES = ['off', 'tailscale-serve'] as const
+export const REMOTE_EXPOSURES = ['off', 'tailscale-serve', 'opentunnel'] as const
 export type RemoteExposure = (typeof REMOTE_EXPOSURES)[number]
 
 /**
  * The public mapping the active reachability provider owns.
  *
- * Its lifetime is the remote server's: created when the server starts,
- * re-pointed when the ephemeral port changes, removed when it stops.
+ * Its connection follows the remote server: made when the server starts,
+ * re-pointed when the ephemeral port changes, dropped when it stops. Whether
+ * the public NAME outlives that differs by provider (`remote/reachability.ts`).
  */
 export interface TunnelStatus {
   /** A mapping exists and is published. */
@@ -1368,7 +1384,35 @@ export interface TunnelStatus {
    */
   enableUrl: string | null
   error: string | null
+  /** What a long provisioning is doing right now, for a provider that reports it. */
+  progress?: string | null
+  /** The relay connection, for a provider that holds one open. */
+  connection?: TunnelConnectionState | null
+  /**
+   * A published address is on record that switching away would delete, so a
+   * phone that knows it would have to rescan. False while a first
+   * provisioning has not yet produced one.
+   */
+  kept?: boolean
+  /**
+   * Providers other than this one that are still tearing down, or failed to.
+   * A tunnel left on a public relay must be visible whichever exposure is chosen.
+   */
+  elsewhere?: TunnelNotice[]
 }
+
+/** What a provider that is not the one on screen still has to say. */
+export interface TunnelNotice {
+  provider: Exclude<RemoteExposure, 'off'>
+  busy: boolean
+  progress: string | null
+  error: string | null
+  /** Its failure can be dismissed with `remote:forget-tunnel`, leaving the remote side as it is. */
+  forgettable: boolean
+}
+
+/** `closing`: the bridge is being shut down and may still deliver visitors until it has. */
+export type TunnelConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'closing'
 
 export interface RemoteInterface {
   name: string

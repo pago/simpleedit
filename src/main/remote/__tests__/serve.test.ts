@@ -72,7 +72,7 @@ async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
 }
 
 beforeEach(() => {
-  config = { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', exposure: 'tailscale-serve', servePort: 0 }
+  config = { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', exposure: 'tailscale-serve', servePort: 0, openTunnelAcknowledged: false }
   fixtures = mkdtempSync(join(tmpdir(), 'se-serve-'))
   stub = join(fixtures, 'tailscale')
   log = join(fixtures, 'calls.log')
