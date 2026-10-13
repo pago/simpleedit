@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Sidebar from './components/sidebar/Sidebar.svelte'
+  import SidebarRail from './components/sidebar/SidebarRail.svelte'
   import WorkspaceManager from './components/layout/WorkspaceManager.svelte'
   import ScreenPrsView from './components/screenprs/ScreenPrsView.svelte'
   import Welcome from './components/Welcome.svelte'
@@ -8,6 +9,8 @@
   import { uiView } from './stores/uiView.svelte'
   import { clampSidebarWidth, loadSidebarWidths, saveSidebarWidth } from './lib/sidebarWidth'
   import { viewForShortcut } from './lib/viewShortcuts'
+  import { isToggleSidebarShortcut, SIDEBAR_RAIL_WIDTH } from './lib/sidebarCollapse'
+  import { sidebarRail } from './stores/sidebarRail.svelte'
   import { initScreenPrsListeners } from './stores/screenprs.svelte'
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
@@ -30,6 +33,8 @@
 
   let sidebarWidths = $state(loadSidebarWidths())
   let sidebarWidth = $derived(sidebarWidths[uiView.current()])
+  let sidebarCollapsed = $derived(sidebarRail.collapsed())
+  const isMac = navigator.platform.startsWith('Mac')
   let isResizing = $state(false)
   let repoPath = $state<string | null>(null)
   let sessionReady = $state(false)
@@ -149,14 +154,19 @@
     const view = viewForShortcut(e)
     if (view) {
       e.preventDefault()
-      uiView.show(view)
+      sidebarRail.showSection(view)
+      return
+    }
+    const target = e.target as HTMLElement | null
+    if (isToggleSidebarShortcut(e, isMac, !!target?.classList.contains('xterm-helper-textarea'))) {
+      e.preventDefault()
+      sidebarRail.toggleCollapsed()
       return
     }
     // ⌘T / Ctrl+T — new Claude session, focusing its terminal. Fires even while
     // a terminal is focused (the common case); xterm's helper textarea is
     // exempt from the text-field guard so the shortcut still reaches us there.
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
-      const target = e.target as HTMLElement | null
       const tag = target?.tagName
       const inTextField =
         (tag === 'INPUT' || tag === 'TEXTAREA') &&
@@ -215,28 +225,49 @@
     <UpdateBanner />
     <!-- Title bar / drag region -->
     <div class="drag-region flex h-9 flex-none items-center border-b border-zinc-700 bg-zinc-900">
-      <div class="flex items-center gap-2 pl-[78px]" style:width="{sidebarWidth}px">
-        <h1 class="text-xs font-semibold tracking-wide text-zinc-400">SimpleEdit [{repoName}]</h1>
+      <!-- Collapsed, the block can't follow the rail: the traffic lights alone are wider. -->
+      <div
+        class="flex min-w-0 items-center gap-2 pl-[78px] pr-2"
+        style:width={sidebarCollapsed ? undefined : `${sidebarWidth}px`}
+      >
+        <h1 class="min-w-0 truncate text-xs font-semibold tracking-wide text-zinc-400">SimpleEdit [{repoName}]</h1>
+        <button
+          class="ml-auto flex h-5 w-5 flex-none items-center justify-center rounded text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-pressed={sidebarCollapsed}
+          title="{sidebarCollapsed ? 'Expand' : 'Collapse'} sidebar ({isMac ? '⌘B' : 'Ctrl+B'})"
+          onclick={() => sidebarRail.toggleCollapsed()}
+        >
+          <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <path d={sidebarCollapsed ? 'M6 4l4 4-4 4' : 'M10 4L6 8l4 4'} stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
       </div>
     </div>
 
     <!-- Main content below title bar -->
-    <div class="flex min-h-0 flex-1">
-      <aside
-        class="flex-none overflow-hidden border-r border-zinc-700 bg-zinc-900"
-        style:width="{sidebarWidth}px"
-      >
-        <Sidebar />
-      </aside>
+    <div class="relative flex min-h-0 flex-1">
+      {#if sidebarCollapsed}
+        <aside class="flex-none border-r border-zinc-700 bg-zinc-900" style:width="{SIDEBAR_RAIL_WIDTH}px">
+          <SidebarRail widths={sidebarWidths} />
+        </aside>
+      {:else}
+        <aside
+          class="flex-none overflow-hidden border-r border-zinc-700 bg-zinc-900"
+          style:width="{sidebarWidth}px"
+        >
+          <Sidebar />
+        </aside>
 
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-      <div
-        class="w-1 flex-none cursor-col-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
-        role="separator"
-        aria-orientation="vertical"
-        tabindex="0"
-        onmousedown={onMouseDown}
-      ></div>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+        <div
+          class="w-1 flex-none cursor-col-resize bg-zinc-800 hover:bg-blue-500 transition-colors"
+          role="separator"
+          aria-orientation="vertical"
+          tabindex="0"
+          onmousedown={onMouseDown}
+        ></div>
+      {/if}
 
       <main class="flex-1 overflow-hidden bg-zinc-950">
         {#if uiView.current() === 'screenprs'}

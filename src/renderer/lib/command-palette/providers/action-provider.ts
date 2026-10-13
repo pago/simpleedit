@@ -4,7 +4,7 @@ import { fuzzyMatch } from '../fuzzy-match'
 import { refreshWorktrees } from '../../../stores/worktrees.svelte'
 import { openDiffTab, openTourTab } from '../../../stores/diffReview.svelte'
 import { triggerTour, loadCachedTour, tourStore } from '../../../stores/tourStore.svelte'
-import { uiView } from '../../../stores/uiView.svelte'
+import { sidebarRail } from '../../../stores/sidebarRail.svelte'
 
 interface ActionDef {
   id: string
@@ -104,7 +104,7 @@ const actions: ActionDef[] = [
     keywords: 'sessions sidebar workspace agents terminals',
     inMemoryView: true,
     execute() {
-      uiView.show('workspace')
+      sidebarRail.showSection('workspace')
     }
   },
   {
@@ -114,7 +114,7 @@ const actions: ActionDef[] = [
     keywords: 'backlog sidebar prepared sessions queue',
     inMemoryView: true,
     execute() {
-      uiView.show('backlog')
+      sidebarRail.showSection('backlog')
     }
   },
   {
@@ -124,7 +124,17 @@ const actions: ActionDef[] = [
     keywords: 'screen prs pull requests review sidebar',
     inMemoryView: true,
     execute() {
-      uiView.show('screenprs')
+      sidebarRail.showSection('screenprs')
+    }
+  },
+  {
+    id: 'action:toggle-sidebar',
+    label: 'Toggle Sidebar',
+    description: navigator.platform.startsWith('Mac') ? '⌘B' : 'Ctrl+B',
+    keywords: 'toggle collapse expand sidebar rail icons hide',
+    inMemoryView: true,
+    execute() {
+      sidebarRail.toggleCollapsed()
     }
   }
 ]

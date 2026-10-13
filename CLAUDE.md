@@ -722,13 +722,40 @@ one drag handle, but each section remembers its own width
   new-session menu (`NewSessionButtons`).
 - **Finished, unseen** (`stores/sessionAttention.svelte.ts`): an agent session
   that goes from active to `idle` while not on screen (active session, view
-  `'workspace'`, window focused) gets a blue dot until it is shown. In memory
-  only.
+  `'workspace'`, window focused) gets a blue dot until it is shown, including
+  on window refocus while it's shown; the mark goes with the session on exit.
+  In memory only.
 - **Only the user's own session starts switch to Sessions** (⌘T, ✦ Agent, the
   new-session menu, + Term; Backlog Start, Discuss with Agent and picking a
   session already did). Sessions an agent, the phone or `spawn_session`
   creates never steal the view, so the switch sits at those call sites, not in
   the sessions store.
+- **Collapsed: an icon rail plus an overlay** (`SidebarRail`,
+  `stores/sidebarRail.svelte.ts`). ⌘B (Ctrl+B elsewhere, but not from a
+  focused terminal: readline/tmux own it there), the title-bar chevron or the
+  palette's "Toggle Sidebar" collapse the sidebar to a 40px rail
+  (`lib/sidebarCollapse.ts`, `localStorage`). One icon per section
+  (`SectionIcon`, shared with the accordion) carries that section's indicator;
+  the current `uiView` gets the blue inset bar. There's no drag handle, and the
+  title-bar block keeps the traffic-light inset plus the repo name.
+  - The overlay is the section's normal body, absolutely positioned over
+    `<main>` (no layout shift) at the section's remembered width. Hover an
+    icon ~150ms to preview; moving between icons switches; it closes ~300ms
+    after the pointer leaves both rail and overlay.
+  - **Opening the overlay never changes `uiView`**; it is a preview. A click
+    on an icon, ⌘1–3 / "Show …" (which also switch the view), or any
+    interaction inside (pointerdown, focus: so a backlog drag or a context
+    menu isn't cut short) pin it; click and keyboard move focus in. Esc
+    (unless a menu or modal inside took it: they `preventDefault`), an outside
+    click, or a second click on the pinned icon close it.
+  - **Choosing an item closes it**, detected centrally, not per row: the
+    overlay watches `uiView`, the active session, the picked backlog item and
+    the picked PR against a baseline taken when it opened. A pick in the
+    Backlog / Screen PRs overlay also brings that view forward. The backlog
+    list's own auto-select (nothing or a removed item selected) is not a pick.
+  - Menus and modals opened inside render inside the overlay's DOM (fixed,
+    not portalled), which is what keeps hover and outside-click treating them
+    as inside. A portalled one would need its own exemption.
 
 `WorkspaceManager` renders the active session's `SessionWorkspace` (all others
 stay mounted but hidden). A workspace starts as a **full-bleed terminal**;
@@ -746,7 +773,9 @@ over a bottom terminal strip.
 │ ▸ Screen PRs   1   │ viewer opens)                   │   │
 └────────────────────┴─────────────────────────────────────┘
   open section ≡ uiView: Backlog / Screen PRs open in place,
-  and the main area shows their header + detail instead
+  and the main area shows their header + detail instead.
+  Collapsed (⌘B): a 40px rail of section icons; hover or click
+  one to lay its list over the main area.
 ```
 File tree is on the right (unusual but intentional — editor is the primary focus).
 All splits are user-resizable.
@@ -816,6 +845,8 @@ src/
       sidebar/
         Sidebar.svelte        ← Accordion: Sessions / Backlog / Screen PRs (open ≡ uiView)
         SidebarSection.svelte ← One accordion section: header button + @container body
+        SidebarRail.svelte    ← Collapsed sidebar: icon rail + the section overlay over <main>
+        SectionIcon.svelte    ← The Sessions / Backlog / Screen PRs glyphs (accordion + rail)
         NewSessionButtons.svelte ← ✦ Agent / + Term + new-session menu (Sessions header)
         StatusDot.svelte      ← The session attention dot (row and header)
         SessionList.svelte    ← Flat, groupable list of sessions (primary nav)
@@ -856,10 +887,11 @@ src/
       backlog.svelte.ts       ← Mirror of the project's backlog (desktop + phone)
       backlogViewState.svelte.ts ← What BacklogList and the item detail share on screen
       sessionAttention.svelte.ts ← Finished-unseen marks + the Sessions aggregate dot
+      sidebarRail.svelte.ts   ← Collapsed flag + rail overlay (hover intent, pin, close)
       uiView.svelte.ts, commandPalette.svelte.ts, tourStore.svelte.ts
       markdownView.svelte.ts, fsRefresh.svelte.ts
       memoryView.svelte.ts    ← Open memory dirs: watch, health, markers, re-resolve
-    lib/                      ← sessionPersistence, session-brief, sessionsAttention, sidebarWidth, viewShortcuts, …
+    lib/                      ← sessionPersistence, session-brief, sessionsAttention, sidebarWidth, sidebarCollapse, viewShortcuts, …
   shared/
     ipc-types.ts       ← All IPC channel type definitions
     git-types.ts       ← Re-exports from ipc-types
