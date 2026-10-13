@@ -25,6 +25,28 @@ interface TerminalStatus {
 
 let byTerminal = $state<Record<string, TerminalStatus>>({})
 
+/** `next` is undefined when the terminal is dropped from tracking. */
+export type AgentStatusTransitionListener = (
+  terminalId: string,
+  prev: AgentStatus | undefined,
+  next: AgentStatus | undefined,
+) => void
+
+const transitionListeners = new Set<AgentStatusTransitionListener>()
+
+/** Subscribe to per-terminal status changes; repeats of the same status are not reported. */
+export function onAgentStatusTransition(listener: AgentStatusTransitionListener): () => void {
+  transitionListeners.add(listener)
+  return () => {
+    transitionListeners.delete(listener)
+  }
+}
+
+function emitTransition(terminalId: string, prev: AgentStatus | undefined, next: AgentStatus | undefined): void {
+  if (prev === next) return
+  for (const listener of transitionListeners) listener(terminalId, prev, next)
+}
+
 /** Non-idle "an agent is doing something" states. */
 function isActive(status: AgentStatus): boolean {
   return status === 'initializing' || status === 'running' || status === 'waiting'
@@ -53,8 +75,9 @@ export function getAgentStatusForTerminal(terminalId: string): AgentStatus {
 /** Drop a terminal from status tracking (called when its tab/PTY goes away). */
 export function clearAgentStatusForTerminal(terminalId: string): void {
   if (!(terminalId in byTerminal)) return
-  const { [terminalId]: _removed, ...rest } = byTerminal
+  const { [terminalId]: removed, ...rest } = byTerminal
   byTerminal = rest
+  emitTransition(terminalId, removed.status, undefined)
 }
 
 /**
@@ -63,11 +86,13 @@ export function clearAgentStatusForTerminal(terminalId: string): void {
  */
 export function initAgentStatusListeners(): () => void {
   const offStatus = window.api.on('agent:status', (data) => {
-    if (byTerminal[data.terminalId]?.precise && !data.precise) return
+    const prev = byTerminal[data.terminalId]
+    if (prev?.precise && !data.precise) return
     byTerminal = {
       ...byTerminal,
       [data.terminalId]: { worktreePath: data.worktreePath, status: data.status, precise: data.precise },
     }
+    emitTransition(data.terminalId, prev?.status, data.status)
   })
   // When a PTY exits its terminal can no longer be active — prune it so the
   // worktree status recomputes without the dead terminal. (#114)
