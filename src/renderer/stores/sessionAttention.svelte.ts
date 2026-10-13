@@ -29,8 +29,10 @@ function drop(terminalId: string): void {
   unseen = rest
 }
 
+// Not `initializing`: a fresh session reaches its empty prompt as initializing → idle,
+// and nothing has finished yet.
 function wasWorking(status: AgentStatus | undefined): boolean {
-  return status === 'initializing' || status === 'running'
+  return status === 'running'
 }
 
 export function noteAgentStatusTransition(
