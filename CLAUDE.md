@@ -707,8 +707,13 @@ Backlog (`BacklogList`) and Screen PRs (`ScreenPrsQueue`), each a
 `SidebarSection`. **The open section is `uiView`**: `'workspace'` opens
 Sessions, `'backlog'` Backlog, `'screenprs'` Screen PRs. So exactly one is
 always open, and the sidebar can never disagree with the main area. Clicking
-the open header does nothing; ⌘1/⌘2/⌘3 (Ctrl elsewhere) and the palette's
-"Show …" entries switch. The main area shows the matching view:
+the open header does nothing; ⌘1/⌘2/⌘3 (Ctrl+1–3 off macOS only: on macOS
+Ctrl+digits stay with terminal programs) and the palette's "Show …" entries
+switch. **Sidebar shortcuts (⌘1–3, ⌘B) wait while a modal is open**
+(`aria-modal="true"` anywhere, or the key was already `preventDefault`ed,
+`sidebarShortcutsBlocked`): switching unmounts the section body, and with it
+a modal it opened (hand-off brief, rename, review confirmation). New modals
+must carry `aria-modal="true"`. The main area shows the matching view:
 `WorkspaceManager`, or the view's header + detail (`BacklogView`,
 `ScreenPrsView`; a one-line hint until something is picked). The sidebar has
 one drag handle, but each section remembers its own width
@@ -721,10 +726,11 @@ one drag handle, but each section remembers its own width
   nothing; counts in the tooltip) and the ✦ Agent / + Term buttons with the
   new-session menu (`NewSessionButtons`).
 - **Finished, unseen** (`stores/sessionAttention.svelte.ts`): an agent session
-  that goes from active to `idle` while not on screen (active session, view
-  `'workspace'`, window focused) gets a blue dot until it is shown, including
-  on window refocus while it's shown; the mark goes with the session on exit.
-  In memory only.
+  that goes from `running` to `idle` while not on screen (active session,
+  view `'workspace'`, window focused) gets a blue dot until it is shown; a
+  fresh session's `initializing` → `idle` doesn't count. Showing it clears the
+  mark, including on window refocus while it's shown; the mark goes with the
+  session on exit. In memory only.
 - **Only the user's own session starts switch to Sessions** (⌘T, ✦ Agent, the
   new-session menu, + Term; Backlog Start, Discuss with Agent and picking a
   session already did). Sessions an agent, the phone or `spawn_session`
