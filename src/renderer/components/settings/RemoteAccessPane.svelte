@@ -9,8 +9,8 @@
     RemoteAccessStatus,
     RemoteInterface,
     SttStatus,
-    TailscaleServeStatus,
     TailscaleStatus,
+    TunnelStatus,
   } from '../../../shared/ipc-types'
 
   let config = $state<RemoteAccessConfig | null>(null)
@@ -22,7 +22,7 @@
   let stt = $state<SttStatus | null>(null)
   let sttError = $state<string | null>(null)
   let ts = $state<TailscaleStatus | null>(null)
-  let serve = $state<TailscaleServeStatus | null>(null)
+  let serve = $state<TunnelStatus | null>(null)
   let serveError = $state<string | null>(null)
   let push = $state<PushStatus | null>(null)
   let pushError = $state<string | null>(null)
@@ -44,16 +44,16 @@
       running: status?.running ?? false,
       directUrl: status?.url ?? null,
       boundToTailscale,
-      serveUrl: serve?.url ?? null,
+      tunnelUrl: serve?.url ?? null,
     }),
   )
 
-  const serveOn = $derived(config?.serveEnabled ?? false)
+  const serveOn = $derived(config?.exposure === 'tailscale-serve')
 
   onMount(() => {
     void refresh()
     const offStatus = window.api.on('remote:status-changed', (next) => { status = next })
-    const offServe = window.api.on('remote:serve-changed', (next) => { serve = next })
+    const offServe = window.api.on('remote:tunnel-changed', (next) => { serve = next })
     // A phone registering itself changes this pane while nobody is touching
     // it — that is the whole point of the list.
     const offPush = window.api.on('push:status-changed', (next) => { push = next })
@@ -67,7 +67,7 @@
       window.api.invoke('remote:interfaces'),
       window.api.invoke('stt:status'),
       window.api.invoke('tailscale:status'),
-      window.api.invoke('tailscale:serve-status'),
+      window.api.invoke('remote:tunnel-status'),
       window.api.invoke('push:status'),
     ])
   }
@@ -76,7 +76,9 @@
     busy = true
     serveError = null
     try {
-      serve = await window.api.invoke('remote:set-serve-enabled', next)
+      // The answer is only the acceptance, and can land after the outcome's
+      // `remote:tunnel-changed`; adopting it would leave the switch stuck busy.
+      await window.api.invoke('remote:set-exposure', next ? 'tailscale-serve' : 'off')
       config = await window.api.invoke('remote:config')
     } catch (error) {
       // Main refuses the opt-in when the bind is not loopback, and says why.

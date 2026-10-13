@@ -440,7 +440,7 @@ test('a remote client cannot switch on Tailscale Serve', async ({ window, browse
 
   const refused = await page.evaluate(async () => {
     try {
-      await (window as unknown as { api: Api }).api.invoke('remote:set-serve-enabled', true)
+      await (window as unknown as { api: Api }).api.invoke('remote:set-exposure', 'tailscale-serve')
       return null
     } catch (error) {
       return error instanceof Error ? error.message : String(error)
@@ -450,8 +450,8 @@ test('a remote client cannot switch on Tailscale Serve', async ({ window, browse
 
   const config = (await window.evaluate(() =>
     (window as unknown as { api: Api }).api.invoke('remote:config'),
-  )) as { serveEnabled: boolean }
-  expect(config.serveEnabled).toBe(false)
+  )) as { exposure: string }
+  expect(config.exposure).toBe('off')
 
   await page.close()
 })

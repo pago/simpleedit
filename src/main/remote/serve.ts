@@ -34,7 +34,8 @@
 import { execFileSync } from 'child_process'
 import { getRemoteConfig, setRemoteConfig } from './config'
 import { findTailscaleCli, findTailscaleCliSync, getTailscaleStatus, runTailscale } from './tailscale'
-import type { TailscaleServeStatus } from '../../shared/ipc-types'
+import type { TunnelStatus } from '../../shared/ipc-types'
+import type { ReachabilityProvider } from './reachability'
 import { appLink } from '../../shared/remote-pairing'
 
 /** Serve talks to tailscaled over a local socket; slow here means wedged. */
@@ -87,7 +88,7 @@ let busy = false
 /** Serialised, so two toggles cannot each run a command against the other's state. */
 let chain: Promise<void> = Promise.resolve()
 
-export function getServeStatus(): TailscaleServeStatus {
+export function getServeStatus(): TunnelStatus {
   return {
     active: publishedUrl !== null,
     port: claimedPort,
@@ -219,7 +220,7 @@ function forgetClaim(): void {
  * its mind while a command is running is honoured by the step that command is
  * already queued ahead of, rather than racing it.
  */
-export function applyServe(next: { port: number; token: string } | null): Promise<TailscaleServeStatus> {
+export function applyServe(next: { port: number; token: string } | null): Promise<TunnelStatus> {
   desired = next
   pending += 1
   busy = true
@@ -477,6 +478,31 @@ export function serveTargetsPort(stdout: string, port: number): boolean {
     }
   }
   return false
+}
+
+const listeners = new Set<(status: TunnelStatus) => void>()
+
+function emit(status: TunnelStatus): void {
+  for (const listener of listeners) listener(status)
+}
+
+/** Tailscale Serve as a reachability provider. */
+export const tailscaleServe: ReachabilityProvider = {
+  id: 'tailscale-serve',
+  apply(target) {
+    // `applyServe` never rejects: its chain maps a failed step to the status.
+    void applyServe(target).then(emit)
+    const accepted = getServeStatus()
+    emit(accepted)
+    return accepted
+  },
+  status: getServeStatus,
+  stopSync: stopServeSync,
+  reclaimAbandoned: reclaimAbandonedServe,
+  onChange(listener) {
+    listeners.add(listener)
+    return () => { listeners.delete(listener) }
+  },
 }
 
 /** Test seam: forget everything this module is holding. */

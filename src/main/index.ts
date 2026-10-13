@@ -19,7 +19,7 @@ import {
   getActiveTerminalIds,
   getTerminalBacklog
 } from './pty'
-import type { PtySpawnOptions, WorktreeInfo } from '../shared/ipc-types'
+import { REMOTE_EXPOSURES, type PtySpawnOptions, type WorktreeInfo } from '../shared/ipc-types'
 import {
   listDirectory, listAllFiles, readFile, writeFile,
   createFile, createDirectory, renamePath, deletePath,
@@ -55,7 +55,7 @@ import { handleInvoke, handleSend } from './ipc-registry'
 import { startRemoteServer, stopRemoteServer, getRemoteStatus, closeSocketsForHub, currentRemoteToken, webBuildId } from './remote/server'
 import { capDiffForRemote } from './remote/payload-cap'
 import { getTailscaleStatus } from './remote/tailscale'
-import { applyServe, getServeStatus, reclaimAbandonedServe, stopServeSync } from './remote/serve'
+import { PROVIDERS, applyExposure, reclaimAbandonedTunnels, stopAllTunnelsSync, tunnelStatus } from './remote/reachability'
 import { getRemoteConfig, setRemoteConfig } from './remote/config'
 import { pairingTarget, withoutKey } from '../shared/remote-pairing'
 import { getSttStatus, setSttModelPath, transcribe, cancelTranscriptions, sweepAbandonedAudio } from './remote/stt'
@@ -91,7 +91,7 @@ import { listPrompts, readPrompt, customizePrompt, savePrompt, markPromptCurrent
 import { registerAssetProtocolScheme, installAssetProtocolHandler } from './asset-protocol'
 import { checkForUpdatesFromMenu, initAutoUpdater } from './auto-update'
 import { broadcastToWindows, liveWindowCandidates, liveWindowContents } from './window-broadcast'
-import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, TailscaleServeStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
+import type { JsonRpcMessage, SerializedSession, ModelConfig, AgentSpawnOptions, AgentProviderId, SubmitReviewRequest, SubmitReviewResult, EventMap, AgentPeer, PtyClientId, PushStatus, PushSubscriptionInput, RemoteAccessStatus, RemoteExposure, TunnelStatus, WindowSessionInput, SessionCreateRequest, SessionCreateOutcome, PromptId } from '../shared/ipc-types'
 import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } from './agent-bus'
 import { initAgentWake, noteUserInput, userKeys } from './agent-wake'
 import { applyThreadOp, assertKnownWorktree, loadThreads, reassignSession, removeSessionThreads } from './agent-threads-store'
@@ -312,8 +312,8 @@ function broadcastPushStatus(status: PushStatus): void {
   broadcastToWindows('push:status-changed', status)
 }
 
-function broadcastServeStatus(status: TailscaleServeStatus): void {
-  broadcastToWindows('remote:serve-changed', status)
+for (const provider of Object.values(PROVIDERS)) {
+  provider.onChange(() => broadcastToWindows('remote:tunnel-changed', tunnelStatus(getRemoteConfig().exposure)))
 }
 
 /** What the model pickers resolve the allowlist against (`loadAllowlistedModels`), so main refuses whatever they can't offer. */
@@ -371,38 +371,35 @@ function applyAndBroadcastDraftOp(url: string, op: PrReviewDraftOp): DraftOpResu
 }
 
 /**
- * Point `tailscale serve` at the server that is running NOW, or remove the
- * mapping entirely. Called on every path that starts, stops or re-binds the
- * server, and by the opt-in toggle.
+ * Point the chosen reachability provider at the server that is running NOW,
+ * or remove its mapping entirely. Called on every path that starts, stops or
+ * re-binds the server, and by the opt-in toggle.
  *
  * Two properties are decided here rather than in the pane:
  *
  *  - **The mapping never outlives its server.** The port is ephemeral, so a
  *    mapping that survives a restart points at a dead port or, worse, at a
  *    recycled one belonging to something else.
- *  - **Serve only ever proxies a LOOPBACK bind.** Not a style preference:
- *    tailscaled terminates TLS and forwards over plain HTTP, and `originOf`
+ *  - **A provider only ever proxies a LOOPBACK bind.** Not a style preference:
+ *    the tunnel terminates TLS and forwards over plain HTTP, and `originOf`
  *    only honours the forwarded `https` scheme from a loopback peer. Pointed
- *    at the Tailscale address instead, every subresource would be refused as
- *    cross-origin and the phone would get a blank page. Binding loopback is
- *    also strictly safer: with Serve on, nothing answers in the clear on the
- *    tailnet at all.
+ *    at any other address, every subresource would be refused as cross-origin
+ *    and the phone would get a blank page. Binding loopback is also strictly
+ *    safer: with a tunnel on, nothing answers in the clear off this Mac.
  *
- * Everything up to `applyServe` is synchronous, so the latest intent always
- * wins over one still in flight.
+ * Synchronous throughout, so the latest intent always wins over one still in
+ * flight, and nothing waits on provisioning: the outcome arrives later as
+ * `remote:tunnel-changed`.
  */
-function syncServe(): Promise<TailscaleServeStatus> {
+function syncTunnel(): TunnelStatus {
   const config = getRemoteConfig()
   const status = getRemoteStatus()
   const token = currentRemoteToken()
   const want =
-    config.serveEnabled && status.running && status.port !== null && token !== null && isLoopbackHost(status.host)
+    config.exposure !== 'off' && status.running && status.port !== null && token !== null && isLoopbackHost(status.host)
       ? { port: status.port, token }
       : null
-  return applyServe(want).then((next) => {
-    broadcastServeStatus(next)
-    return next
-  })
+  return applyExposure(config.exposure, want)
 }
 
 // ── Push notifications ────────────────────────────────────
@@ -418,12 +415,12 @@ function syncServe(): Promise<TailscaleServeStatus> {
  */
 function pushTargetUrl(): string | null {
   const status = getRemoteStatus()
-  const serve = getServeStatus()
+  const tunnel = tunnelStatus(getRemoteConfig().exposure)
   const { url } = pairingTarget({
     running: status.running,
     directUrl: status.url,
     boundToTailscale: listRemoteInterfaces().some((i) => i.isTailscale && i.address === status.host),
-    serveUrl: serve.url,
+    tunnelUrl: tunnel.url,
   })
   return url === null ? null : withoutKey(url)
 }
@@ -482,14 +479,14 @@ async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
   const config = getRemoteConfig()
   stopRemoteServer()
   if (!config.enabled) {
-    await syncServe()
+    syncTunnel()
     return getRemoteStatus()
   }
   // The stored preference is kept verbatim, so this is where a host that is no
   // longer bindable — a Tailscale address with Tailscale down — is caught. It
   // fails closed and SAYS so, rather than quietly binding somewhere else.
   if (!isAllowedBindHost(config.host)) {
-    await syncServe()
+    syncTunnel()
     return remoteBindRefused(config.host)
   }
   const status = await startRemoteServer({
@@ -501,9 +498,10 @@ async function applyRemoteConfigNow(): Promise<RemoteAccessStatus> {
     onStatusChange: broadcastRemoteStatus,
     onClientGone: releaseTerminalsOwnedBy,
   })
-  // After the port is known, and awaited: the mapping is part of "remote
-  // access is up", not something that drifts into place afterwards.
-  await syncServe()
+  // After the port is known, but not awaited: a provider can take a minute to
+  // provision, and the server is up regardless. The pane hears the outcome
+  // from `remote:tunnel-changed`.
+  syncTunnel()
   return status
 }
 
@@ -735,9 +733,9 @@ function registerAllHandlers(): void {
   handleInvoke('remote:interfaces', () => listRemoteInterfaces())
   handleInvoke('remote:projects', () => projectsOf(windowCandidates()))
   handleInvoke('tailscale:status', () => getTailscaleStatus())
-  handleInvoke('tailscale:serve-status', () => getServeStatus())
+  handleInvoke('remote:tunnel-status', () => tunnelStatus(getRemoteConfig().exposure))
 
-  handleInvoke('remote:set-serve-enabled', async (event, enabled: boolean) => {
+  handleInvoke('remote:set-exposure', async (event, exposure: RemoteExposure) => {
     // Not reachable over the socket. Every other `remote:*` setter decides what
     // THIS Mac does; this one decides what the tailnet can reach, and a token
     // holder must not be able to widen the surface from loopback-only to every
@@ -746,17 +744,18 @@ function registerAllHandlers(): void {
     if (event.sender.clientKey !== undefined) {
       throw new Error('Tailscale Serve is not available to remote clients')
     }
+    if (!REMOTE_EXPOSURES.includes(exposure)) throw new Error(`Unknown remote exposure: ${String(exposure)}`)
     const config = getRemoteConfig()
     // Refused up front so the pane can say why, rather than leaving the user
-    // with a toggle that is on and a mapping that never appears. `syncServe`
+    // with a toggle that is on and a mapping that never appears. `syncTunnel`
     // enforces the same rule at the point of use.
-    if (enabled && !isLoopbackHost(config.host)) {
+    if (exposure !== 'off' && !isLoopbackHost(config.host)) {
       throw new Error(
         'Tailscale Serve proxies to this Mac over loopback, so remote access has to be bound to 127.0.0.1. Pick "This Mac only" above — with Serve on, that is also the safer choice: nothing answers in the clear on the tailnet.',
       )
     }
-    setRemoteConfig({ ...config, serveEnabled: enabled })
-    return await syncServe()
+    setRemoteConfig({ ...config, exposure })
+    return syncTunnel()
   })
 
   handleInvoke('remote:set-enabled', async (_event, enabled: boolean) => {
@@ -1400,13 +1399,10 @@ app.whenReady().then(() => {
   // Remote access survives a restart if it was on. `attachTarget` is resolved
   // per socket, not now, so starting before any window exists is fine.
   //
-  // A serve mapping does NOT survive: the previous run's port is gone, so any
+  // A tunnel mapping does NOT survive: the previous run's port is gone, so any
   // mapping recorded against it is removed BEFORE a new server can claim a
   // port — sequenced, or the reclaim would tear down the one just created.
-  void reclaimAbandonedServe()
-    .catch((err: unknown) => {
-      console.error('[SimpleEdit] Failed to reclaim an abandoned serve mapping:', err)
-    })
+  void reclaimAbandonedTunnels()
     .then(() => applyRemoteConfig())
     .catch((err: unknown) => {
       console.error('[SimpleEdit] Failed to start remote access:', err)
@@ -1516,7 +1512,7 @@ app.on('before-quit', () => {
   try { stopRemoteServer() } catch { /* ignore */ }
   // Synchronous, and after the server it points at is gone: a serve mapping
   // that outlives its port is the failure mode this whole module guards.
-  try { stopServeSync() } catch { /* ignore */ }
+  try { stopAllTunnelsSync() } catch { /* ignore */ }
   try { cancelTranscriptions() } catch { /* ignore */ }
   // A marker left on disk would tell Claude Code you are at a machine running
   // an app that has quit — silencing its push for the whole next session.
@@ -1553,7 +1549,7 @@ app.on('window-all-closed', () => {
   try { stopRemoteServer() } catch { /* ignore */ }
   // Synchronous, and after the server it points at is gone: a serve mapping
   // that outlives its port is the failure mode this whole module guards.
-  try { stopServeSync() } catch { /* ignore */ }
+  try { stopAllTunnelsSync() } catch { /* ignore */ }
   try { cancelTranscriptions() } catch { /* ignore */ }
   // A marker left on disk would tell Claude Code you are at a machine running
   // an app that has quit — silencing its push for the whole next session.

@@ -23,7 +23,7 @@ describe('isPhoneReachable', () => {
 describe('pairingTarget', () => {
   it('offers nothing while the server is stopped', () => {
     expect(
-      pairingTarget({ running: false, directUrl: null, boundToTailscale: false, serveUrl: null }),
+      pairingTarget({ running: false, directUrl: null, boundToTailscale: false, tunnelUrl: null }),
     ).toEqual({ url: null, secure: false, note: null })
   })
 
@@ -32,7 +32,7 @@ describe('pairingTarget', () => {
       running: true,
       directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
       boundToTailscale: true,
-      serveUrl: null,
+      tunnelUrl: null,
     })
     expect(result.url).toBeNull()
   })
@@ -42,20 +42,20 @@ describe('pairingTarget', () => {
       running: true,
       directUrl: null,
       boundToTailscale: false,
-      serveUrl: `https://localhost${TOKEN_PATH}`,
+      tunnelUrl: `https://localhost${TOKEN_PATH}`,
     })
     expect(result.url).toBeNull()
   })
 
   it('prefers the HTTPS serve URL and marks it secure', () => {
-    const serveUrl = `https://mac.tail050858.ts.net${TOKEN_PATH}`
+    const tunnelUrl = `https://mac.tail050858.ts.net${TOKEN_PATH}`
     const result = pairingTarget({
       running: true,
       directUrl: `http://100.109.247.56:5173${TOKEN_PATH}`,
       boundToTailscale: true,
-      serveUrl,
+      tunnelUrl,
     })
-    expect(result).toEqual({ url: serveUrl, secure: true, note: null })
+    expect(result).toEqual({ url: tunnelUrl, secure: true, note: null })
   })
 
   it('falls back to the tailnet address, flagged as not a secure context', () => {
@@ -64,7 +64,7 @@ describe('pairingTarget', () => {
       running: true,
       directUrl,
       boundToTailscale: true,
-      serveUrl: null,
+      tunnelUrl: null,
     })
     expect(result.url).toBe(directUrl)
     expect(result.secure).toBe(false)
@@ -76,7 +76,7 @@ describe('pairingTarget', () => {
       running: true,
       directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
       boundToTailscale: false,
-      serveUrl: null,
+      tunnelUrl: null,
     })
     expect(result.url).toBeNull()
     expect(result.note).toMatch(/bound to this Mac only/i)
@@ -92,7 +92,7 @@ describe('pairingTarget', () => {
       running: true,
       directUrl: `http://127.0.0.1:5173${TOKEN_PATH}`,
       boundToTailscale: false,
-      serveUrl: null,
+      tunnelUrl: null,
     }).note
     expect(loopback).toMatch(/Turn on Tailscale Serve above/)
     expect(loopback).toMatch(/without Serve, pick the Tailscale address/)
@@ -101,7 +101,7 @@ describe('pairingTarget', () => {
       running: true,
       directUrl: `http://100.109.247.56:5173${TOKEN_PATH}`,
       boundToTailscale: true,
-      serveUrl: null,
+      tunnelUrl: null,
     }).note
     expect(overTailnet).toMatch(/switch the bind to .This Mac only. and turn on Tailscale Serve/)
   })

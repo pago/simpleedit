@@ -24,7 +24,9 @@ import {
   resetServeStateForTests,
   serveTargetsPort,
   stopServeSync,
+  tailscaleServe,
 } from '../serve'
+import type { TunnelStatus } from '../../../shared/ipc-types'
 
 const TOKEN = '9f3c0a7e5b1d4826aa11cc22dd33ee44ff5566778899aabbccddeeff00112233'
 
@@ -70,7 +72,7 @@ async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
 }
 
 beforeEach(() => {
-  config = { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', serveEnabled: true, servePort: 0 }
+  config = { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', exposure: 'tailscale-serve', servePort: 0 }
   fixtures = mkdtempSync(join(tmpdir(), 'se-serve-'))
   stub = join(fixtures, 'tailscale')
   log = join(fixtures, 'calls.log')
@@ -318,6 +320,23 @@ describe('applyServe', () => {
     await applyServe(null)
     expect(liveTarget()).toBe(3000)
     expect(config.servePort).toBe(0)
+  })
+})
+
+describe('tailscaleServe provider', () => {
+  it('answers on acceptance and reports the outcome through onChange', async () => {
+    const seen: TunnelStatus[] = []
+    const off = tailscaleServe.onChange((status) => seen.push(status))
+    try {
+      const accepted = tailscaleServe.apply({ port: 52123, token: TOKEN })
+      expect(accepted).toMatchObject({ busy: true, active: false })
+      expect(seen).toEqual([accepted])
+
+      await waitFor(() => seen.some((status) => status.active))
+      expect(seen.at(-1)).toMatchObject({ busy: false, active: true, url: `https://mac.tail050858.ts.net/app/?k=${TOKEN}` })
+    } finally {
+      off()
+    }
   })
 })
 

@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import RemoteAccessPane from '../RemoteAccessPane.svelte'
-import type { RemoteAccessConfig, RemoteAccessStatus, TailscaleServeStatus, TailscaleStatus } from '../../../../shared/ipc-types'
+import type { RemoteAccessConfig, RemoteAccessStatus, TunnelStatus, TailscaleStatus } from '../../../../shared/ipc-types'
 
 const TOKEN = '9f3c0a7e5b1d4826aa11cc22dd33ee44ff5566778899aabbccddeeff00112233'
 const TAILSCALE_IP = '100.109.247.56'
@@ -11,7 +11,7 @@ let answers: Answers
 let invoke: ReturnType<typeof vi.fn>
 
 function config(over: Partial<RemoteAccessConfig> = {}): RemoteAccessConfig {
-  return { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', serveEnabled: false, servePort: 0, ...over }
+  return { enabled: true, host: '127.0.0.1', port: 0, sttModelPath: '', exposure: 'off', servePort: 0, ...over }
 }
 
 function status(over: Partial<RemoteAccessStatus> = {}): RemoteAccessStatus {
@@ -39,7 +39,7 @@ function tailscale(over: Partial<TailscaleStatus> = {}): TailscaleStatus {
   }
 }
 
-function serve(over: Partial<TailscaleServeStatus> = {}): TailscaleServeStatus {
+function serve(over: Partial<TunnelStatus> = {}): TunnelStatus {
   return { active: false, port: null, url: null, busy: false, enableUrl: null, error: null, ...over }
 }
 
@@ -53,7 +53,7 @@ beforeEach(() => {
     ],
     'stt:status': { installed: false, binary: null, modelPath: '', modelReady: false, ready: false, hint: null },
     'tailscale:status': tailscale(),
-    'tailscale:serve-status': serve(),
+    'remote:tunnel-status': serve(),
   }
   invoke = vi.fn((channel: string) => {
     const answer = answers[channel]
@@ -108,8 +108,8 @@ describe('pairing a phone', () => {
   })
 
   it('encodes the HTTPS Serve URL once Serve publishes one', async () => {
-    answers['remote:config'] = config({ serveEnabled: true })
-    answers['tailscale:serve-status'] = serve({
+    answers['remote:config'] = config({ exposure: 'tailscale-serve' })
+    answers['remote:tunnel-status'] = serve({
       active: true,
       port: 52123,
       url: `https://mac.tail050858.ts.net/${TOKEN}/`,
@@ -132,7 +132,7 @@ describe('pairing a phone', () => {
 describe('Tailscale Serve', () => {
   it('turns the "not enabled" dead end into a link that opens the admin console', async () => {
     const enableUrl = 'https://login.tailscale.com/f/serve?node=nfvSEnrBQr11CNTRL'
-    answers['tailscale:serve-status'] = serve({ enableUrl, error: 'Serve is not enabled on your tailnet.' })
+    answers['remote:tunnel-status'] = serve({ enableUrl, error: 'Serve is not enabled on your tailnet.' })
     render(RemoteAccessPane)
 
     const link = await screen.findByRole('button', { name: `${enableUrl} ↗` })
@@ -143,7 +143,7 @@ describe('Tailscale Serve', () => {
   })
 
   it('shows a failure it could not classify instead of hiding it behind a link', async () => {
-    answers['tailscale:serve-status'] = serve({
+    answers['remote:tunnel-status'] = serve({
       enableUrl: null,
       error: 'error: HTTPS must be enabled first; visit https://tailscale.com/kb/1153/enabling-https',
     })
@@ -155,7 +155,7 @@ describe('Tailscale Serve', () => {
   })
 
   it('says nothing is published yet when Serve is on but remote access is off', async () => {
-    answers['remote:config'] = config({ enabled: false, serveEnabled: true })
+    answers['remote:config'] = config({ enabled: false, exposure: 'tailscale-serve' })
     answers['remote:status'] = status({ running: false, host: null, port: null, url: null, powerSaveBlocked: false })
     render(RemoteAccessPane)
     await loaded()
@@ -166,7 +166,7 @@ describe('Tailscale Serve', () => {
   })
 
   it('is not clickable while a serve command is in flight', async () => {
-    answers['tailscale:serve-status'] = serve({ busy: true })
+    answers['remote:tunnel-status'] = serve({ busy: true })
     render(RemoteAccessPane)
     await loaded()
 
@@ -174,7 +174,7 @@ describe('Tailscale Serve', () => {
   })
 
   it('reports main’s refusal instead of leaving the toggle silently on', async () => {
-    answers['remote:set-serve-enabled'] = new Error('Tailscale Serve proxies to this Mac over loopback')
+    answers['remote:set-exposure'] = new Error('Tailscale Serve proxies to this Mac over loopback')
     render(RemoteAccessPane)
     await loaded()
 
@@ -183,6 +183,34 @@ describe('Tailscale Serve', () => {
     await waitFor(() =>
       expect(screen.getByText(/Serve proxies to this Mac over loopback/)).toBeInTheDocument(),
     )
+  })
+
+  it('takes the outcome from remote:tunnel-changed, not from the accepted request', async () => {
+    const listeners = new Map<string, (data: unknown) => void>()
+    vi.stubGlobal('api', {
+      invoke,
+      on: vi.fn((channel: string, listener: (data: unknown) => void) => {
+        listeners.set(channel, listener)
+        return () => {}
+      }),
+    })
+    const url = `https://mac.tail050858.ts.net/app/?k=${TOKEN}`
+    let accept: (status: TunnelStatus) => void = () => {}
+    invoke.mockImplementation((channel: string) => {
+      if (channel === 'remote:set-exposure') return new Promise((resolve) => { accept = resolve })
+      if (channel === 'remote:config') return Promise.resolve(config({ exposure: 'tailscale-serve' }))
+      return Promise.resolve(answers[channel])
+    })
+    render(RemoteAccessPane)
+    await loaded()
+
+    await fireEvent.click(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' }))
+    listeners.get('remote:tunnel-changed')?.(serve({ active: true, port: 52123, url }))
+    // The acceptance arrives last, still saying busy; it must not win.
+    accept(serve({ busy: true }))
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Publish over Tailscale Serve' })).toBeEnabled())
+    expect(qr()).toBeInTheDocument()
   })
 
   it('cannot be turned on when no Tailscale CLI was found', async () => {
