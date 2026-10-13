@@ -1,16 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
   import BacklogItemDetail from './BacklogItemDetail.svelte'
-  import BacklogList from './BacklogList.svelte'
   import { backlogStore } from '../../stores/backlog.svelte'
   import { backlogView } from '../../stores/backlogViewState.svelte'
-
-  interface Props {
-    /** Show the list in a column of its own; off when it is shown elsewhere. */
-    list?: boolean
-  }
-
-  let { list = true }: Props = $props()
 
   const selectedId = $derived(backlogStore.selectedId)
   const projectName = $derived(backlogStore.project?.replace(/\/+$/, '').split('/').pop()?.replace(/\.git$/, '') ?? '')
@@ -30,34 +22,28 @@
     <button class="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500" onclick={() => void backlogView.choose('new')}>+ New</button>
   </header>
 
-  <div class="flex min-h-0 flex-1">
-    {#if list}
-      <BacklogList class="w-[340px] flex-none border-r border-zinc-800" />
+  <div class="min-h-0 flex-1">
+    {#if selectedId}
+      <!-- Keyed: the detail takes a copy of its item when it opens. -->
+      {#key selectedId}
+        <BacklogItemDetail
+          bind:unsaved={backlogView.unsaved}
+          id={selectedId}
+          item={backlogStore.get(selectedId)}
+          models={backlogView.models}
+          noModels={backlogView.noModels}
+          focus={selectedId === backlogView.newId}
+          onmodelsfocus={() => backlogView.refreshModels()}
+          oncreated={() => (backlogView.newId = null)}
+          onreplaced={(id) => {
+            backlogView.newId = null
+            // The detail has just discarded its text, so nothing is held.
+            backlogStore.select(id)
+          }}
+        />
+      {/key}
+    {:else}
+      <div class="flex h-full items-center justify-center text-xs text-zinc-600">Pick an item, or add one with + New.</div>
     {/if}
-
-    <div class="min-w-0 flex-1">
-      {#if selectedId}
-        <!-- Keyed: the detail takes a copy of its item when it opens. -->
-        {#key selectedId}
-          <BacklogItemDetail
-            bind:unsaved={backlogView.unsaved}
-            id={selectedId}
-            item={backlogStore.get(selectedId)}
-            models={backlogView.models}
-            noModels={backlogView.noModels}
-            focus={selectedId === backlogView.newId}
-            onmodelsfocus={() => backlogView.refreshModels()}
-            oncreated={() => (backlogView.newId = null)}
-            onreplaced={(id) => {
-              backlogView.newId = null
-              // The detail has just discarded its text, so nothing is held.
-              backlogStore.select(id)
-            }}
-          />
-        {/key}
-      {:else}
-        <div class="flex h-full items-center justify-center text-xs text-zinc-600">Pick an item, or add one with + New.</div>
-      {/if}
-    </div>
   </div>
 </div>

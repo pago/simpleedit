@@ -45,7 +45,7 @@ When opening without `SIMPLEEDIT_REPO`, a Welcome screen shows recent repos
 and a directory picker. Recent repos are stored in Electron's userData dir.
 
 ### Sessions are the primary entity (agent-first UI)
-The sidebar is a flat list of **sessions** (`SessionList.svelte`), not worktrees.
+The sidebar's Sessions section is a flat list of **sessions** (`SessionList.svelte`), not worktrees.
 A session is one PTY — Claude, an Agent View, or a plain terminal — plus the
 workspace state that hangs off it. The session registry
 (`stores/sessions.svelte.ts`, `Session` type) is the primary navigation store;
@@ -666,8 +666,10 @@ user's call.
   other provider syntax is ever injected; dropped files become absolute paths.
 - Agents' flat `provider`/`model` fields are translated by `backlog-agent.ts`;
   on update, fields left out keep the item's values.
-- **Desktop UI** (`BacklogView` list + `BacklogItemDetail`, the Screen PRs
-  shape): the first item is shown by default (`backlogStore.selectedId`, which
+- **Desktop UI** (`BacklogList` in the sidebar's Backlog section;
+  `BacklogView`'s header + `BacklogItemDetail` in the main area, the Screen PRs
+  shape; what the two halves share lives in `stores/backlogViewState.svelte.ts`):
+  the first item is shown by default (`backlogStore.selectedId`, which
   the arrival notice's Edit also sets); Start selects the next. The detail
   **autosaves** (600 ms debounce) only the changed fields against its
   `baseVersion`, and saves before a switch, a Start or unmount; a refused save
@@ -700,24 +702,54 @@ user's call.
   discovery spawns CLIs.
 
 ### Layout
-The sidebar (`SessionList`) picks the active session; `WorkspaceManager` renders
-that session's `SessionWorkspace` (all others stay mounted but hidden). A
-workspace starts as a **full-bleed terminal**; opening its viewer splits it into
-an editor area (tabs + Monaco / diff / markdown / composed panels) with the file
-tree and git log docked on the right, over a bottom terminal strip.
+The sidebar is an **accordion of three sections**: Sessions (`SessionList`),
+Backlog (`BacklogList`) and Screen PRs (`ScreenPrsQueue`), each a
+`SidebarSection`. **The open section is `uiView`**: `'workspace'` opens
+Sessions, `'backlog'` Backlog, `'screenprs'` Screen PRs. So exactly one is
+always open, and the sidebar can never disagree with the main area. Clicking
+the open header does nothing; ⌘1/⌘2/⌘3 (Ctrl elsewhere) and the palette's
+"Show …" entries switch. The main area shows the matching view:
+`WorkspaceManager`, or the view's header + detail (`BacklogView`,
+`ScreenPrsView`; a one-line hint until something is picked). The sidebar has
+one drag handle, but each section remembers its own width
+(`lib/sidebarWidth.ts`, `localStorage`, defaults 260/340/380, clamped
+180–500); the title-bar block follows the current width. Section bodies are
+`@container`s, so cards narrow by container query, never by viewport.
+- **The Sessions header works while collapsed.** It carries the aggregate dot
+  (`StatusDot` over `currentSessionsAttention()`, most urgent first: red
+  crashed/error, amber waiting, blue finished-unseen, green running, grey
+  nothing; counts in the tooltip) and the ✦ Agent / + Term buttons with the
+  new-session menu (`NewSessionButtons`).
+- **Finished, unseen** (`stores/sessionAttention.svelte.ts`): an agent session
+  that goes from active to `idle` while not on screen (active session, view
+  `'workspace'`, window focused) gets a blue dot until it is shown. In memory
+  only.
+- **Only the user's own session starts switch to Sessions** (⌘T, ✦ Agent, the
+  new-session menu, + Term; Backlog Start, Discuss with Agent and picking a
+  session already did). Sessions an agent, the phone or `spawn_session`
+  creates never steal the view, so the switch sits at those call sites, not in
+  the sessions store.
+
+`WorkspaceManager` renders the active session's `SessionWorkspace` (all others
+stay mounted but hidden). A workspace starts as a **full-bleed terminal**;
+opening its viewer splits it into an editor area (tabs + Monaco / diff /
+markdown / composed panels) with the file tree and git log docked on the right,
+over a bottom terminal strip.
 
 ```
 ┌─ Title bar (drag region, repo name) ─────────────────────┐
-├─ Sidebar ──┬─ SessionWorkspace (active session) ─────────┤
-│ Sessions   │ Editor tabs (PaneTabBar + TabContainer)  │ F │
-│ (grouped)  │ ──── file tree / git log docked right ─── │ T │
-│ + Backlog, │ ════════════ resize ════════════════════  │ + │
-│ Screen PRs │ Terminal (full-bleed until viewer opens)   │Git│
-└────────────┴─────────────────────────────────────────────┘
+├─ Sidebar ──────────┬─ SessionWorkspace (active session) ─┤
+│ ▾ Sessions ● ✦ +   │ Editor tabs (PaneTabBar)        │ F │
+│   (grouped list)   │ ── file tree / git log right ── │ T │
+│                    │ ═════════ resize ══════════════ │ + │
+│ ▸ Backlog      3   │ Terminal (full-bleed until the  │Git│
+│ ▸ Screen PRs   1   │ viewer opens)                   │   │
+└────────────────────┴─────────────────────────────────────┘
+  open section ≡ uiView: Backlog / Screen PRs open in place,
+  and the main area shows their header + detail instead
 ```
 File tree is on the right (unusual but intentional — editor is the primary focus).
-All splits are user-resizable. (`ScreenPrsView` and `BacklogView` replace the
-workspace area when their view is active — `uiView` store.)
+All splits are user-resizable.
 
 ## File structure
 
@@ -782,7 +814,10 @@ src/
     components/
       Welcome.svelte          ← Repo picker + recent repos
       sidebar/
-        Sidebar.svelte        ← SessionList + screen-PRs toggle
+        Sidebar.svelte        ← Accordion: Sessions / Backlog / Screen PRs (open ≡ uiView)
+        SidebarSection.svelte ← One accordion section: header button + @container body
+        NewSessionButtons.svelte ← ✦ Agent / + Term + new-session menu (Sessions header)
+        StatusDot.svelte      ← The session attention dot (row and header)
         SessionList.svelte    ← Flat, groupable list of sessions (primary nav)
         HandoffComposer.svelte ← "Hand off…" brief editor → replace-in-place spawn
         WorktreeList.svelte, GitLog.svelte ← Worktree list + commit log
@@ -805,8 +840,8 @@ src/
       filetree/
         FileTree.svelte, FileNode.svelte, FileTreeContextMenu.svelte
       composed/               ← Gen-UI composed panels (agent-authored) + registry
-      screenprs/              ← ScreenPrsView, PrDetail, ReviewComposer, OverviewCard, …
-      backlog/                ← BacklogView (list), BacklogItemDetail (autosave), PromptField (Monaco + file drop)
+      screenprs/              ← ScreenPrsView (header + detail), ScreenPrsQueue (sidebar), PrDetail, ReviewComposer, …
+      backlog/                ← BacklogView (header + detail), BacklogList (sidebar), BacklogItemDetail (autosave), PromptField
       settings/               ← SettingsWindow, ModelsPane, DefaultModelPane, …
       command-palette/        ← CommandPalette + input/results
       memory/                 ← Memory health badge/list + empty state
@@ -819,10 +854,12 @@ src/
       agentTerminals.svelte.ts ← "Discuss with Agent" targets (live Claude sessions)
       screenprs.svelte.ts, reviewStore.svelte.ts ← Screen-PRs + review state
       backlog.svelte.ts       ← Mirror of the project's backlog (desktop + phone)
+      backlogViewState.svelte.ts ← What BacklogList and the item detail share on screen
+      sessionAttention.svelte.ts ← Finished-unseen marks + the Sessions aggregate dot
       uiView.svelte.ts, commandPalette.svelte.ts, tourStore.svelte.ts
       markdownView.svelte.ts, fsRefresh.svelte.ts
       memoryView.svelte.ts    ← Open memory dirs: watch, health, markers, re-resolve
-    lib/                      ← sessionPersistence, session-brief, agent-message, branchName, …
+    lib/                      ← sessionPersistence, session-brief, sessionsAttention, sidebarWidth, viewShortcuts, …
   shared/
     ipc-types.ts       ← All IPC channel type definitions
     git-types.ts       ← Re-exports from ipc-types

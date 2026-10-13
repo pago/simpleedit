@@ -10,6 +10,7 @@
   import { clientKey } from '../../lib/clientKey'
   import { hasUserAttention as isAttended } from '../../lib/attention'
   import { attachPty, type PtyAttachment } from '../../lib/pty-attach'
+  import { viewForShortcut } from '../../lib/viewShortcuts'
 
   interface Props {
     terminalId: string
@@ -175,6 +176,9 @@
         }
         return false
       }
+      // Ctrl+1–3 switch the sidebar section (App.svelte); without this, xterm
+      // would also send the control byte to the PTY before the window sees it.
+      if (viewForShortcut(e)) return false
       return true
     })
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { search, executeItem } from '../palette-engine'
 import { pendingPaletteAction, consumePaletteAction } from '../../../stores/commandPalette.svelte'
+import { uiView } from '../../../stores/uiView.svelte'
 
 let invoke: ReturnType<typeof vi.fn>
 
@@ -31,13 +32,27 @@ describe('palette engine', () => {
     const results = await search('', ctx)
     expect(results.groups.map((g) => g.category)).not.toContain('commit')
     expect(results.flat.map((i) => i.label)).toEqual(expect.arrayContaining(['MEMORY.md', 'b.md']))
-    expect(results.flat.filter((i) => i.category === 'action').map((i) => i.label)).toEqual(['Refresh Worktrees'])
+    expect(results.flat.filter((i) => i.category === 'action').map((i) => i.label)).toEqual([
+      'Refresh Worktrees',
+      'Show Sessions',
+      'Show Backlog',
+      'Show Screen PRs',
+    ])
     expect(invoke).not.toHaveBeenCalledWith('git:log', expect.anything(), expect.anything())
 
     expect(await search('#', ctx)).toEqual({ groups: [], flat: [] })
     expect((await search('>tour', ctx)).flat).toEqual([])
     expect((await search('>refresh', ctx)).flat.map((i) => i.label)).toEqual(['Refresh Worktrees'])
     expect(invoke).not.toHaveBeenCalledWith('git:log', expect.anything(), expect.anything())
+  })
+
+  it('switches the sidebar section from the palette', async () => {
+    const ctx = { activeSessionId: 's', worktreePath: '/wt-show' }
+    const item = (await search('>show backlog', ctx)).flat[0]
+    expect(item.label).toBe('Show Backlog')
+    executeItem(item, ctx)
+    expect(uiView.current()).toBe('backlog')
+    uiView.show('workspace')
   })
 
   it('opens a memory file at its absolute path', async () => {
