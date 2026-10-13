@@ -60,6 +60,9 @@ importers:
       '@electron/rebuild':
         specifier: ^4.0.4
         version: 4.0.4
+      '@opentunnel/client':
+        specifier: 0.5.1
+        version: 0.5.1(effect@4.0.4)
       '@playwright/test':
         specifier: ^1.61.1
         version: 1.61.1
@@ -102,6 +105,9 @@ importers:
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
+      effect:
+        specifier: ^4.0.4
+        version: 4.0.4
       electron:
         specifier: ^42.5.0
         version: 42.5.0
@@ -777,6 +783,17 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@opentunnel/client@0.5.1':
+    resolution: {integrity: sha512-TdrdD0RCgX5vGRjLEKAsPD0vshUdjJEIUr7KEmJA3wmgbmRj5TQSHO66AMWF6REhd7UJ2ZnYQ3XNjqgnT+ghfQ==}
+    engines: {bun: '>=1.4.0', node: '>=22'}
+    peerDependencies:
+      effect: ^4.0.0
+
+  '@opentunnel/protocol@0.5.1':
+    resolution: {integrity: sha512-8DIZNyDxEFyzl6WzVB/M7hZauCU+zFABo0iviywj6kX3yO9jFSPzqWCBBaarpjWJEOXYXaSILllJI62fSlEdeA==}
+    peerDependencies:
+      effect: ^4.0.0
 
   '@peculiar/asn1-schema@2.8.0':
     resolution: {integrity: sha512-7YT0U/ze0tF2QOBbE15gKZwy5tvgGyLRiRHLzhlbOpf7BT032oBSd0haZqXn5W6l26WLlu3dyxzjM+2638/z2Q==}
@@ -1904,6 +1921,9 @@ packages:
 
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
+
+  effect@4.0.4:
+    resolution: {integrity: sha512-Sr50OeVSC3M5UkoUYUhFf3EULryhGaZZUf6OzDHTvaznOw7HRlxOKdF3/4nvQXHL22StOyMG3Cvo8Bt7xUp+Ng==}
 
   ejs@3.1.10:
     resolution: {integrity: sha512-UeJmFfOrAQS8OJWPZ4qtgHyWExa088/MtK5UEyoJGFH67cDEXkZSviOiKRCZ4Xij0zxI3JECgYs3oKx+AizQBA==}
@@ -4200,6 +4220,15 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
+  '@opentunnel/client@0.5.1(effect@4.0.4)':
+    dependencies:
+      '@opentunnel/protocol': 0.5.1(effect@4.0.4)
+      effect: 4.0.4
+
+  '@opentunnel/protocol@0.5.1(effect@4.0.4)':
+    dependencies:
+      effect: 4.0.4
+
   '@peculiar/asn1-schema@2.8.0':
     dependencies:
       '@peculiar/utils': 2.0.3
@@ -5337,6 +5366,8 @@ snapshots:
       readable-stream: 2.3.8
 
   ee-first@1.1.1: {}
+
+  effect@4.0.4: {}
 
   ejs@3.1.10:
     dependencies:

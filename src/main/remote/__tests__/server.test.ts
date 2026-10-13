@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer, MANIFEST_LINK, resolveStatic, webBuildId } from '../server'
+import { startRemoteServer, stopRemoteServer, getRemoteStatus, currentRemoteToken, closeSocketsForHub, originOf, isLoopbackPeer, MANIFEST_LINK, resolveStatic, webBuildId, noteRefusedKey, resetRefusalLogForTests, type ProxyTrust } from '../server'
 import { handleInvoke } from '../../ipc-registry'
 import { ClientHub } from '../../client-hub'
 import type { ServerFrame } from '../../../shared/remote-protocol'
@@ -751,6 +751,37 @@ describe('originOf', () => {
     expect(originOf({}, LOCAL)).toBeNull()
   })
 
+  describe('behind a provider that does not set forwarded headers', () => {
+    const TUNNEL_HOST = '46a58ed880bbfb4a.shmeg77if6cw.opentunnel.xyz'
+    const OPENTUNNEL: ProxyTrust = { forwardedHeaders: false, httpsHosts: [TUNNEL_HOST] }
+
+    // Every tunnelled visitor is 127.0.0.1, and the spike saw a visitor's own
+    // `x-forwarded-*` arrive verbatim. Honouring them would let it name any
+    // origin it likes.
+    it('ignores a visitor-set forwarded host and scheme', () => {
+      const origin = originOf(
+        { host: TUNNEL_HOST, 'x-forwarded-proto': 'https', 'x-forwarded-host': 'evil.example' },
+        LOCAL,
+        OPENTUNNEL,
+      )
+      expect(origin).toBe(`https://${TUNNEL_HOST}`)
+    })
+
+    it('reads the tunnel host as https, because TLS ended in this process', () => {
+      expect(originOf({ host: TUNNEL_HOST }, LOCAL, OPENTUNNEL)).toBe(`https://${TUNNEL_HOST}`)
+    })
+
+    it('keeps any other host on plain http, whatever it claims', () => {
+      expect(originOf({ host: '127.0.0.1:8080', 'x-forwarded-proto': 'https' }, LOCAL, OPENTUNNEL)).toBe(
+        'http://127.0.0.1:8080',
+      )
+    })
+
+    it('does not upgrade the tunnel host for a peer that is not on loopback', () => {
+      expect(originOf({ host: TUNNEL_HOST }, '100.64.0.9', OPENTUNNEL)).toBe(`http://${TUNNEL_HOST}`)
+    })
+  })
+
   it('recognises loopback in its IPv4, IPv6 and mapped forms', () => {
     expect(isLoopbackPeer('127.0.0.1')).toBe(true)
     expect(isLoopbackPeer('::1')).toBe(true)
@@ -831,5 +862,75 @@ describe('choosing the window a socket joins', () => {
     closeSocketsForHub(42)
     expect(other.transportCount).toBe(2)
     second.ws.close()
+  })
+})
+
+describe('refused keys', () => {
+  beforeEach(() => resetRefusalLogForTests())
+  afterEach(() => vi.restoreAllMocks())
+
+  it('logs a wrong key, at most once a minute, with the count it held back', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    noteRefusedKey('/app/auth', 1_000)
+    for (let i = 0; i < 500; i++) noteRefusedKey('/app/ws', 2_000 + i)
+    expect(warn).toHaveBeenCalledTimes(1)
+
+    noteRefusedKey('/app/auth', 61_000)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn.mock.calls[1][0]).toMatch(/Refused 501 request/)
+  })
+
+  it('logs a wrong key presented to /app/auth, and never a right one', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { url, token } = await start()
+    const origin = new URL(url).origin
+    await fetch(`${origin}/app/auth?k=${token}`)
+    expect(warn).not.toHaveBeenCalled()
+    await fetch(`${origin}/app/auth?k=${'0'.repeat(64)}`)
+    expect(warn).toHaveBeenCalledTimes(1)
+    stopRemoteServer()
+  })
+})
+
+describe('origin checks behind a tunnel that sets no forwarded headers', () => {
+  const TUNNEL_HOST = 'route.tunnelid.opentunnel.xyz'
+
+  async function startTunnelled(): Promise<{ port: number; token: string }> {
+    const status = await startRemoteServer({
+      host: HOST,
+      port: 0,
+      webRoot: WEB_ROOT,
+      attachTarget: () => hub,
+      proxyTrust: () => ({ forwardedHeaders: false, httpsHosts: [TUNNEL_HOST] }),
+    })
+    if (!status.port) throw new Error('server did not start')
+    return { port: status.port, token: currentRemoteToken()! }
+  }
+
+  function upgrade(port: number, token: string, headers: Record<string, string>): Promise<boolean> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://${HOST}:${port}/app/ws?k=${token}`, { headers })
+      ws.once('open', () => { ws.close(); resolve(true) })
+      ws.once('error', () => resolve(false))
+    })
+  }
+
+  // What a phone's browser sends through the tunnel: its own https origin and
+  // Host, over the plain HTTP the SDK forwards. Without naming the host as
+  // https, every asset and the socket would be refused as cross-origin.
+  it('accepts the page the tunnel serves', async () => {
+    const { port, token } = await startTunnelled()
+    expect(await upgrade(port, token, { host: TUNNEL_HOST, origin: `https://${TUNNEL_HOST}` })).toBe(true)
+  })
+
+  it('refuses a visitor that forwards itself to another origin', async () => {
+    const { port, token } = await startTunnelled()
+    const accepted = await upgrade(port, token, {
+      host: TUNNEL_HOST,
+      origin: 'https://evil.example',
+      'x-forwarded-host': 'evil.example',
+      'x-forwarded-proto': 'https',
+    })
+    expect(accepted).toBe(false)
   })
 })

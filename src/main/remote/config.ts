@@ -13,7 +13,7 @@ import { REMOTE_EXPOSURES, type RemoteAccessConfig, type RemoteExposure } from '
 import { REMOTE_DEFAULT_HOST } from './interfaces'
 
 function defaults(): RemoteAccessConfig {
-  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0, sttModelPath: '', exposure: 'off', servePort: 0 }
+  return { enabled: false, host: REMOTE_DEFAULT_HOST, port: 0, sttModelPath: '', exposure: 'off', servePort: 0, openTunnelAcknowledged: false }
 }
 
 function filePath(): string {
@@ -72,6 +72,7 @@ export function getRemoteConfig(): RemoteAccessConfig {
         && parsed.servePort >= 0 && parsed.servePort <= 65535
         ? parsed.servePort
         : base.servePort,
+      openTunnelAcknowledged: parsed.openTunnelAcknowledged === true,
     }
   } catch {
     return defaults()

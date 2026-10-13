@@ -486,19 +486,29 @@ function emit(status: TunnelStatus): void {
   for (const listener of listeners) listener(status)
 }
 
-/** Tailscale Serve as a reachability provider. */
+function applyAndEmit(target: { port: number; token: string } | null): TunnelStatus {
+  // `applyServe` never rejects: its chain maps a failed step to the status.
+  void applyServe(target).then(emit)
+  const accepted = getServeStatus()
+  emit(accepted)
+  return accepted
+}
+
+/**
+ * Tailscale Serve as a reachability provider.
+ *
+ * Deselecting it and stopping its server are the same thing here: the mapping
+ * names an ephemeral port, so there is nothing worth keeping for the next
+ * start, and a recorded claim is reclaimed whatever exposure is chosen.
+ */
 export const tailscaleServe: ReachabilityProvider = {
   id: 'tailscale-serve',
-  apply(target) {
-    // `applyServe` never rejects: its chain maps a failed step to the status.
-    void applyServe(target).then(emit)
-    const accepted = getServeStatus()
-    emit(accepted)
-    return accepted
-  },
+  trustsForwardedHeaders: true,
+  apply: applyAndEmit,
+  withdraw: () => applyAndEmit(null),
   status: getServeStatus,
   stopSync: stopServeSync,
-  reclaimAbandoned: reclaimAbandonedServe,
+  reclaimAbandoned: () => reclaimAbandonedServe(),
   onChange(listener) {
     listeners.add(listener)
     return () => { listeners.delete(listener) }

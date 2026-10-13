@@ -2,16 +2,45 @@
   import { onMount } from 'svelte'
   import Toggle from './Toggle.svelte'
   import QrCode from './QrCode.svelte'
-  import { pairingTarget } from '../../../shared/remote-pairing'
+  import { EXPOSURE_LABELS, pairingTarget } from '../../../shared/remote-pairing'
   import type {
     PushStatus,
     RemoteAccessConfig,
     RemoteAccessStatus,
+    RemoteExposure,
     RemoteInterface,
     SttStatus,
     TailscaleStatus,
+    TunnelConnectionState,
     TunnelStatus,
   } from '../../../shared/ipc-types'
+
+  interface ExposureChoice {
+    id: RemoteExposure
+    blurb: string
+    experimental: boolean
+  }
+
+  const EXPOSURE_CHOICES: ExposureChoice[] = [
+    { id: 'off', blurb: 'Nothing is published. The bind above is all there is.', experimental: false },
+    {
+      id: 'tailscale-serve',
+      blurb: 'An HTTPS address on your tailnet, reachable from your own devices only. Recommended.',
+      experimental: false,
+    },
+    {
+      id: 'opentunnel',
+      blurb: 'A public HTTPS address on the internet, through a third-party relay. Works without Tailscale.',
+      experimental: true,
+    },
+  ]
+
+  const CONNECTION_LABELS: Record<TunnelConnectionState, string> = {
+    connecting: 'Connecting…',
+    connected: 'Connected',
+    reconnecting: 'Reconnecting…',
+    closing: 'Closing…',
+  }
 
   let config = $state<RemoteAccessConfig | null>(null)
   let status = $state<RemoteAccessStatus | null>(null)
@@ -22,8 +51,13 @@
   let stt = $state<SttStatus | null>(null)
   let sttError = $state<string | null>(null)
   let ts = $state<TailscaleStatus | null>(null)
-  let serve = $state<TunnelStatus | null>(null)
-  let serveError = $state<string | null>(null)
+  let tunnel = $state<TunnelStatus | null>(null)
+  let exposureError = $state<string | null>(null)
+  /** OpenTunnel was picked and its one-time warning is on screen. */
+  let acknowledging = $state(false)
+  let radioGroup = $state<HTMLFieldSetElement | null>(null)
+  /** Where the user asked to go from OpenTunnel, held until they confirm the tunnel's deletion. */
+  let confirmingLeave = $state<RemoteExposure | null>(null)
   let push = $state<PushStatus | null>(null)
   let pushError = $state<string | null>(null)
 
@@ -41,27 +75,49 @@
    */
   const pairing = $derived(
     pairingTarget({
+      exposure: config?.exposure ?? 'off',
       running: status?.running ?? false,
       directUrl: status?.url ?? null,
       boundToTailscale,
-      tunnelUrl: serve?.url ?? null,
+      tunnelUrl: tunnel?.url ?? null,
     }),
   )
 
-  const serveOn = $derived(config?.exposure === 'tailscale-serve')
+  const exposure = $derived<RemoteExposure>(config?.exposure ?? 'off')
+  /**
+   * Locked while a request is in flight, except while OpenTunnel provisions:
+   * that can take minutes, and switching away is how it is cancelled.
+   */
+  const choicesLocked = $derived(
+    busy || config === null || (tunnel?.busy === true && exposure !== 'opentunnel'),
+  )
+  /** Providers switched away from that are still deleting, or failed to. */
+  const elsewhere = $derived(tunnel?.elsewhere ?? [])
+  const keptNow = $derived(tunnel?.kept ?? false)
+
+  // A confirmation asked about a tunnel that has since gone, or a choice that
+  // has since changed, must not be answerable any more.
+  $effect(() => {
+    void exposure
+    void keptNow
+    confirmingLeave = null
+  })
+  const exposureLabel = $derived(EXPOSURE_LABELS[exposure])
+  /** The public address alone: the key belongs in the pairing code, not on display here. */
+  const publicOrigin = $derived(tunnel?.url ? new URL(tunnel.url).origin : null)
 
   onMount(() => {
     void refresh()
     const offStatus = window.api.on('remote:status-changed', (next) => { status = next })
-    const offServe = window.api.on('remote:tunnel-changed', (next) => { serve = next })
+    const offTunnel = window.api.on('remote:tunnel-changed', (next) => { tunnel = next })
     // A phone registering itself changes this pane while nobody is touching
     // it — that is the whole point of the list.
     const offPush = window.api.on('push:status-changed', (next) => { push = next })
-    return () => { offStatus(); offServe(); offPush() }
+    return () => { offStatus(); offTunnel(); offPush() }
   })
 
   async function refresh(): Promise<void> {
-    ;[config, status, interfaces, stt, ts, serve, push] = await Promise.all([
+    ;[config, status, interfaces, stt, ts, tunnel, push] = await Promise.all([
       window.api.invoke('remote:config'),
       window.api.invoke('remote:status'),
       window.api.invoke('remote:interfaces'),
@@ -72,20 +128,72 @@
     ])
   }
 
-  async function setServeEnabled(next: boolean): Promise<void> {
+  /**
+   * A native radio checks itself on the click; when the choice does not go
+   * through (the warning, a refusal), put the group back to what main has.
+   */
+  function showStoredChoice(): void {
+    for (const input of radioGroup?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ?? []) {
+      input.checked = input.value === exposure
+    }
+  }
+
+  async function chooseExposure(next: RemoteExposure, confirmed = false): Promise<void> {
+    // `aria-disabled`, not `disabled`, while locked: disabling the radio that
+    // has focus drops focus to the body, and the next arrow key goes nowhere.
+    if (choicesLocked) {
+      showStoredChoice()
+      return
+    }
+    exposureError = null
+    if (next === 'opentunnel' && !config?.openTunnelAcknowledged) {
+      acknowledging = true
+      showStoredChoice()
+      return
+    }
+    // One click or arrow key would otherwise delete a public address a phone
+    // relies on. A first provisioning that never published one is let go.
+    if (!confirmed && exposure === 'opentunnel' && next !== 'opentunnel' && tunnel?.kept) {
+      confirmingLeave = next
+      showStoredChoice()
+      return
+    }
+    confirmingLeave = null
+    acknowledging = false
     busy = true
-    serveError = null
     try {
       // The answer is only the acceptance, and can land after the outcome's
-      // `remote:tunnel-changed`; adopting it would leave the switch stuck busy.
-      await window.api.invoke('remote:set-exposure', next ? 'tailscale-serve' : 'off')
+      // `remote:tunnel-changed`; adopting it would leave the choice stuck busy.
+      await window.api.invoke('remote:set-exposure', next)
       config = await window.api.invoke('remote:config')
     } catch (error) {
-      // Main refuses the opt-in when the bind is not loopback, and says why.
-      serveError = error instanceof Error ? error.message : String(error)
+      // Main refuses a provider when the bind is not loopback, and says why.
+      exposureError = error instanceof Error ? error.message : String(error)
+      showStoredChoice()
     } finally {
       busy = false
     }
+  }
+
+  async function forgetTunnel(provider: Exclude<RemoteExposure, 'off'>): Promise<void> {
+    exposureError = null
+    try {
+      // The outcome arrives as `remote:tunnel-changed`, like every other.
+      await window.api.invoke('remote:forget-tunnel', provider)
+    } catch (error) {
+      exposureError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  async function acknowledgeOpenTunnel(): Promise<void> {
+    exposureError = null
+    try {
+      config = await window.api.invoke('remote:acknowledge-opentunnel')
+    } catch (error) {
+      exposureError = error instanceof Error ? error.message : String(error)
+      return
+    }
+    await chooseExposure('opentunnel')
   }
 
   function openExternal(url: string): void {
@@ -170,8 +278,9 @@
   <header>
     <h1 class="text-lg font-semibold text-zinc-100">Remote access</h1>
     <p class="mt-1 text-[13px] leading-relaxed text-zinc-400">
-      Serves SimpleEdit to a browser on this machine or over your Tailscale network. Anyone with
-      the link below can run terminals, edit files and remove worktrees — treat it as a password.
+      Serves SimpleEdit to a browser on this machine, over your Tailscale network, or through a
+      public tunnel. Anyone with the link below can run terminals, edit files and remove
+      worktrees — treat it as a password.
     </p>
   </header>
 
@@ -270,27 +379,119 @@
           </p>
         {/if}
       {/if}
+    </div>
 
-      <div class="mt-4 flex items-center justify-between gap-4 border-t border-zinc-800 pt-4">
-        <div class="min-w-0">
-          <p class="text-[13.5px] font-medium text-zinc-100">Publish over Tailscale Serve</p>
-          <p class="mt-0.5 text-xs leading-relaxed text-zinc-500">
-            Puts SimpleEdit on a real HTTPS address on your tailnet, which is the only kind of
-            origin a browser will open a microphone on. It also makes this reachable from every
-            device on the tailnet, so it is a separate decision from turning remote access on —
-            never implied by it.
-          </p>
+    <div class="mt-4 border-t border-zinc-800 pt-4">
+      <h3 class="text-[13px] font-medium text-zinc-100">Publish beyond this Mac</h3>
+      <p class="mt-2 text-xs leading-relaxed text-zinc-500">
+        Gives SimpleEdit a real HTTPS address, which is the only kind of origin a browser will open a
+        microphone on. Both options proxy to this Mac over loopback. Who can reach the address is a
+        separate decision from turning remote access on, and never implied by it.
+      </p>
+      <fieldset class="mt-3 space-y-1.5" bind:this={radioGroup}>
+        <legend class="sr-only">Publish beyond this Mac</legend>
+        {#each EXPOSURE_CHOICES as choice (choice.id)}
+          {@const selected = exposure === choice.id}
+          {@const unavailable = choice.id === 'tailscale-serve' && !ts?.cliUsable}
+          <label
+            class="flex w-full items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors
+              has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-blue-600
+              {unavailable || choicesLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}
+              {selected
+                ? 'border-blue-800 bg-blue-950/50'
+                : 'border-zinc-800 hover:bg-zinc-800'}"
+          >
+            <input
+              type="radio"
+              name="remote-exposure"
+              value={choice.id}
+              checked={selected}
+              disabled={unavailable}
+              aria-disabled={choicesLocked}
+              aria-label={EXPOSURE_LABELS[choice.id]}
+              aria-describedby="exposure-{choice.id}"
+              onchange={() => void chooseExposure(choice.id)}
+              class="mt-0.5 flex-none accent-blue-500"
+            />
+            <span class="min-w-0 flex-1">
+              <span class="flex items-center gap-2 text-[13px] {selected ? 'text-blue-300' : 'text-zinc-200'}">
+                {EXPOSURE_LABELS[choice.id]}
+                {#if choice.experimental}
+                  <span class="rounded bg-amber-950 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400">Experimental</span>
+                {/if}
+              </span>
+              <span id="exposure-{choice.id}" class="mt-0.5 block text-xs leading-relaxed text-zinc-500">
+                {#if choice.experimental}<span class="sr-only">Experimental. </span>{/if}{choice.blurb}
+              </span>
+            </span>
+          </label>
+        {/each}
+      </fieldset>
+
+      {#if acknowledging}
+        <div
+          class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-200"
+          data-testid="opentunnel-ack"
+        >
+          <p class="font-semibold text-amber-300">OpenTunnel puts this Mac on the public internet</p>
+          <ul class="mt-2 list-disc space-y-1 pl-4">
+            <li>
+              Anyone with the address can reach the sign-in page. The access key is the only
+              protection: nothing checks which device is asking, as Tailscale does.
+            </li>
+            <li>
+              OpenTunnel is a third-party service with no published terms, pricing or uptime
+              guarantee. It can change or go away.
+            </li>
+            <li>
+              Switching away from OpenTunnel deletes the tunnel. Choosing it again makes a new
+              address, and the phone has to scan again.
+            </li>
+          </ul>
+          <div class="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onclick={() => void acknowledgeOpenTunnel()}
+              class="rounded-md bg-amber-900/60 px-2.5 py-1 text-xs font-medium text-amber-100 hover:bg-amber-900"
+            >I understand, use OpenTunnel</button>
+            <button
+              type="button"
+              onclick={() => { acknowledging = false }}
+              class="rounded-md px-2.5 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            >Cancel</button>
+          </div>
         </div>
-        <Toggle
-          checked={serveOn}
-          disabled={busy || serve?.busy || config === null || !ts?.cliUsable}
-          label="Publish over Tailscale Serve"
-          onchange={(v) => void setServeEnabled(v)}
-        />
-      </div>
+      {/if}
 
-      {#if serveError}
-        <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{serveError}</p>
+      {#if confirmingLeave}
+        {@const target = confirmingLeave}
+        <div
+          class="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-3 text-xs leading-relaxed text-amber-200"
+          data-testid="opentunnel-leave"
+        >
+          <p class="font-semibold text-amber-300">Delete the OpenTunnel address?</p>
+          <p class="mt-2">
+            Switching to {EXPOSURE_LABELS[target]} deletes the tunnel. Its address stops working for
+            good, and the phone will need to scan a new code. Choosing OpenTunnel again later makes a
+            different address.
+          </p>
+          <div class="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onclick={() => void chooseExposure(target, true)}
+              class="rounded-md bg-amber-900/60 px-2.5 py-1 text-xs font-medium text-amber-100 hover:bg-amber-900"
+            >Delete tunnel and switch</button>
+            <button
+              type="button"
+              onclick={() => { confirmingLeave = null }}
+              class="rounded-md px-2.5 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            >Keep OpenTunnel</button>
+          </div>
+        </div>
+      {/if}
+
+      {#if exposureError}
+        <p class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">{exposureError}</p>
       {/if}
 
       <!--
@@ -299,11 +500,11 @@
         misclassified failure — one that merely mentioned a URL — replaced its own
         message with a link to the wrong place, so over-firing hid the error.
       -->
-      {#if serve?.error}
+      {#if tunnel?.error}
         <div class="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-300">
-          <p>{serve.error}</p>
-          {#if serve.enableUrl}
-            {@const enableUrl = serve.enableUrl}
+          <p>{tunnel.error}</p>
+          {#if tunnel.enableUrl}
+            {@const enableUrl = tunnel.enableUrl}
             <p class="mt-2">
               Serve is an admin-console setting for the whole tailnet, so it cannot be turned on
               from here — and this link names your node, so it cannot be guessed either.
@@ -317,19 +518,69 @@
         </div>
       {/if}
 
-      {#if serveOn && !status?.running}
-        <p class="mt-3 text-xs leading-relaxed text-zinc-500">
-          Remote access is off, so nothing is published yet. Serve starts and stops with it, and
-          the mapping never outlives the server it points at.
+      {#each elsewhere as notice (notice.provider)}
+        <p
+          class="mt-3 rounded-md border px-3 py-2 text-xs leading-relaxed
+            {notice.error ? 'border-red-900/60 bg-red-950/40 text-red-300' : 'border-zinc-800 text-zinc-400'}"
+          data-testid="tunnel-elsewhere"
+          role="status"
+        >
+          {EXPOSURE_LABELS[notice.provider]}: {notice.error ?? notice.progress ?? 'Removing…'}
+          {#if notice.forgettable}
+            <span class="mt-2 block text-zinc-400">
+              If the relay stays unreachable you can forget the tunnel here instead. It may then remain
+              on the relay, unused, with nothing on this Mac able to delete it later.
+            </span>
+            <button
+              type="button"
+              onclick={() => void forgetTunnel(notice.provider)}
+              class="mt-2 rounded-md px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+            >Forget without deleting</button>
+          {/if}
         </p>
-      {:else if serveOn && !boundToLoopback}
+      {/each}
+
+      {#if tunnel?.busy && tunnel.progress}
+        <p class="mt-3 text-xs leading-relaxed text-zinc-400" data-testid="tunnel-progress" role="status">
+          {tunnel.progress}
+          {#if exposure === 'opentunnel'}
+            <span class="block text-zinc-500">
+              The first time, this can take a minute while a certificate is issued for the address.
+            </span>
+          {/if}
+        </p>
+      {/if}
+
+      {#if exposure !== 'off' && !status?.running}
+        <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+          Remote access is off, so nothing is published yet.
+          {#if exposure === 'opentunnel'}
+            The address is kept while it is off, so turning it back on reuses it.
+          {:else}
+            Serve starts and stops with it, and the mapping never outlives the server it points at.
+          {/if}
+        </p>
+      {:else if exposure !== 'off' && !boundToLoopback}
         <p class="mt-3 text-xs leading-relaxed text-amber-400">
-          Serve proxies to this Mac over loopback, so it stays idle while remote access is bound to
-          {status?.host}. Choose “This Mac only” above to publish again.
+          {exposureLabel} proxies to this Mac over loopback, so it stays idle while remote access is
+          bound to {status?.host}. Choose “This Mac only” above to publish again.
         </p>
-      {:else if serve?.active && serve.port}
+      {:else if exposure === 'opentunnel' && tunnel?.active && publicOrigin}
+        <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+          <dt class="text-zinc-500">Address</dt>
+          <dd class="min-w-0 break-all text-zinc-300" data-testid="tunnel-origin">{publicOrigin}</dd>
+          <dt class="text-zinc-500">Relay</dt>
+          <dd class={tunnel.connection === 'connected' ? 'text-emerald-400' : 'text-amber-400'} data-testid="tunnel-connection">
+            {tunnel.connection ? CONNECTION_LABELS[tunnel.connection] : 'not connected'}
+          </dd>
+        </dl>
         <p class="mt-3 text-xs leading-relaxed text-zinc-500">
-          Serving port {serve.port}. The mapping is removed when remote access stops, when
+          The address stays the same across restarts and is deleted when you switch away from
+          OpenTunnel. Every connection still needs the access key.
+        </p>
+      {:else if exposure === 'tailscale-serve' && tunnel?.active && tunnel.port}
+        <p class="mt-3 text-xs leading-relaxed text-zinc-500">
+          Serving port {tunnel.port}. The mapping is removed when remote access stops, when
           SimpleEdit quits, and at the next launch if it ever crashes — it proxies the server root,
           so the access key is still required for every connection.
         </p>
@@ -354,8 +605,8 @@
                 so the app and its notifications carry on.
               {:else}
                 This address changes port on every start, so after a restart scan the new code with
-                the Camera again; a Home Screen copy cannot follow it. Tailscale Serve gives a
-                stable address.
+                the Camera again; a Home Screen copy cannot follow it. Tailscale Serve or OpenTunnel
+                gives a stable address.
               {/if}
             </p>
             <code class="block break-all rounded-md bg-zinc-950 px-2.5 py-2 text-[11px] text-zinc-400">{pairing.url}</code>
@@ -426,7 +677,7 @@
       <li>
         <span class="font-semibold text-zinc-300">1.</span>
         Open the pairing link on the phone. It has to be the <span class="text-zinc-300">https://</span>
-        one; if there isn't one, the Tailscale section above says what this node still needs.
+        one; if there isn't one, the publishing section above says what is still missing.
       </li>
       <li>
         <span class="font-semibold text-zinc-300">2.</span>

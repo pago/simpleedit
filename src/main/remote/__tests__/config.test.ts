@@ -63,3 +63,16 @@ describe('remote config exposure', () => {
     expect(written).not.toHaveProperty('serveEnabled')
   })
 })
+
+describe('remote config OpenTunnel acknowledgement', () => {
+  it('reads OpenTunnel back as a known exposure', () => {
+    store({ exposure: 'opentunnel', openTunnelAcknowledged: true })
+    expect(getRemoteConfig()).toMatchObject({ exposure: 'opentunnel', openTunnelAcknowledged: true })
+  })
+
+  it('counts only a literal true as acknowledged', () => {
+    expect(getRemoteConfig().openTunnelAcknowledged).toBe(false)
+    store({ openTunnelAcknowledged: 'yes' })
+    expect(getRemoteConfig().openTunnelAcknowledged).toBe(false)
+  })
+})
