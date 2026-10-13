@@ -6,6 +6,8 @@
   import Welcome from './components/Welcome.svelte'
   import CommandPalette from './components/command-palette/CommandPalette.svelte'
   import { uiView } from './stores/uiView.svelte'
+  import { clampSidebarWidth, loadSidebarWidths, saveSidebarWidth } from './lib/sidebarWidth'
+  import { viewForShortcut } from './lib/viewShortcuts'
   import { initScreenPrsListeners } from './stores/screenprs.svelte'
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
@@ -26,7 +28,8 @@
   // standalone surface — no Welcome/IDE bootstrap, palette, or session restore.
   const isSettingsView = new URLSearchParams(window.location.search).get('view') === 'settings'
 
-  let sidebarWidth = $state(260)
+  let sidebarWidths = $state(loadSidebarWidths())
+  let sidebarWidth = $derived(sidebarWidths[uiView.current()])
   let isResizing = $state(false)
   let repoPath = $state<string | null>(null)
   let sessionReady = $state(false)
@@ -143,6 +146,12 @@
       togglePalette()
       return
     }
+    const view = viewForShortcut(e)
+    if (view) {
+      e.preventDefault()
+      uiView.show(view)
+      return
+    }
     // ⌘T / Ctrl+T — new Claude session, focusing its terminal. Fires even while
     // a terminal is focused (the common case); xterm's helper textarea is
     // exempt from the text-field guard so the shortcut still reaches us there.
@@ -165,6 +174,7 @@
         .invoke('models:config-get')
         .catch(() => null)
         .then((config) => {
+          uiView.show('workspace')
           sessionsStore.requestTerminalFocus(createSessionFromDefaults(config, root, wt.path))
         })
     }
@@ -172,13 +182,16 @@
 
   function onMouseDown() {
     isResizing = true
+    // The open section's width; ⌘1–3 mid-drag doesn't move the drag to another.
+    const view = uiView.current()
 
     function onMouseMove(e: MouseEvent) {
-      sidebarWidth = Math.max(180, Math.min(500, e.clientX))
+      sidebarWidths[view] = clampSidebarWidth(e.clientX)
     }
 
     function onMouseUp() {
       isResizing = false
+      saveSidebarWidth(view, sidebarWidths[view])
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
@@ -210,7 +223,7 @@
     <!-- Main content below title bar -->
     <div class="flex min-h-0 flex-1">
       <aside
-        class="flex-none overflow-y-auto border-r border-zinc-700 bg-zinc-900"
+        class="flex-none overflow-hidden border-r border-zinc-700 bg-zinc-900"
         style:width="{sidebarWidth}px"
       >
         <Sidebar />

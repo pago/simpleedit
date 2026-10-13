@@ -726,14 +726,8 @@ describe('switching project', () => {
 })
 
 describe('BacklogView', () => {
-  it('shows its own list by default', async () => {
+  it('shows a hint until something is picked, and + New still opens a new item', async () => {
     render(BacklogView)
-    expect(await screen.findByTestId('backlog-list')).toBeTruthy()
-    await waitFor(() => expect(prompt().value).toBe('Do the b_aaaaaaaa work\nwith details'))
-  })
-
-  it('without its list, shows a hint until something is picked, and + New still opens a new item', async () => {
-    render(BacklogView, { list: false })
     expect(screen.queryByTestId('backlog-list')).toBeNull()
     expect(screen.getByText('Pick an item, or add one with + New.')).toBeTruthy()
     await fireEvent.click(screen.getByRole('button', { name: '+ New' }))

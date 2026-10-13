@@ -3,16 +3,8 @@
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { triageModel } from '../../stores/triageModel.svelte'
   import PrDetail from './PrDetail.svelte'
-  import ScreenPrsQueue from './ScreenPrsQueue.svelte'
   import MagnifierIcon from './MagnifierIcon.svelte'
   import { CUTOFF_DAYS, isCutoffDays, type ScreenPrsFilterPrefs } from '../../../shared/screenprs-filter'
-
-  interface Props {
-    /** Show the queue in a column of its own; off when it is shown elsewhere. */
-    queue?: boolean
-  }
-
-  let { queue = true }: Props = $props()
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
@@ -120,17 +112,11 @@
     </div>
   </div>
 
-  <div class="flex min-h-0 flex-1">
-    {#if queue}
-      <ScreenPrsQueue class="w-[380px] flex-none border-r border-zinc-800" />
+  <div class="min-h-0 flex-1">
+    {#if selectedKey && selectedContext}
+      <PrDetail context={selectedContext} card={selectedCard} />
+    {:else if !selectedKey}
+      <div class="flex h-full items-center justify-center text-xs text-zinc-600">Pick a PR from the queue to review it.</div>
     {/if}
-
-    <div class="min-w-0 flex-1">
-      {#if selectedKey && selectedContext}
-        <PrDetail context={selectedContext} card={selectedCard} />
-      {:else if !selectedKey}
-        <div class="flex h-full items-center justify-center text-xs text-zinc-600">Pick a PR from the queue to review it.</div>
-      {/if}
-    </div>
   </div>
 </div>

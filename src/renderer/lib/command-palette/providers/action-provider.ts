@@ -4,6 +4,7 @@ import { fuzzyMatch } from '../fuzzy-match'
 import { refreshWorktrees } from '../../../stores/worktrees.svelte'
 import { openDiffTab, openTourTab } from '../../../stores/diffReview.svelte'
 import { triggerTour, loadCachedTour, tourStore } from '../../../stores/tourStore.svelte'
+import { uiView } from '../../../stores/uiView.svelte'
 
 interface ActionDef {
   id: string
@@ -94,6 +95,36 @@ const actions: ActionDef[] = [
     inMemoryView: true,
     execute() {
       refreshWorktrees()
+    }
+  },
+  {
+    id: 'action:show-sessions',
+    label: 'Show Sessions',
+    description: '⌘1',
+    keywords: 'sessions sidebar workspace agents terminals',
+    inMemoryView: true,
+    execute() {
+      uiView.show('workspace')
+    }
+  },
+  {
+    id: 'action:show-backlog',
+    label: 'Show Backlog',
+    description: '⌘2',
+    keywords: 'backlog sidebar prepared sessions queue',
+    inMemoryView: true,
+    execute() {
+      uiView.show('backlog')
+    }
+  },
+  {
+    id: 'action:show-screenprs',
+    label: 'Show Screen PRs',
+    description: '⌘3',
+    keywords: 'screen prs pull requests review sidebar',
+    inMemoryView: true,
+    execute() {
+      uiView.show('screenprs')
     }
   }
 ]

@@ -59,9 +59,9 @@ describe('ScreenPrsQueue', () => {
   })
 })
 
-describe('ScreenPrsView without its queue', () => {
+describe('ScreenPrsView', () => {
   it('shows a hint until a PR is picked', () => {
-    render(ScreenPrsView, { queue: false })
+    render(ScreenPrsView)
     expect(screen.queryByTestId('screenprs-queue')).toBeNull()
     expect(screen.getByText('Pick a PR from the queue to review it.')).toBeTruthy()
   })
