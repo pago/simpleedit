@@ -1,5 +1,37 @@
 # simpleedit
 
+## 0.24.0
+
+### Minor Changes
+
+- [#212](https://github.com/pago/simpleedit/pull/212) [`f99c04f`](https://github.com/pago/simpleedit/commit/f99c04fb10227cd993545cfb60a1c048e5623aec) Thanks [@pago](https://github.com/pago)! - Agent threads: comment on a line in the editor, a session diff or on the phone, and the session's agent answers in that thread. Comments are typed into the session only when it is idle with an empty prompt and no dialog open, otherwise they wait. Threads follow their code through edits, show as gutter icons and inline, notify the phone on replies, and the agent can open a thread itself with the `open_thread` MCP tool.
+
+- [#208](https://github.com/pago/simpleedit/pull/208) [`720255b`](https://github.com/pago/simpleedit/commit/720255b19ca9e5e9bfd19ef1339ccc7a210e890c) Thanks [@pago](https://github.com/pago)! - Browse a Claude session's auto-memory from the repo picker ("Claude memory"): the memory files open in the file tree and editor, broken index links, unindexed memories and unresolved `[[wiki]]` links show as editor markers and in a health list, and a git-tracked memory dir gets its own scoped git log.
+
+- [#216](https://github.com/pago/simpleedit/pull/216) [`f129e68`](https://github.com/pago/simpleedit/commit/f129e681a771cc74e87227a59b97a4a007955338) Thanks [@pago](https://github.com/pago)! - Remote access can now publish the phone companion through OpenTunnel, an experimental public HTTPS tunnel that works without Tailscale. Settings → Remote access offers Off, Tailscale Serve or OpenTunnel; OpenTunnel asks for a one-time acknowledgement that the address is public and protected only by the access key. Its address stays the same across restarts and is deleted when you switch away.
+
+- [#219](https://github.com/pago/simpleedit/pull/219) [`372696c`](https://github.com/pago/simpleedit/commit/372696cc13951a06195ddd4f6a0c56d055f674c4) Thanks [@pago](https://github.com/pago)! - Screen PRs can now screen your review queue in the background every 1, 2, 4 or 16 hours. Pick an interval with the new Auto control in the filter bar, on the desktop or the phone. Scheduled runs keep going with no window open, and they refresh the board in place instead of clearing it.
+
+- [#188](https://github.com/pago/simpleedit/pull/188) [`26fcb3d`](https://github.com/pago/simpleedit/commit/26fcb3dbfa0c9496f2d263c540d871ffdd44774f) Thanks [@pago](https://github.com/pago)! - Add a session backlog: prepared session prompts per project that you start later, from the desk or the phone. Ask an agent to "add this to our backlog" and it writes the prompt for you to review; Start turns an item into a session.
+
+- [#217](https://github.com/pago/simpleedit/pull/217) [`cee4a1d`](https://github.com/pago/simpleedit/commit/cee4a1d4f41de3de24ad9ccb5bace16864ba2f29) Thanks [@pago](https://github.com/pago)! - The sidebar is now an accordion of Sessions, Backlog and Screen PRs. Backlog and Screen PRs open their list in the sidebar instead of a second column, so the main area gets that width back for the item or PR you picked. Each section remembers its own sidebar width, and ⌘1/⌘2/⌘3 (Ctrl on Windows and Linux) switch between them. A session that finished while you weren't looking gets a blue dot, and the Sessions header shows the most urgent session state even while it is collapsed. Starting a session yourself (⌘T, ✦ Agent, + Term) switches back to Sessions. Press ⌘B (Ctrl+B on Windows and Linux) or the chevron in the title bar to collapse the sidebar to a rail of icons: hover one to see its list over the main area, or click to keep it open; picking something closes it again.
+
+### Patch Changes
+
+- [#214](https://github.com/pago/simpleedit/pull/214) [`030b95d`](https://github.com/pago/simpleedit/commit/030b95da87add61c6205485cdd00ec03d9cde8af) Thanks [@pago](https://github.com/pago)! - Agents started by a SimpleEdit that was itself launched from a Claude Code session now save their conversations, so Resume works; resuming a session whose conversation was never saved now says so instead of failing with "No conversation found".
+
+- [#213](https://github.com/pago/simpleedit/pull/213) [`5541130`](https://github.com/pago/simpleedit/commit/5541130f10a6739e1c6dcade02d14ae17bd57289) Thanks [@pago](https://github.com/pago)! - Screen PRs "Discuss with Agent" now offers the same models as everywhere else, on the desk and the phone: "Default" plus the models ticked in Settings → Models, including OpenCode and local Ollama models. When no models are ticked, the Discuss and backlog pickers say where to pick them.
+
+- [#206](https://github.com/pago/simpleedit/pull/206) [`727a50f`](https://github.com/pago/simpleedit/commit/727a50fe3fde9656c0f40956e6d9739e336e0efd) Thanks [@pago](https://github.com/pago)! - A Homebrew update no longer leaves a stray half-hour `sleep` running in the background after it finishes. The upgrade helper's timeout watchdog now ends by itself once brew exits, and the helper waits for it before exiting.
+
+- [#209](https://github.com/pago/simpleedit/pull/209) [`eac8d20`](https://github.com/pago/simpleedit/commit/eac8d20d37949ecfb0e2fa53708c56b26dacee3d) Thanks [@pago](https://github.com/pago)! - Notice new releases while SimpleEdit stays open: the app now checks for updates every four hours, not only at launch, and the app menu has a "Check for Updates…" item that also brings back a dismissed update banner.
+
+- [#215](https://github.com/pago/simpleedit/pull/215) [`47fa235`](https://github.com/pago/simpleedit/commit/47fa2350bdc2024fe11c039cbde51c303a4a691f) Thanks [@pago](https://github.com/pago)! - The phone app now reloads itself when the Mac app restarts on a new version, instead of running its old code against the new one. If something unsent would be lost, it shows a Reload banner and asks first.
+
+- [#218](https://github.com/pago/simpleedit/pull/218) [`6b6cd30`](https://github.com/pago/simpleedit/commit/6b6cd301b8cce3805550a01ea8a6ef3c10a6e415) Thanks [@pago](https://github.com/pago)! - Backlog's + New and Screen PRs' Screen button now sit in their section headers in the sidebar, like Sessions' ✦ Agent and + Term, so you can add a backlog item or start a screening while that section is collapsed, and with the sidebar collapsed (⌘B) they also appear at the top of the Backlog and Screen PRs views. The sidebar header shows how far a screening has got, next to Stop. Using + New or Screen opens its section.
+
+- [#211](https://github.com/pago/simpleedit/pull/211) [`3e302f6`](https://github.com/pago/simpleedit/commit/3e302f6e1ceaed921fe915813f257b0866d6195c) Thanks [@pago](https://github.com/pago)! - Fix phone push notifications occasionally unregistering every device: about one in 256 generated signing keys was saved one byte short, rejected as invalid on the next load, and replaced along with all subscriptions. Keys already saved that way are now repaired on load, so those phones stay registered.
+
 ## 0.23.1
 
 ### Patch Changes
