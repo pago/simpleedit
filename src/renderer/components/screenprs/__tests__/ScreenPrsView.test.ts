@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import ScreenPrsView from '../ScreenPrsView.svelte'
 import ScreenPrsButton from '../ScreenPrsButton.svelte'
 import { screenPrsStore } from '../../../stores/screenprs.svelte'
+import { _resetSidebarRailForTests } from '../../../stores/sidebarRail.svelte'
 
 /** The org and cutoff are main's, saved for every window and phone, not this view's. */
 let invoke: ReturnType<typeof vi.fn>
@@ -93,5 +94,25 @@ describe('ScreenPrsView — the saved filter', () => {
     await fireEvent.click(screen.getByRole('button', { name: /Screen/ }))
     await vi.waitFor(() => expect(screenPrsStore.status()).toBe('error'))
     expect(screenPrsStore.error()).toBe('gh is not signed in')
+  })
+})
+
+describe('ScreenPrsView — collapsed sidebar', () => {
+  it('carries Screen, then progress and Stop, in its own header only while the sidebar is collapsed to the rail', async () => {
+    _resetSidebarRailForTests(false)
+    render(ScreenPrsView)
+    expect(screen.queryByRole('button', { name: 'Screen' })).toBeNull()
+
+    _resetSidebarRailForTests(true)
+    try {
+      await fireEvent.click(await screen.findByRole('button', { name: 'Screen' }))
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:start', expect.objectContaining({ owner: 'acme' })))
+      screenPrsStore._onStatus('running', 10)
+      expect(await screen.findByTestId('screening-progress')).toHaveTextContent('0/10')
+      await fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+      expect(invoke).toHaveBeenCalledWith('screenprs:cancel')
+    } finally {
+      _resetSidebarRailForTests(false)
+    }
   })
 })

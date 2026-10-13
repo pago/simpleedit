@@ -147,7 +147,10 @@ describe('Sidebar', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('screenprs:start', expect.anything()))
 
     uiView.show('workspace')
-    await fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    screenPrsStore._onStatus('running', 4)
+    screenPrsStore._onCard(attentionCard(7))
+    expect(await screen.findByTestId('screening-progress')).toHaveTextContent('1/4')
+    await fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
     expect(invoke).toHaveBeenCalledWith('screenprs:cancel')
     expect(uiView.current()).toBe('workspace')
   })
