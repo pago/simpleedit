@@ -60,7 +60,9 @@ function render({ context, triage = [], overview, deep = [], focus }: PrBriefInp
   if (focus) lines.push('', `I want to dig into this question from the overview first:`, focus.markdown)
   lines.push(
     '',
-    `Start by running \`gh pr diff ${context.url}\` to see the change (and \`gh pr checkout\` if you want to run it), then help me decide whether it's ready.`
+    `When you need it, \`gh pr diff ${context.url}\` shows the change (and \`gh pr checkout\` lets you run it).`,
+    '',
+    `That's the context. Don't run anything or start reviewing yet — reply with a one-line acknowledgement and wait for my instructions.`
   )
   return lines.join('\n')
 }

@@ -22,6 +22,16 @@ describe('buildPrBrief', () => {
     expect(brief).not.toContain('Triage')
   })
 
+  it('ends by waiting for instructions instead of starting the review', () => {
+    const brief = buildPrBrief({ context, focus: { markdown: 'Why is the lock dropped early?', refs: [] } } as PrBriefInput)
+    expect(brief).toContain("Don't post anything until I tell you to.")
+    expect(brief.split('\n').at(-1)).toBe(
+      "That's the context. Don't run anything or start reviewing yet — reply with a one-line acknowledgement and wait for my instructions."
+    )
+    expect(brief).not.toContain('Start by running')
+    expect(brief).not.toContain('help me decide')
+  })
+
   it('carries the findings, the overview and the question to start from', () => {
     const brief = buildPrBrief({
       context,
