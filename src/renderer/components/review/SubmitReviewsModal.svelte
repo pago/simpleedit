@@ -1,10 +1,12 @@
 <script lang="ts">
   /**
-   * One review per layer, each with its own verdict and exactly the comments
-   * the user drafted on it. The fold preview runs the same pure builder main
+   * One review per layer, each with its own verdict, its draft's summary and
+   * the comments drafted in this review's threads: exactly what main posts
+   * (other comments in a layer's draft stay where they are). The fold preview runs the same pure builder main
    * posts with (`ConfirmReviewModal` does too), so it can't drift. Posting is
    * main's (`review:submit`); this only shows what each layer came back with.
    */
+  import { onMount } from 'svelte'
   import type { ReviewLayerInfo, ReviewLayerSubmitOutcome, ReviewSubmitRequest, ReviewVerdict } from '../../../shared/review-room-ipc'
   import type { PrReviewComment } from '../../../shared/screenprs'
   import { anchorCounts, anchorsForHead, buildReviewPayload, commentableLines } from '../../../shared/screenprs'
@@ -31,7 +33,14 @@
   function initial<T>(make: (l: ReviewLayerInfo) => T): Record<string, T> {
     return Object.fromEntries(layers.map((l) => [l.url, make(l)]))
   }
-  let verdicts = $state(initial((l) => defaultVerdict(screenPrsStore.draftFor(l.url).comments)))
+
+  let threadIds = $derived(new Set(reviewRoom.threadsFor(reviewId).map((t) => t.id)))
+  /** A layer's comments that main posts: those of this review's threads. */
+  function postedComments(url: string, ids: ReadonlySet<string> = threadIds): PrReviewComment[] {
+    return screenPrsStore.draftFor(url).comments.filter((c) => c.threadId !== undefined && ids.has(c.threadId))
+  }
+
+  let verdicts = $state(initial((l) => defaultVerdict(postedComments(l.url, new Set(reviewRoom.threadsFor(reviewId).map((t) => t.id))))))
   /** A merged or closed layer can't take a review, so it starts left out. */
   let included = $state(initial((l) => l.state === 'OPEN'))
   let outcomes = $state<Record<string, ReviewLayerSubmitOutcome>>({})
@@ -50,10 +59,10 @@
   }
 
   function preview(l: ReviewLayerInfo): LayerPreview {
-    const draft = screenPrsStore.draftFor(l.url)
+    const draft = { ...screenPrsStore.draftFor(l.url), comments: postedComments(l.url) }
     const lineDraft = { ...draft, comments: draft.comments.filter((c) => !c.inReplyTo) }
     const diff = reviewRoom.layerDiff(reviewId, l.url)
-    const head = diff?.headSha ?? l.headSha
+    const head = readHead(l)
     const base = diff?.base ?? l.base
     const isolatedBase = base?.kind === 'polluted' && base.isolated
     // Only GitHub's own diff says which lines GitHub takes; an isolated one doesn't.
@@ -71,11 +80,19 @@
   }
 
   let previews = $derived(new Map(layers.map((l) => [l.url, preview(l)])))
-  /** Still to send: a pending review found on GitHub waits for its own answer (Use it / Cancel). */
+  /** The head the user is reading: what main checks the layer against and pins the review to. */
+  function readHead(l: ReviewLayerInfo): string {
+    return reviewRoom.layerDiff(reviewId, l.url)?.headSha ?? l.headSha
+  }
+
+  /**
+   * Still to send: a pending review found on GitHub waits for its own answer
+   * (Use it / Cancel), and a layer that moved waits for a reload.
+   */
   let pending = $derived(
     layers.filter((l) => {
       const kind = outcomes[l.url]?.kind
-      return included[l.url] && kind !== 'posted' && kind !== 'skipped' && kind !== 'foreign-pending'
+      return included[l.url] && kind !== 'posted' && kind !== 'skipped' && kind !== 'foreign-pending' && kind !== 'head-moved'
     }),
   )
 
@@ -83,9 +100,13 @@
     if (!urls.length || submitting) return
     submitting = true
     error = null
+    // Main posts the summary it holds, so one still being typed goes first.
+    await Promise.all(urls.map((url) => screenPrsStore.flushSummary(url)))
     const request: ReviewSubmitRequest = {
       reviewId,
-      layers: urls.map((prUrl) => ({ prUrl, verdict: verdicts[prUrl], ...(adopt[prUrl] ? { adoptPendingReviewId: adopt[prUrl] } : {}) })),
+      layers: layers
+        .filter((l) => urls.includes(l.url))
+        .map((l) => ({ prUrl: l.url, verdict: verdicts[l.url], readHead: readHead(l), ...(adopt[l.url] ? { adoptPendingReviewId: adopt[l.url] } : {}) })),
     }
     try {
       const result = await window.api.invoke('review:submit', request)
@@ -107,10 +128,41 @@
     delete outcomes[url]
   }
 
+  // ── Focus: taken on open, kept inside, given back on close ──
+  let dialog = $state<HTMLDivElement>()
+
+  onMount(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    dialog?.focus()
+    return () => {
+      if (opener?.isConnected) opener.focus()
+    }
+  })
+
+  function focusables(): HTMLElement[] {
+    if (!dialog) return []
+    return [...dialog.querySelectorAll<HTMLElement>('button, input, textarea, select, a[href], [tabindex]:not([tabindex="-1"])')].filter(
+      (el) => !el.hasAttribute('disabled') && el.getClientRects().length > 0,
+    )
+  }
+
   function handleKeydown(e: KeyboardEvent): void {
     if (e.key === 'Escape') {
       e.preventDefault()
       if (!submitting) onclose()
+    } else if (e.key === 'Tab') {
+      const all = focusables()
+      if (!all.length) return
+      const first = all[0]
+      const last = all[all.length - 1]
+      const at = document.activeElement
+      if (e.shiftKey && (at === first || at === dialog)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && at === last) {
+        e.preventDefault()
+        first.focus()
+      }
     }
   }
 
@@ -125,6 +177,7 @@
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onclick={() => !submitting && onclose()}>
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div
+    bind:this={dialog}
     class="flex max-h-[85vh] w-[640px] max-w-full flex-col rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl"
     onclick={(e) => e.stopPropagation()}
     onkeydown={handleKeydown}
@@ -135,7 +188,7 @@
   >
     <div class="flex-none px-4 pt-4">
       <h2 class="text-sm font-semibold text-zinc-100">Submit reviews</h2>
-      <p class="mt-1 text-[11px] text-zinc-500">One review per layer, with exactly the comments you drafted. Conversations with the companion are never posted. This posts to GitHub as you.</p>
+      <p class="mt-1 text-[11px] text-zinc-500">One review per layer: its review body and the comments you drafted in this review’s threads. Conversations with the companion are never posted. This posts to GitHub as you.</p>
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -167,6 +220,18 @@
           </div>
 
           {#if included[l.url] && p}
+            <label class="mt-2 block">
+              <span class="text-[10px] uppercase tracking-wider text-zinc-500">Review body for #{l.number} · posted above the comments</span>
+              <textarea
+                class="mt-0.5 w-full resize-y rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-[12px] text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500 disabled:opacity-60"
+                rows="2"
+                placeholder="Optional"
+                aria-label="Review body for #{l.number}"
+                value={screenPrsStore.draftFor(l.url).summary}
+                disabled={submitting || outcome?.kind === 'posted'}
+                oninput={(e) => screenPrsStore.setSummary(l.url, e.currentTarget.value)}
+              ></textarea>
+            </label>
             {#if p.comments.length}
               <ul class="mt-2 flex flex-col gap-1">
                 {#each p.comments as c (c.id)}
@@ -218,6 +283,10 @@
                     <button type="button" class="rounded border border-zinc-600 px-2 py-0.5 text-zinc-200 hover:bg-zinc-800" disabled={submitting} onclick={() => leaveOut(l.url)}>Cancel</button>
                   </span>
                 </div>
+              {:else if outcome.kind === 'head-moved'}
+                <span class="text-amber-300" data-testid="submit-head-moved">
+                  Not posted: #{l.number} moved to {outcome.headSha.slice(0, 7)} since you read {outcome.readHead.slice(0, 7)}. Reload the layer and read what changed first.
+                </span>
               {:else}
                 <span class="text-red-300">{outcome.kind === 'unknown' ? 'GitHub didn’t answer in time; it may have the review.' : 'Couldn’t post'}: {outcome.error}</span>
                 <button type="button" class="ml-1.5 rounded border border-zinc-700 px-2 py-0.5 text-zinc-200 hover:bg-zinc-800" disabled={submitting} onclick={() => submit([l.url])}>Retry</button>

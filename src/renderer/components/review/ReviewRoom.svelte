@@ -27,11 +27,19 @@
   let top = $derived(layers.at(-1))
   let threads = $derived(reviewRoom.threadsFor(reviewId))
   let stackThreads = $derived(threads.filter((t) => t.anchor.kind === 'stack'))
+  let readonly = $derived(review?.status !== 'open')
 
-  /** Each thread's draft: the draft store's `threadId` is the only link. */
+  /**
+   * Each of this review's threads' draft: the draft store's `threadId` is the
+   * only link. These are exactly what main posts per layer (with its summary);
+   * other comments in a layer's draft are left alone.
+   */
   let drafts = $derived.by(() => {
+    const ids = new Set(threads.map((t) => t.id))
     const out = new Map<string, { url: string; comment: PrReviewComment }>()
-    for (const l of layers) for (const c of screenPrsStore.draftFor(l.url).comments) if (c.threadId) out.set(c.threadId, { url: l.url, comment: c })
+    for (const l of layers) {
+      for (const c of screenPrsStore.draftFor(l.url).comments) if (c.threadId && ids.has(c.threadId)) out.set(c.threadId, { url: l.url, comment: c })
+    }
     return out
   })
 
@@ -54,7 +62,7 @@
           l.url,
           {
             open: threads.filter((t) => t.status === 'open' && t.anchor.kind !== 'stack' && t.anchor.pr === l.number).length,
-            toPost: screenPrsStore.draftFor(l.url).comments.length,
+            toPost: [...drafts.values()].filter((d) => d.url === l.url).length,
             ...(steps.length ? { read: steps.filter((s) => s.read).length / steps.length } : {}),
             ...(since?.kind === 'ahead' ? { newCommits: since.aheadBy } : {}),
           },
@@ -131,10 +139,11 @@
             {#if stackThreads.length}
               <div class="mt-3 flex flex-col gap-2">
                 {#each stackThreads as t (t.id)}
-                  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={top?.url ?? ''} {layers} {companionSessionId} />
+                  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={top?.url ?? ''} {layers} {companionSessionId} {readonly} />
                 {/each}
               </div>
             {/if}
+            {#if !readonly}
             <div class="mt-3">
               {#if composingStack}
                 <ThreadComposer draftKey="stack:{reviewId}" label="On the whole stack · a comment posts on the layer you pick, the top one by default" onask={(text) => startStack(text, 'ask')} ondraft={(text) => startStack(text, 'draft')} oncancel={() => (composingStack = false)} />
@@ -144,6 +153,7 @@
                 </button>
               {/if}
             </div>
+            {/if}
           </section>
         {/if}
         {#each layers as layer (layer.url)}
@@ -155,6 +165,7 @@
             threads={threads.filter((t) => t.anchor.kind !== 'stack' && t.anchor.pr === layer.number)}
             {drafts}
             {companionSessionId}
+            {readonly}
           />
         {/each}
       </div>

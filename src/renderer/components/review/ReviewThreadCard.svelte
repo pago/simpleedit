@@ -39,9 +39,11 @@
     /** Bottom → top: the layers a whole-stack thread's draft can be posted on. */
     layers: ReviewLayerInfo[]
     companionSessionId?: string
+    /** The review was submitted or discarded: shown, never changed. */
+    readonly?: boolean
   }
 
-  let { reviewId, thread, draft, draftUrl, layers, companionSessionId }: Props = $props()
+  let { reviewId, thread, draft, draftUrl, layers, companionSessionId, readonly = false }: Props = $props()
 
   const CLOSE_REASONS: { key: ReviewCloseReason; label: string }[] = [
     { key: 'fixed', label: 'Fixed' },
@@ -154,7 +156,7 @@
   }
 
   function onAskKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault()
       void ask(askText)
     }
@@ -244,6 +246,7 @@
 
   function save(): void {
     clearTimeout(saveTimer)
+    saveTimer = undefined
     if (draft && text !== draft.comment.text) screenPrsStore.updateComment(draft.url, draft.comment.id, { text })
   }
 
@@ -253,7 +256,10 @@
     saveTimer = setTimeout(save, 500)
   }
 
-  $effect(() => () => clearTimeout(saveTimer))
+  // Leaving (a layer reloading, the room closing) must not drop what the debounce still holds.
+  $effect(() => () => {
+    if (saveTimer !== undefined) save()
+  })
 
   function setSeverity(value: string): void {
     if (!draft) return
@@ -324,12 +330,12 @@
   </div>
 {/snippet}
 
-{#snippet draftBox(readonly: boolean)}
+{#snippet draftBox(locked: boolean)}
   {#if draft}
     <div class="mx-2.5 mb-2.5 flex flex-col gap-1.5 rounded-md border border-blue-500/60 bg-blue-500/[0.08] px-2.5 py-2" data-testid="draft-box">
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-[11.5px] font-semibold text-blue-300">{draftWhere}</span>
-        {#if thread.anchor.kind === 'stack' && !readonly}
+        {#if thread.anchor.kind === 'stack' && !locked}
           <select
             class="rounded border border-zinc-700 bg-zinc-900 px-1 py-px text-[11px] text-zinc-200"
             aria-label="Which PR this comment is posted on"
@@ -341,7 +347,7 @@
         {:else if thread.anchor.kind === 'stack'}
           <span class="text-[11.5px] font-semibold text-blue-300">#{layers.find((l) => l.url === draft.url)?.number ?? '?'}</span>
         {/if}
-        {#if !isReply && !readonly}
+        {#if !isReply && !locked}
           <select
             class="rounded border border-zinc-700 bg-zinc-900 px-1 py-px text-[11px] text-zinc-200"
             aria-label="Severity you post"
@@ -355,11 +361,11 @@
           <span class="rounded-full px-2 py-px text-[10.5px] font-semibold {SEVERITY_CLASS[draft.comment.severity]}">{draft.comment.severity}</span>
         {/if}
         <span class="flex-1"></span>
-        {#if !readonly}
+        {#if !locked}
           <button type="button" class="rounded px-1.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" onclick={removeDraft}>Remove</button>
         {/if}
       </div>
-      {#if readonly}
+      {#if locked}
         <p class="whitespace-pre-wrap text-[12px] text-zinc-200">{draft.comment.text}</p>
       {:else}
         <textarea
@@ -377,7 +383,7 @@
           }}
         ></textarea>
       {/if}
-      {#if !readonly && !thread.proposal && hasCompanionAnswer}
+      {#if !locked && !thread.proposal && hasCompanionAnswer}
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" class="rounded bg-violet-500/15 px-2 py-0.5 text-[11px] font-semibold text-violet-300 hover:bg-violet-500/25" onclick={redraft}>Redraft from conversation</button>
           <span class="text-[10.5px] text-zinc-500">Your text stays until you choose.</span>
@@ -403,7 +409,9 @@
   {:else if thread.status === 'done'}
     <div class="flex items-center gap-1 pr-2">
       <div class="min-w-0 flex-1">{@render head(true)}</div>
-      <button type="button" class="flex-none rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" onclick={() => void run(() => reviewRoom.setStatus(reviewId, thread.id, 'open'))}>Reopen</button>
+      {#if !readonly}
+        <button type="button" class="flex-none rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" onclick={() => void run(() => reviewRoom.setStatus(reviewId, thread.id, 'open'))}>Reopen</button>
+      {/if}
     </div>
     {@render draftBox(true)}
   {:else}
@@ -461,6 +469,7 @@
       {/if}
     </div>
 
+    {#if !readonly}
     <div class="flex flex-col gap-1.5 px-2.5 pb-2">
       {#if chips.length}
         <div class="flex flex-wrap gap-1">
@@ -492,6 +501,7 @@
         >Ask</button>
       </div>
     </div>
+    {/if}
 
     {#if thread.proposal}
       <div class="mx-2.5 mb-2 flex flex-col gap-1.5 rounded-md border border-dashed border-violet-500/50 bg-violet-500/[0.06] px-2.5 py-2" data-testid="proposal">
@@ -502,15 +512,18 @@
           {/if}
         </div>
         <p class="whitespace-pre-wrap text-[12px] text-zinc-200">{thread.proposal.text}</p>
+        {#if !readonly}
         <div class="flex gap-1.5">
           <button type="button" class="rounded bg-blue-600 px-2 py-0.5 text-[11px] text-white hover:bg-blue-500" onclick={acceptProposal}>Accept</button>
           <button type="button" class="rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" onclick={() => void run(() => reviewRoom.clearProposal(reviewId, thread.id))}>Keep mine</button>
         </div>
+        {/if}
       </div>
     {/if}
 
-    {@render draftBox(false)}
+    {@render draftBox(readonly)}
 
+    {#if !readonly}
     <div class="flex flex-wrap items-center gap-1.5 px-2.5 pb-2.5">
       {#if !draft}
         <button type="button" class="rounded bg-blue-600 px-2.5 py-0.5 text-[11.5px] text-white hover:bg-blue-500" onclick={startDraft}>
@@ -529,6 +542,7 @@
         <span class="text-[10.5px] text-zinc-500">{draft ? 'Done keeps your comment; it posts when you submit.' : 'Nothing is posted unless you draft a comment.'}</span>
       {/if}
     </div>
+    {/if}
   {/if}
   {#if error}
     <p role="alert" class="px-2.5 pb-2 text-[11px] text-red-300">{error}</p>
