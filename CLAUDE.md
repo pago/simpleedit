@@ -80,6 +80,8 @@ main-process module:
   (`claude-memory.ts`, `memory-watcher.ts`)
 - `backlog:` — the project's session backlog (`backlog-store.ts`,
   `backlog-start.ts`)
+- `workflow:` — workflows: list, start, cancel, dismiss, lead hosts, settings
+  (`workflow-host.ts`, `workflow-engine.ts`, `workflow-store.ts`)
 
 ### Claude Code integration (provider architecture)
 The "✦ Claude" button in terminal tabs spawns `claude --output-format stream-json`
@@ -912,6 +914,59 @@ user's call.
   at most every 30 s on window focus; concurrent loads share one, since
   discovery spawns CLIs.
 
+### Workflows (scripted multi-agent execution)
+A lead session turns a plan into a **workflow**: a JSON task graph
+(`shared/workflow.ts`) that SimpleEdit validates and runs. Each task gets a
+hidden worker session, and the lead is woken only at judgment points. The lead
+picks the split, the dependencies and the agent/model per task; the user
+reviews the graph and presses **Start** in the lead's Workflow tab. MCP tools:
+`create_workflow`, `patch_workflow`, `start_workflow`, `get_workflow`, and
+`report_result` for workers.
+- **Main owns workflows** in the app database (migration 4: `workflows`,
+  `workflow_tasks`, `workflow_patches`). `workflow-store.ts` reads and writes a
+  workflow whole and synchronously. A lead's patch is applied against
+  `baseVersion` by `applyOpsTo`: all ops or none, every problem listed for the
+  agent. `workflow-engine.ts` owns runtime state. `workflow-host.ts` wires both
+  to IPC (`workflow:*`, broadcast `workflow:changed` per workflow) and the
+  bridge (`setWorkflowTools`).
+- **Workers are terminal sessions with `owner: {kind: 'workflow', workflowId,
+  taskId, attempt}`** (`shared/session-owner.ts`, shared with Review Room).
+  Owned sessions never show in the sidebar and are never selected; a worker's
+  attention rolls up onto its lead's dot and the Sessions aggregate
+  (`sessionAttention.svelte.ts`). Only a renderer can create a session, so the
+  engine sends `agent-session:spawn` with `owner` to the lead's window. With the
+  lead's window closed, nothing new starts (`paused: window-closed`, derived)
+  and running workers carry on.
+- **Terminal ids are never stored.** Workers are bound from the agent-bus peer
+  list by their owner (`peersWithWindows`, `onPeersChanged`). Leads are keyed by
+  provider session id, and windows report which leads they hold
+  (`workflow:hosts`, placeholders included). After a restart the renderer
+  resumes the workers of running tasks, and the engine nudges each re-attached
+  worker once by mail.
+- **A task is done only when its worker calls `report_result`.** A `Stop`
+  without one makes the task `waiting` (Needs you); the next
+  `UserPromptSubmit` makes it `running` again. `failed` retries once under
+  `onFailure: "retry"`, otherwise it escalates. Escalations, `needs_lead` and a
+  stuck graph become **judgments**, mailed to the lead from the synthetic
+  sender `workflow` (`sendSystemMail`, same wake rules as agent mail).
+- **Cancelling never stops a worker**: a cancelled running task's session drops
+  its owner and appears in the sidebar (`workflow:worker` `detach`). Finished
+  workflows keep their workers until **Dismiss**, which closes them and archives
+  the record.
+- **Stray workers are swept on every peer change** (`sweepStrays`): one that
+  appears after its task was cancelled is detached; one of a dismissed workflow
+  or an abandoned spawn (no handle in 10 s, no peer 20 s later) is closed. A
+  running task whose worker doesn't return within 90 s of a restart fails.
+  A closing window drops its hosts before the bus forgets its peers, or its
+  workers would read as failed.
+- Concurrency: local 1, cloud 4 over all workflow workers (the gate's limits,
+  counted separately so long-lived workers can't starve Screen PRs). Typing into
+  a worker marks its task `steered`, and its result tells the lead.
+- `start_workflow` is refused unless Settings → Workflows allows it
+  (`userData/config/workflows.json`).
+- Not built yet: `loop` and `map` kinds, the patch history view, the phone.
+  Every engine step is logged as `[Workflows] …`.
+
 ### Layout
 The sidebar is an **accordion of three sections**: Sessions (`SessionList`),
 Backlog (`BacklogList`) and Screen PRs (`ScreenPrsQueue`), each a
@@ -1036,6 +1091,8 @@ src/
     agent-threads-store.ts ← Agent threads: ops, persistence, broadcast
     backlog-store.ts, backlog-start.ts ← Session backlog: ops + persistence; start-once
     backlog-agent.ts   ← list_backlog / edit_backlog shape ↔ backlog ops
+    workflow-store.ts, workflow-engine.ts ← Workflows: persistence + patch ops; scheduling, results, judgments
+    workflow-host.ts   ← Workflow engine ↔ windows, agent bus, worktrees, IPC, MCP tools
     thread-delivery.ts ← When a thread comment may be typed in; confirm, arm, answer
     prompt-model.ts    ← Draft-in-the-prompt model fed by the user's keys
     thread-reanchor.ts, thread-anchor-watch.ts ← Move threads with their code
@@ -1112,6 +1169,7 @@ src/
       screenprs/              ← ScreenPrsView (header + Review Room), ScreenPrsQueue (sidebar), OverviewCard, ConfirmReviewModal, …
       review/                 ← Review Room: ReviewRoom, LayerSection, ReviewThreadCard, ReviewOutline, CompanionDock, SubmitReviewsModal
       backlog/                ← BacklogView (header + detail), BacklogList (sidebar), BacklogItemDetail (autosave), PromptField
+      workflow/               ← WorkflowView (tab), WorkflowGraph (xyflow + elk, lazy), TaskNode, WorkerPopup
       settings/               ← SettingsWindow, ModelsPane, DefaultModelPane, …
       command-palette/        ← CommandPalette + input/results
       memory/                 ← Memory health badge/list + empty state
@@ -1124,6 +1182,7 @@ src/
       agentTerminals.svelte.ts ← "Discuss with Agent" targets (live Claude sessions)
       screenprs.svelte.ts, reviewStore.svelte.ts ← Screen-PRs + review state
       backlog.svelte.ts       ← Mirror of the project's backlog (desktop + phone)
+      workflows.svelte.ts     ← Mirror of the project's workflows; lead hosts, worker resume, tab open
       backlogViewState.svelte.ts ← What BacklogList and the item detail share on screen
       sessionAttention.svelte.ts ← Finished-unseen marks + the Sessions aggregate dot
       sidebarRail.svelte.ts   ← Collapsed flag + rail overlay (hover intent, pin, close)

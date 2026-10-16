@@ -249,6 +249,80 @@ merge before #222.
 
 The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.md`.
 
+## PR 1 implementation notes
+
+Built on `feature/runs` (2026-10-17) while the user was away; every call below was made
+without them and is open to change.
+
+- **Migration 4.** Review Room PR 1 took 3.
+- **`SessionOwner` carries `attempt`**: `{kind: 'workflow', workflowId, taskId, attempt}`. A
+  retry starts a fresh worker while the failed one stays until Dismiss, and the engine must
+  tell them apart. `isOwned` now means "has any owner".
+- **No terminal ids are stored, not even the lead's.** Workers are bound from the agent-bus
+  peer list, whose entries carry `owner` (`peersWithWindows`, `onPeersChanged`). The lead is
+  keyed by its provider session id (`sessionForTerminal`, the reverse of the hook routing
+  map). A lead with none yet falls back to its terminal id, which doesn't survive a restart.
+- **Window binding through `workflow:hosts`.** Each window reports the stable keys of the
+  leads it holds, restored placeholders included, so a workflow knows its window before the
+  lead is resumed. `paused: window-closed` is derived per snapshot, not a stored status:
+  statuses are `draft | running | done | failed | cancelled`.
+- **Own concurrency counters, the gate's limits** (local 1, cloud 4, over all workflows).
+  `withBackendGate` only wraps a promise. Holding it for a worker's lifetime would starve
+  Screen PRs runs. "Local" means a Claude task whose model is an installed Ollama model.
+- **`onFailure: "retry"` is one fresh worker** (2 attempts), then escalate. A worker whose
+  session closes or exits without a result, in a window that is still open, counts as
+  failed.
+- **A `retry` patch op** (failed → queued, optional new brief) lets the lead answer an
+  escalation without re-adding the task under a new id.
+- **`failed` means stuck**: nothing running and nothing startable. The engine raises a
+  judgment for each blocked task. Any patch reopens the workflow (`running`).
+- **Task `waiting`**: a `Stop` without `report_result` sets it, with a note, and the next
+  `UserPromptSubmit` clears it. `needs_lead` is also `waiting`, plus a judgment, cleared when
+  the worker's next turn starts (the lead's answer arrives as mail).
+- **Judgments go to the lead as system mail** (`sendSystemMail`: `enqueue` from the
+  synthetic sender `workflow` + `afterEnqueue`, so the normal wake rules apply). A lead that
+  isn't live gets it on a later peer change.
+- **Restart re-attach**: the renderer resumes worker placeholders of running/waiting tasks in
+  running workflows. The engine sends a re-attached running worker one nudge by mail
+  ("SimpleEdit restarted… finish with report_result"). Attempts started in this run are
+  recorded before the spawn, because the bus lists a new worker before its id comes back.
+- **A spawn that fails** puts the task back in the queue and holds it for 5 s.
+- **Workers spawn through `agent-session:spawn` + `owner`** and launch at the project root
+  like every agent. A Claude task without `model` inherits the lead's model, as
+  `spawn_session` does. Providers are `claude | codex`, the set `spawn_session` accepts.
+- **`integrate` is a brief, not git work in main**: it lists the `after` tasks' branches
+  (`result.branch`, else their worktree branch) and the shape. The integrator merges.
+- **Worktrees**: `createWorktree` (beside the bare repo, named after the branch). An existing
+  worktree of the branch is reused. A task without `worktree` runs in the lead's worktree.
+- **Not built from the mockup**: Pause, Show patches (patch history is PR 2), and the popup's
+  Diff and "Open as full session" buttons. The popup has Brief (brief, note, result) and
+  Close. Cancel and Dismiss take a second click.
+- **Steering**: any `pty:write` carrying user keys into a worker (desktop popup or phone)
+  marks the task `steered`.
+- **The Workflow tab is persisted** (`SerializedTab` kind `workflow`) and opens when the
+  workflow is created: focused if the lead has no tab, otherwise in the background.
+- **Setting**: `userData/config/workflows.json`, Settings → Workflows.
+- **Sidebar**: a lead's row adds "⇶ done/total · N need you". Workers' attention merges
+  into the lead's dot and into the Sessions aggregate.
+
+- **Review fixes (adversarial review before the PR)**:
+  - A `Stop` that isn't blocked ends the worker's turn even with `stop_hook_active` set.
+  - A spawn whose handle times out (10 s) gets 20 s more for its worker to appear, then
+    counts as failed. A worker of an abandoned attempt that appears late is closed.
+  - A worker that appears after its task was cancelled is detached. One whose workflow was
+    dismissed is closed (main for live workers; the renderer for restored or exited ones).
+  - After a restart, a running task whose worker doesn't come back within 90 s fails ("never
+    started or was lost"), for example a session that wasn't saved before the quit.
+  - Closing a window drops its hosts before the bus forgets its peers, so its workers don't
+    read as failed.
+  - Codex sessions register their `session_id` on their first hook, so a Codex lead keeps
+    its workflows across a restart.
+  - A worker never inherits a local (Ollama) lead model: main counts a worker as local only
+    when its task names a local model.
+  - Only current workers of unfinished tasks roll up onto the lead's dot.
+- **Known gap**: a closed window's bridge stops, so its workers keep running but can't call
+  `report_result` until the window is reopened. They are then restored like after a restart.
+
 ## Open questions
 
 - **Budgets:** a per-workflow cap on concurrent workers and total rounds beyond the backend
