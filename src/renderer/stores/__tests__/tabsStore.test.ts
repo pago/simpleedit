@@ -46,6 +46,7 @@ describe('tabIdFor', () => {
     expect(tabIdFor({ kind: 'diff', worktreePath: W, commitHash: 'abc' })).toBe(`diff:${W}:abc`)
     expect(tabIdFor({ kind: 'tour', worktreePath: W, commitHash: null })).toBe(`tour:${W}:staging`)
     expect(tabIdFor({ kind: 'composed', id: 'foo' })).toBe('composed:foo')
+    expect(tabIdFor({ kind: 'workflow', workflowId: 'wf_abcdefgh' })).toBe('workflow:wf_abcdefgh')
   })
 
   it('produces different ids for different kinds with the same key', () => {

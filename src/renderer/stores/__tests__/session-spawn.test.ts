@@ -188,6 +188,22 @@ describe('agent-session:spawn listener', () => {
       off()
     }
   })
+
+  it("refuses target:'replace' from a workflow worker: its successor would be a visible session", async () => {
+    const off = initSessionListeners()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const worker = sessionsStore.createClaude(PRIMARY, FEAT_WT, {
+        owner: { kind: 'workflow', workflowId: 'wf_abcdefgh', taskId: 'a', attempt: 1 },
+      })
+      handlers.get('agent-session:spawn')!({ sourceTerminalId: worker, brief: 'fresh', target: 'replace' })
+      await flush()
+      expect(sessionsStore.sessions().map((s) => s.id)).toEqual([worker])
+    } finally {
+      warn.mockRestore()
+      off()
+    }
+  })
 })
 
 describe('replaceWithClaude (store)', () => {
