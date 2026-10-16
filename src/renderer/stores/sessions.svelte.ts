@@ -1391,7 +1391,8 @@ function peerSnapshot(): AgentPeer[] {
       provider: s.provider ?? 'claude',
       worktreePath: s.worktreePath,
       status: getAgentStatusForTerminal(s.id),
-      ...(s.owner ? { owner: s.owner } : {}),
+      // A plain copy: the store's `owner` is a $state proxy, which IPC's structured clone refuses.
+      ...(s.owner ? { owner: { kind: s.owner.kind, reviewId: s.owner.reviewId } } : {}),
     }))
 }
 
@@ -1532,7 +1533,7 @@ export function initSessionListeners(): () => void {
   const stopPeerSync = $effect.root(() => {
     $effect(() => {
       if (!_hydrated) return
-      void window.api.invoke('agent-bus:sync', peerSnapshot())
+      window.api.invoke('agent-bus:sync', peerSnapshot()).catch((err: unknown) => console.error('[sessions] agent-bus:sync failed:', err))
     })
     // The same push, for the wider list a second client renders. Main drops it
     // when nothing changed, so sharing the effect's firing rate costs nothing.
