@@ -118,6 +118,30 @@ describe('starting a companion', () => {
     expect(deps.requestSend).not.toHaveBeenCalled()
   })
 
+  it('kills a session that launched before the window refused, and refuses its late spawn', async () => {
+    const started = ensureCompanion(REVIEW, 1)
+    await flush()
+    const reserved = sent[0]!.request.sessionId
+    live.add(reserved)
+    answerLast({ ok: false, reason: 'gave up' })
+    await expect(started).rejects.toThrow('gave up')
+    expect(deps.kill).toHaveBeenCalledWith(reserved)
+    expect(getReview(REVIEW)!.companion).toBeUndefined()
+    expect(() => companionSpawnFor(reserved, { kind: 'review', reviewId: REVIEW })).toThrow('claim has ended')
+  })
+
+  it('kills a session that launched before the timeout fired', async () => {
+    vi.useFakeTimers()
+    const started = ensureCompanion(REVIEW, 1)
+    await flush()
+    const reserved = sent[0]!.request.sessionId
+    live.add(reserved)
+    vi.advanceTimersByTime(COMPANION_CREATE_TIMEOUT_MS + 1)
+    await expect(started).rejects.toThrow('in time')
+    expect(deps.kill).toHaveBeenCalledWith(reserved)
+    expect(getReview(REVIEW)!.companion).toBeUndefined()
+  })
+
   it('clears its own claim on a timeout, and only that claim', async () => {
     vi.useFakeTimers()
     const started = ensureCompanion(REVIEW, 1)

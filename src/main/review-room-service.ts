@@ -266,6 +266,8 @@ async function loadLayerDiff(layer: ReviewPrRef): Promise<{ diff: string; base?:
 /** Test seam. */
 export function resetReviewRoomForTests(): void {
   diffs.clear()
+  triedAt.clear()
+  reresolving.clear()
   opening = Promise.resolve()
   submitting.clear()
 }
@@ -339,12 +341,35 @@ function moveLinkedDraft(threadId: string, url: string, from: LineAnchor, to: Li
   }
 }
 
-async function reresolveLayer(reviewId: string, layer: ReviewPrRef, diff: string | null): Promise<void> {
+/**
+ * Outdated threads already tried against a head, by thread id. Their head never
+ * matches again, so without this every open would refetch their files.
+ */
+const triedAt = new Map<string, string>()
+/** Per review, so a slow pass for one push can't land after the next one's. */
+const reresolving = new Map<string, Promise<void>>()
+
+function reresolveLayer(reviewId: string, layer: ReviewPrRef, diff: string | null): Promise<void> {
+  const run = (reresolving.get(reviewId) ?? Promise.resolve()).catch(() => {}).then(() => reresolvePass(reviewId, layer, diff))
+  reresolving.set(reviewId, run)
+  void run.finally(() => {
+    if (reresolving.get(reviewId) === run) reresolving.delete(reviewId)
+  }).catch(() => {})
+  return run
+}
+
+const headNow = (reviewId: string, url: string): string | undefined =>
+  getReview(reviewId)?.layers.find((candidate) => candidate.url === url)?.headSha
+
+async function reresolvePass(reviewId: string, layer: ReviewPrRef, diff: string | null): Promise<void> {
+  if (headNow(reviewId, layer.url) !== layer.headSha) return
   const moved = threadsForReview(reviewId).flatMap((thread) => {
     const anchor = thread.anchor
-    return anchor.kind === 'line' && anchor.pr === layer.number && anchor.headSha !== layer.headSha ? [{ thread, anchor }] : []
+    if (anchor.kind !== 'line' || anchor.pr !== layer.number || anchor.headSha === layer.headSha) return []
+    return thread.outdated && triedAt.get(thread.id) === layer.headSha ? [] : [{ thread, anchor }]
   })
   if (!moved.length) return
+  const inDiff = new Set(diff === null ? [] : parseUnifiedDiff(diff).map((file) => file.path))
   const files = new Map<string, Promise<string | undefined>>()
   const fileAt = (path: string): Promise<string | undefined> => {
     let hit = files.get(path)
@@ -354,14 +379,28 @@ async function reresolveLayer(reviewId: string, layer: ReviewPrRef, diff: string
     }
     return hit
   }
-  const changes: Array<ReviewChange | null> = []
+  const outcomes: Array<{ id: string; anchor: LineAnchor; placed: LineAnchor | null; conclusive: boolean }> = []
   for (const { thread, anchor } of moved) {
-    const placed = diff === null || anchor.side !== 'RIGHT' ? null : placeOnNewHead(anchor, diff, layer.headSha, await fileAt(anchor.path))
+    if (diff === null) {
+      outcomes.push({ id: thread.id, anchor, placed: null, conclusive: false })
+    } else if (anchor.side !== 'RIGHT' || !inDiff.has(anchor.path)) {
+      outcomes.push({ id: thread.id, anchor, placed: null, conclusive: true })
+    } else {
+      const content = await fileAt(anchor.path)
+      outcomes.push({ id: thread.id, anchor, placed: placeOnNewHead(anchor, diff, layer.headSha, content), conclusive: content !== undefined })
+    }
+  }
+  // Another push may have landed while the files were read; its own pass places them.
+  if (headNow(reviewId, layer.url) !== layer.headSha) return
+  const changes: Array<ReviewChange | null> = []
+  for (const { id, anchor, placed, conclusive } of outcomes) {
     try {
-      changes.push(updateMainReviewThread(thread.id, placed ? { anchor: placed, outdated: false } : { outdated: true }))
-      if (placed) moveLinkedDraft(thread.id, layer.url, anchor, placed)
+      changes.push(updateMainReviewThread(id, placed ? { anchor: placed, outdated: false } : { outdated: true }))
+      if (placed) moveLinkedDraft(id, layer.url, anchor, placed)
+      if (placed) triedAt.delete(id)
+      else if (conclusive) triedAt.set(id, layer.headSha)
     } catch (err) {
-      warn(`re-anchoring ${thread.id}`, err)
+      warn(`re-anchoring ${id}`, err)
     }
   }
   broadcast(changes)
@@ -787,6 +826,7 @@ async function submit(request: ReviewSubmitRequest): Promise<ReviewSubmitResult>
     const result = await postReviewLayer({
       pr: { owner, repo, number: layer.number, url: layer.url },
       draft,
+      currentDraft: () => layerDraftFor(review, layer.url),
       readHead: ask.readHead,
       verdict: ask.verdict,
       isolatedBase,

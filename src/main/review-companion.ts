@@ -333,6 +333,10 @@ async function startCompanion(reviewId: string, windowId: number, requestId: str
     if (!outcome.ok) throw new Error(outcome.reason)
   } catch (err) {
     console.warn(`[ReviewRoom] Companion ${sessionId} for ${reviewId} did not start:`, err)
+    // The renderer spawns before it answers, so a refusal or a timeout can
+    // follow a launch. Killed first: once unclaimed, the bridge no longer
+    // treats the id as read-only.
+    if (d.isLive(sessionId)) d.kill(sessionId)
     broadcastChange(clearCompanion(reviewId, sessionId))
     throw err
   }

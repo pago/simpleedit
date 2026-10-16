@@ -239,6 +239,25 @@ describe('starts still reading REVIEW.md', () => {
     expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'done', headSha: 'new' })
   })
 
+  it('for the new head join the run that replaced an older head’s', async () => {
+    const url = 'https://github.com/acme/ui/pull/73'
+    let release = (): void => {}
+    gather.mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve({ pr: PR }))))
+    const old = startOverview({ ...PR, url, headSha: 'old' }, client().wc)
+    await vi.waitFor(() => expect(gather).toHaveBeenCalledTimes(1))
+    const held = holdRubric()
+    answers.items = ['x']
+    const first = startOverview({ ...PR, url, headSha: 'new' }, client().wc)
+    const second = startOverview({ ...PR, url, headSha: 'new' }, client().wc)
+    await vi.waitFor(() => expect(held.size).toBe(1))
+    held.get('new')!()
+    release()
+    const results = await Promise.all([first, second])
+    await old
+    expect(results).toEqual(expect.arrayContaining([{ joined: true }, { joined: false }]))
+    expect(overviewSnapshot()[url]).toMatchObject({ status: 'done', headSha: 'new' })
+  })
+
   it('are reached by Stop', async () => {
     const held = holdRubric()
     const { sent, wc } = client()
@@ -247,7 +266,8 @@ describe('starts still reading REVIEW.md', () => {
     cancelOverview('https://github.com/acme/ui/pull/71')
     held.get('sha1')!()
     await expect(stopped).resolves.toEqual({ joined: false })
-    expect(sent).toEqual([])
+    expect(sent).toEqual([['screenprs:overview-status', { url: 'https://github.com/acme/ui/pull/71', status: 'idle' }]])
+    expect(overviewSnapshot()['https://github.com/acme/ui/pull/71']).toMatchObject({ status: 'idle' })
     expect(gather).not.toHaveBeenCalled()
   })
 

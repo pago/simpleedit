@@ -11,7 +11,7 @@ const gh = vi.hoisted(() => ({
   compares: new Map<string, unknown>(),
   diffs: new Map<string, string>(),
   /** File contents at a ref, by contents-API path. */
-  files: new Map<string, string>(),
+  files: new Map<string, string | Promise<string>>(),
   calls: [] as string[][],
 }))
 const fakes = vi.hoisted(() => ({
@@ -40,7 +40,7 @@ vi.mock('../github/gh', async (importOriginal) => {
     if (args[0] === 'api') {
       const path = args.at(-1)!
       if (args.includes('Accept: application/vnd.github.raw')) {
-        const file = gh.files.get(path)
+        const file = await gh.files.get(path)
         if (file === undefined) throw new Error('gh api exited 1: Not Found (HTTP 404)')
         return file
       }
@@ -255,6 +255,52 @@ describe('review:open', () => {
     expect(getReviewThread('rt_gone01')?.anchor).toMatchObject({ headSha: 'head12', startLine: 12 })
     // Only the re-placed thread's draft moves with it.
     expect(deps.applyDraftOp.mock.calls).toEqual([[U12, { kind: 'update-comment', id: 'd_kept', patch: { line: '16', sha: 'head12b' } }]])
+  })
+
+  it('tries an outdated thread once per head, reading each file once per pass', async () => {
+    singleReview()
+    const anchor = (id: string, snippet: string) => ({
+      kind: 'add-thread' as const,
+      thread: { id, anchor: { kind: 'line' as const, pr: 12, headSha: 'head12', path: 'src/a.ts', side: 'RIGHT' as const, startLine: 12, endLine: 12, snippet, before: '', after: '' } },
+    })
+    applyReviewOp('r_aaaaaa', anchor('rt_gone01', 'const second = 2'))
+    applyReviewOp('r_aaaaaa', anchor('rt_gone02', 'const third = 3'))
+    pr(U12, 12, 'head12b', 'main')
+    gh.diffs.set(U12, PUSHED)
+    gh.files.set('repos/acme/app/contents/src/a.ts?ref=head12b', NEW_FILE)
+    const reads = () => gh.calls.filter((args) => args.at(-1)?.includes('/contents/')).length
+
+    await openReview(U12)
+    await vi.waitFor(() => expect(getReviewThread('rt_gone02')?.outdated).toBe(true))
+    expect(reads()).toBe(1)
+    await openReview(U12)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(reads()).toBe(1)
+  })
+
+  it('lets a slow pass for an older push give way to the newer one', async () => {
+    singleReview()
+    applyReviewOp('r_aaaaaa', {
+      kind: 'add-thread',
+      thread: { id: 'rt_kept01', anchor: { kind: 'line', pr: 12, headSha: 'head12', path: 'src/a.ts', side: 'RIGHT', startLine: 11, endLine: 11, snippet: 'const added = true', before: 'context before', after: '' } },
+    })
+    let releaseB = (): void => {}
+    pr(U12, 12, 'head12b', 'main')
+    gh.diffs.set(U12, PUSHED)
+    // At B the code is gone from the file, so B's pass would outdate the thread.
+    gh.files.set('repos/acme/app/contents/src/a.ts?ref=head12b', new Promise((resolve) => (releaseB = () => resolve('nothing here'))))
+    await openReview(U12)
+    await vi.waitFor(() => expect(gh.calls.some((args) => args.at(-1)?.endsWith('ref=head12b'))).toBe(true))
+
+    pr(U12, 12, 'head12c', 'main')
+    gh.files.set('repos/acme/app/contents/src/a.ts?ref=head12c', NEW_FILE)
+    await openReview(U12)
+    // Long enough for an unserialised pass for C to finish first.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    releaseB()
+    await vi.waitFor(() => expect(getReviewThread('rt_kept01')?.anchor).toMatchObject({ headSha: 'head12c', startLine: 16 }))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(getReviewThread('rt_kept01')).toMatchObject({ outdated: false, anchor: { headSha: 'head12c' } })
   })
 
   it('outdates every moved thread when the file at the new head can’t be read', async () => {

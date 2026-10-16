@@ -161,6 +161,25 @@ describe('deep review starts still reading REVIEW.md', () => {
     expect(deepReviewSnapshot()[url]).toMatchObject({ status: 'done', headSha: 'new' })
   })
 
+  it('for the new head join the run that replaced an older head’s', async () => {
+    const url = 'https://github.com/acme/ui/pull/24'
+    const old = startDeepReview({ ...PR, url, headSha: 'old' }, client().wc)
+    await vi.waitFor(() => expect(deepReviewSnapshot()[url]).toMatchObject({ status: 'running', headSha: 'old' }))
+    const reads: Array<() => void> = []
+    rubric.fetchReviewRubric.mockImplementation(() => new Promise<undefined>((resolve) => reads.push(() => resolve(undefined))))
+    const first = startDeepReview({ ...PR, url, headSha: 'new' }, client().wc)
+    const second = startDeepReview({ ...PR, url, headSha: 'new' }, client().wc)
+    await vi.waitFor(() => expect(reads).toHaveLength(2))
+    // The second is still reading when the first replaces the old head's run.
+    reads[0]!()
+    await vi.waitFor(() => expect(deepReviewSnapshot()[url]).toMatchObject({ status: 'running', headSha: 'new' }))
+    reads[1]!()
+    await expect(second).resolves.toEqual({ joined: true })
+    lens.release()
+    await Promise.all([first, old])
+    expect(deepReviewSnapshot()[url]).toMatchObject({ status: 'done', headSha: 'new' })
+  })
+
   it('are reached by Stop', async () => {
     const held = holdRubric()
     const { sent, wc } = client()
@@ -170,7 +189,8 @@ describe('deep review starts still reading REVIEW.md', () => {
     cancelDeepReview('https://github.com/acme/ui/pull/22')
     held.get('sha1')!()
     await expect(stopped).resolves.toEqual({ joined: false })
-    expect(sent).toEqual([])
+    expect(sent).toEqual([['screenprs:deep-status', { url: 'https://github.com/acme/ui/pull/22', status: 'idle' }]])
+    expect(deepReviewSnapshot()['https://github.com/acme/ui/pull/22']).toMatchObject({ status: 'idle' })
     expect(lens.runs).toBe(runs)
   })
 

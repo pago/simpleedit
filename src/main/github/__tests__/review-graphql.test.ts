@@ -501,6 +501,22 @@ describe('postReviewLayer: findings of the adversarial review', () => {
     expect(gh.ops('SubmitReview')).toHaveLength(1)
   })
 
+  it('keeps a comment edited while the post was under way out of what is cleared', async () => {
+    const draft = { comments: [you({ id: 'a', line: '11' }), you({ id: 'b', line: '12' })], summary: 'Looks good', verdict: 'comment' as const }
+    let now = draft
+    vi.mocked(runGh).mockImplementation(async (args, opts) => {
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        // The user edits `b` while the submit is in flight.
+        if (String(opts?.input).includes('SubmitReview')) now = { ...draft, comments: [draft.comments[0], { ...draft.comments[1], text: 'edited' }] }
+        return gh.run(opts?.input ?? '{}')
+      }
+      return JSON.stringify({ baseRefOid: 'base1', headRefOid: gh.head })
+    })
+    const { outcome, state } = await postReviewLayer(layer(draft.comments, { draft, currentDraft: () => now }))
+    expect(outcome).toMatchObject({ kind: 'posted' })
+    expect(state.postedCommentIds).toEqual(['a'])
+  })
+
   it('deletes the review of a timed-out create, found by its claim, when the read head changed', async () => {
     gh.next.set('AddReview', 'landed-timeout')
     await postReviewLayer(layer([you({ id: 'a', line: '11' })]))
