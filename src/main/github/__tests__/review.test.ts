@@ -177,6 +177,18 @@ describe('handleSubmitReview', () => {
     expect(clear).not.toHaveBeenCalled()
   })
 
+  it('refuses a Review Room draft, which would turn its replies into top-level comments', async () => {
+    const clear = vi.fn()
+    const threaded = you({ line: '11', threadId: 'rt_thread0001' })
+    const replying = you({ id: 'r', line: '11', inReplyTo: { threadNodeId: 'PRRT_1', rootCommentId: '1' } })
+    for (const c of [threaded, replying]) {
+      const res = await handleSubmitReview(request([c], { clearDraft: true }), clear)
+      expect(res).toEqual({ ok: false, error: 'This draft belongs to a Review Room thread; post it from the Review Room.' })
+    }
+    expect(posted()).toEqual([])
+    expect(clear).not.toHaveBeenCalled()
+  })
+
   it('says a killed post may have landed', async () => {
     post.mockRejectedValueOnce(new GhTimeoutError('gh api did not finish'))
     expect(await handleSubmitReview(request([]), vi.fn())).toMatchObject({ ok: false, delivered: 'unknown' })

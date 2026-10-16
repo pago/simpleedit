@@ -81,7 +81,7 @@ function isUnprocessable(err: unknown): boolean {
  * builds it: from the merge base with the base branch. Both reads go at once;
  * the compare is only needed when the head has moved.
  */
-async function prDiffAt(pr: SubmitReviewRequest['pr'], headSha: string | undefined): Promise<string> {
+export async function prDiffAt(pr: Pick<PrRef, 'url'>, headSha: string | undefined): Promise<string> {
   if (!headSha) return getPrDiff(pr)
   const [view, latest] = await Promise.all([
     runGh(['pr', 'view', pr.url, '--json', 'baseRefOid,headRefOid']),
@@ -97,6 +97,11 @@ async function prDiffAt(pr: SubmitReviewRequest['pr'], headSha: string | undefin
  * and `postReview`'s fallback is what catches a bad one.
  */
 export async function submitReview(request: SubmitReviewRequest): Promise<{ reviewUrl?: string; folded: ReviewFolds }> {
+  // This path can't attach a reply to its thread: it would post it as a new
+  // top-level comment.
+  if (request.draft.comments.some((c) => c.threadId || c.inReplyTo)) {
+    throw new Error('This draft belongs to a Review Room thread; post it from the Review Room.')
+  }
   let commentable: Map<string, CommentableSides> | undefined
   try {
     commentable = commentableLines(await prDiffAt(request.pr, request.headSha))

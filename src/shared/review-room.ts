@@ -24,16 +24,45 @@ export interface ReviewCompanion {
   claimRequestId: string
 }
 
+/** A draft comment that landed in the layer's pending review. */
+export interface ReviewSubmissionItem {
+  draftId: string
+  /** `draftRev` of the draft comment as it was sent; a different one on retry means update it. */
+  draftRev: string
+  nodeId: string
+  /** The REST id (`fullDatabaseId`, beyond Int32, so a string). */
+  databaseId?: string
+}
+
+/**
+ * One layer's posting progress, persisted as it goes so a retry resumes the
+ * same pending review. The fields after `state` are absent on rows written
+ * before GraphQL posting.
+ */
+export interface ReviewLayerSubmission {
+  prUrl: string
+  verdict: 'approve' | 'comment' | 'request_changes'
+  reviewNodeId?: string
+  /** Once posted: every draft comment id the review carried (lines, replies and folds), for `clear-posted`. */
+  postedCommentIds: string[]
+  state: 'pending' | 'posted' | 'failed' | 'unknown'
+  /** The head the user read, which the review is pinned to. */
+  readHead?: string
+  /**
+   * Written into the pending review's body before it is created, so a retry
+   * after a timed-out create can recognise the review as its own.
+   */
+  claimToken?: string
+  items?: ReviewSubmissionItem[]
+  /** Draft ids GitHub refused on a line (or as a reply), now bound for the review body. */
+  folded?: string[]
+  reviewUrl?: string
+}
+
 export interface ReviewSubmission {
   at: string
   destination: { session: boolean; github: boolean }
-  layers: Array<{
-    prUrl: string
-    verdict: 'approve' | 'comment' | 'request_changes'
-    reviewNodeId?: string
-    postedCommentIds: string[]
-    state: 'pending' | 'posted' | 'failed' | 'unknown'
-  }>
+  layers: ReviewLayerSubmission[]
 }
 
 export interface Review {
