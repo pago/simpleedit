@@ -51,6 +51,10 @@ The value is the human reviewer's judgement, amplified. Not "run an AI review an
 14. **Posting via GraphQL** (pending review → threads + replies → submit), unless the spike in
     PR 2 hits a blocker (see §7).
 15. **Phone is in scope** (PR 4): queue → the same page, outline behind a button, no terminal.
+16. **`request_review` may carry the author's briefing** (what / why / impact, reading order, open
+    questions). It is shown labelled "by the author", fills the tour at once, and never replaces the
+    independent overview: that stays a button and, when run, checks the briefing's claims against
+    the diff.
 
 ## What exists and is reused (verified by code survey + adversarial review)
 
@@ -93,8 +97,11 @@ Review        { id, repo, layers: PrRef[] (bottom→top), status: 'open'|'submit
                 companion?: { sessionId, windowId, agent: {provider, model}, claimRequestId },
                 companionAgent: {provider, model},            // picker value, survives companion end
                 lastSeenHead: {prUrl → sha}, readSteps: string[],
+                authorBriefing?: { stack?: {summary}, layers: {prUrl → Briefing} },
                 submissions: Submission[], createdAt, updatedAt }
 PrRef         { url, number, headSha }
+Briefing      { what, why, impact, readingOrder: {title, summary, refs: {path, startLine, endLine}[]}[],
+                openQuestions: {path?, line?, text}[], forHead: sha }
 Submission    { at, destination: {session: boolean, github: boolean},
                 layers: { prUrl, verdict, reviewNodeId?, postedCommentIds: string[],
                           state: 'pending'|'posted'|'failed'|'unknown' }[] }
@@ -105,7 +112,7 @@ ReviewThread  { id ('rt_…'), reviewId, anchor, origin, status: 'open'|'done', 
 anchor  =  { kind: 'stack' } | { kind: 'pr', pr }
          | { kind: 'line', pr, headSha, path, side: 'LEFT'|'RIGHT', startLine, endLine,
              snippet, before, after }
-origin  =  { kind: 'finding', source: 'triage'|'overview'|'deep', key, severity?, lens? }
+origin  =  { kind: 'finding', source: 'triage'|'overview'|'deep'|'author', key, severity?, lens? }
          | { kind: 'github', threadNodeId, rootCommentId, author, isResolved }
          | { kind: 'user' }
 ReviewMessage { seq, author: 'user'|'companion'|'author'|'reviewer'|'tool', body,
@@ -156,6 +163,26 @@ when run for the whole stack. Sections render as the tour with the referenced hu
 without an overview, a layer shows files in path order. Look-into items with refs become
 `origin: finding, source: overview` threads. The fingerprint change invalidates cached overviews
 once (acceptable).
+
+### 4a. The author's briefing (`request_review(…, briefing)`)
+
+- Same structure as the overview's sections plus `openQuestions`, per layer, optionally one
+  stack summary. Parsed by main against that contract (unknown fields dropped), capped (≈20 KB
+  per layer, 50 reading-order sections, 30 questions), `refs` kept only when they resolve to a
+  path in that layer's review diff (`resolveRefPath`), text sanitised. Rendered as markdown
+  only; never typed into a PTY.
+- Stamped with the layer's head (`forHead`). After a push it is shown as "written for an earlier
+  head" and the tour falls back to path order for files the briefing doesn't cover.
+- **Display:** fills the layer's what / why / impact and the tour immediately, under a "by the
+  author" label (the same standing as the PR description). `openQuestions` become
+  `origin: finding, source: 'author'` threads (no severity).
+- **Independent overview stays manual.** When run, the briefing is one input (beside the PR
+  body, under the overview's input budget), and the contract's fixed part tells it to check the
+  briefing's claims against the diff; disagreements come back as Look-into items, so they
+  become threads. The overview then replaces the author's text in the layer header, and the
+  briefing stays reachable as "Author's briefing".
+- A second `request_review` for an open review may update the briefing (new head); threads
+  materialised from the old questions follow the finding rules in §1.
 
 ### 5. Companion
 
@@ -243,7 +270,7 @@ once (acceptable).
 | `get_review_diff(review_id, pr)` **(new)** | companion | The layer's review diff (isolated), size-capped with a truncation note. |
 | `checkout_review_head(review_id, pr?)` **(new)** | companion | §5; returns the path. |
 | `propose_draft(thread_id, text, severity?)` **(new)** | companion | Stores a proposal; never writes the draft. |
-| `request_review(pr, focus?)` **(new)** | any session | Resolves the stack (number in the caller's repo, or URL), creates or reuses the **open** Review for that stack, records requester session + window, lists it under **Requested** at the top of the Screen PRs queue with the section's attention badge. Does **not** switch the view (CLAUDE.md "Layout"). Returns `{review_id}` at once. |
+| `request_review(pr, focus?, briefing?)` **(new)** | any session | Resolves the stack (number in the caller's repo, or URL), creates or reuses the **open** Review for that stack, records requester session + window, lists it under **Requested** at the top of the Screen PRs queue with the section's attention badge. Does **not** switch the view (CLAUDE.md "Layout"). Returns `{review_id}` at once. |
 | `get_review(review_id)` **(new)** | requester | The latest submission: per-layer verdict, state, and every comment (PR, path, line, severity, text). |
 
 Requested reviews are `Review` rows with a requester, so every client renders them from the
@@ -339,7 +366,8 @@ Agent* is removed.
    GraphQL posting; return visits; removal of desktop Discuss / `ReviewComposer` (quick approve
    keeps `ConfirmReviewModal`).
 3. **`request_review`, hand-back, Ask author** — Requested group, `screenprs:open-pr`, requester
-   recording, destinations, `get_review`, Ask author.
+   recording, author's briefing (parse, display, overview input), destinations, `get_review`,
+   Ask author.
 4. **Phone** — §10.
 
 ## Verification
@@ -353,7 +381,8 @@ Agent* is removed.
   unrelated requester turn (not attached); `list_threads` scoping; session end → `unanswered`;
   GraphQL posting: retry after partial add, timeout → unknown → resume, pre-existing foreign
   pending review → stop, fold-on-error per item, severity prefix; hand-back formatting;
-  focus sanitising/capping; compare `ahead`/`diverged`/404.
+  focus sanitising/capping; briefing parse (oversized, unknown fields, refs outside the diff
+  dropped, stale head); overview input includes the briefing and its contract asks for the check; compare `ahead`/`diverged`/404.
 - **Browser (headless):** thread card states, draft/proposal flow, outline filters, per-layer
   verdict defaults, dock collapsed / needs-you / other-window state.
 - **E2E (CI only, never locally):** open room → Ask → reply lands in the right thread (stub
