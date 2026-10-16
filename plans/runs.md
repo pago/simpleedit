@@ -4,7 +4,7 @@ Status: draft · Branch: `feature/runs` (worktree `wt-runs`) · Mockup:
 https://claude.ai/artifact/HsK89KKsAM7BzSZEvWEQoU
 
 > A lead session turns a plan into a **run**: a JSON task graph SimpleEdit executes
-> deterministically. Workers are real sessions (headless or terminal), hidden from the
+> deterministically. Workers are real terminal sessions, hidden from the
 > sidebar, shown as a graph in the lead's **Run** tab. The lead is only woken at judgment
 > points. SimpleEdit owns lifecycle, visibility and fan-in; the agent owns decomposition and
 > model choice.
@@ -33,8 +33,12 @@ Delegation already works: a lead can `spawn_session` and collect with
   which a running script couldn't offer.
 - **The plan stays prose.** `PLAN.md` is not parsed. The run is the lead's *derived*
   execution record, never an authoring surface (the lesson of Plan Mode, #132).
-- **Two task modes, the lead chooses per task:** `headless` (cheap, no terminal) and
-  `terminal` (a full session the user can intercept and steer).
+- **Every worker is a terminal session** the user can intercept and steer. No headless
+  mode: the headless runners are read-only today (see Runner), so writing tasks would
+  need a new write-capable mode per backend plus a fallback path in the UI when it fails.
+  A hidden terminal worker already gives what headless promised (no sidebar noise, no
+  attention unless it asks), and it costs the same tokens for the same model. The lead
+  still picks provider and model per task, local models included.
 - **Workers are hidden from the sidebar.** Their attention state rolls up onto the lead's
   row. The user can still open any worker's terminal from the graph in a popup.
 - **The Run tab lives in the lead's session view**, beside PLAN.md / Diff, with the lead's
@@ -65,14 +69,13 @@ Delegation already works: a lead can `spawn_session` and collect with
 
 | kind | fields | semantics |
 |---|---|---|
-| `agent` | `brief`, `provider`, `model`, `effort?`, `mode`, `worktree` (branch/path) | One worker session. Done when it reports a result. |
+| `agent` | `brief`, `provider`, `model`, `effort?`, `worktree` (branch/path) | One worker session. Done when it reports a result. |
 | `loop` | `worker` (an agent spec), `reviewer` (agent spec), `maxRounds` | Worker runs; a **fresh** reviewer reviews the diff; findings go back to the worker; repeat until the reviewer reports `clean` or `maxRounds` is hit (→ judgment point). |
 | `map` | `over: "<taskId>.result.items"`, `template` (agent spec with `{{item}}`) | Fan-out sized at runtime from an earlier result. Renders as one stacked card. |
-| `integrate` | an agent spec, `shape: "single" \| "stack" \| "separate"` | Fan-in: combine the branches of its `after` tasks into the planned PR shape. Defaults to `mode: terminal`, since conflicts are where runs go wrong. |
+| `integrate` | an agent spec, `shape: "single" \| "stack" \| "separate"` | Fan-in: combine the branches of its `after` tasks into the planned PR shape. Conflicts are where runs go wrong, so this is the task the user most often steps into. |
 
 Briefs may reference earlier results (`{{task.<id>.result.summary}}`). Templates are lookups
-only, no expressions. `onFailure: "retry" | "promote" | "escalate"` per task: `promote`
-re-runs a failed headless task as a terminal session.
+only, no expressions. `onFailure: "retry" | "escalate"` per task.
 
 ## Worker result contract
 
@@ -83,11 +86,8 @@ There is no "task done" signal today, only turn ends (`handleTurnEnd`,
 - **New MCP tool `report_result`** for run workers: `{status: done | failed | needs_lead,
   summary, branch?, changedFiles?, items?, verdict?: clean | findings, findings?}`. The bridge
   resolves the caller from `terminalId` (`mcp-server/index.mjs:60-98`) to a run task.
-- **Terminal workers:** a `Stop` without `report_result` means "turn ended, still working".
-  A worker left idle without a result becomes `waiting` and shows in Needs you.
-- **Headless workers:** the runner's final structured output is the result
-  (`agent-tasks/runner.ts:233-293`, `json` mode). Process exit 0 without a parseable result
-  counts as `failed`.
+- A `Stop` without `report_result` means "turn ended, still working". A worker left idle
+  without a result becomes `waiting` and shows in Needs you.
 - The worker brief gets a standard footer (as `withSpawnerAddress` does today,
   `mcp-bridge.ts:242`): its run/task id, its acceptance criteria, and "finish with
   `report_result`".
@@ -132,17 +132,14 @@ There is no "task done" signal today, only turn ends (`handleTurnEnd`,
   `run: {runId, taskId}` field. Only the renderer can create sessions
   (`session-create.ts:221-320`), so terminal tasks need the lead's window (see Open
   questions).
-- **Headless tasks** use `createTaskExecution` (`agent-tasks/registry.ts:25-58`). **Gap:**
-  every headless runner is analysis-only today: Codex `--sandbox read-only`
-  (`runner.ts:355-366`), OpenCode with edit/bash/task denied (`:443-460`), DirectRunner
-  text-only (`:306-326`), Claude `--print` with no permission flags (`:206-215`). Runs need a
-  **write-capable worktree mode** per backend (Codex `workspace-write`, Claude
-  `--permission-mode` + allowed tools, OpenCode edit/bash allowed), confined to the task's
-  worktree.
-- **Loop rounds:** the reviewer is always a fresh session or headless run over the worker's
-  diff. Findings go back to a terminal worker as mail (`agent-bus.ts` `enqueue` +
-  `requestWake`, `agent-wake.ts:219`), or to a headless worker as a new run whose brief
-  includes the findings.
+- **Why not the headless runners** (`createTaskExecution`, `agent-tasks/registry.ts:25-58`):
+  every one is analysis-only today. Codex runs `--sandbox read-only` (`runner.ts:355-366`),
+  OpenCode has edit/bash/task denied (`:443-460`), DirectRunner is text-only (`:306-326`),
+  Claude runs `--print` with no permission flags (`:206-215`). Revisit only if hidden
+  terminal workers prove too heavy, e.g. many parallel PTYs.
+- **Loop rounds:** the reviewer is always a fresh hidden session over the worker's diff.
+  Findings go back to the worker as mail (`agent-bus.ts` `enqueue` + `requestWake`,
+  `agent-wake.ts:219`).
 - **Waking the lead:** `enqueue` from a synthetic `runner` sender (`agent-bus.ts:205-264`
   allows any `from` that isn't the recipient) + `requestWake`. It inherits the wake rules:
   Claude waits for `idle_prompt`, a keypress since the turn started blocks the wake, and
@@ -150,9 +147,8 @@ There is no "task done" signal today, only turn ends (`handleTurnEnd`,
 - **Worktrees:** each writing task names a branch. The runner creates the worktree before
   spawning (to verify: reuse whatever `open_worktree` / the worktree picker uses).
   Read-only tasks (reviewers) run in the worker's worktree.
-- **Restart:** on app start, `running` terminal tasks re-attach to their restored sessions
-  by run/task id. Headless tasks in flight are marked `failed (interrupted)` and follow
-  `onFailure`.
+- **Restart:** on app start, `running` tasks re-attach to their restored sessions by
+  run/task id.
 
 ### Session identity
 
@@ -183,8 +179,7 @@ There is no "task done" signal today, only turn ends (`handleTurnEnd`,
 - **Worker popup:** a modal with a second `<Terminal terminalId={worker}>`. Each instance
   builds its own xterm and replays `pty:backlog` (`Terminal.svelte:143-161`,
   `lib/pty-attach.ts:62`). Caveat: `pty:claim` sizing (`Terminal.svelte:75-78`): the popup
-  claims size while open and must hand the claim back on close. Headless cards open a log
-  view instead.
+  claims size while open and must hand the claim back on close.
 - **Intervention signal:** typing into a worker's popup marks the task `steered`; its
   `report_result` is passed on to the lead with that flag, so the lead doesn't treat the
   outcome as the worker's own call.
@@ -198,12 +193,10 @@ The phone reuses renderer stores directly (`web/main.ts:8,27-40`). A read-only R
 
 ## Delivery (few, larger PRs)
 
-1. **Runs core, terminal mode.** Store + migration, `create/patch/start/get_run`,
-   `report_result`, runner (dependencies, `agent` + `integrate` kinds, `onFailure`
-   retry/escalate), hidden workers + roll-up, Run tab graph + Needs you + popup, restart
-   re-attach. End to end with real terminal sessions.
-2. **Headless + loops.** Write-capable headless mode per backend, `loop` and `map` kinds,
-   `promote`, patch history view.
+1. **Runs core.** Store + migration, `create/patch/start/get_run`, `report_result`, runner
+   (dependencies, `agent` + `integrate` kinds, `onFailure` retry/escalate), hidden workers +
+   roll-up, Run tab graph + Needs you + popup, restart re-attach.
+2. **Loops and maps.** `loop` and `map` kinds, patch history view.
 3. **Phone.** Run screen, push on waiting / lead woken.
 
 The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.md`.
@@ -214,13 +207,13 @@ The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.
   review or overview is a "run" (CLAUDE.md, "Screen PRs: runs belong to the app"), and
   bounded agent tasks have runners. A distinct name for the feature avoids
   `run-store.ts` / `runner` confusion. Candidates: *plan run*, *job*, *flight*.
-- **No window open:** terminal tasks can't start without a renderer. Proposal: a run is
-  bound to the lead's window; when that window closes, the runner pauses starting terminal
-  tasks (headless tasks continue) and the run shows `paused: window closed`. Alternative: a
-  main-side session-create path (larger change).
-- **Headless permissions:** how wide the write-capable mode is. Proposal: edits plus
-  commands confined to the task's worktree; network/package installs are a per-run flag the
-  lead sets and the user sees on the graph before Start.
+- **No window open:** tasks can't start without a renderer. Proposal: a run is bound to the
+  lead's window; when that window closes, the runner stops starting tasks (running ones
+  continue) and the run shows `paused: window closed`. Alternative: a main-side
+  session-create path (larger change).
+- **Worker permission mode:** every permission prompt is a Needs you stop. Should the lead
+  set a permission mode per task (e.g. accept edits inside the task's worktree), shown on
+  the card before Start? `spawn_session` has no such argument today.
 - **Who may start:** should `start_run` from the lead start immediately, or always wait for
   the user's Start in the Run tab? Proposal: user Start by default, plus an opt-in "lead may
   start" setting.
