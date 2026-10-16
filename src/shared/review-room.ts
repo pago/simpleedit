@@ -150,7 +150,8 @@ export type ReviewOp =
   | {
       kind: 'add-thread'
       thread: { id: string; anchor: ReviewThreadAnchor }
-      message: { id: string; body: string }
+      /** Absent: a thread that only carries a draft, so nothing is asked of the companion. */
+      message?: { id: string; body: string }
     }
   | { kind: 'append'; threadId: string; message: { id: string; body: string } }
   | {
@@ -161,6 +162,7 @@ export type ReviewOp =
     }
   | { kind: 'remove-thread'; threadId: string }
   | { kind: 'mark-read'; threadId: string; seq: number }
+  | { kind: 'clear-proposal'; threadId: string }
 
 export interface ReviewSnapshot {
   reviews: Review[]
@@ -275,11 +277,11 @@ export function parseReviewOp(raw: unknown): ReviewOp {
   switch (raw.kind) {
     case 'add-thread': {
       const thread = raw.thread
-      const message = parseNewMessage(raw.message)
-      if (!isObject(thread) || !isReviewThreadId(thread.id) || !message) break
+      const message = raw.message === undefined ? undefined : parseNewMessage(raw.message)
+      if (!isObject(thread) || !isReviewThreadId(thread.id) || message === null) break
       const anchor = parseReviewThreadAnchor(thread.anchor)
       if (!anchor) break
-      return { kind: raw.kind, thread: { id: thread.id, anchor }, message }
+      return { kind: raw.kind, thread: { id: thread.id, anchor }, ...(message ? { message } : {}) }
     }
     case 'append': {
       const message = parseNewMessage(raw.message)
@@ -307,6 +309,9 @@ export function parseReviewOp(raw: unknown): ReviewOp {
       if (isReviewThreadId(raw.threadId) && typeof raw.seq === 'number' && Number.isSafeInteger(raw.seq) && raw.seq >= 0) {
         return { kind: raw.kind, threadId: raw.threadId, seq: raw.seq }
       }
+      break
+    case 'clear-proposal':
+      if (isReviewThreadId(raw.threadId)) return { kind: raw.kind, threadId: raw.threadId }
       break
   }
   throw new Error('Malformed review op')

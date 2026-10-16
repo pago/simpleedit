@@ -38,6 +38,21 @@ const states = new Map<string, OverviewState>()
 /** Pre-start reads (diff, rubric) not yet owned by a run, so quit can still kill their `gh`. */
 const preparing = new Set<AbortController>()
 
+export interface OverviewResult {
+  url: string
+  headSha: string
+  /** The diff the overview read, which its citations point into. */
+  diff: string
+  text: string
+}
+
+let resultListener: ((result: OverviewResult) => void) | null = null
+
+/** Called with every overview a client is sent, a cache hit included. */
+export function onOverviewResult(fn: ((result: OverviewResult) => void) | null): void {
+  resultListener = fn
+}
+
 function setState(url: string, patch: Partial<OverviewState>): void {
   states.set(url, { ...(states.get(url) ?? { status: 'idle' }), ...patch })
 }
@@ -104,6 +119,7 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
     if (!live()) return
     setState(ctx.url, { text, facts, headSha: ctx.headSha })
     out.send('screenprs:overview-result', { url: ctx.url, headSha: ctx.headSha, text, facts })
+    resultListener?.({ url: ctx.url, headSha: ctx.headSha, diff: pr.diff, text })
   }
 
   states.set(ctx.url, { status: 'idle', headSha: ctx.headSha })

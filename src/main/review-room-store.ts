@@ -151,6 +151,12 @@ export function getReview(id: string): Review | null {
   return row ? toReview(row) : null
 }
 
+/** The review records alone, without loading every thread. */
+export function reviewsWithStatus(status: ReviewStatus): Review[] {
+  const rows = getDb().prepare('SELECT * FROM reviews WHERE status = ? ORDER BY created_at, id').all(status) as unknown as ReviewRow[]
+  return rows.map(toReview)
+}
+
 export function getReviewThread(id: string): ReviewThread | null {
   const row = getDb().prepare('SELECT * FROM review_threads WHERE id = ?').get(id) as ThreadRow | undefined
   return row ? toThread(row, messagesOf(id)) : null
@@ -321,11 +327,11 @@ export function applyReviewOp(reviewId: string, op: ReviewOp, now = new Date()):
     switch (op.kind) {
       case 'add-thread': {
         if (!anchorBelongsToReview(review, op.thread.anchor)) throw new Error('Thread anchor is not in this review')
+        const message = op.message
         if (
           tombstoned(d, op.thread.id) ||
-          tombstoned(d, op.message.id) ||
           exists(d, 'review_threads', op.thread.id) ||
-          exists(d, 'review_messages', op.message.id)
+          (message && (tombstoned(d, message.id) || exists(d, 'review_messages', message.id)))
         )
           return { change: null }
         d.prepare(
@@ -334,10 +340,11 @@ export function applyReviewOp(reviewId: string, op: ReviewOp, now = new Date()):
             ask_author_open, proposal, created_at, updated_at)
            VALUES (?, ?, ?, ?, 'open', 0, NULL, NULL, 0, 0, NULL, ?, ?)`
         ).run(op.thread.id, reviewId, JSON.stringify(op.thread.anchor), JSON.stringify({ kind: 'user' }), at, at)
+        if (!message) return { change: changedThread(reviewId, op.thread.id) }
         insertMessage(d, op.thread.id, {
-          id: op.message.id,
+          id: message.id,
           author: 'user',
-          body: op.message.body,
+          body: message.body,
           at,
           delivery: 'held',
           heldReason: 'not-running',
@@ -347,7 +354,7 @@ export function applyReviewOp(reviewId: string, op: ReviewOp, now = new Date()):
           queued: {
             reviewId,
             threadId: op.thread.id,
-            messageId: op.message.id,
+            messageId: message.id,
             ...(review.companion ? { sessionId: review.companion.sessionId } : {}),
           },
         }
@@ -401,6 +408,12 @@ export function applyReviewOp(reviewId: string, op: ReviewOp, now = new Date()):
       }
       case 'remove-thread':
         return { change: removeThread(d, reviewId, op.threadId, at) }
+      case 'clear-proposal': {
+        const result = d
+          .prepare('UPDATE review_threads SET proposal = NULL, updated_at = ? WHERE id = ? AND review_id = ? AND proposal IS NOT NULL')
+          .run(at, op.threadId, reviewId)
+        return { change: result.changes ? changedThread(reviewId, op.threadId) : null }
+      }
     }
   })
 }
@@ -468,6 +481,78 @@ export function clearCompanion(reviewId: string, sessionId: string, now = new Da
       .run(now.toISOString(), reviewId, JSON.stringify(review.companion))
     return result.changes ? changedReview(reviewId) : null
   })
+}
+
+/**
+ * Move a surviving claim to the terminal id its resumed placeholder will run
+ * under, and to the window resuming it. Compare-and-set on the old id: a
+ * claim that was cleared or replaced meanwhile is not resurrected.
+ */
+export function rebindCompanion(
+  reviewId: string,
+  fromSessionId: string,
+  toSessionId: string,
+  windowId: number,
+  now = new Date()
+): ReviewRecordChange | null {
+  if (
+    !isReviewId(reviewId) ||
+    !fromSessionId || fromSessionId.length > 256 ||
+    !toSessionId || toSessionId.length > 256 ||
+    !Number.isSafeInteger(windowId) || windowId < 1
+  ) throw new Error('Malformed companion rebind')
+  const d = getDb()
+  return transaction(d, () => {
+    const review = getReview(reviewId)
+    if (!review || review.status !== 'open' || review.companion?.sessionId !== fromSessionId) return null
+    const companion: ReviewCompanion = { ...review.companion, sessionId: toSessionId, windowId }
+    const result = d
+      .prepare(
+        `UPDATE reviews SET companion = ?, companion_session_id = ?, updated_at = ?
+         WHERE id = ? AND companion_session_id = ? AND companion = ?`
+      )
+      .run(JSON.stringify(companion), toSessionId, now.toISOString(), reviewId, fromSessionId, JSON.stringify(review.companion))
+    return result.changes ? changedReview(reviewId) : null
+  })
+}
+
+/** The agent the next companion of this review starts as. Leaves a running one alone. */
+export function setCompanionAgent(reviewId: string, agent: ReviewAgent, now = new Date()): ReviewRecordChange | null {
+  if (!isReviewId(reviewId) || !validAgent(agent)) throw new Error('Malformed companion agent')
+  const d = getDb()
+  return transaction(d, () => {
+    const review = getReview(reviewId)
+    if (!review) return null
+    if (review.companionAgent.provider === agent.provider && review.companionAgent.model === agent.model) return null
+    d.prepare('UPDATE reviews SET companion_agent = ?, updated_at = ? WHERE id = ?').run(
+      JSON.stringify({ provider: agent.provider, model: agent.model }),
+      now.toISOString(),
+      reviewId
+    )
+    return changedReview(reviewId)
+  })
+}
+
+/** Reviews whose claimed companion is `sessionId`. Indexed. */
+export function reviewsWithCompanionSession(sessionId: string): Review[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM reviews WHERE companion_session_id = ? ORDER BY created_at, id')
+    .all(sessionId) as unknown as ReviewRow[]
+  return rows.map(toReview)
+}
+
+/** Every review that has a companion claim, whatever its status. */
+export function reviewsWithCompanion(): Review[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM reviews WHERE companion_session_id IS NOT NULL ORDER BY created_at, id')
+    .all() as unknown as ReviewRow[]
+  return rows.map(toReview)
+}
+
+/** Ids and last change of every open review, for sweeping what closed ones left behind. */
+export function openReviewActivity(): Map<string, string> {
+  const rows = getDb().prepare("SELECT id, updated_at FROM reviews WHERE status = 'open'").all() as unknown as Array<{ id: string; updated_at: string }>
+  return new Map(rows.map((row) => [row.id, row.updated_at]))
 }
 
 export function appendReviewMessage(
@@ -655,6 +740,38 @@ export function setReviewStatus(
       now.toISOString(),
       reviewId
     )
+    return changedReview(reviewId)
+  })
+}
+
+/** §8: the head the user last looked at on one layer. Main-only: it moves on open, *Got it* and submit. */
+export function setReviewLastSeenHead(reviewId: string, prUrl: string, headSha: string, now = new Date()): ReviewRecordChange | null {
+  if (!headSha || headSha.length > 128) throw new Error('Malformed head')
+  const d = getDb()
+  return transaction(d, () => {
+    const review = getReview(reviewId)
+    if (!review || !review.layers.some((layer) => layer.url === prUrl)) return null
+    if (review.lastSeenHead[prUrl] === headSha) return null
+    const next = { ...review.lastSeenHead, [prUrl]: headSha }
+    d.prepare('UPDATE reviews SET last_seen_head = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now.toISOString(), reviewId)
+    return changedReview(reviewId)
+  })
+}
+
+export const MAX_READ_STEPS = 500
+const MAX_STEP_ID = 256
+
+/** Marks one reading-order step read or unread. The oldest marks go first past the cap. */
+export function setReviewStepRead(reviewId: string, stepId: string, read: boolean, now = new Date()): ReviewRecordChange | null {
+  if (!stepId || stepId.length > MAX_STEP_ID) throw new Error('Malformed step id')
+  const d = getDb()
+  return transaction(d, () => {
+    const review = getReview(reviewId)
+    if (!review) return null
+    const has = review.readSteps.includes(stepId)
+    if (has === read) return null
+    const steps = read ? [...review.readSteps, stepId].slice(-MAX_READ_STEPS) : review.readSteps.filter((step) => step !== stepId)
+    d.prepare('UPDATE reviews SET read_steps = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(steps), now.toISOString(), reviewId)
     return changedReview(reviewId)
   })
 }

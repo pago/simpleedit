@@ -53,7 +53,7 @@ vi.mock('../screenprs-cache', () => ({
 }))
 
 import { ClientHub, everyClient } from '../client-hub'
-import { startScreening, cancelScreening, screeningSnapshot, onScreeningStarted } from '../screenprs'
+import { startScreening, cancelScreening, screeningSnapshot, onScreeningStarted, onTriageJudged } from '../screenprs'
 
 const REF: PrRef = {
   owner: 'acme', repo: 'acme/widgets', number: 7, url: 'https://github.com/acme/widgets/pull/7',
@@ -301,5 +301,18 @@ describe('everyClient', () => {
     expect(phoneOnA.send).toHaveBeenCalledTimes(1)
     expect(windowB.send).toHaveBeenCalledTimes(1)
     expect(windowWithoutHub.send).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the Review Room hook', () => {
+  it('hears each judged card, a cache hit included', async () => {
+    const heard = vi.fn()
+    onTriageJudged(heard)
+    const run = startScreening({ owner: 'hook' }, all)
+    await settle()
+    gate.release()
+    await run
+    onTriageJudged(null)
+    expect(heard).toHaveBeenCalledWith(expect.objectContaining({ url: REF.url, headSha: 'sha1', diff: DIFF, findings: [] }))
   })
 })

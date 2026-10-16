@@ -17,7 +17,8 @@ import {
   killTerminal,
   killAllTerminals,
   getActiveTerminalIds,
-  getTerminalBacklog
+  getTerminalBacklog,
+  isTerminalLive
 } from './pty'
 import { REMOTE_EXPOSURES, type PtySpawnOptions, type WorktreeInfo } from '../shared/ipc-types'
 import {
@@ -38,15 +39,15 @@ import {
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
-import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot, isScreening, onScreeningStarted } from './screenprs'
+import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot, isScreening, onScreeningStarted, onTriageJudged } from './screenprs'
 import { startScreeningSchedule, stopScreeningSchedule, rescheduleScreening, noteScreeningStarted, screeningSchedule } from './screenprs-schedule'
 import { assertReviewDraftOp, loadDrafts, applyOp as applyDraftOp, removeDraftsForThread } from './screenprs-drafts'
 import { loadFilter, setFilter } from './screenprs-filter'
 import { parseScreeningFilters, screeningFilters } from '../shared/screenprs-filter'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
 import { parseDraftOpRequest } from '../shared/review-drafts'
-import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnapshot } from './deep-review'
-import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot } from './pr-overview'
+import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnapshot, onDeepResult } from './deep-review'
+import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot, onOverviewResult } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer, setBacklogTools, setReviewRoomTools, revokeBridgeSession } from './mcp-bridge'
@@ -106,8 +107,17 @@ import { applyBacklogOps, loadBacklog, parseBacklogOps, type Origin } from './ba
 import { parseStartRequest, startBacklogItem } from './backlog-start'
 import { closeDb } from './db'
 import { applyReviewOp, isReviewCompanionSession, loadReviews } from './review-room-store'
-import { parseReviewOpRequest, type ReviewChange, type ReviewSnapshot } from '../shared/review-room'
+import { isReviewMessageId, parseReviewOpRequest, type ReviewChange, type ReviewSnapshot } from '../shared/review-room'
 import { createReviewRoomTools } from './review-room-tools'
+import {
+  ackHead, configureReviewRoom, discardReview, layerDiff, markStep, moveDraft, onDeepFindings, onOverviewText, onTriageCard,
+  openReview, reviewLayers, since, sinceDiff, submitReview, sweepClosedReviews,
+} from './review-room-service'
+import { removeReviewCheckouts } from './review-checkout'
+import {
+  companionInfo, companionLaunchFor, defaultCompanionAgent, endCompanionsOfWindow, endReviewCompanion, ensureCompanion, initReviewCompanion, markCompanionQuitting,
+  onCompanionExited, rebindCompanionSession, resolveCompanionCreated, setReviewCompanionAgent, sweepCompanionCheckouts,
+} from './review-companion'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
@@ -474,6 +484,39 @@ setReviewRoomTools(createReviewRoomTools({
   markReplied: markThreadReplied,
 }))
 
+// ── Review Room ────────────────────────────────────────────
+configureReviewRoom({
+  broadcastReview: broadcastReviewChanges,
+  applyDraftOp: applyAndBroadcastDraftOp,
+  broadcastDraft: (url, result) => broadcastToAllClients('screenprs:draft-changed', { url, ...result }),
+  defaultCompanionAgent: () => defaultCompanionAgent(),
+  endCompanion: endReviewCompanion,
+  removeCheckouts: (reviewId) => removeReviewCheckouts(reviewId),
+})
+// ── Review Room companion ──────────────────────────────────
+initReviewCompanion({
+  sendCreateRequest: (windowId, request) => {
+    const window = getWindowForContents(windowId)
+    if (!window || window.webContents.isDestroyed()) return false
+    window.webContents.send('review:companion-create-request', request)
+    return true
+  },
+  broadcast: broadcastReviewChanges,
+  requestSend,
+  isLive: isTerminalLive,
+  kill: killTerminal,
+  modelConfig: () => {
+    try { return getModelConfig() } catch { return null }
+  },
+})
+onAgentStatus((event) => {
+  if (event.status === 'exited') onCompanionExited(event.terminalId)
+})
+
+onTriageJudged(onTriageCard)
+onDeepResult(onDeepFindings)
+onOverviewResult(onOverviewText)
+
 // Deferred to app-ready: the store opens the database under userData.
 function startThreadDelivery(): void {
   initThreadDelivery({
@@ -587,6 +630,7 @@ function createWindow(repoPath?: string): BrowserWindow {
     // its next invoke would name a destroyed window id and rebuild everything
     // the teardown below is about to take apart.
     closeSocketsForHub(webContentsId)
+    endCompanionsOfWindow(webContentsId)
     stopBridge(webContentsId)
     forgetWindow(webContentsId)
     unwatchAllWorktreeListsForWindow(webContentsId)
@@ -1034,7 +1078,9 @@ function registerAllHandlers(): void {
           ...(bridge ? { bridgePort: bridge.port, bridgeToken: bridge.token } : {})
         },
         client,
-        clientKeyOf(event.sender)
+        clientKeyOf(event.sender),
+        // Main's own lookup of the id, never the payload's say-so.
+        { reviewCompanion: companionLaunchFor(options.id) }
       )
     } catch (error) {
       reportSpawnFailure(options.id, error, client)
@@ -1172,7 +1218,7 @@ function registerAllHandlers(): void {
 
   handleInvoke('review:load', (): ReviewSnapshot => loadReviews())
 
-  handleInvoke('review:op', (_event, raw: unknown) => {
+  handleInvoke('review:op', (event, raw: unknown) => {
     const { reviewId, op } = parseReviewOpRequest(raw)
     const { change, queued } = applyReviewOp(reviewId, op)
     if (change && op.kind === 'remove-thread') {
@@ -1182,8 +1228,45 @@ function registerAllHandlers(): void {
     }
     if (change) broadcastReviewChanges([change])
     if (queued?.sessionId) requestSend(queued.sessionId)
+    // The companion starts on the first question; a live one is returned as is.
+    if (queued) {
+      void ensureCompanion(reviewId, event.sender.id, `message:${queued.messageId}`)
+        .catch((err: unknown) => console.warn('[ReviewRoom] Companion did not start:', err))
+    }
     return change
   })
+
+  handleInvoke('review:open', (_event, url: unknown) => openReview(url))
+  handleInvoke('review:layers', (_event, reviewId: unknown) => reviewLayers(reviewId))
+  handleInvoke('review:layer-diff', (_event, reviewId: unknown, prUrl: unknown) => layerDiff(reviewId, prUrl))
+  handleInvoke('review:since', (_event, reviewId: unknown, prUrl: unknown) => since(reviewId, prUrl))
+  handleInvoke('review:since-diff', (_event, reviewId: unknown, prUrl: unknown) => sinceDiff(reviewId, prUrl))
+  handleInvoke('review:ack-head', (_event, reviewId: unknown, prUrl: unknown) => ackHead(reviewId, prUrl))
+  handleInvoke('review:mark-step', (_event, reviewId: unknown, stepId: unknown, read: unknown) => markStep(reviewId, stepId, read))
+  handleInvoke('review:move-draft', (_event, threadId: unknown, toUrl: unknown) => moveDraft(threadId, toUrl))
+  handleInvoke('review:submit', (_event, request: unknown) => submitReview(request))
+  handleInvoke('review:discard', (_event, reviewId: unknown) => discardReview(reviewId))
+
+  // The companion: claimed and started by main, created by the claiming window.
+  handleInvoke('review:companion-start', async (event, reviewId: unknown) => {
+    if (typeof reviewId !== 'string') throw new Error('Malformed review id')
+    await ensureCompanion(reviewId, event.sender.id)
+  })
+
+  // Desktop only, like `session:created` (the functions refuse remote callers).
+  handleInvoke('review:companion-created', (event, correlationId: unknown, outcome: unknown) =>
+    resolveCompanionCreated(event.sender, correlationId, outcome)
+  )
+
+  handleInvoke('review:companion-rebind', (event, reviewId: unknown, fromSessionId: unknown, toSessionId: unknown) =>
+    rebindCompanionSession(event.sender, reviewId, fromSessionId, toSessionId)
+  )
+
+  handleInvoke('review:companion-info', (event, reviewId: unknown) => companionInfo(reviewId, event.sender.id))
+
+  handleInvoke('review:set-companion-agent', (_event, reviewId: unknown, target: unknown) =>
+    setReviewCompanionAgent(reviewId, target)
+  )
 
   handleInvoke('agent-threads:load', () => loadThreads())
 
@@ -1197,7 +1280,8 @@ function registerAllHandlers(): void {
   })
 
   handleInvoke('agent-threads:retry', (_event, sessionId: unknown, messageId: unknown) =>
-    typeof sessionId === 'string' && retryMessage(sessionId, parseMessageIdRequest(messageId))
+    typeof sessionId === 'string' &&
+      retryMessage(sessionId, isReviewMessageId(messageId) ? messageId : parseMessageIdRequest(messageId))
   )
 
   handleInvoke('agent-threads:force-send', (_event, sessionId: unknown) => {
@@ -1439,6 +1523,8 @@ app.whenReady().then(() => {
   try {
     startThreadDelivery()
     startThreadAnchorWatch({ broadcast: broadcastThreadChanges }).catch((err) => console.error('[Threads] Re-anchoring at startup failed:', err))
+    void sweepClosedReviews().catch((err: unknown) => console.warn('[ReviewRoom] Closed-review sweep failed:', err))
+    void sweepCompanionCheckouts().catch((err: unknown) => console.warn('[ReviewRoom] Checkout sweep failed:', err))
   } catch (err) {
     // Threads are one feature; a database that won't open must not keep the app from starting.
     console.error('[Threads] Could not start:', err)
@@ -1580,6 +1666,8 @@ process.on('exit', () => {
 })
 
 app.on('before-quit', () => {
+  // First: every terminal killed below would otherwise read as its companion ending.
+  markCompanionQuitting()
   try { detachAllStreams() } catch { /* ignore */ }
   try { killAllTerminals() } catch { /* ignore */ }
   try { unwatchAllGitRefs() } catch { /* ignore */ }

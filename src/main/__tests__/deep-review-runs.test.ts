@@ -42,7 +42,7 @@ vi.mock('../screenprs-cache', () => ({
   putDeep: vi.fn(),
 }))
 
-import { startDeepReview, cancelDeepReview, deepReviewSnapshot } from '../deep-review'
+import { startDeepReview, cancelDeepReview, deepReviewSnapshot, onDeepResult } from '../deep-review'
 
 const PR = { url: 'https://github.com/acme/ui/pull/7', headSha: 'sha1', diff: 'd' } as PrContext
 
@@ -95,5 +95,19 @@ describe('deep review runs', () => {
     ])
     // A client that reconnects now agrees with one that watched it happen.
     expect(deepReviewSnapshot()[url]).toMatchObject({ status: 'done', headSha: 'new', lenses: { soundness: 'done' } })
+  })
+})
+
+describe('the Review Room hook', () => {
+  it('hears each result sent, with the diff its lines point into', async () => {
+    const heard = vi.fn()
+    onDeepResult(heard)
+    const url = 'https://github.com/acme/ui/pull/8'
+    const run = startDeepReview({ ...PR, url, diff: 'the diff' }, client().wc)
+    await vi.waitFor(() => expect(lens.waiting.length).toBeGreaterThan(0))
+    lens.release()
+    await run
+    onDeepResult(null)
+    expect(heard).toHaveBeenCalledWith({ url, headSha: 'sha1', diff: 'the diff', findings: [] })
   })
 })

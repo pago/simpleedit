@@ -53,6 +53,13 @@ export function onScreeningStarted(fn: (() => void) | null): void {
   startedListener = fn
 }
 
+let judgedListener: ((card: ScreenPrCard) => void) | null = null
+
+/** Called with each card the model judged (a cache hit included); never with a failure's metadata-only card. */
+export function onTriageJudged(fn: ((card: ScreenPrCard) => void) | null): void {
+  judgedListener = fn
+}
+
 /**
  * The same card/context, with the diff emptied — what a remote client gets.
  *
@@ -205,12 +212,13 @@ export async function startScreening(
       metas ??= await fetchMetas()
       if (!live(r)) return { joined: false }
 
-      const emitCard = (ctx: PrContext, result: TriageResult): void => {
+      const emitCard = (ctx: PrContext, result: TriageResult, judged: boolean): void => {
         if (!live(r)) return
         const card: ScreenPrCard = { ...ctx, ...result, bucket: bucketOf({ ...ctx, ...result }) }
         Object.assign(entry(r, card), { context: card, card })
         r.triaging.delete(card.url)
         sendSplit(r, 'screenprs:card', { card }, { card: withoutDiff(card) })
+        if (judged) judgedListener?.(card)
       }
 
       // Cache hit (same head SHA and base) → reuse the diff + triage, no model
@@ -226,7 +234,7 @@ export async function startScreening(
       for (const meta of metas) {
         const key = baseKeys.get(meta.url) ?? ''
         const cached = filters.force ? undefined : getCached(meta.url, meta.headSha, triageFingerprint, key)
-        if (cached) emitCard(withReviewDiff(meta, cached), cached.triage)
+        if (cached) emitCard(withReviewDiff(meta, cached), cached.triage, true)
         else toTriage.push(meta)
       }
 
@@ -280,7 +288,7 @@ export async function startScreening(
                 analysis: ctx.base,
               })
             }
-            emitCard(ctx, result)
+            emitCard(ctx, result, ev.kind === 'done' && !!results[ev.index])
           }
         }
       } finally {
