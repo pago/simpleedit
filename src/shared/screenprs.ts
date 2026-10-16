@@ -10,7 +10,31 @@
 import type { ConventionalCommentLabel } from './ipc-types'
 import { parseUnifiedDiff } from './parseDiff'
 
-export type PrCiStatus = 'green' | 'pending' | 'failing'
+/**
+ * `none` = nothing ran (no checks, or only skipped optional ones), which is not a
+ * pass. `attention` = a check was cancelled, or a required one skipped.
+ */
+export type PrCiStatus = 'green' | 'pending' | 'failing' | 'attention' | 'none'
+export const CI_TONE: Record<PrCiStatus, string> = {
+  green: 'text-emerald-400',
+  pending: 'text-amber-400',
+  failing: 'text-red-400',
+  attention: 'text-amber-400',
+  none: 'text-zinc-400',
+}
+
+/** One honest line for a PR's CI, naming the checks behind a bad state. */
+export function ciLabel(pr: { ci: PrCiStatus; ciFailing: string[]; ciAttention?: string[] }): string {
+  const names = (list: string[] | undefined): string => (list?.length ? `: ${list.join(', ')}` : '')
+  switch (pr.ci) {
+    case 'green': return 'CI passing'
+    case 'pending': return 'CI pending'
+    case 'failing': return `CI failing${names(pr.ciFailing)}`
+    case 'attention': return `CI needs attention${names(pr.ciAttention)}`
+    case 'none': return 'No CI checks'
+  }
+}
+
 export type PrReviewerState = 'approved' | 'changes_requested' | 'commented' | 'pending'
 
 /** The lightweight identity from the PR search — enough to render a placeholder. */
@@ -64,6 +88,8 @@ export interface PrContext extends PrRef {
   ci: PrCiStatus
   /** Names of the failing checks (for the "waiting on author" one-liner). */
   ciFailing: string[]
+  /** Cancelled or required-but-skipped checks; absent on a context that predates the field. */
+  ciAttention?: string[]
   reviewers: PrReviewer[]
   /** Approved by someone *other* than the current user. */
   approvedByOther: boolean

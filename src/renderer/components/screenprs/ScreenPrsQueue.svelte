@@ -3,7 +3,8 @@
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { triageModel } from '../../stores/triageModel.svelte'
   import { sidebarRail } from '../../stores/sidebarRail.svelte'
-  import type { ScreenPrCard, ScreenPrBucket, PrCiStatus, PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
+  import type { ScreenPrCard, ScreenPrBucket, PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
+  import { CI_TONE, ciLabel } from '../../../shared/screenprs'
   import { BUCKET_ORDER, groupStacks, emptyReviewDraft } from '../../../shared/screenprs'
   import MagnifierIcon from './MagnifierIcon.svelte'
   import ConfirmReviewModal from './ConfirmReviewModal.svelte'
@@ -33,17 +34,6 @@
   }
 
   onMount(() => void triageModel.refresh())
-
-  const ciClass: Record<PrCiStatus, string> = {
-    green: 'text-emerald-400',
-    pending: 'text-amber-400',
-    failing: 'text-red-400',
-  }
-  function ciLabel(c: ScreenPrCard): string {
-    if (c.ci === 'green') return 'CI green'
-    if (c.ci === 'pending') return 'CI pending'
-    return c.ciFailing.length ? `CI: ${c.ciFailing.join(', ')}` : 'CI failing'
-  }
 
   // ── quick-approve ✓: one-click Approve straight from a card, still guarded by
   // the same confirm modal the composer uses (this writes to GitHub too).
@@ -103,7 +93,7 @@
       </div>
       <div class="hidden flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] @[13rem]:flex">
         <span class="tabular-nums text-zinc-400"><b class="text-emerald-400">+{c.additions}</b> <b class="text-red-400">−{c.deletions}</b> <span class="text-zinc-600">·</span> {c.changedFiles}f</span>
-        <span class="hidden {ciClass[c.ci]} @2xs:inline">{ciLabel(c)}</span>
+        <span class="hidden {CI_TONE[c.ci]} @2xs:inline">{ciLabel(c)}</span>
         {#if c.reviewers.length}
           <span class="hidden text-zinc-500 @2xs:inline">{c.reviewers.map((r) => `${r.login}:${r.state}`).join(', ')}</span>
         {/if}

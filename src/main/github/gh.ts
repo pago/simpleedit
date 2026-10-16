@@ -163,14 +163,59 @@ interface RawCheck {
   bucket?: string
 }
 
-/** Derive a single CI status + the failing check names from `gh pr checks --json`. */
-export function parseChecks(json: string): { ci: PrCiStatus; ciFailing: string[] } {
+const FAIL_STATES = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'])
+const PENDING_STATES = new Set(['PENDING', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'EXPECTED'])
+const SKIP_STATES = new Set(['SKIPPED', 'NEUTRAL', 'STALE'])
+
+type CheckKind = 'pass' | 'fail' | 'pending' | 'cancel' | 'skip' | 'unknown'
+
+/** `bucket` is gh's own grouping; `state` only stands in when an older gh omits it. */
+function kindOf(r: RawCheck): CheckKind {
+  switch (r.bucket) {
+    case 'pass': return 'pass'
+    case 'fail': return 'fail'
+    case 'pending': return 'pending'
+    case 'cancel': return 'cancel'
+    case 'skipping': return 'skip'
+  }
+  if (r.state === 'SUCCESS') return 'pass'
+  if (FAIL_STATES.has(r.state)) return 'fail'
+  if (PENDING_STATES.has(r.state)) return 'pending'
+  if (r.state === 'CANCELLED' || r.state === 'CANCELED') return 'cancel'
+  if (SKIP_STATES.has(r.state)) return 'skip'
+  return 'unknown'
+}
+
+/**
+ * Derive a single CI status from `gh pr checks --json`, plus the names behind it.
+ *
+ * `gh` has no `required` JSON field, so the required checks come from a second
+ * call (`--required`) and are matched by name. A skipped check is quiet unless
+ * it is required; a cancelled or unrecognised one never counts as a pass. Green
+ * means something actually passed: no rows, or only skipped optional ones, is
+ * `none`.
+ */
+export function parseChecks(
+  json: string,
+  requiredJson = ''
+): { ci: PrCiStatus; ciFailing: string[]; ciAttention: string[] } {
   const rows = (JSON.parse(json || '[]') as RawCheck[]) ?? []
-  if (rows.length === 0) return { ci: 'green', ciFailing: [] }
-  const failing = rows.filter((r) => r.bucket === 'fail' || r.state === 'FAILURE' || r.state === 'ERROR')
-  if (failing.length) return { ci: 'failing', ciFailing: failing.map((r) => r.name) }
-  const pending = rows.some((r) => r.bucket === 'pending' || r.state === 'PENDING' || r.state === 'IN_PROGRESS' || r.state === 'QUEUED')
-  return { ci: pending ? 'pending' : 'green', ciFailing: [] }
+  const required = new Set(((JSON.parse(requiredJson || '[]') as RawCheck[]) ?? []).map((r) => r.name))
+  const named = (kinds: CheckKind[]): string[] => rows.filter((r) => kinds.includes(kindOf(r))).map((r) => r.name)
+
+  const failing = named(['fail'])
+  const attention = rows
+    .filter((r) => {
+      const kind = kindOf(r)
+      return kind === 'cancel' || kind === 'unknown' || (kind === 'skip' && required.has(r.name))
+    })
+    .map((r) => r.name)
+  const none = { ci: 'none' as const, ciFailing: [], ciAttention: [] }
+
+  if (failing.length) return { ci: 'failing', ciFailing: failing, ciAttention: attention }
+  if (named(['pending']).length) return { ci: 'pending', ciFailing: [], ciAttention: attention }
+  if (attention.length) return { ci: 'attention', ciFailing: [], ciAttention: attention }
+  return named(['pass']).length ? { ci: 'green', ciFailing: [], ciAttention: [] } : none
 }
 
 interface RawReview {
@@ -202,7 +247,13 @@ const REVIEW_STATE: Record<string, PrReviewerState> = {
 }
 
 /** Assemble a `PrMeta` (everything but the diff) from the view + checks output. */
-export function assembleMeta(ref: PrRef, viewJson: string, checksJson: string, handle: string): PrMeta {
+export function assembleMeta(
+  ref: PrRef,
+  viewJson: string,
+  checksJson: string,
+  handle: string,
+  requiredJson = ''
+): PrMeta {
   const view = JSON.parse(viewJson) as RawPrView
   const reviews = view.latestReviews ?? []
   const reviewers: PrReviewer[] = reviews.map((r) => ({
@@ -224,7 +275,7 @@ export function assembleMeta(ref: PrRef, viewJson: string, checksJson: string, h
     body: view.body ?? '',
     reviewers,
     approvedByOther,
-    ...parseChecks(checksJson),
+    ...parseChecks(checksJson, requiredJson),
   }
 }
 
@@ -233,11 +284,13 @@ const VIEW_FIELDS = 'additions,deletions,changedFiles,baseRefName,baseRefOid,hea
 /** The cheap half: metadata + CI + head SHA (no diff). Always refetched so a
  *  cached PR still gets current CI/reviews and an accurate bucket. */
 export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
-  const [viewJson, checksJson] = await Promise.all([
+  const [viewJson, checksJson, requiredJson] = await Promise.all([
     runGh(['pr', 'view', ref.url, '--json', VIEW_FIELDS]),
     runGh(['pr', 'checks', ref.url, '--json', 'name,state,bucket'], { allowFail: true }),
+    // Exits nonzero with empty stdout when the base branch requires nothing.
+    runGh(['pr', 'checks', ref.url, '--required', '--json', 'name,state,bucket'], { allowFail: true }),
   ])
-  return assembleMeta(ref, viewJson, checksJson, handle)
+  return assembleMeta(ref, viewJson, checksJson, handle, requiredJson)
 }
 
 /** The expensive-to-refetch half: the unified diff. Skipped on a cache hit. */

@@ -15,7 +15,7 @@
    * of the one PR you open.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, anchorCounts, anchorsForHead, baseWarning } from '../shared/screenprs'
+  import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, anchorCounts, anchorsForHead, baseWarning, CI_TONE, ciLabel } from '../shared/screenprs'
   import { truncateSnippet } from '../shared/review-drafts'
   import type {
     DeepFinding,
@@ -23,7 +23,6 @@
     PrRef,
     PrReviewComment,
     TriageFinding,
-    PrCiStatus,
   } from '../shared/screenprs'
   import { cachedDiff, fetchDiff, type CommentTarget } from './lib/prs.svelte'
   import PrDiff from './PrDiff.svelte'
@@ -266,12 +265,6 @@
     concern: 'bg-amber-500/15 text-amber-300',
     note: 'bg-zinc-700 text-zinc-300',
   }
-  const CI_CLASS: Record<PrCiStatus, string> = {
-    green: 'text-emerald-400',
-    pending: 'text-amber-400',
-    failing: 'text-red-400',
-  }
-
   let activeLenses = $derived(DEEP_LENS_ORDER.filter((l) => deep?.lenses[l]))
 </script>
 
@@ -303,11 +296,7 @@
               ><b class="text-emerald-500">+{context.additions}</b>
               <b class="text-red-500">−{context.deletions}</b> · {context.changedFiles} files</span
             >
-            <span class={CI_CLASS[context.ci]}>
-              {context.ci === 'failing' && context.ciFailing.length
-                ? `CI: ${context.ciFailing.join(', ')}`
-                : `CI ${context.ci}`}
-            </span>
+            <span class={CI_TONE[context.ci]}>{ciLabel(context)}</span>
             <span>base {context.baseRefName}</span>
           {/if}
         </p>

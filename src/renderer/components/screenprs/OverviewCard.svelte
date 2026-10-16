@@ -9,6 +9,7 @@
    * that doesn't parse is shown whole, so nothing the model wrote is lost.
    */
   import type { PrContext } from '../../../shared/screenprs'
+  import { CI_TONE, ciLabel } from '../../../shared/screenprs'
   import {
     parseOverview,
     type OverviewLookIntoItem,
@@ -21,7 +22,7 @@
   type SectionKey = keyof OverviewSections
 
   interface Props {
-    context: Pick<PrContext, 'author' | 'reviewers' | 'ci' | 'ciFailing' | 'headSha'>
+    context: Pick<PrContext, 'author' | 'reviewers' | 'ci' | 'ciFailing' | 'ciAttention' | 'headSha'>
     overview: OverviewState
     /** Sections open on first render; the others start collapsed. Default: all. */
     initiallyOpen?: SectionKey[]
@@ -70,7 +71,6 @@
     return 'changeset: none'
   })
 
-  const CI_CLASS = { green: 'text-emerald-400', pending: 'text-amber-400', failing: 'text-red-400' } as const
 
   const refLabel = (r: OverviewRef): string => (r.line ? `${r.path}:${r.line}` : r.path)
   const html = (md: string): string => renderMarkdown(md)
@@ -83,8 +83,8 @@
     <span>@{context.author}</span>
     {#if overview.facts}<span>{overview.facts.draft ? 'draft' : 'ready'}</span>{/if}
     <span>{reviews}</span>
-    <span class={CI_CLASS[context.ci]}>
-      {context.ci === 'failing' && context.ciFailing.length ? `CI failing: ${context.ciFailing.join(', ')}` : `CI ${context.ci === 'green' ? 'passing' : context.ci}`}
+    <span class={CI_TONE[context.ci]}>
+      {ciLabel(context)}
     </span>
     {#if changeset}<span>{changeset}</span>{/if}
   </div>

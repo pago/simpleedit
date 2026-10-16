@@ -25,20 +25,63 @@ describe('parseSearch', () => {
 })
 
 describe('parseChecks', () => {
-  it('treats no checks as green', () => {
-    expect(parseChecks('[]')).toEqual({ ci: 'green', ciFailing: [] })
-    expect(parseChecks('')).toEqual({ ci: 'green', ciFailing: [] })
+  const rows = (...r: { name: string; state: string; bucket: string }[]): string => JSON.stringify(r)
+  const pass = { name: 'unit', state: 'SUCCESS', bucket: 'pass' }
+  const none = { ci: 'none', ciFailing: [], ciAttention: [] }
+
+  it('does not call an absence of checks a pass', () => {
+    expect(parseChecks('[]')).toEqual(none)
+    expect(parseChecks('')).toEqual(none)
+  })
+  it('reports green only when something passed', () => {
+    expect(parseChecks(rows(pass))).toEqual({ ci: 'green', ciFailing: [], ciAttention: [] })
   })
   it('reports failing checks by name', () => {
-    const json = JSON.stringify([
-      { name: 'unit', state: 'SUCCESS', bucket: 'pass' },
-      { name: 'e2e', state: 'FAILURE', bucket: 'fail' },
-    ])
-    expect(parseChecks(json)).toEqual({ ci: 'failing', ciFailing: ['e2e'] })
+    const json = rows(pass, { name: 'e2e', state: 'FAILURE', bucket: 'fail' })
+    expect(parseChecks(json)).toEqual({ ci: 'failing', ciFailing: ['e2e'], ciAttention: [] })
   })
   it('reports pending when nothing failed but something is in progress', () => {
-    const json = JSON.stringify([{ name: 'build', state: 'IN_PROGRESS', bucket: 'pending' }])
-    expect(parseChecks(json)).toEqual({ ci: 'pending', ciFailing: [] })
+    const json = rows({ name: 'build', state: 'IN_PROGRESS', bucket: 'pending' })
+    expect(parseChecks(json)).toEqual({ ci: 'pending', ciFailing: [], ciAttention: [] })
+  })
+  it('flags a cancelled check instead of passing it', () => {
+    const json = rows(pass, { name: 'e2e', state: 'CANCELLED', bucket: 'cancel' })
+    expect(parseChecks(json)).toEqual({ ci: 'attention', ciFailing: [], ciAttention: ['e2e'] })
+  })
+  it('falls back to state when gh omits the bucket', () => {
+    const json = JSON.stringify([{ name: 'e2e', state: 'CANCELLED' }, { name: 'unit', state: 'SUCCESS' }])
+    expect(parseChecks(json).ci).toBe('attention')
+  })
+  it('keeps a skipped optional check quiet', () => {
+    const json = rows(pass, { name: 'deploy', state: 'SKIPPED', bucket: 'skipping' })
+    expect(parseChecks(json)).toEqual({ ci: 'green', ciFailing: [], ciAttention: [] })
+  })
+  it('flags a skipped required check', () => {
+    const json = rows(pass, { name: 'deploy', state: 'SKIPPED', bucket: 'skipping' })
+    const required = rows({ name: 'deploy', state: 'SKIPPED', bucket: 'skipping' })
+    expect(parseChecks(json, required)).toEqual({ ci: 'attention', ciFailing: [], ciAttention: ['deploy'] })
+  })
+  it('reads a PR with only skipped optional checks as none', () => {
+    const json = rows({ name: 'deploy', state: 'SKIPPED', bucket: 'skipping' })
+    expect(parseChecks(json)).toEqual(none)
+  })
+  it('does not treat an unrecognised check as passed', () => {
+    const json = rows(pass, { name: 'odd', state: 'SOMETHING_NEW', bucket: 'whatever' })
+    expect(parseChecks(json)).toEqual({ ci: 'attention', ciFailing: [], ciAttention: ['odd'] })
+  })
+  it('lets a failure outrank a cancelled check, and still names the cancelled one', () => {
+    const json = rows(
+      { name: 'lint', state: 'FAILURE', bucket: 'fail' },
+      { name: 'e2e', state: 'CANCELLED', bucket: 'cancel' }
+    )
+    expect(parseChecks(json)).toEqual({ ci: 'failing', ciFailing: ['lint'], ciAttention: ['e2e'] })
+  })
+  it('keeps pending ahead of a cancelled check, which settles once the run ends', () => {
+    const json = rows(
+      { name: 'build', state: 'IN_PROGRESS', bucket: 'pending' },
+      { name: 'e2e', state: 'CANCELLED', bucket: 'cancel' }
+    )
+    expect(parseChecks(json).ci).toBe('pending')
   })
 })
 
