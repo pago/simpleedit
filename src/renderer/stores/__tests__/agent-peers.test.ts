@@ -8,6 +8,7 @@
  * message another. Nothing caught it, because `pnpm typecheck` does not actually
  * check the renderer.
  */
+import { serializeSession } from '../../lib/sessionPersistence'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { AgentPeer, WindowSessionInput, WorktreeInfo } from '../../../shared/ipc-types'
 import { sessionsStore, initSessionListeners } from '../sessions.svelte'
@@ -32,7 +33,9 @@ function lastWindowSessions(): WindowSessionInput[] | undefined {
 }
 
 beforeEach(async () => {
-  invoke = vi.fn((channel: string) => {
+  invoke = vi.fn((channel: string, ...args: unknown[]) => {
+    // What Electron's IPC does to every argument: a $state proxy would throw here.
+    structuredClone(args)
     if (channel === 'worktree:list') {
       return Promise.resolve<WorktreeInfo[]>([{ path: MAIN_WT, branch: 'main', isMain: true, isCurrent: false }])
     }
@@ -126,6 +129,8 @@ describe('agent-bus peer snapshot', () => {
 
       expect(lastSyncedPeers()?.find((peer) => peer.terminalId === id)?.owner).toEqual({ kind: 'review', reviewId: 'r_review01' })
       expect(lastWindowSessions()?.some((session) => session.terminalId === id)).toBe(false)
+      // What `session:save` sends must survive IPC's structured clone too.
+      expect(structuredClone(serializeSession(ROOT)).sessions.map((s) => s.owner)).toContainEqual({ kind: 'review', reviewId: 'r_review01' })
       expect(sessionsStore.activeSessionId()).toBeNull()
     } finally {
       off()

@@ -99,7 +99,9 @@ export function serializeSession(repoPath: string): SerializedSession {
         : {}),
       ...(session.groupId ? { groupId: session.groupId } : {}),
       ...(session.seedPrompt ? { seedPrompt: session.seedPrompt } : {}),
-      ...(session.owner ? { owner: session.owner, companionClaimId: session.companionClaimId ?? session.id } : {}),
+      ...(session.owner
+        ? { owner: { kind: session.owner.kind, reviewId: session.owner.reviewId }, companionClaimId: session.companionClaimId ?? session.id }
+        : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
       unread,
