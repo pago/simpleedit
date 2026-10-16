@@ -114,6 +114,18 @@ describe('ReviewScreen', () => {
     await waitFor(() => expect(screen.queryByTestId('outline-sheet')).toBeNull())
   })
 
+  it('reads nothing that a sheet covers', async () => {
+    addThread({ id: 'rt_pr000004', anchor: { kind: 'pr', pr: 183 }, origin: { kind: 'user' }, messages: [msg('user', 'Q'), msg('companion', 'A')], readSeq: 0 })
+    mount()
+    await fireEvent.click(await screen.findByTestId('open-outline'))
+    await screen.findByTestId('outline-sheet')
+    api.ops.length = 0
+    await new Promise((r) => setTimeout(r, 100))
+    expect(api.ops.filter((o) => o.op.kind === 'mark-read')).toEqual([])
+    nav.back()
+    await waitFor(() => expect(api.ops.some((o) => o.op.kind === 'mark-read')).toBe(true))
+  })
+
   it('says why it can’t open while offline', () => {
     mount({ connected: false })
     expect(screen.getByTestId('room-loading')).toHaveTextContent('Waiting for the connection')

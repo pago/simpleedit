@@ -19,6 +19,7 @@
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
   import { readingProgress, reportMarkdown, reviewDrafts, tourSteps } from '../renderer/lib/review-room'
   import { nav } from './lib/nav.svelte'
+  import { isOverlay } from './lib/nav'
   import { companionLine, companionState, reviewSubmits } from './lib/review-phone.svelte'
   import { copyText } from './lib/copy-text'
   import ReviewLayer from './ReviewLayer.svelte'
@@ -42,6 +43,9 @@
   }
 
   let { url, connected, visible, hostBlocked }: Props = $props()
+
+  /** Threads under the outline or the submit sheet are covered, not read. */
+  let uncovered = $derived(visible && !isOverlay(nav.top('prs')))
 
   // ── Opening ──
   let openState = $derived(reviewRoom.openState(url))
@@ -237,7 +241,7 @@
           {#if stackThreads.length}
             <div class="mt-2 flex flex-col gap-2">
               {#each stackThreads as t (t.id)}
-                <RoomThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={top?.url ?? ''} {layers} {companionSessionId} {readonly} requesterSessionId={requesterLive ? requesterId : undefined} {askBlocked} {visible} />
+                <RoomThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={top?.url ?? ''} {layers} {companionSessionId} {readonly} requesterSessionId={requesterLive ? requesterId : undefined} {askBlocked} visible={uncovered} />
               {/each}
             </div>
           {/if}
@@ -267,7 +271,7 @@
           requesterSessionId={requesterLive ? requesterId : undefined}
           {askBlocked}
           {connected}
-          {visible}
+          visible={uncovered}
         />
       {/each}
     </div>

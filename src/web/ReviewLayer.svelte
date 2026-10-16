@@ -20,6 +20,7 @@
   import { DEEP_LENS_LABEL, DEEP_LENS_ORDER, baseWarning } from '../shared/screenprs'
   import { parseUnifiedDiff, type DiffFile, type DiffRow } from '../shared/parseDiff'
   import { parseOverview } from '../shared/pr-overview'
+  import { DIFF_TRUNCATED_MARKER } from '../shared/ipc-types'
   import { tick } from 'svelte'
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
   import { reviewRoom } from '../renderer/stores/reviewRoom.svelte'
@@ -421,6 +422,9 @@
           <div class="mx-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-300">Couldn’t load the new changes: {sinceOnly.error}</div>
         {:else}
           <p class="mx-3 text-[12px] text-zinc-500">Only the commits since you last looked. Threads stay on the whole layer.</p>
+          {#if sinceOnly.diff.trimEnd().endsWith(DIFF_TRUNCATED_MARKER)}
+            <p class="mx-3 mt-1 text-[12px] text-amber-300/90">Cut for the phone: read the rest at the desk before you tap Got it.</p>
+          {/if}
           <MobileDiff diff={sinceOnly.diff} testid="room-since-diff" />
         {/if}
       {:else if tour}

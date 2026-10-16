@@ -293,14 +293,6 @@ export const screenPrsStore = {
   },
 
   /**
-   * A review post is in flight. Its answer comes back on the invoke, over this
-   * connection only, so a client that reconnects meanwhile never learns
-   * whether it landed. Screening, deep reviews and overviews report to every
-   * client instead (`loadState` catches a reconnected one up).
-   */
-  posting: (): boolean => _submitting.size > 0,
-
-  /**
    * Replace this client's view of every run with main's: on start, and after a
    * reconnect or a project switch, which miss whatever was sent meanwhile.
    */
