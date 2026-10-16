@@ -88,11 +88,23 @@ describe('CompanionDock', () => {
     expect(api.invoke).toHaveBeenCalledWith('review:companion-start', REVIEW_ID)
   })
 
-  it('asks main again when the companion’s status changes', async () => {
+  it('doesn’t ask main again on every running/idle flip', async () => {
     hostedHere()
     render(CompanionDock, { props: { reviewId: REVIEW_ID, review: review({ companion: COMPANION }) } })
-    await vi.waitFor(() => expect(api.invoke.mock.calls.filter((c) => c[0] === 'review:companion-info')).toHaveLength(1))
+    const infoCalls = (): number => api.invoke.mock.calls.filter((c) => c[0] === 'review:companion-info').length
+    await vi.waitFor(() => expect(infoCalls()).toBe(1))
     api.emit('agent:status', { terminalId: 'sess-c1', worktreePath: '/p', status: 'running', precise: true })
-    await vi.waitFor(() => expect(api.invoke.mock.calls.filter((c) => c[0] === 'review:companion-info').length).toBeGreaterThan(1))
+    api.emit('agent:status', { terminalId: 'sess-c1', worktreePath: '/p', status: 'idle', precise: true })
+    expect(await screen.findByText('Idle')).toBeInTheDocument()
+    expect(infoCalls()).toBe(1)
+  })
+
+  it('asks again when the claim moves to another session', async () => {
+    hostedHere()
+    const view = render(CompanionDock, { props: { reviewId: REVIEW_ID, review: review({ companion: COMPANION }) } })
+    const infoCalls = (): number => api.invoke.mock.calls.filter((c) => c[0] === 'review:companion-info').length
+    await vi.waitFor(() => expect(infoCalls()).toBe(1))
+    await view.rerender({ reviewId: REVIEW_ID, review: review({ companion: { ...COMPANION, sessionId: 'sess-c2' } }) })
+    await vi.waitFor(() => expect(infoCalls()).toBe(2))
   })
 })

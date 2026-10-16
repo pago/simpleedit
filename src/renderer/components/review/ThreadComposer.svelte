@@ -34,7 +34,8 @@
     error = null
     try {
       await action(body)
-      reviewRoom.setAskDraft(draftKey, '')
+      // Only what went out: anything typed while it was in flight stays.
+      if (reviewRoom.askDraft(draftKey).trim() === body) reviewRoom.setAskDraft(draftKey, '')
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
     }
@@ -42,7 +43,7 @@
   }
 
   function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
       e.preventDefault()
       void submit(onask)
     } else if (e.key === 'Escape' && oncancel) {

@@ -23,15 +23,6 @@ import { truncateSnippet } from '../../shared/review-drafts'
 import { hasUnreadMessages, newestSeq } from '../lib/review-room'
 import { screenPrsStore } from './screenprs.svelte'
 
-/**
- * Ops this client sends beyond the committed `ReviewOp`: a thread that starts
- * with the user's draft rather than a question, and "Keep mine" on a
- * companion's proposal. Narrow on purpose, so they can't drift into anything else.
- */
-export type DraftOnlyThreadOp = { kind: 'add-thread'; thread: { id: string; anchor: ReviewThreadAnchor } }
-export type ClearProposalOp = { kind: 'clear-proposal'; threadId: string }
-export type RoomOp = ReviewOp | DraftOnlyThreadOp | ClearProposalOp
-
 export type OpenState =
   | { status: 'loading' }
   | { status: 'ready'; reviewId: string }
@@ -68,6 +59,11 @@ function receive(change: ReviewChange): void {
   }
   if (change.rev < (_reviewRevs.get(change.reviewId) ?? -Infinity)) return
   _reviewRevs.set(change.reviewId, change.rev)
+  // A pushed head reaches the record first; the layer's title and figures follow from main.
+  const infos = _layers.get(change.reviewId)
+  if (change.review && infos?.some((i) => change.review?.layers.some((l) => l.url === i.url && l.headSha !== i.headSha))) {
+    void reviewRoom.refreshLayers(change.reviewId)
+  }
   const next = new Map(_reviews)
   if (change.review) next.set(change.reviewId, change.review)
   else next.delete(change.reviewId)
@@ -98,7 +94,7 @@ function setIn<T>(map: Map<string, T>, key: string, value: T): Map<string, T> {
   return next
 }
 
-async function sendOp(reviewId: string, op: RoomOp): Promise<void> {
+async function sendOp(reviewId: string, op: ReviewOp): Promise<void> {
   const change = await window.api.invoke('review:op', { reviewId, op })
   if (change) receive(change)
 }
@@ -144,9 +140,17 @@ export const reviewRoom = {
       return null
     }
   },
-  /** Bottom → top, as main resolved the stack. */
+  /**
+   * Bottom → top, as main resolved the stack, at the heads the review records:
+   * those arrive with `review:changed`, ahead of the rest of the layer's info.
+   */
   layers(reviewId: string): ReviewLayerInfo[] {
-    return _layers.get(reviewId) ?? []
+    const infos = _layers.get(reviewId) ?? []
+    const heads = new Map((_reviews.get(reviewId)?.layers ?? []).map((l) => [l.url, l.headSha]))
+    return infos.map((l) => {
+      const head = heads.get(l.url)
+      return head && head !== l.headSha ? { ...l, headSha: head } : l
+    })
   },
   async refreshLayers(reviewId: string): Promise<void> {
     try {
@@ -192,7 +196,7 @@ export const reviewRoom = {
 
   // ── Threads ──
   /** Rejects if main refused it, so a composer can keep the text. */
-  op(reviewId: string, op: RoomOp): Promise<void> {
+  op(reviewId: string, op: ReviewOp): Promise<void> {
     return sendOp(reviewId, op)
   },
   /** A thread started with a question for the companion, or (no body) with the user's own draft. Resolves to its id. */

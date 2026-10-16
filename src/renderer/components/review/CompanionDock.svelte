@@ -41,7 +41,6 @@
     void local?.pendingResume
     void local?.exited
     void placeholder?.id
-    if (local) void getAgentStatusForTerminal(local.id)
     if (!id) {
       info = null
       return

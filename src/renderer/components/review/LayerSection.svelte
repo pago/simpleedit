@@ -40,18 +40,23 @@
     threads: ReviewThread[]
     drafts: Map<string, { url: string; comment: PrReviewComment }>
     companionSessionId?: string
+    /** The review is closed: everything shows, nothing changes. */
+    readonly?: boolean
   }
 
-  let { reviewId, review, layer, layers, threads, drafts, companionSessionId }: Props = $props()
+  let { reviewId, review, layer, layers, threads, drafts, companionSessionId, readonly = false }: Props = $props()
 
   // ── The diff and "since you last looked" ──
   let diff = $derived(reviewRoom.layerDiff(reviewId, layer.url))
   let diffError = $state<string | null>(null)
   let since = $derived(reviewRoom.since(reviewId, layer.url))
 
+  // Values, not the layer object: a review change rebuilds the object with the same head.
+  let layerUrl = $derived(layer.url)
+  let layerHead = $derived(layer.headSha)
   $effect(() => {
-    const url = layer.url
-    void layer.headSha // a pushed head means a new diff
+    const url = layerUrl
+    void layerHead // a pushed head means a new diff
     diffError = null
     reviewRoom.loadLayerDiff(reviewId, url).catch((err: unknown) => {
       diffError = err instanceof Error ? err.message : String(err)
@@ -188,7 +193,8 @@
     return c && c.section === section ? { path: c.path, side: c.side, from: c.from, to: c.to } : undefined
   }
 
-  let toPost = $derived(screenPrsStore.draftFor(layer.url).comments.length)
+  /** What main posts for this layer: drafts of this review's threads (`drafts` holds only those). */
+  let toPost = $derived([...drafts.values()].filter((d) => d.url === layer.url).length)
   let readCount = $derived(tour ? tour.steps.filter((s) => readSet.has(s.id)).length : 0)
 
   const BTN = 'rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50'
@@ -196,7 +202,7 @@
 </script>
 
 {#snippet card(t: ReviewThread)}
-  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={layer.url} {layers} {companionSessionId} />
+  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={layer.url} {layers} {companionSessionId} {readonly} />
 {/snippet}
 
 {#snippet rowExtras(section: string, f: DiffFile, row: DiffRow)}
@@ -219,7 +225,7 @@
 
 {#snippet diffOf(section: string, sectionFiles: DiffFile[])}
   {#snippet below(f: DiffFile, row: DiffRow, _i: number)}{@render rowExtras(section, f, row)}{/snippet}
-  <UnifiedDiffView files={sectionFiles} onLineClick={(f, row, _i, ev) => lineClick(section, f, row, ev)} belowRow={below} selectedRange={selectedFor(section)} />
+  <UnifiedDiffView files={sectionFiles} onLineClick={readonly ? undefined : (f, row, _i, ev) => lineClick(section, f, row, ev)} belowRow={below} selectedRange={selectedFor(section)} />
 {/snippet}
 
 <section class="mt-8 scroll-mt-24" id="layer-{layer.number}" data-testid="layer-section">
@@ -319,6 +325,7 @@
         {#each topThreads as t (t.id)}{@render card(t)}{/each}
       </div>
     {/if}
+    {#if !readonly}
     <div class="mt-3">
       {#if composingPr}
         <ThreadComposer draftKey="pr:{layer.url}" label="On #{layer.number} as a whole" onask={(text) => startPr(text, 'ask')} ondraft={(text) => startPr(text, 'draft')} oncancel={() => (composingPr = false)} />
@@ -328,6 +335,7 @@
         </button>
       {/if}
     </div>
+    {/if}
   </div>
 
   <div class="mt-4">
@@ -354,6 +362,7 @@
                 type="button"
                 class="-ml-[1.95rem] flex h-5 w-5 flex-none items-center justify-center rounded border text-[11px] {read ? 'border-blue-500 bg-blue-600 text-white' : 'border-zinc-600 bg-zinc-900 text-transparent hover:border-zinc-400'}"
                 aria-pressed={read}
+                disabled={readonly}
                 aria-label={read ? `Mark “${step.title}” as unread` : `Mark “${step.title}” as read`}
                 onclick={() => void reviewRoom.markStep(reviewId, step.id, !read)}
               >✓</button>

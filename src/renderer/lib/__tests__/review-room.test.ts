@@ -66,12 +66,34 @@ describe('buildTour', () => {
     expect(tour.steps[0].files.map((f) => f.path)).toEqual(['src/a.ts'])
     expect(tour.steps[0].files[0].rows.some((r) => r.text === 'new13')).toBe(false)
     expect(tour.steps[1].files).toEqual([])
-    expect(tour.rest.map((f) => f.path)).toEqual(['src/b.ts'])
+    // a.ts is cited, but its rows past line 8 aren't in the step, so they follow it.
+    expect(tour.rest.map((f) => f.path)).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(tour.rest[0].rows.some((r) => r.text === 'new13')).toBe(true)
   })
 
   it('shows a whole file when a step cites it without a line', () => {
     const tour = buildTour(1, [{ title: 'All of a', summary: '', refs: [{ path: 'src/a.ts' }, { path: 'src/a.ts', line: '2' }] }], FILES)
     expect(tour.steps[0].files[0]).toBe(A)
+  })
+
+  it('keeps the hunks of a cited file that no step shows under "Not in the tour"', () => {
+    const lines = (from: number, n: number): string[] => Array.from({ length: n }, (_, i) => ` l${from + i}`)
+    const big = parseUnifiedDiff(
+      ['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', '@@ -10,11 +10,12 @@', ...lines(10, 5), '+added15', ...lines(15, 6), '@@ -300,51 +301,52 @@', ...lines(301, 25), '+far326', ...lines(326, 26)].join('\n'),
+    )
+    const tour = buildTour(1, [{ title: 'Near', summary: '', refs: [{ path: 'a.ts', line: '10-20' }] }], big)
+    const shown = new Set(tour.steps[0].files[0].rows.filter((r) => r.kind !== 'hunk'))
+    const rest = tour.rest.find((f) => f.path === 'a.ts')
+    expect(rest?.rows.some((r) => r.text === 'far326')).toBe(true)
+    // Nothing shows twice, and every changed row is somewhere.
+    expect(rest?.rows.some((r) => shown.has(r))).toBe(false)
+    const everywhere = [...shown, ...(rest?.rows ?? [])]
+    for (const row of big[0].rows) if (row.kind !== 'hunk') expect(everywhere).toContain(row)
+  })
+
+  it('leaves a fully shown cited file out of "Not in the tour"', () => {
+    const tour = buildTour(1, [{ title: 'All', summary: '', refs: [{ path: 'src/b.ts', line: '1-2' }] }], FILES)
+    expect(tour.rest.map((f) => f.path)).toEqual(['src/a.ts'])
   })
 
   it('names steps stably', () => {

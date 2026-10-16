@@ -102,3 +102,66 @@ describe('ReviewRoom', () => {
     screenPrsStore._onOverviewStatus(URL_1, 'idle')
   })
 })
+
+describe('ThreadComposer', () => {
+  it('keeps what was typed while a send was in flight, and ignores Enter mid-composition', async () => {
+    const { default: ThreadComposer } = await import('../ThreadComposer.svelte')
+    let release: () => void = () => {}
+    const onask = vi.fn(() => new Promise<void>((r) => (release = r)))
+    render(ThreadComposer, { props: { draftKey: 'k-inflight', label: 'x', onask, ondraft: async () => {} } })
+    const box = screen.getByLabelText('New thread')
+    await fireEvent.input(box, { target: { value: 'first' } })
+    await fireEvent.keyDown(box, { key: 'Enter', metaKey: true, isComposing: true })
+    expect(onask).not.toHaveBeenCalled()
+    await fireEvent.click(screen.getByRole('button', { name: 'Ask companion' }))
+    await fireEvent.input(box, { target: { value: 'first and more' } })
+    release()
+    await vi.waitFor(() => expect(onask).toHaveBeenCalledWith('first'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(box).toHaveValue('first and more')
+  })
+})
+
+describe('ReviewRoom — after the first look', () => {
+  const diffCalls = (url: string): number => api.invoke.mock.calls.filter((c) => c[0] === 'review:layer-diff' && c[2] === url).length
+
+  it('picks up a pushed head from review:changed: new diff, new layer info', async () => {
+    render(ReviewRoom, { props: { reviewId: REVIEW_ID } })
+    await vi.waitFor(() => expect(diffCalls(URL_1)).toBe(1))
+    const moved = review({ layers: [{ url: URL_1, number: 183, headSha: 'sha183b' }, { url: URL_2, number: 184, headSha: 'sha184' }] })
+    _receiveReviewChange({ reviewId: REVIEW_ID, review: moved, rev: 2 })
+    await vi.waitFor(() => expect(diffCalls(URL_1)).toBe(2))
+    expect(api.invoke).toHaveBeenCalledWith('review:layers', REVIEW_ID)
+    expect(diffCalls(URL_2)).toBe(1)
+  })
+
+  it('doesn’t refetch a layer whose head didn’t move', async () => {
+    render(ReviewRoom, { props: { reviewId: REVIEW_ID } })
+    await vi.waitFor(() => expect(diffCalls(URL_1)).toBe(1))
+    _receiveReviewChange({ reviewId: REVIEW_ID, review: review({ readSteps: ['x'] }), rev: 3 })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(diffCalls(URL_1)).toBe(1)
+  })
+
+  it('counts only what main posts: this review’s thread drafts', async () => {
+    addThread(thread({ id: 'rt_counted1', anchor: { kind: 'pr', pr: 183 }, messages: [msg('user', 'q')] }))
+    screenPrsStore.addComment(URL_1, { source: 'you', file: '', text: 'in a thread', threadId: 'rt_counted1' })
+    screenPrsStore.addComment(URL_1, { source: 'you', file: '', text: 'old composer comment' })
+    screenPrsStore.addComment(URL_1, { source: 'you', file: '', text: 'another review', threadId: 'rt_elsewher' })
+    render(ReviewRoom, { props: { reviewId: REVIEW_ID } })
+    expect(screen.getByTestId('post-bar')).toHaveTextContent('#183: 1 to post')
+    expect(screen.getAllByTestId('layer-section')[0]).toHaveTextContent('1 to post')
+  })
+
+  it('a closed review is read-only', async () => {
+    _receiveReviewChange({ reviewId: REVIEW_ID, review: review({ status: 'submitted' }), rev: 4 })
+    addThread(thread({ id: 'rt_closed01', anchor: { kind: 'pr', pr: 183 }, messages: [msg('user', 'q')] }))
+    render(ReviewRoom, { props: { reviewId: REVIEW_ID } })
+    const first = screen.getAllByTestId('layer-section')[0]
+    await within(first).findByText('const b = 2')
+    expect(screen.queryByRole('button', { name: 'Ask about the stack' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Start a thread on this PR' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Comment on line 2' })).toBeNull()
+    expect(screen.queryByLabelText('Ask the companion')).toBeNull()
+  })
+})

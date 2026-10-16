@@ -244,7 +244,33 @@ export function buildTour(prNumber: number, steps: readonly OverviewReadingStep[
     const stepFiles = files.filter((f) => ranges.has(f.path)).map((f) => sliceFile(f, ranges.get(f.path) ?? null))
     return { id: stepId(prNumber, index, step.title), title: step.title, summary: step.summary, files: stepFiles }
   })
-  return { steps: tour, rest: files.filter((f) => !cited.has(f.path)) }
+  const shown = new Set<DiffRow>()
+  for (const step of tour) for (const f of step.files) for (const row of f.rows) shown.add(row)
+  const rest = files.flatMap((f) => {
+    if (!cited.has(f.path)) return [f]
+    const left = withoutRows(f, shown)
+    return left ? [left] : []
+  })
+  return { steps: tour, rest }
+}
+
+/** `f` without the rows in `shown` (a hunk row ahead of each run left), or null when every row is shown. */
+function withoutRows(f: DiffFile, shown: ReadonlySet<DiffRow>): DiffFile | null {
+  const rows: DiffRow[] = []
+  let header = ''
+  let lastKept = -2
+  f.rows.forEach((row, i) => {
+    if (row.kind === 'hunk') {
+      header = row.text
+      return
+    }
+    if (shown.has(row)) return
+    if (lastKept !== i - 1) rows.push({ kind: 'hunk', text: header })
+    rows.push(row)
+    lastKept = i
+  })
+  if (!rows.length) return null
+  return { ...f, rows, additions: rows.filter((r) => r.kind === 'add').length, deletions: rows.filter((r) => r.kind === 'del').length }
 }
 
 export function byPath(files: readonly DiffFile[]): DiffFile[] {

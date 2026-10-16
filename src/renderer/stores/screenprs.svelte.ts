@@ -452,6 +452,13 @@ export const screenPrsStore = {
     }, SUMMARY_DEBOUNCE_MS)
     _pendingSummary.set(url, { text: summary, timer })
   },
+  /** Send a summary still in its debounce now: a post that main runs reads main's copy. */
+  async flushSummary(url: string): Promise<void> {
+    const pending = _pendingSummary.get(url)
+    if (!pending) return
+    dropPendingSummary(url)
+    await sendOp(url, { kind: 'set-summary', summary: pending.text })
+  },
   setVerdict(url: string, verdict: PrReviewVerdict): void {
     localOp(url, { kind: 'set-verdict', verdict })
   },

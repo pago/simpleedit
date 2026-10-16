@@ -204,3 +204,41 @@ describe('ReviewThreadCard — read state', () => {
     expect(api.ops.some((o) => o.op.kind === 'mark-read')).toBe(false)
   })
 })
+
+describe('ReviewThreadCard — nothing typed is lost', () => {
+  it('saves draft text still in its debounce when the card goes away', async () => {
+    screenPrsStore.addComment(URL_1, { source: 'you', file: '', text: 'mine', threadId: 'rt_thread01' })
+    const view = show(expanded(), { draft: screenPrsStore.draftFor(URL_1).comments[0] })
+    const field = screen.getByLabelText('Your comment')
+    await fireEvent.focus(field)
+    await fireEvent.input(field, { target: { value: 'mine, edited' } })
+    view.unmount()
+    expect(screenPrsStore.draftFor(URL_1).comments[0].text).toBe('mine, edited')
+  })
+
+  it('Enter while an IME is composing doesn’t send', async () => {
+    show(expanded())
+    const box = screen.getByLabelText('Ask the companion')
+    await fireEvent.input(box, { target: { value: 'にほんご' } })
+    await fireEvent.keyDown(box, { key: 'Enter', isComposing: true })
+    expect(api.ops.some((o) => o.op.kind === 'append')).toBe(false)
+    await fireEvent.keyDown(box, { key: 'Enter' })
+    expect(api.ops.some((o) => o.op.kind === 'append')).toBe(true)
+  })
+})
+
+describe('ReviewThreadCard — a closed review', () => {
+  it('is read-only', () => {
+    screenPrsStore.addComment(URL_1, { source: 'you', file: '', text: 'mine', threadId: 'rt_thread01' })
+    render(ReviewThreadCard, {
+      props: { reviewId: REVIEW_ID, thread: expanded({ proposal: { text: 'theirs' } }), draftUrl: URL_1, layers: LAYERS, readonly: true, draft: { url: URL_1, comment: screenPrsStore.draftFor(URL_1).comments[0] } },
+    })
+    expect(screen.queryByLabelText('Ask the companion')).toBeNull()
+    expect(screen.queryByLabelText('Your comment')).toBeNull()
+    expect(screen.queryByLabelText('Severity you post')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Done' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull()
+    expect(screen.getByTestId('draft-box')).toHaveTextContent('mine')
+  })
+})
