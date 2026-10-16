@@ -150,6 +150,12 @@ export function getCachedFindings(url: string, headSha: string): { triage: Triag
   return { triage: e.triage.findings, deep: e.deep ?? [] }
 }
 
+/** The whole entry when it is at this head, whatever fingerprints produced it. */
+export function getCacheEntryAt(url: string, headSha: string): CacheEntry | undefined {
+  const e = load()[url]
+  return e?.headSha === headSha ? e : undefined
+}
+
 export function getCachedOverview(url: string, headSha: string, overviewFingerprint: string): CachedOverview | undefined {
   const e = load()[url]
   return e?.headSha === headSha && e.overviewFingerprint === overviewFingerprint ? e.overview : undefined

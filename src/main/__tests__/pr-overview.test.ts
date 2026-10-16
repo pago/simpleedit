@@ -47,7 +47,7 @@ vi.mock('../agent-tasks/registry', async (orig) => {
   }
 })
 
-import { startOverview, cancelOverview, overviewSnapshot } from '../pr-overview'
+import { startOverview, cancelOverview, overviewSnapshot, onOverviewResult } from '../pr-overview'
 import { rubricFingerprint } from '../github/review-rubric'
 
 const PR: PrContext = {
@@ -181,5 +181,16 @@ describe('startOverview', () => {
     answers.items = ['## What changed\nB']
     await startOverview(PR, client().wc)
     expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'done', text: '## What changed\nB', headSha: 'sha1' })
+  })
+})
+
+describe('the Review Room hook', () => {
+  it('hears a cached overview too, with the diff its citations point into', async () => {
+    cache.getCachedOverview.mockReturnValue({ text: 'cached', facts: { draft: false, changeset: 'no' }, at: 'x' })
+    const heard = vi.fn()
+    onOverviewResult(heard)
+    await startOverview({ ...PR, diff: 'the diff' }, client().wc)
+    onOverviewResult(null)
+    expect(heard).toHaveBeenCalledWith({ url: PR.url, headSha: 'sha1', diff: 'the diff', text: 'cached' })
   })
 })

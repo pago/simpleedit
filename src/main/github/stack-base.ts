@@ -89,12 +89,54 @@ export function parseCompare(json: string): BaseCompare {
   }
 }
 
+export type CompareStatus = 'ahead' | 'identical' | 'behind' | 'diverged'
+
+/** How `to` relates to `from`, and whether the commits between them include a merge. */
+export interface CompareSummary {
+  status: CompareStatus
+  aheadBy: number
+  behindBy: number
+  /** One of `from...to`'s commits has two parents: something (usually the base) was merged in. */
+  mergeCommit: boolean
+}
+
+const COMPARE_STATUSES: readonly string[] = ['ahead', 'identical', 'behind', 'diverged']
+
+const count = (value: unknown): number => (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0)
+
+/** Parse `gh api repos/<r>/compare/<from>...<to>` for its status; anything unexpected throws. */
+export function parseCompareStatus(json: string): CompareSummary {
+  const raw = JSON.parse(json) as unknown
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('GitHub returned a malformed comparison')
+  const { status, ahead_by, behind_by, commits } = raw as Record<string, unknown>
+  if (typeof status !== 'string' || !COMPARE_STATUSES.includes(status)) throw new Error('GitHub returned a malformed comparison')
+  const mergeCommit = Array.isArray(commits) && commits.some((commit: unknown) => {
+    const parents = typeof commit === 'object' && commit !== null ? (commit as { parents?: unknown }).parents : undefined
+    return Array.isArray(parents) && parents.length > 1
+  })
+  return { status: status as CompareStatus, aheadBy: count(ahead_by), behindBy: count(behind_by), mergeCommit }
+}
+
+/**
+ * `from...to` in `url`'s repo, or `missing` when GitHub has no such
+ * comparison (a force-push dropped `from`, so it can't be found any more).
+ */
+export async function compareHeads(url: string, from: string, to: string): Promise<CompareSummary | 'missing'> {
+  const r = repoOf(url)
+  try {
+    return parseCompareStatus(await runGh(['api', '--hostname', r.host, `repos/${r.owner}/${r.name}/compare/${refPath(from)}...${refPath(to)}`]))
+  } catch (err) {
+    if (err instanceof Error && /HTTP 404|Not Found|No common ancestor/i.test(err.message)) return 'missing'
+    throw err
+  }
+}
+
 /** Parse `gh pr list --json number` — the first PR, if any. */
 export function parsePrNumber(json: string): number | undefined {
   return (JSON.parse(json || '[]') as { number: number }[])[0]?.number
 }
 
-type StackCard = Pick<ScreenPrCard, 'url' | 'number' | 'headSha' | 'headRefName' | 'baseRefName'>
+export type StackCard = Pick<ScreenPrCard, 'url' | 'number' | 'headSha' | 'headRefName' | 'baseRefName'>
 
 interface RawStackPr {
   url?: unknown
@@ -168,8 +210,8 @@ async function findStackParent(card: StackCard): Promise<StackCard | undefined> 
  * the bottom layer, whatever else has a head of that name.
  */
 export async function resolveStack(
-  card: ScreenPrCard,
-  allCards: readonly ScreenPrCard[],
+  card: StackCard,
+  allCards: readonly StackCard[],
   defaultBranch: string,
   lookupParent: (card: StackCard) => Promise<StackCard | undefined> = findStackParent,
 ): Promise<ReviewPrRef[]> {

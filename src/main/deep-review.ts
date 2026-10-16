@@ -44,6 +44,21 @@ const states = new Map<string, DeepReviewState>()
 /** Rubric reads not yet owned by a run, so quit can still kill their `gh`. */
 const preparing = new Set<AbortController>()
 
+export interface DeepResult {
+  url: string
+  headSha: string
+  /** The diff the lenses read, which the findings' lines point into. */
+  diff: string
+  findings: DeepFinding[]
+}
+
+let resultListener: ((result: DeepResult) => void) | null = null
+
+/** Called with every deep result a client is sent, a cache hit included. */
+export function onDeepResult(fn: ((result: DeepResult) => void) | null): void {
+  resultListener = fn
+}
+
 function setState(url: string, patch: Partial<DeepReviewState>): void {
   const cur = states.get(url) ?? { status: 'idle', lenses: {}, findings: [] }
   states.set(url, { ...cur, ...patch })
@@ -126,6 +141,7 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
     if (!live()) return
     setState(ctx.url, { findings, headSha: ctx.headSha })
     out.send('screenprs:deep-result', { url: ctx.url, findings, headSha: ctx.headSha })
+    resultListener?.({ url: ctx.url, headSha: ctx.headSha, diff: ctx.diff, findings })
   }
 
   states.set(ctx.url, { status: 'idle', lenses: {}, findings: [], headSha: ctx.headSha })
