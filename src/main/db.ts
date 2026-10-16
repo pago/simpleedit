@@ -136,6 +136,52 @@ const MIGRATIONS: string[] = [
   CREATE INDEX reviews_by_hand_back ON reviews(hand_back_session_id, hand_back_delivery);
   ALTER TABLE review_messages ADD COLUMN to_author INTEGER NOT NULL DEFAULT 0;
   `,
+  `
+  CREATE TABLE workflows (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    lead_key TEXT NOT NULL,
+    lead_label TEXT NOT NULL,
+    title TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    judgments TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    archived_at TEXT
+  ) STRICT;
+  CREATE INDEX workflows_by_project ON workflows(project, archived_at);
+  CREATE TABLE workflow_tasks (
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    spec TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    result TEXT,
+    note TEXT,
+    worktree_path TEXT,
+    steered INTEGER NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    added_by INTEGER,
+    cancelled_by INTEGER,
+    detached INTEGER NOT NULL,
+    PRIMARY KEY (workflow_id, id)
+  ) STRICT;
+  CREATE TABLE workflow_patches (
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    at TEXT NOT NULL,
+    ops TEXT NOT NULL,
+    PRIMARY KEY (workflow_id, version)
+  ) STRICT;
+  `,
+  `
+  ALTER TABLE workflow_tasks ADD COLUMN history TEXT;
+  `,
 ]
 
 let db: Db | null = null
