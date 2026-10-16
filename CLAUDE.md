@@ -922,8 +922,8 @@ picks the split, the dependencies and the agent/model per task; the user
 reviews the graph and presses **Start** in the lead's Workflow tab. MCP tools:
 `create_workflow`, `patch_workflow`, `start_workflow`, `get_workflow`, and
 `report_result` for workers.
-- **Main owns workflows** in the app database (migration 4: `workflows`,
-  `workflow_tasks`, `workflow_patches`). `workflow-store.ts` reads and writes a
+- **Main owns workflows** in the app database (migration 5: `workflows`,
+  `workflow_tasks`, `workflow_patches`; 6: the tasks' attempt `history`). `workflow-store.ts` reads and writes a
   workflow whole and synchronously. A lead's patch is applied against
   `baseVersion` by `applyOpsTo`: all ops or none, every problem listed for the
   agent. `workflow-engine.ts` owns runtime state. `workflow-host.ts` wires both
@@ -935,24 +935,36 @@ reviews the graph and presses **Start** in the lead's Workflow tab. MCP tools:
   attention rolls up onto its lead's dot and the Sessions aggregate
   (`sessionAttention.svelte.ts`). Only a renderer can create a session, so the
   engine sends `agent-session:spawn` with `owner` to the lead's window. With the
-  lead's window closed, nothing new starts (`paused: window-closed`, derived)
-  and running workers carry on.
+  lead's window closed, nothing new starts (`paused: window-closed`, derived).
+  Closing it kills its non-detached workers, since its bridge stops with it:
+  like a restart, on reopen they resume and get one nudge, or fail after the
+  90 s grace. Workers are listed in `list_sessions` with their owner (on
+  purpose) and never push to the phone; their needs surface through the lead.
 - **Terminal ids are never stored.** Workers are bound from the agent-bus peer
   list by their owner (`peersWithWindows`, `onPeersChanged`). Leads are keyed by
   provider session id, and windows report which leads they hold
   (`workflow:hosts`, placeholders included). After a restart the renderer
   resumes the workers of running tasks, and the engine nudges each re-attached
-  worker once by mail.
+  worker once by mail. A Hand off (`spawn_session` replace) moves the lead's
+  workflows to the successor (`leadHandoff`), and a lead keyed by terminal id
+  moves to its session id once one registers (`onSessionRegistered`). A worker
+  can't replace itself.
 - **A task is done only when its worker calls `report_result`.** A `Stop`
   without one makes the task `waiting` (Needs you); the next
   `UserPromptSubmit` makes it `running` again. `failed` retries once under
-  `onFailure: "retry"`, otherwise it escalates. Escalations, `needs_lead` and a
+  `onFailure: "retry"`, otherwise it escalates. A retry closes the previous
+  attempt's worker and keeps its result and note in the task's `history` (at
+  most 5, `earlierAttempts` in `get_workflow`). Escalations, `needs_lead` and a
   stuck graph become **judgments**, mailed to the lead from the synthetic
-  sender `workflow` (`sendSystemMail`, same wake rules as agent mail).
+  sender `workflow` (`sendSystemMail`, same wake rules as agent mail), packed
+  under the bus's size cap. Mail lives in memory, so a judgment is `delivered`
+  only once the lead read it, and mail lost to a restart or the lead's exit is
+  sent again.
 - **Cancelling never stops a worker**: a cancelled running task's session drops
-  its owner and appears in the sidebar (`workflow:worker` `detach`). Finished
-  workflows keep their workers until **Dismiss**, which closes them and archives
-  the record.
+  its owner and appears in the sidebar (`workflow:worker` `detach`). Cancelling
+  every task leaves the workflow `cancelled`. Finished workflows keep their
+  workers until **Dismiss**, which closes them (detached ones excepted) and
+  archives the record.
 - **Stray workers are swept on every peer change** (`sweepStrays`): one that
   appears after its task was cancelled is detached; one of a dismissed workflow
   or an abandoned spawn (no handle in 10 s, no peer 20 s later) is closed. A

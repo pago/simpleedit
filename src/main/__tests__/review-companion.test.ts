@@ -131,6 +131,11 @@ describe('starting a companion', () => {
     expect(() => companionSpawnFor(reserved, { kind: 'review', reviewId: REVIEW })).toThrow('claim has ended')
   })
 
+  it('launches a workflow worker as a normal session and refuses a malformed owner', () => {
+    expect(companionSpawnFor('worker-1', { kind: 'workflow', workflowId: 'wf_abcdefgh', taskId: 'build', attempt: 1 })).toBeUndefined()
+    expect(() => companionSpawnFor('worker-2', { kind: 'nobody' })).toThrow('not valid')
+  })
+
   it('kills a session that launched before the timeout fired', async () => {
     vi.useFakeTimers()
     const started = ensureCompanion(REVIEW, 1)

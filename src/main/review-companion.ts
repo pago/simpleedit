@@ -166,17 +166,20 @@ export function companionLaunchFor(terminalId: string): ReviewCompanionLaunch | 
 /**
  * The launch an `agent:spawn` for `terminalId` gets, or a refusal. A claimed
  * id launches only as its review's companion. The payload's `owner` can only
- * add a restriction: an owned spawn with no open claim behind it (the claim
- * ended, timed out or moved meanwhile) is refused rather than started writable.
+ * add a restriction: a review-owned spawn with no open claim behind it (the
+ * claim ended, timed out or moved meanwhile) is refused rather than started
+ * writable. A workflow worker's owner is no claim, so it launches normally.
  */
 export function companionSpawnFor(terminalId: string, owner: unknown): ReviewCompanionLaunch | undefined {
   const launch = companionLaunchFor(terminalId)
+  const parsed = owner === undefined ? undefined : parseSessionOwner(owner)
   if (launch) {
-    if (owner !== undefined && parseSessionOwner(owner)?.reviewId !== launch.reviewId) throw new Error('That session belongs to another review')
+    if (owner !== undefined && (parsed?.kind !== 'review' || parsed.reviewId !== launch.reviewId)) throw new Error('That session belongs to another review')
     return launch
   }
   assertUnclaimed(terminalId)
-  if (owner !== undefined) throw new Error("This review companion's claim has ended; start a new one from the review")
+  if (owner !== undefined && !parsed) throw new Error('That session owner is not valid')
+  if (parsed?.kind === 'review') throw new Error("This review companion's claim has ended; start a new one from the review")
   return undefined
 }
 

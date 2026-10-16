@@ -35,6 +35,13 @@ export function parseSessionOwner(value: unknown): SessionOwner | undefined {
   return undefined
 }
 
+/** A plain copy for IPC: a store's `owner` is a `$state` proxy, which structured clone refuses. */
+export function plainSessionOwner(owner: SessionOwner): SessionOwner {
+  return owner.kind === 'review'
+    ? { kind: 'review', reviewId: owner.reviewId }
+    : { kind: 'workflow', workflowId: owner.workflowId, taskId: owner.taskId, attempt: owner.attempt }
+}
+
 export function isOwned(value: { owner?: SessionOwner } | null | undefined): boolean {
   return value?.owner !== undefined
 }
