@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { isPrUrl, getPrDiff } from '../github/gh'
 
 /**
- * `screenprs:pr-diff` reaches `gh` with a url the caller supplied, and a socket
- * client is a caller. `spawn` uses no shell, so there is no command to inject —
+ * Review Room channels (`review:open`) reach `gh` with a url the caller
+ * supplied, and a socket client is a caller. `spawn` uses no shell, so there is no command to inject —
  * but an argument that starts with `-` is read as an OPTION, which is how you
  * turn `gh pr diff <url>` into `gh pr diff -R someone/else`. The shape check is
  * what stops that, and it has to stay a check rather than an assumption.

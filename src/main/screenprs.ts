@@ -67,8 +67,8 @@ export function onTriageJudged(fn: ((card: ScreenPrCard) => void) | null): void 
  * where you're a reviewer, so a board is dozens of complete diffs pushed down a
  * WebSocket to a phone that will open one of them. The field is emptied rather
  * than dropped so the payload still is a `PrContext` (a missing-but-typed
- * `string` is the kind of lie that surfaces three call sites away); the client
- * fetches the real diff with `screenprs:pr-diff` when it opens a PR.
+ * `string` is the kind of lie that surfaces three call sites away); the phone's
+ * Review Room fetches each layer's diff with `review:layer-diff`.
  */
 function withoutDiff<T extends PrContext>(value: T): T {
   return { ...value, diff: '' }

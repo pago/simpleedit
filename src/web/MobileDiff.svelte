@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
    * A unified diff at phone width: the one phone diff, under both the session's
-   * Changes pane (`SessionDiff`, agent threads) and Screen PRs (`PrDiff`, review
-   * drafts). Each wrapper decides what a tap on a line means and what shows
+   * Changes pane (`SessionDiff`, agent threads) and the Review Room
+   * (`ReviewLayer`, review threads). Each wrapper decides what a tap on a line means and what shows
    * under it; this decides how a diff reads on a phone.
    *
    * Unified because there is no second column to put anything in: a
@@ -25,7 +25,9 @@
   import { findRevealTarget, REVEAL_FLASH_MS, scrollBehavior, type RevealTarget } from '../renderer/lib/diffReveal'
 
   interface Props {
-    diff: string
+    /** The diff to show, or `files` already parsed (a slice of one: a tour step's hunks). */
+    diff?: string
+    files?: DiffFile[]
     testid?: string
     /** A line was tapped. Absent: the diff is read-only. */
     ontap?: (file: DiffFile, row: DiffRow) => void
@@ -35,9 +37,9 @@
     below?: Snippet<[DiffFile, DiffRow]>
   }
 
-  let { diff, testid = 'session-diff', ontap, tappable = () => true, below }: Props = $props()
+  let { diff = '', files: parsed, testid = 'session-diff', ontap, tappable = () => true, below }: Props = $props()
 
-  let files = $derived<DiffFile[]>(parseUnifiedDiff(diff))
+  let files = $derived<DiffFile[]>(parsed ?? parseUnifiedDiff(diff))
 
   /**
    * A small change opens ready to read; a large one opens as a table of

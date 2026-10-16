@@ -8,18 +8,22 @@
   /**
    * The board: every PR waiting on you, in the order the buckets put them.
    *
-   * Buckets ORDER; they do not gate. Every PR here opens the same way and is
-   * fully reviewable — an `attention` PR simply carries more to read than a
-   * `quick` one. Ordering and stacking are the shared pure rules
-   * (`bucketOf`/`compareInBucket`/`groupStacks`), so the phone and the desk
-   * cannot disagree about what is urgent.
+   * Buckets ORDER; they do not gate. Every PR here opens the same way, into the
+   * Review Room of its stack — an `attention` PR simply carries more to read
+   * than a `quick` one. Ordering and stacking are the shared pure rules
+   * (`bucketOf`/`compareInBucket`/`stacksByBucket`), so the phone and the desk
+   * cannot disagree about what is urgent. Above them, Requested: the reviews
+   * an agent asked for (`request_review`), which may name a PR no screening
+   * carded.
    *
    * A top-level screen: no segmented control. The screen control is a row
    * inside the list rather than a second header action.
    */
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
-  import { BUCKET_ORDER, groupStacks } from '../shared/screenprs'
+  import { reviewRoom } from '../renderer/stores/reviewRoom.svelte'
+  import { BUCKET_ORDER, stacksByBucket } from '../shared/screenprs'
   import type { ScreenPrBucket, ScreenPrCard, PrRef } from '../shared/screenprs'
+  import type { Review } from '../shared/review-room'
   import PrCard from './PrCard.svelte'
   import {
     AUTO_SCREEN_HOURS,
@@ -100,9 +104,21 @@
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
+  let grouped = $derived(stacksByBucket(byBucket))
+  let requested = $derived(reviewRoom.requested())
+
+  /** `owner/name`, as a card's `repo` reads. */
+  const repoOf = (url: string): string => new URL(url).pathname.split('/').slice(1, 3).join('/')
+
+  /** A requested review opens on its top layer, which is all a Requested row knows. */
+  function openRequested(r: Review): void {
+    const top = r.layers.at(-1)
+    if (!top) return
+    onopen({ owner: top.url.split('/')[3] ?? '', repo: repoOf(top.url), number: top.number, url: top.url, title: top.title ?? 'Pull request', author: '', updatedAt: r.createdAt })
+  }
   let pending = $derived(screenPrsStore.pending())
   let error = $derived(screenPrsStore.error())
-  let done = $derived(BUCKET_ORDER.reduce((n, b) => n + byBucket[b].length, 0))
+  let done = $derived(BUCKET_ORDER.reduce((n, b) => n + byBucket[b].length, 0) + requested.length)
 
   async function screen(): Promise<void> {
     commitOwner()
@@ -223,16 +239,50 @@
     </section>
   {/if}
 
+  {#if requested.length > 0}
+    <section class="mb-5" data-testid="requested-section">
+      <h2 class="mb-1.5 px-1 text-[11px] font-bold uppercase tracking-wider text-violet-300">
+        Requested <span class="tabular-nums text-zinc-600">({requested.length})</span>
+      </h2>
+      <p class="mb-1.5 px-1 text-[11px] text-zinc-600">an agent asked for your review</p>
+      <ul class="space-y-1.5">
+        {#each requested as r (r.id)}
+          {@const top = r.layers.at(-1)}
+          {#if top}
+            <li>
+              <button
+                type="button"
+                onclick={() => openRequested(r)}
+                data-testid="requested-card"
+                data-pr-url={top.url}
+                class="flex w-full flex-col gap-1.5 rounded-lg border border-violet-500/30 bg-zinc-900 px-3 py-3 text-left active:bg-zinc-800"
+              >
+                <span class="text-sm leading-snug text-zinc-100">{top.title ?? 'Pull request'}</span>
+                <span class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-zinc-500">
+                  <span class="font-mono text-zinc-400">{repoOf(top.url)}#{top.number}</span>
+                  {#if r.layers.length > 1}<span class="text-violet-300">stack of {r.layers.length}</span>{/if}
+                  {#if r.round > 1}<span class={r.round >= 3 ? 'text-amber-300' : ''}>round {r.round}</span>{/if}
+                  {#if r.authorBriefing}<span>briefing</span>{/if}
+                </span>
+              </button>
+            </li>
+          {/if}
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
   {#each BUCKET_ORDER as bucket (bucket)}
-    {@const cards = byBucket[bucket]}
-    {#if cards.length > 0}
+    {@const groups = grouped[bucket]}
+    {@const count = groups.reduce((n, g) => n + g.cards.length, 0)}
+    {#if count > 0}
       <section class="mb-5" data-testid="bucket" data-bucket={bucket}>
         <h2 class="mb-1.5 px-1 text-[11px] font-bold uppercase tracking-wider {BUCKETS[bucket].head}">
-          {BUCKETS[bucket].label} <span class="tabular-nums text-zinc-600">({cards.length})</span>
+          {BUCKETS[bucket].label} <span class="tabular-nums text-zinc-600">({count})</span>
         </h2>
         <p class="mb-1.5 px-1 text-[11px] text-zinc-600">{BUCKETS[bucket].sub}</p>
         <ul class="space-y-1.5">
-          {#each groupStacks(cards) as group (group.cards[0].url)}
+          {#each groups as group (group.cards[0].url)}
             {#each group.cards as card, i (card.url)}
               <li><PrCard {card} depth={group.stackId ? i : 0} onopen={open} /></li>
             {/each}

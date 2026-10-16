@@ -2,6 +2,8 @@ import { render, screen, fireEvent } from '@testing-library/svelte'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import PrBoard from '../PrBoard.svelte'
 import { screenPrsStore } from '../../renderer/stores/screenprs.svelte'
+import { _receiveReviewChange, _resetReviewRoomForTests } from '../../renderer/stores/reviewRoom.svelte'
+import { review } from '../../renderer/components/review/__tests__/fixtures'
 import type { PrRef, ScreenPrCard } from '../../shared/screenprs'
 
 /**
@@ -61,6 +63,37 @@ describe('PrBoard', () => {
     const attention = screen.getAllByTestId('bucket')[0]
     expect(attention).toHaveTextContent('high impact')
     expect(attention.querySelector('[data-testid="issue-count"]')).toHaveTextContent('1 issue')
+  })
+})
+
+describe('PrBoard — stacks and requested reviews', () => {
+  it('keeps a stack whole in the most urgent bucket of its PRs', () => {
+    screenPrsStore._onQueued([])
+    const base = card({ number: 10, bucket: 'quick', headRefName: 'base' })
+    const top = card({ number: 11, bucket: 'attention', impact: 'high', headRefName: 'top', baseRefName: 'base', findings: [{ label: 'issue', file: 'a.ts', title: 'x' }] })
+    for (const c of [base, top]) screenPrsStore._onCard(c)
+    screenPrsStore._onStatus('done', 2)
+    render(PrBoard, { onopen: vi.fn() })
+    const buckets = screen.getAllByTestId('bucket')
+    expect(buckets.map((el) => el.dataset.bucket)).toEqual(['attention'])
+    expect([...buckets[0].querySelectorAll('[data-testid="pr-card"]')].map((el) => el.getAttribute('data-pr-url')?.split('/').pop())).toEqual(['10', '11'])
+  })
+
+  it('lists what an agent asked for above the buckets, opening its top layer', async () => {
+    _resetReviewRoomForTests()
+    _receiveReviewChange({
+      reviewId: 'r_review01',
+      review: review({ requesterSessionId: 'agent-claude-req', layers: [{ url: 'https://github.com/acme/app/pull/183', number: 183, headSha: 's1' }, { url: 'https://github.com/acme/app/pull/184', number: 184, headSha: 's2', title: 'Top layer' }] }),
+      rev: 90_000,
+    })
+    const opened: PrRef[] = []
+    render(PrBoard, { onopen: (pr: PrRef) => opened.push(pr) })
+    const row = screen.getByTestId('requested-card')
+    expect(row).toHaveTextContent('Top layer')
+    expect(row).toHaveTextContent('stack of 2')
+    await fireEvent.click(row)
+    expect(opened).toMatchObject([{ url: 'https://github.com/acme/app/pull/184', repo: 'acme/app', number: 184 }])
+    _resetReviewRoomForTests()
   })
 })
 

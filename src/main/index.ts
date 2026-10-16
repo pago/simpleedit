@@ -39,7 +39,7 @@ import {
 import { attachToTerminal, detachFromTerminal, detachAll as detachAllStreams } from './claude-stream'
 import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
-import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot, isScreening, onScreeningStarted, onTriageJudged } from './screenprs'
+import { startScreening, cancelScreening, cancelAllScreening, screeningSnapshot, isScreening, onScreeningStarted, onTriageJudged } from './screenprs'
 import { startScreeningSchedule, stopScreeningSchedule, rescheduleScreening, noteScreeningStarted, screeningSchedule } from './screenprs-schedule'
 import { assertReviewDraftOp, loadDrafts, applyOp as applyDraftOp, removeDraftsForThread } from './screenprs-drafts'
 import { loadFilter, setFilter } from './screenprs-filter'
@@ -123,7 +123,7 @@ import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
 import { getOpenCodeModels, listOpenCodeModels, cancelOpenCodeDiscovery } from './models/opencode-catalog'
-import type { PrContext, PrRef } from '../shared/screenprs'
+import type { PrContext } from '../shared/screenprs'
 import type { BacklogOpResult } from '../shared/backlog'
 import { handleSubmitReview } from './github/review'
 
@@ -1195,10 +1195,6 @@ function registerAllHandlers(): void {
     schedule: screeningSchedule(),
     overviews: overviewSnapshot(),
   }))
-
-  handleInvoke('screenprs:pr-diff', (_event, pr: Pick<PrRef, 'url'> & { headSha?: string }) => {
-    return reviewDiffFor(pr)
-  })
 
   handleInvoke('screenprs:deep-start', (_event, context: PrContext) => {
     return startDeepReview(context, allClients)
