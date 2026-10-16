@@ -227,7 +227,9 @@ The nearest `REVIEW.md` (repo root, then the layer's top changed directories), r
 layer's head (`?ref=`-pinned like the overview's key files), capped (16 KB), is passed as data to
 the overview, each deep-review lens and the companion brief, and is part of their cache
 fingerprints. It is a rubric (failure modes, paths to skip, nit policy), not instructions that
-replace ours: the fixed contracts still apply. Absent → nothing changes.
+replace ours: the fixed contracts still apply. Optional: absent → nothing changes. SimpleEdit
+never creates, scaffolds or suggests a `REVIEW.md`, and no feature depends on one (this PR adds
+none to this repo either).
 
 ### 5. Companion
 
