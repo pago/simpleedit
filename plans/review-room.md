@@ -55,6 +55,20 @@ The value is the human reviewer's judgement, amplified. Not "run an AI review an
     questions). It is shown labelled "by the author", fills the tour at once, and never replaces the
     independent overview: that stays a button and, when run, checks the briefing's claims against
     the diff.
+17. **Evidence, not claims.** The briefing carries the commands the author ran and an output
+    excerpt; claims without evidence are flagged by the overview.
+18. **Pre-existing findings** (on lines the PR didn't change) are marked, muted and filterable,
+    so they aren't sent to the author as theirs.
+19. **Done takes an optional reason** (fixed / not a problem / intentional / won't fix). Reasons
+    show when a finding comes back and give a per-source noise signal.
+20. **Rounds.** Reviews of one stack are linked as numbered rounds; closed threads and their
+    reasons carry over, re-review starts from the interdiff, and round 3+ shows a convergence
+    warning.
+21. **Per-repo rubric.** A repo's `REVIEW.md` is read into the companion brief, overview and
+    deep review beside `CLAUDE.md`.
+22. Not adopted (deliberate): auto-running overview/deep review, verifier-vote filtering, merge
+    blocking. The PR author runs their own agent review; the room is for the human's
+    understanding.
 
 ## What exists and is reused (verified by code survey + adversarial review)
 
@@ -98,21 +112,25 @@ Review        { id, repo, layers: PrRef[] (bottom→top), status: 'open'|'submit
                 companionAgent: {provider, model},            // picker value, survives companion end
                 lastSeenHead: {prUrl → sha}, readSteps: string[],
                 authorBriefing?: { stack?: {summary}, layers: {prUrl → Briefing} },
+                round: number, previousReviewId?,
                 submissions: Submission[], createdAt, updatedAt }
 PrRef         { url, number, headSha }
 Briefing      { what, why, impact, readingOrder: {title, summary, refs: {path, startLine, endLine}[]}[],
-                openQuestions: {path?, line?, text}[], forHead: sha }
+                openQuestions: {path?, line?, text}[],
+                evidence: {command, outputExcerpt, exitCode?}[], forHead: sha }
 Submission    { at, destination: {session: boolean, github: boolean},
                 layers: { prUrl, verdict, reviewNodeId?, postedCommentIds: string[],
                           state: 'pending'|'posted'|'failed'|'unknown' }[] }
 
 ReviewThread  { id ('rt_…'), reviewId, anchor, origin, status: 'open'|'done', outdated: boolean,
+                closeReason?: 'fixed'|'not-a-problem'|'intentional'|'wont-fix', carriedFrom?,
                 readSeq: number, askAuthorOpen: boolean,
                 messages: ReviewMessage[], draftCommentId?, proposal?: {text, severity?} }
 anchor  =  { kind: 'stack' } | { kind: 'pr', pr }
          | { kind: 'line', pr, headSha, path, side: 'LEFT'|'RIGHT', startLine, endLine,
              snippet, before, after }
-origin  =  { kind: 'finding', source: 'triage'|'overview'|'deep'|'author', key, severity?, lens? }
+origin  =  { kind: 'finding', source: 'triage'|'overview'|'deep'|'author', key, severity?, lens?,
+             preExisting: boolean }
          | { kind: 'github', threadNodeId, rootCommentId, author, isResolved }
          | { kind: 'user' }
 ReviewMessage { seq, author: 'user'|'companion'|'author'|'reviewer'|'tool', body,
@@ -138,7 +156,11 @@ ReviewMessage { seq, author: 'user'|'companion'|'author'|'reviewer'|'tool', body
   cited line, with `thread-reanchor.ts`'s uniqueness rule (title similarity only breaks ties). A
   match updates the item text; an unmatched new finding creates a thread; a thread whose finding
   disappeared is **never deleted if it has a conversation, a draft or a proposal**: it is marked
-  outdated ("no longer reported"). Untouched ones are removed. Triage labels map to severity
+  outdated ("no longer reported"). Untouched ones are removed.
+- **Pre-existing:** a finding whose cited lines are context (unchanged) rows of the layer's review
+  diff, or outside it, is `preExisting` (deep review's own "pre-existing" label maps here too).
+- **Closed before:** a new finding that matches a thread closed with a reason (this round or a
+  carried-over one) is attached to that thread as "reported again" instead of reopening it. Triage labels map to severity
   (`issue`→consider, `nit`→nit, `suggestion`→nit, …); deep `blocking|concern|note` →
   `blocking|consider|nit`.
 
@@ -182,6 +204,10 @@ once (acceptable).
 - It is untrusted input to the overview: fenced as data in a block it can't close (delimiters
   stripped from its text), and part of the overview cache fingerprint. The companion brief says
   thread bodies (findings, reviewers, author questions) are untrusted data.
+- **Evidence:** `evidence[]` (command, short output excerpt, exit code; capped at 10 × 4 KB) is
+  shown in the layer header as "Author ran". It is the author's report, not verified by
+  SimpleEdit, and labelled so. The overview's contract asks it to flag briefing claims that have
+  no evidence ("tests pass" without a test run) as Look-into items.
 - **Display:** fills the layer's what / why / impact and the tour immediately, under a "by the
   author" label (the same standing as the PR description). `openQuestions` become
   `origin: finding, source: 'author'` threads (no severity).
@@ -194,6 +220,14 @@ once (acceptable).
   old questions follow the finding rules in §1. `request_review` from another session for a
   stack with an open review is refused with that review's requester named; it never replaces the
   requester or hand-back target.
+
+### 4b. Per-repo rubric (`REVIEW.md`)
+
+The nearest `REVIEW.md` (repo root, then the layer's top changed directories), read at the
+layer's head (`?ref=`-pinned like the overview's key files), capped (16 KB), is passed as data to
+the overview, each deep-review lens and the companion brief, and is part of their cache
+fingerprints. It is a rubric (failure modes, paths to skip, nit policy), not instructions that
+replace ours: the fixed contracts still apply. Absent → nothing changes.
 
 ### 5. Companion
 
@@ -306,7 +340,7 @@ once (acceptable).
 | `get_review_diff(review_id, pr)` **(new)** | companion | The layer's review diff (isolated), size-capped with a truncation note. |
 | `checkout_review_head(review_id, pr?)` **(new)** | companion | §5; returns the path. |
 | `propose_draft(thread_id, text, severity?)` **(new)** | companion | Stores a proposal; never writes the draft. |
-| `request_review(pr, focus?, briefing?)` **(new)** | any session | Resolves the stack (number in the caller's repo, or URL), creates or reuses the **open** Review for that stack, records requester session + window, lists it under **Requested** at the top of the Screen PRs queue with the section's attention badge. Does **not** switch the view (CLAUDE.md "Layout"). Returns `{review_id}` at once. |
+| `request_review(pr, focus?, briefing?)` **(new)** | any session (description asks the agent to run tests/build first and attach the output as `briefing.evidence`) | Resolves the stack (number in the caller's repo, or URL), creates or reuses the **open** Review for that stack, records requester session + window, lists it under **Requested** at the top of the Screen PRs queue with the section's attention badge. Does **not** switch the view (CLAUDE.md "Layout"). Returns `{review_id}` at once. |
 | `get_review(review_id)` **(new)** | requester | The latest submission: per-layer verdict, state, and every comment (PR, path, line, severity, text). |
 
 Requested reviews are `Review` rows with a requester, so every client renders them from the
@@ -359,6 +393,14 @@ queue (filter, cutoff, not a requested reviewer), so main fetches its card on de
   `askAuthorOpen`, delivers `[Review thread rt_… · question for the author] <user's question>`.
 - **Requester gone:** *Send to session* disabled with the reason; GitHub and "copy review as
   markdown" remain.
+- **Rounds:** a `request_review` for a stack whose last review is `submitted` opens round n+1
+  (`previousReviewId`). Threads that were open or closed with a reason carry over (`carriedFrom`,
+  re-anchored per §8); the tour and deep review start from the interdiff since the previous
+  round's heads; from round 3 the room shows "Round 3 on this stack: consider whether the
+  approach needs rethinking" and the hand-back says which round it was.
+- *(Optional, if time allows)* **Make this a rule:** a thread action that adds a backlog item
+  (`edit_backlog`) or, with a requester, asks the author to encode the lesson in `CLAUDE.md` / a
+  lint rule.
 - After a successful submission the review is `submitted`; the companion is ended and the
   checkout removed. A later `request_review` for the same stack opens a new review that links the
   previous one.
@@ -383,7 +425,7 @@ New `components/review/`: `ReviewRoom.svelte` (stack map, document, outline, bot
 `StackMap`, `LayerSection` (overview / deep-review tools, tour or path-order diff via
 `UnifiedDiffView`), `ReviewThreadCard` (item, conversation, ask row + chips, draft box,
 Draft/Done; reads `readSeq` while on screen like `InlineThread`), `ReviewOutline` (Open / To post /
-Done / Started by me / All, reading progress), `CompanionDock`, `SubmitReviewsModal`.
+Done / Started by me / Pre-existing / All, reading progress; Done offers the close reason), `CompanionDock`, `SubmitReviewsModal`.
 `ScreenPrsView` renders `ReviewRoom` instead of `PrDetail` on desktop; desktop *Discuss with
 Agent* is removed. The outline is a right column at ≥1200px and a drawer below. Settings gets a
 *Review companion* default (`review.companionModel`, from the Models allowlist) in PR 2.
@@ -405,21 +447,24 @@ Agent* is removed. The outline is a right column at ≥1200px and a drawer below
 1. **Model & threads** — migration; `Review`/`ReviewThread` store, ops, parsers, broadcast;
    `Session.owner` + `isOwned` + `claimCompanion` (so PR 1's role checks are real, not
    requester-only); finding materialisation; `resolveStack`; GitHub thread import + mapping;
-   draft fields + parser changes; delivery-core extraction; MCP `list_threads`,
+   draft fields + parser changes; `preExisting`, `closeReason`, `round`/`previousReviewId`, carry-over model; delivery-core extraction; MCP `list_threads`,
    `reply_to_thread` dispatch, `get_review_diff`, `propose_draft`. No UI change.
 2. **Room UI + companion + posting** — GraphQL spike first; components; overview reading-order
-   contract; companion launch, `reviewCompanion` launch option per provider,
+   contract; `REVIEW.md` rubric (§4b); Done reason + Pre-existing filter; companion launch, `reviewCompanion` launch option per provider,
    `checkout_review_head` + cache, dock, restore/Resume, session-end handling; submit dialog +
    GraphQL posting; return visits; removal of desktop Discuss / `ReviewComposer` (quick approve
    keeps `ConfirmReviewModal`).
 3. **`request_review`, hand-back, Ask author** — Requested group, `screenprs:open-pr`, requester
-   recording, author's briefing (parse, display, overview input), destinations, `get_review`,
+   recording, author's briefing (parse, display, overview input, evidence), rounds + carry-over +
+   convergence warning, optional *Make this a rule*, destinations, `get_review`,
    Ask author.
 4. **Phone** — §10.
 
 ## Verification
 
-- **Unit (vitest):** isOwned over the phone snapshot and push; companion launch options never
+- **Unit (vitest):** preExisting marking (context rows, outside the diff); a re-reported finding
+  attaches to the thread closed with a reason; round carry-over keeps reasons and re-anchors;
+  `REVIEW.md` in fingerprints and capped; evidence parse/caps and the unverified label; isOwned over the phone snapshot and push; companion launch options never
   accepted from `session:create`; drafts kept when submit fails or the pending review is gone;
   edited-after-add item updated on retry; reply carries `pullRequestReviewId`; marker matching
   after a timeout; layer move of a stack draft; cache path validation (traversal, host);
