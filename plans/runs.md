@@ -44,6 +44,10 @@ Delegation already works: a lead can `spawn_session` and collect with
 - **The Run tab lives in the lead's session view**, beside PLAN.md / Diff, with the lead's
   terminal in the normal split below. No "wake lead" button: the user talks to the lead in
   its terminal.
+- **A run is bound to the lead's window.** Only the renderer can create sessions
+  (`session-create.ts:221-320`), so when that window closes the runner stops starting
+  tasks, running ones continue, and the run shows `paused: window closed`. It resumes when
+  the window reopens. No main-side session-create path.
 - **Waking the lead at judgment points is fine** (rare by design). The run record is the
   durable memory, so the user may compact the lead once the run is prepared.
 - **Visualization: layered graph.** Columns = dependency depth, cards carry status, a
@@ -207,10 +211,6 @@ The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.
   review or overview is a "run" (CLAUDE.md, "Screen PRs: runs belong to the app"), and
   bounded agent tasks have runners. A distinct name for the feature avoids
   `run-store.ts` / `runner` confusion. Candidates: *plan run*, *job*, *flight*.
-- **No window open:** tasks can't start without a renderer. Proposal: a run is bound to the
-  lead's window; when that window closes, the runner stops starting tasks (running ones
-  continue) and the run shows `paused: window closed`. Alternative: a main-side
-  session-create path (larger change).
 - **Permissions are not a run concern.** No provider launch passes a permission or
   approval flag (`main/agents/*.ts`), so workers get the user's own CLI defaults (in
   practice auto mode). A rare prompt is an ordinary Needs you item.
