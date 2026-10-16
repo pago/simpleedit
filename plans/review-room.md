@@ -553,6 +553,47 @@ Where these differ from §1–§9, these win.
     threads one by one (a `null` thread or a comment whose `commit.oid` ≠ read head is deleted and
     folded into the body, per item); if the head moved, every line thread folds into the body
     (today's REST rule). REST stays only for quick approve.
+- **Posting resume details.** Before creating, a `claimToken` is recorded and written into the
+  review body as `<!-- se-review:<token> -->`, so a create that timed out but landed is recognised
+  as ours, not as a foreign pending review. `draftRev` has an anchor part and a body part: a body
+  change is an update in place, an anchor change deletes and re-adds (only while head = read head,
+  else it folds). A recorded review that is no longer pending counts as posted; a changed read head
+  since the last attempt deletes the old pending review and starts over. "Cancel" on a foreign
+  pending review posts nothing and leaves it alone (it is the user's own work), so there is no
+  channel to delete one.
+- **Overview.** Reading order is a fifth fixed section (What changed, Why, Impact, Reading order,
+  Look into); old cached four-section answers still parse. The stack section for whole-stack runs
+  is **not built**: overview and deep review run per layer. `OVERVIEW_PROMPT_VERSION` and
+  `DEEP_REVIEW_PROMPT_VERSION` are 2. The overview fetches the review diff and `REVIEW.md` before
+  its cache check (the rubric is in the fingerprint).
+- **`REVIEW.md` lookup:** root first, then up to 4 top-level changed directories (most changed
+  files first); first found wins; `?ref=<head>`, 16 KB cap. The companion brief reads only the
+  root one (it has no changed-path list at launch) and drops it past a 24k-char brief.
+- **Companion launch.** Main passes `companionLaunchFor(terminalId)` to the provider as a separate,
+  main-only argument of the spawn; nothing in a spawn payload can reach it. Claude: `--settings`
+  `permissions.deny` = Edit, Write, NotebookEdit, Bash (Edit rules cover MultiEdit), `--add-dir`
+  before `--session-id` (it is variadic and would swallow the prompt). Codex: `--sandbox
+  read-only`, default approval policy. OpenCode: the read-only ruleset with `external_directory`
+  allowing only `<checkout>/**`. All report `readOnly: 'enforced'` pending the live checks.
+- **Resume** doesn't mint a second id (restore already gives the placeholder a fresh one): owned
+  sessions persist `companionClaimId`, and Resume rebinds from it before spawning; a refused rebind
+  removes the placeholder. The renderer also closes owned sessions no claim names.
+- **Checkout git env:** simple-git refuses an env with `EDITOR`, `PAGER`, `GIT_ASKPASS`,
+  `GIT_CONFIG_*` and similar, so `reviewGitEnv()` drops those from `agentEnv()`. A checkout slower
+  than the MCP call timeout (~300 s) fails; the retry reuses what was fetched.
+- **Return visits:** `review:since-diff` is empty when a new commit is a merge (base merged in);
+  the plan's interdiff on the review diffs is **deferred**. A reused review keeps the layers it was
+  created with: a PR stacked on top later is not added (no layer setter yet).
+- **Auto-close** discards a never-submitted review only when all its PRs closed *after* it was
+  created (else a review opened on a merged PR would discard itself), at open and in a startup
+  sweep.
+- **Submit** posts each layer's drafts linked to this review's threads plus the layer summary;
+  destination is always GitHub (hand-back is PR 3). Discard removes the review's thread drafts.
+- **UI:** the outline is a right column when the room is ≥ 900px wide (container query, per the
+  Layout rule; ≈ 1200px of window with the sidebar), else a drawer. The submit dialog has a
+  per-layer "post" checkbox, unchecked for merged/closed layers. Chips send at once.
+- **Removed:** desktop `PrDetail`, `ReviewComposer`, `InlineCommentEditor`, `commentSource.ts`,
+  `SplitButton` (only they used it). `ConfirmReviewModal` and `OverviewCard` stay.
 
 ## Verification
 
