@@ -211,9 +211,9 @@ The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.
   lead's window; when that window closes, the runner stops starting tasks (running ones
   continue) and the run shows `paused: window closed`. Alternative: a main-side
   session-create path (larger change).
-- **Worker permission mode:** every permission prompt is a Needs you stop. Should the lead
-  set a permission mode per task (e.g. accept edits inside the task's worktree), shown on
-  the card before Start? `spawn_session` has no such argument today.
+- **Permissions are not a run concern.** No provider launch passes a permission or
+  approval flag (`main/agents/*.ts`), so workers get the user's own CLI defaults (in
+  practice auto mode). A rare prompt is an ordinary Needs you item.
 - **Who may start:** should `start_run` from the lead start immediately, or always wait for
   the user's Start in the Run tab? Proposal: user Start by default, plus an opt-in "lead may
   start" setting.
