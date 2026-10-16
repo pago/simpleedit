@@ -12,6 +12,7 @@
   import { isToggleSidebarShortcut, SIDEBAR_RAIL_WIDTH } from './lib/sidebarCollapse'
   import { sidebarRail } from './stores/sidebarRail.svelte'
   import { initScreenPrsListeners } from './stores/screenprs.svelte'
+  import { initReviewRoomListeners } from './stores/reviewRoom.svelte'
   import { refreshWorktrees, setProjectRoot, projectRoot, mainWorktree } from './stores/worktrees.svelte'
   import { initAgentStatusListeners } from './stores/agent-status.svelte'
   import { initAgentMailListeners } from './stores/agent-mail.svelte'
@@ -50,6 +51,7 @@
     const unsubAttention = initSessionAttention()
     const unsubSessions = initSessionListeners()
     const unsubScreenPrs = initScreenPrsListeners()
+    const unsubReviewRoom = initReviewRoomListeners()
     const unsubThreads = initAgentThreadsListeners()
     const unsubBacklog = initBacklogListeners()
     // Cache every provider's capabilities up front: the session store reads
@@ -63,6 +65,7 @@
       unsubAttention()
       unsubSessions()
       unsubScreenPrs()
+      unsubReviewRoom()
       unsubThreads()
       unsubBacklog()
       window.removeEventListener('beforeunload', flushSessionSave)

@@ -3,6 +3,7 @@
   import type {
     ClaudeModel,
     CodexModel,
+    InteractiveTarget,
     OpenCodeModel,
     ModelConfig,
     ModelDescriptor,
@@ -10,6 +11,7 @@
     ModelRef,
   } from '../../../shared/ipc-types'
   import { refKey } from './model-format'
+  import { ALLOWLIST_HINT, loadAllowlistedModels, targetKey, targetLabel, type AllowlistedModel } from '../../lib/agentModels'
 
   interface Option {
     key: string
@@ -23,6 +25,11 @@
   let openCodeOptions = $state<Option[]>([])
   let defaults = $state<Partial<Record<ModelFeatureKey, ModelRef>>>({})
   let loading = $state(true)
+  /** The Review Room's companion default: "Default" (a plain new session's agent) or one of Settings → Models. */
+  let reviewCompanion = $state<InteractiveTarget | undefined>(undefined)
+  let companionModels = $state<AllowlistedModel[]>([])
+  let companionKey = $derived(targetKey(reviewCompanion))
+  let companionUnlisted = $derived(!!reviewCompanion && !companionModels.some((m) => targetKey(m.target) === companionKey))
 
   // Every option, for resolving a selected key back to its ModelRef.
   const byKey = $derived(
@@ -80,8 +87,14 @@
         return { key: refKey(ref), label: m.name, ref }
       })
       defaults = config.defaults
+      reviewCompanion = config.reviewCompanion
       loading = false
     })()
+    loadAllowlistedModels()
+      .then((list) => {
+        if (!cancelled) companionModels = list
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
@@ -95,6 +108,13 @@
     // proxies, which Electron IPC structured-clone rejects.
     const config = await window.api.invoke('models:config-set', { defaults: $state.snapshot(next) })
     defaults = config.defaults
+  }
+
+  async function setReviewCompanion(key: string): Promise<void> {
+    const target = companionModels.find((m) => targetKey(m.target) === key)?.target
+    // The key is sent even when cleared: absent would mean "leave it as it is".
+    const config = await window.api.invoke('models:config-set', { reviewCompanion: target ? $state.snapshot(target) : undefined })
+    reviewCompanion = config.reviewCompanion
   }
 
   const FIELDS: { feature: ModelFeatureKey; label: string; desc: string }[] = [
@@ -166,6 +186,26 @@
           </div>
         </div>
       {/each}
+    </div>
+
+    <div class="mt-2 grid max-w-[560px] grid-cols-[1fr_auto] items-center gap-5 border-t border-zinc-800 py-4">
+      <div>
+        <div class="text-sm font-semibold text-zinc-100">Review companion</div>
+        <div class="mt-0.5 text-[12px] text-zinc-400">
+          The agent a Review Room starts for your questions. Each review can switch it.
+          {#if companionModels.length === 0}{ALLOWLIST_HINT}{/if}
+        </div>
+      </div>
+      <select
+        aria-label="Default review companion"
+        value={companionKey}
+        onchange={(e) => setReviewCompanion(e.currentTarget.value)}
+        class="min-w-[210px] rounded-lg border border-zinc-600 bg-zinc-900 py-2 pl-3 pr-3 font-mono text-[13px] text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+      >
+        <option value="">Default</option>
+        {#each companionModels as m (m.key)}<option value={targetKey(m.target)}>{m.label}</option>{/each}
+        {#if companionUnlisted}<option value={companionKey} disabled>{targetLabel(reviewCompanion, companionModels)}</option>{/if}
+      </select>
     </div>
 
     <div

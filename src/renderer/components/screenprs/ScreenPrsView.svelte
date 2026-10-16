@@ -2,7 +2,8 @@
   import { onMount } from 'svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { triageModel } from '../../stores/triageModel.svelte'
-  import PrDetail from './PrDetail.svelte'
+  import ReviewRoom from '../review/ReviewRoom.svelte'
+  import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import ScreenPrsButton from './ScreenPrsButton.svelte'
   import { sidebarRail } from '../../stores/sidebarRail.svelte'
   import {
@@ -16,8 +17,11 @@
   } from '../../../shared/screenprs-filter'
 
   let selectedKey = $derived(screenPrsStore.selectedKey())
-  let selectedCard = $derived(screenPrsStore.selectedCard())
-  let selectedContext = $derived(screenPrsStore.selectedContext())
+  // Picking a PR opens the review of its whole stack (one per stack, reused).
+  let opened = $derived(selectedKey ? reviewRoom.openState(selectedKey) : undefined)
+  $effect(() => {
+    if (selectedKey) void reviewRoom.open(selectedKey)
+  })
 
   // The org field is a draft of the saved filter: it follows the saved value
   // (another window or the phone may change it) except while it is being typed in.
@@ -125,10 +129,21 @@
   </div>
 
   <div class="min-h-0 flex-1">
-    {#if selectedKey && selectedContext}
-      <PrDetail context={selectedContext} card={selectedCard} />
-    {:else if !selectedKey}
+    {#if !selectedKey}
       <div class="flex h-full items-center justify-center text-xs text-zinc-600">Pick a PR from the queue to review it.</div>
+    {:else if opened?.status === 'ready'}
+      {#key opened.reviewId}
+        <ReviewRoom reviewId={opened.reviewId} />
+      {/key}
+    {:else if opened?.status === 'error'}
+      <div class="flex h-full flex-col items-center justify-center gap-2 text-xs text-zinc-400" data-testid="review-open-error">
+        <span>Couldn’t open the review: {opened.error}</span>
+        <button type="button" class="rounded border border-zinc-700 px-2.5 py-1 text-zinc-200 hover:bg-zinc-800" onclick={() => selectedKey && void reviewRoom.open(selectedKey)}>Try again</button>
+      </div>
+    {:else}
+      <div class="flex h-full items-center justify-center gap-2 text-xs text-zinc-500">
+        <span class="h-3 w-3 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500"></span>Opening the review…
+      </div>
     {/if}
   </div>
 </div>
