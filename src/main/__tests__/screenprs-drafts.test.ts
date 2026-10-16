@@ -5,7 +5,9 @@ import { join } from 'path'
 import type { PrReviewComment } from '../../shared/screenprs'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'se-drafts-test-'))
+const reviewStore = vi.hoisted(() => ({ getReview: vi.fn(), getReviewThread: vi.fn() }))
 vi.mock('electron', () => ({ app: { getPath: () => tmpRoot } }))
+vi.mock('../review-room-store', () => reviewStore)
 // Pass-through, so a test can make one write fail and see what survives it.
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>()
@@ -22,6 +24,8 @@ let drafts: typeof import('../screenprs-drafts')
 beforeEach(async () => {
   vi.resetModules()
   vi.mocked(writeFileSync).mockClear()
+  reviewStore.getReview.mockReset()
+  reviewStore.getReviewThread.mockReset()
   rmSync(FILE, { force: true })
   drafts = await import('../screenprs-drafts')
 })
@@ -50,6 +54,66 @@ describe('screenprs-drafts', () => {
     vi.resetModules()
     const fresh = await import('../screenprs-drafts')
     expect(fresh.loadDrafts().drafts[U1].summary).toBe('LGTM')
+  })
+
+  it('keeps the newest draft link when a crash left one thread in two drafts', async () => {
+    mkdirSync(join(tmpRoot, 'config'), { recursive: true })
+    writeFileSync(FILE, JSON.stringify({
+      [U1]: { draft: { comments: [comment({ id: 'old', threadId: 'rt_thread01' })], summary: '', verdict: 'approve' }, at: '2099-01-01T00:00:00Z' },
+      [U2]: { draft: { comments: [comment({ id: 'new', threadId: 'rt_thread01' })], summary: '', verdict: 'approve' }, at: '2099-01-02T00:00:00Z' },
+    }))
+    vi.resetModules()
+    const fresh = await import('../screenprs-drafts')
+    expect(fresh.loadDrafts().drafts[U1]).toBeUndefined()
+    expect(fresh.loadDrafts().drafts[U2].comments[0].id).toBe('new')
+    expect(fresh.draftLinksForThread('rt_thread01')).toEqual([{ url: U2, commentId: 'new' }])
+  })
+
+  it('validates linked draft ownership, layer and GitHub reply identity', () => {
+    const review = { status: 'open', layers: [{ url: U1, number: 1, headSha: 'head' }] }
+    reviewStore.getReview.mockReturnValue(review)
+    reviewStore.getReviewThread.mockReturnValue({
+      id: 'rt_thread01',
+      reviewId: 'r_review01',
+      anchor: { kind: 'pr', pr: 1 },
+      origin: { kind: 'github', threadNodeId: 'node-1', rootCommentId: 'root-1' },
+    })
+    const valid = comment({
+      threadId: 'rt_thread01',
+      inReplyTo: { threadNodeId: 'node-1', rootCommentId: 'root-1' },
+    })
+    expect(() => drafts.assertReviewDraftOp(U1, { kind: 'add-comment', comment: valid })).not.toThrow()
+    expect(() => drafts.assertReviewDraftOp(U2, { kind: 'add-comment', comment: valid })).toThrow(/layer/)
+    expect(() => drafts.assertReviewDraftOp(U1, {
+      kind: 'add-comment',
+      comment: { ...valid, inReplyTo: { threadNodeId: 'forged', rootCommentId: 'root-1' } },
+    })).toThrow(/GitHub thread/)
+
+    drafts.applyOp(U2, { kind: 'add-comment', comment: valid })
+    expect(() => drafts.assertReviewDraftOp(U1, {
+      kind: 'add-comment',
+      comment: { ...valid, id: 'other' },
+    })).toThrow(/another layer/)
+  })
+
+  it('moves a stack thread draft by adding the destination before removing the source', () => {
+    const linked = comment({ threadId: 'rt_thread01' })
+    reviewStore.getReview.mockReturnValue({
+      status: 'open',
+      layers: [
+        { url: U1, number: 1, headSha: 'head-1' },
+        { url: U2, number: 2, headSha: 'head-2' },
+      ],
+    })
+    reviewStore.getReviewThread.mockReturnValue({
+      id: 'rt_thread01',
+      reviewId: 'r_review01',
+      anchor: { kind: 'stack' },
+      origin: { kind: 'user' },
+    })
+    drafts.applyOp(U1, { kind: 'add-comment', comment: linked })
+    expect(drafts.moveThreadDraft('rt_thread01', U2).map(({ url }) => url)).toEqual([U2, U1])
+    expect(drafts.draftLinksForThread('rt_thread01')).toEqual([{ url: U2, commentId: linked.id }])
   })
 
   it('reports a no-op as unchanged and does not write', () => {

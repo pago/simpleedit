@@ -7,6 +7,7 @@
  * and main agree on dedupe and on when a draft stops existing.
  */
 import { emptyReviewDraft, isPrUrl, type PrReviewComment, type PrReviewCommentSource, type PrReviewDraft, type PrReviewVerdict } from './screenprs'
+import { isReviewThreadId } from './review-room'
 
 export type PrReviewCommentPatch = Partial<Omit<PrReviewComment, 'id'>>
 
@@ -67,6 +68,7 @@ export function truncateSnippet(snippet: string): string {
 
 /** The same finding shouldn't stack up if ＋review is clicked twice. */
 function isDuplicate(a: Omit<PrReviewComment, 'id'>, b: Omit<PrReviewComment, 'id'>): boolean {
+  if (a.threadId || b.threadId) return a.threadId !== undefined && a.threadId === b.threadId
   return a.text === b.text && a.file === b.file && a.line === b.line && (a.side ?? 'RIGHT') === (b.side ?? 'RIGHT')
 }
 
@@ -183,6 +185,20 @@ function commentFields(value: Fields): PrReviewCommentPatch | null {
     if (!isString(value.sha, MAX_FIELD)) return null
     // Stored, '' would claim a head the comment doesn't belong to (see `sha`).
     if (value.sha) out.sha = value.sha
+  }
+  if (has('threadId')) {
+    if (!isReviewThreadId(value.threadId)) return null
+    out.threadId = value.threadId
+  }
+  if (has('severity')) {
+    if (value.severity !== 'blocking' && value.severity !== 'consider' && value.severity !== 'nit') return null
+    out.severity = value.severity
+  }
+  if (has('inReplyTo')) {
+    if (!isObject(value.inReplyTo)) return null
+    const { threadNodeId, rootCommentId } = value.inReplyTo
+    if (!isString(threadNodeId, MAX_FIELD) || !threadNodeId || !isString(rootCommentId, MAX_FIELD) || !rootCommentId) return null
+    out.inReplyTo = { threadNodeId, rootCommentId }
   }
   return out
 }

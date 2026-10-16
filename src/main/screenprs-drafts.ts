@@ -9,8 +9,9 @@
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { configDir } from './config-dir'
-import { isPrUrl, type PrReviewDraft } from '../shared/screenprs'
-import { applyDraftOp, parseReviewDraft, type DraftOpResult, type DraftsSnapshot, type PrReviewDraftOp } from '../shared/review-drafts'
+import { isPrUrl, type PrReviewComment, type PrReviewDraft } from '../shared/screenprs'
+import { applyDraftOp, isEmptyDraft, parseReviewDraft, type DraftOpResult, type DraftsSnapshot, type PrReviewDraftOp } from '../shared/review-drafts'
+import { getReview, getReviewThread } from './review-room-store'
 
 export interface StoredDraft {
   /** Null once the draft is empty but `removed` still has to be kept. */
@@ -28,6 +29,11 @@ export interface StoredDraft {
 }
 
 type Drafts = Record<string, StoredDraft>
+
+export interface ThreadDraftLink {
+  url: string
+  commentId: string
+}
 
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
 const MAX_REMOVED = 500
@@ -78,14 +84,138 @@ export function sanitize(raw: unknown): Drafts {
   return out
 }
 
+/** Keep one draft comment per Review Room thread; newest draft op wins. */
+export function dedupeThreadDrafts(drafts: Drafts): { drafts: Drafts; changed: boolean } {
+  const winner = new Map<string, { url: string; index: number; at: string }>()
+  for (const [url, stored] of Object.entries(drafts)) {
+    for (const [index, comment] of (stored.draft?.comments ?? []).entries()) {
+      if (!comment.threadId) continue
+      const before = winner.get(comment.threadId)
+      if (!before || stored.at > before.at || (stored.at === before.at && (url > before.url || index > before.index))) {
+        winner.set(comment.threadId, { url, index, at: stored.at })
+      }
+    }
+  }
+  let changed = false
+  const next: Drafts = {}
+  for (const [url, stored] of Object.entries(drafts)) {
+    const removed: string[] = []
+    const comments = (stored.draft?.comments ?? []).filter((comment, index) => {
+      if (!comment.threadId) return true
+      const keep = winner.get(comment.threadId)
+      const kept = keep?.url === url && keep.index === index
+      if (!kept) removed.push(comment.id)
+      return kept
+    })
+    if (removed.length === 0) {
+      next[url] = stored
+      continue
+    }
+    changed = true
+    const draft = stored.draft ? { ...stored.draft, comments } : null
+    next[url] = {
+      draft: draft && !isEmptyDraft(draft) ? draft : null,
+      at: stored.at,
+      removed: [...(stored.removed ?? []), ...removed].slice(-MAX_REMOVED),
+    }
+  }
+  return { drafts: next, changed }
+}
+
 function load(): Drafts {
   if (mem) return mem
   try {
-    mem = prune(sanitize(JSON.parse(readFileSync(filePath(), 'utf-8'))), Date.now())
+    const deduped = dedupeThreadDrafts(prune(sanitize(JSON.parse(readFileSync(filePath(), 'utf-8'))), Date.now()))
+    mem = deduped.drafts
+    if (deduped.changed) save(mem)
   } catch {
     mem = {}
   }
   return mem
+}
+
+export function draftLinksForThread(threadId: string): ThreadDraftLink[] {
+  const links: ThreadDraftLink[] = []
+  for (const [url, stored] of Object.entries(load())) {
+    for (const comment of stored.draft?.comments ?? []) {
+      if (comment.threadId === threadId) links.push({ url, commentId: comment.id })
+    }
+  }
+  return links
+}
+
+export function draftThreadIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const stored of Object.values(load())) {
+    for (const comment of stored.draft?.comments ?? []) if (comment.threadId) ids.add(comment.threadId)
+  }
+  return ids
+}
+
+function assertReviewDraftLink(url: string, comment: PrReviewComment, movingFrom?: ThreadDraftLink): void {
+  if (!comment.threadId) {
+    if (comment.inReplyTo) throw new Error('A GitHub reply draft must belong to a review thread')
+    return
+  }
+  const thread = getReviewThread(comment.threadId)
+  const review = thread ? getReview(thread.reviewId) : null
+  if (!thread || !review || review.status !== 'open') throw new Error('Draft review thread is not open')
+  const layer = review.layers.find((candidate) => candidate.url === url)
+  if (!layer || (thread.anchor.kind !== 'stack' && thread.anchor.pr !== layer.number)) {
+    throw new Error('Draft layer does not belong to the review thread')
+  }
+  if (thread.origin.kind === 'github') {
+    if (
+      comment.inReplyTo?.threadNodeId !== thread.origin.threadNodeId ||
+      comment.inReplyTo.rootCommentId !== thread.origin.rootCommentId
+    ) throw new Error('Draft reply does not match the imported GitHub thread')
+  } else if (comment.inReplyTo) {
+    throw new Error('Only imported GitHub threads can carry reply metadata')
+  }
+  const otherLink = draftLinksForThread(thread.id).find(
+    (link) =>
+      (link.url !== url || link.commentId !== comment.id) &&
+      (link.url !== movingFrom?.url || link.commentId !== movingFrom.commentId),
+  )
+  if (otherLink) throw new Error('Review thread already has a draft on another layer')
+}
+
+export function assertReviewDraftOp(url: string, op: PrReviewDraftOp): void {
+  if (op.kind === 'add-comment') {
+    assertReviewDraftLink(url, op.comment)
+    return
+  }
+  if (op.kind !== 'update-comment') return
+  const existing = loadDrafts().drafts[url]?.comments.find((comment) => comment.id === op.id)
+  if (existing) assertReviewDraftLink(url, { ...existing, ...op.patch, id: existing.id })
+}
+
+export function moveThreadDraft(threadId: string, toUrl: string): Array<{ url: string; result: DraftOpResult }> {
+  const links = draftLinksForThread(threadId)
+  if (links.length !== 1) throw new Error('Review thread does not have exactly one draft to move')
+  const from = links[0]!
+  if (from.url === toUrl) return []
+  const comment = loadDrafts().drafts[from.url]?.comments.find((candidate) => candidate.id === from.commentId)
+  if (!comment) throw new Error('Review thread draft is missing')
+  assertReviewDraftLink(toUrl, comment, from)
+  const added = applyOp(toUrl, { kind: 'add-comment', comment })
+  if (!added.draft?.comments.some((candidate) => candidate.id === comment.id)) {
+    throw new Error('Review thread draft could not be added to the new layer')
+  }
+  const removed = applyOp(from.url, { kind: 'remove-comment', id: comment.id })
+  return [
+    { url: toUrl, result: { draft: added.draft, rev: added.rev } },
+    { url: from.url, result: { draft: removed.draft, rev: removed.rev } },
+  ]
+}
+
+export function removeDraftsForThread(threadId: string): Array<{ url: string; result: DraftOpResult }> {
+  const removed: Array<{ url: string; result: DraftOpResult }> = []
+  for (const link of draftLinksForThread(threadId)) {
+    const { draft, rev: nextRev, changed } = applyOp(link.url, { kind: 'remove-comment', id: link.commentId })
+    if (changed) removed.push({ url: link.url, result: { draft, rev: nextRev } })
+  }
+  return removed
 }
 
 function save(drafts: Drafts): void {

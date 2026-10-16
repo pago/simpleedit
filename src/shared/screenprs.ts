@@ -298,6 +298,11 @@ export interface PrReviewComment {
    * what an absent head means.
    */
   sha?: string
+  /** Review Room thread this draft belongs to. The draft store owns this link. */
+  threadId?: string
+  severity?: 'blocking' | 'consider' | 'nit'
+  /** Existing GitHub thread this comment replies to when posted. */
+  inReplyTo?: { threadNodeId: string; rootCommentId: string }
   /**
    * The line `anchorsForHead` took away, and why — set only on its output,
    * never stored. The comment no longer anchors (`line` is gone), but its

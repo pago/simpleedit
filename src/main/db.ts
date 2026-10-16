@@ -68,6 +68,63 @@ const MIGRATIONS: string[] = [
     at TEXT NOT NULL
   ) STRICT;
   `,
+  `
+  CREATE TABLE reviews (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    layers TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requester_session_id TEXT,
+    requester_window_id INTEGER,
+    companion TEXT,
+    companion_agent TEXT NOT NULL,
+    last_seen_head TEXT NOT NULL,
+    read_steps TEXT NOT NULL,
+    author_briefing TEXT,
+    round INTEGER NOT NULL,
+    previous_review_id TEXT,
+    submissions TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX reviews_by_repo ON reviews(repo, created_at);
+  CREATE INDEX reviews_by_status ON reviews(status);
+  CREATE TABLE review_threads (
+    id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    anchor TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    status TEXT NOT NULL,
+    outdated INTEGER NOT NULL,
+    close_reason TEXT,
+    carried_from TEXT,
+    read_seq INTEGER NOT NULL,
+    ask_author_open INTEGER NOT NULL,
+    proposal TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX review_threads_by_review ON review_threads(review_id, created_at);
+  CREATE TABLE review_messages (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL REFERENCES review_threads(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    at TEXT NOT NULL,
+    read_files TEXT,
+    delivery TEXT,
+    held_reason TEXT,
+    failed_reason TEXT,
+    UNIQUE(thread_id, seq)
+  ) STRICT;
+  CREATE INDEX review_messages_by_thread ON review_messages(thread_id, seq);
+  CREATE INDEX review_messages_by_delivery ON review_messages(delivery);
+  CREATE TABLE review_tombstones (
+    id TEXT PRIMARY KEY,
+    at TEXT NOT NULL
+  ) STRICT;
+  `,
 ]
 
 let db: Db | null = null

@@ -94,10 +94,10 @@ export function getCached(url: string, headSha: string, triageFingerprint: strin
   return e && e.headSha === headSha && e.baseKey === baseKey && e.triageFingerprint === triageFingerprint ? e : undefined
 }
 
-/** The cached review diff for `url` at `headSha`, whatever produced it. */
-export function getCachedDiff(url: string, headSha: string): string | undefined {
+/** The cached review diff for `url` at `headSha`, optionally pinned to its base. */
+export function getCachedDiff(url: string, headSha: string, baseKey?: string): string | undefined {
   const e = load()[url]
-  return e?.headSha === headSha ? e.diff : undefined
+  return e?.headSha === headSha && (baseKey === undefined || e.baseKey === baseKey) ? e.diff : undefined
 }
 
 /** Store (or replace) the triage result + review diff for a PR at a given SHA and base. */

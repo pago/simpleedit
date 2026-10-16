@@ -91,6 +91,8 @@ describe('screenprs-cache', () => {
   it('serves the cached diff at a head regardless of fingerprint', () => {
     cache.putTriage('u1', 'sha1', 'the diff', triage, FP, BASE)
     expect(cache.getCachedDiff('u1', 'sha1')).toBe('the diff')
+    expect(cache.getCachedDiff('u1', 'sha1', BASE.key)).toBe('the diff')
+    expect(cache.getCachedDiff('u1', 'sha1', 'stacked:moved-base')).toBeUndefined()
     expect(cache.getCachedDiff('u1', 'sha2')).toBeUndefined()
   })
 
