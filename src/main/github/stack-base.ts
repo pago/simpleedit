@@ -11,7 +11,8 @@
  * thin layer over `runGh`.
  */
 import { runGh, getPrDiff, isPrUrl, type PrMeta } from './gh'
-import type { BaseAnalysis, DiffStats } from '../../shared/screenprs'
+import type { BaseAnalysis, DiffStats, ScreenPrCard } from '../../shared/screenprs'
+import type { ReviewPrRef } from '../../shared/review-room'
 
 export interface PrCommit {
   sha: string
@@ -91,6 +92,89 @@ export function parseCompare(json: string): BaseCompare {
 /** Parse `gh pr list --json number` — the first PR, if any. */
 export function parsePrNumber(json: string): number | undefined {
   return (JSON.parse(json || '[]') as { number: number }[])[0]?.number
+}
+
+type StackCard = Pick<ScreenPrCard, 'url' | 'number' | 'headSha' | 'headRefName' | 'baseRefName'>
+
+interface RawStackPr {
+  url?: unknown
+  number?: unknown
+  headRefOid?: unknown
+  headRefName?: unknown
+  baseRefName?: unknown
+}
+
+export function parseStackPrs(json: string): StackCard[] {
+  const raw = JSON.parse(json || '[]') as unknown
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((value): StackCard[] => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return []
+    const row = value as RawStackPr
+    if (
+      typeof row.url !== 'string' || !isPrUrl(row.url) ||
+      typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number < 1 ||
+      typeof row.headRefOid !== 'string' || !row.headRefOid ||
+      typeof row.headRefName !== 'string' || !row.headRefName ||
+      typeof row.baseRefName !== 'string' || !row.baseRefName
+    ) return []
+    return [{
+      url: row.url,
+      number: row.number,
+      headSha: row.headRefOid,
+      headRefName: row.headRefName,
+      baseRefName: row.baseRefName,
+    }]
+  })
+}
+
+async function findStackParent(card: StackCard): Promise<StackCard | undefined> {
+  const repo = repoOf(card.url)
+  try {
+    return parseStackPrs(await runGh([
+      'pr', 'list', '-R', `${repo.host}/${repo.owner}/${repo.name}`,
+      '--head', card.baseRefName, '--state', 'all', '--limit', '1',
+      '--json', 'number,url,headRefOid,headRefName,baseRefName',
+    ]))[0]
+  } catch {
+    return undefined
+  }
+}
+
+/** Resolve a stack across queue buckets, including merged/closed parents absent from the queue. */
+export async function resolveStack(
+  card: ScreenPrCard,
+  allCards: readonly ScreenPrCard[],
+  lookupParent: (card: StackCard) => Promise<StackCard | undefined> = findStackParent,
+): Promise<ReviewPrRef[]> {
+  const repo = repoOf(card.url)
+  const same = (candidate: StackCard): boolean => isPrUrl(candidate.url) && sameRepo(repoOf(candidate.url), repo)
+  const queue = allCards.filter(same)
+  const ancestors: StackCard[] = [card]
+  const seen = new Set([card.url])
+  let cursor: StackCard = card
+  while (cursor.baseRefName) {
+    let parent: StackCard | undefined = queue.find((candidate) => candidate !== cursor && candidate.headRefName === cursor.baseRefName)
+    parent ??= await lookupParent(cursor)
+    if (!parent || !same(parent) || seen.has(parent.url)) break
+    ancestors.unshift(parent)
+    seen.add(parent.url)
+    cursor = parent
+  }
+
+  const nodes = new Map<string, StackCard>()
+  for (const candidate of [...queue, ...ancestors]) nodes.set(candidate.url, candidate)
+  const root = ancestors[0]!
+  const ordered: StackCard[] = []
+  const visit = (node: StackCard): void => {
+    if (ordered.some((entry) => entry.url === node.url)) return
+    ordered.push(node)
+    const children = [...nodes.values()]
+      .filter((candidate) => candidate.url !== node.url && candidate.baseRefName === node.headRefName)
+      .sort((a, b) => a.number - b.number)
+    for (const child of children) visit(child)
+  }
+  visit(root)
+  return ordered.map(({ url, number, headSha }) => ({ url, number, headSha }))
 }
 
 // ── the judgment ────────────────────────────────────────────────────────────

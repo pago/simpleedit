@@ -124,6 +124,16 @@ describe('parseDraftOpRequest', () => {
     for (const op of ops) expect(parseDraftOpRequest(req(op))).toEqual({ url: URL, op })
   })
 
+  it('preserves validated Review Room links, severity, and GitHub reply metadata', () => {
+    const linked = comment({
+      threadId: 'rt_thread01',
+      severity: 'blocking',
+      inReplyTo: { threadNodeId: 'PRRT_node', rootCommentId: '123' },
+    })
+    expect(parseReviewDraft(draftOf(linked))?.comments[0]).toEqual(linked)
+    expect(parseReviewDraft(draftOf({ ...linked, threadId: '../bad' }))).toBeNull()
+  })
+
   it('rejects a url that is not a pull request, or too long', () => {
     const op = { kind: 'clear' }
     for (const url of ['u1', '__proto__', 'https://github.com/acme/app/issues/7', 42, `${URL}?${'x'.repeat(600)}`]) {
