@@ -56,6 +56,25 @@ describe('makeLensTask', () => {
   })
 })
 
+describe('the review rubric', () => {
+  const rubric = { path: 'REVIEW.md', text: 'Skip generated/.' }
+  const raw: DeepFinding[] = [{ lens: 'soundness', severity: 'note', file: 'a.ts', title: 't', detail: 'd' }]
+  const block = '<review-rubric path="REVIEW.md">\nSkip generated/.\n</review-rubric>\n\n<diff>'
+
+  it('every lens and the synthesis get it as a data block right before the diff', () => {
+    expect(makeLensTask('soundness', undefined, rubric).buildPrompt(ctx).user).toContain(block)
+    expect(makeLensTask('tests', 'Override.', rubric).buildPrompt(ctx).user).toContain(block)
+    const synth = makeSynthesisTask(undefined, rubric).buildPrompt({ ctx, raw }).user
+    expect(synth).toContain(block)
+    expect(synth.indexOf('</raw-findings>')).toBeLessThan(synth.indexOf('<review-rubric'))
+  })
+
+  it('adds nothing without one', () => {
+    expect(makeLensTask('soundness').buildPrompt(ctx).user).not.toContain('review-rubric')
+    expect(makeSynthesisTask().buildPrompt({ ctx, raw }).user).not.toContain('review-rubric')
+  })
+})
+
 describe('makeSynthesisTask', () => {
   const synthesisTask = makeSynthesisTask()
   it('embeds the raw findings and the diff', () => {

@@ -7,15 +7,21 @@
  */
 import type { PrContext, DeepFinding, DeepLensId, DeepSeverity } from '../../shared/screenprs'
 import type { Task } from '../agent-tasks/orchestrator'
+import { renderRubricBlock, type ReviewRubric } from '../github/review-rubric'
 
 const MAX_DIFF_BYTES = 80_000
 const MAX_BODY_BYTES = 2_000
 const VALID_SEVERITY = new Set<DeepSeverity>(['blocking', 'concern', 'note'])
 const VALID_LENS = new Set<DeepLensId>(['intent', 'tests', 'soundness', 'types', 'architecture'])
-export const DEEP_REVIEW_PROMPT_VERSION = 1
+export const DEEP_REVIEW_PROMPT_VERSION = 2
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '\n…[truncated]' : s
+}
+
+/** The repo's rubric block and a blank line, placed before `<diff>`; nothing without one. */
+function rubricPart(rubric: ReviewRubric | undefined): string {
+  return rubric ? `${renderRubricBlock(rubric)}\n\n` : ''
 }
 
 const OUTPUT_SPEC = `Output ONLY NDJSON — one JSON object per line, no prose, no code fences. Each object:
@@ -31,14 +37,14 @@ export const LENS_INSTRUCTIONS: Record<DeepLensId, string> = {
   architecture: `You are reviewing ONE lens of a pull request: ARCHITECTURE & DESIGN. Flag only concrete, nameable problems: a responsibility in the wrong layer, a leaky abstraction, coupling that will be costly. Only when you can name the problem and a better home for the code. Do not nitpick.`,
 }
 
-function buildLensPrompt(instructions: string, ctx: PrContext): string {
+function buildLensPrompt(instructions: string, ctx: PrContext, rubric: ReviewRubric | undefined): string {
   return `${instructions}
 
 ${OUTPUT_SPEC}
 
 PR: ${ctx.repo}#${ctx.number} — ${ctx.title}
 ${ctx.body ? `\nDescription:\n${truncate(ctx.body, MAX_BODY_BYTES)}\n` : ''}
-<diff>
+${rubricPart(rubric)}<diff>
 ${truncate(ctx.diff, MAX_DIFF_BYTES)}
 </diff>`
 }
@@ -64,14 +70,18 @@ function parseFinding(lens: DeepLensId | null, obj: unknown): DeepFinding | null
 }
 
 /** A single-lens review task; context is pre-gathered (identity buildContext). */
-export function makeLensTask(lens: DeepLensId, instructions = LENS_INSTRUCTIONS[lens]): Task<PrContext, PrContext, DeepFinding> {
+export function makeLensTask(
+  lens: DeepLensId,
+  instructions = LENS_INSTRUCTIONS[lens],
+  rubric?: ReviewRubric
+): Task<PrContext, PrContext, DeepFinding> {
   return {
     name: `deep-lens:${lens}`,
     async buildContext(ctx) {
       return ctx
     },
     buildPrompt(ctx) {
-      return { system: '', user: buildLensPrompt(instructions, ctx) }
+      return { system: '', user: buildLensPrompt(instructions, ctx, rubric) }
     },
     parse: (obj) => parseFinding(lens, obj),
   }
@@ -87,7 +97,7 @@ export const SYNTHESIS_INSTRUCTIONS = `You are the review lead consolidating fin
 - MERGE duplicates/overlaps across lenses into a single finding (keep the clearest wording and the HIGHEST severity).
 - KEEP only what is worth the author's attention. Fewer, well-evidenced findings beat many shaky ones.`
 
-function buildSynthesisPrompt(instructions: string, input: SynthesisInput): string {
+function buildSynthesisPrompt(instructions: string, input: SynthesisInput, rubric: ReviewRubric | undefined): string {
   const raw = input.raw
     .map((f) => `- [${f.lens}/${f.severity}] ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}: ${f.detail}`)
     .join('\n')
@@ -100,20 +110,23 @@ Additionally, each object MUST include "lens" (one of: soundness, intent, tests,
 ${raw || '(none)'}
 </raw-findings>
 
-<diff>
+${rubricPart(rubric)}<diff>
 ${truncate(input.ctx.diff, MAX_DIFF_BYTES)}
 </diff>`
 }
 
 /** The synthesis reduce: curate/dedup/rank all lens findings into the final set. */
-export function makeSynthesisTask(instructions = SYNTHESIS_INSTRUCTIONS): Task<SynthesisInput, SynthesisInput, DeepFinding> {
+export function makeSynthesisTask(
+  instructions = SYNTHESIS_INSTRUCTIONS,
+  rubric?: ReviewRubric
+): Task<SynthesisInput, SynthesisInput, DeepFinding> {
   return {
     name: 'deep-synthesis',
     async buildContext(input) {
       return input
     },
     buildPrompt(input) {
-      return { system: '', user: buildSynthesisPrompt(instructions, input) }
+      return { system: '', user: buildSynthesisPrompt(instructions, input, rubric) }
     },
     parse: (obj) => parseFinding(null, obj),
   }

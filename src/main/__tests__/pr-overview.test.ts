@@ -10,6 +10,9 @@ const cache = vi.hoisted(() => ({
 }))
 const gather = vi.hoisted(() => vi.fn())
 const reviewDiffFor = vi.hoisted(() => vi.fn(async () => 'fetched diff'))
+const rubric = vi.hoisted(() => ({
+  fetchReviewRubric: vi.fn(async (): Promise<{ path: string; text: string } | undefined> => undefined),
+}))
 const answers = vi.hoisted(() => ({ items: [] as string[], seen: [] as { output?: string; user: string }[] }))
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' } }))
@@ -20,6 +23,10 @@ vi.mock('../github/gh', () => ({
   withGhSignal: (_signal: AbortSignal, fn: () => Promise<unknown>) => fn(),
 }))
 vi.mock('../prompts/overrides', () => ({ resolveInstructions: () => ({ text: 'instructions' }), instructionsHash: (t: string) => t }))
+vi.mock('../github/review-rubric', async (orig) => ({
+  ...(await orig<typeof import('../github/review-rubric')>()),
+  fetchReviewRubric: rubric.fetchReviewRubric,
+}))
 vi.mock('../models/config', () => ({ getModelConfig: () => ({ defaults: {} }) }))
 vi.mock('../github/pr-overview-context', async (orig) => ({
   ...(await orig<typeof import('../github/pr-overview-context')>()),
@@ -41,6 +48,7 @@ vi.mock('../agent-tasks/registry', async (orig) => {
 })
 
 import { startOverview, cancelOverview, overviewSnapshot } from '../pr-overview'
+import { rubricFingerprint } from '../github/review-rubric'
 
 const PR: PrContext = {
   owner: 'acme', repo: 'ui', number: 7, url: 'https://github.com/acme/ui/pull/7', title: 'Add widget', author: 'a',
@@ -65,6 +73,27 @@ beforeEach(() => {
 })
 
 describe('startOverview', () => {
+  it('reads the rubric before the cache check, keys the cache on it and hands it to the gather', async () => {
+    const found = { path: 'REVIEW.md', text: 'Skip generated/.' }
+    rubric.fetchReviewRubric.mockResolvedValueOnce(found)
+    cache.getCachedOverview.mockReturnValue({ text: 'cached', facts: { draft: false, changeset: 'no' }, at: 'x' })
+    await startOverview({ ...PR, diff: 'diff --git a/src/x.ts b/src/x.ts\n+code' }, client().wc)
+    expect(rubric.fetchReviewRubric).toHaveBeenCalledWith(PR.url, 'sha1', ['src/x.ts'])
+    expect(cache.analysisFingerprint).toHaveBeenCalledWith(expect.objectContaining({ rubric: rubricFingerprint(found) }))
+
+    cache.getCachedOverview.mockReturnValue(undefined)
+    rubric.fetchReviewRubric.mockResolvedValueOnce(found)
+    answers.items = ['x']
+    await startOverview(PR, client().wc)
+    expect(gather.mock.calls[0][1]).toMatchObject({ rubric: found })
+  })
+
+  it('keys the cache on "none" when the repo has no rubric', async () => {
+    cache.getCachedOverview.mockReturnValue({ text: 'cached', facts: { draft: false, changeset: 'no' }, at: 'x' })
+    await startOverview(PR, client().wc)
+    expect(cache.analysisFingerprint).toHaveBeenCalledWith(expect.objectContaining({ rubric: 'none' }))
+  })
+
   it('serves a cached overview at once, without gathering or a model call', async () => {
     cache.getCachedOverview.mockReturnValue({ text: 'cached', facts: { draft: false, changeset: 'no' }, at: 'x' })
     const { sent, wc } = client()

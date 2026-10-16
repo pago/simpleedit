@@ -1,9 +1,10 @@
 /**
  * PR Overview — the parser for the model's fixed-section markdown answer.
  *
- * The contract fixes four headings (`## What changed`, `## Why`, `## Impact`,
- * `## Look into`), the last a numbered list of questions with backticked
- * `path:line` citations. Code renders the facts and the actions; the model only
+ * The contract fixes five headings (`## What changed`, `## Why`, `## Impact`,
+ * `## Reading order`, `## Look into`); the last two are numbered lists with
+ * backticked `path:line` citations. Reading order is optional here: overviews
+ * cached before it joined the contract must still parse. Code renders the facts and the actions; the model only
  * writes the prose inside these sections. Anything the parser cannot place with
  * confidence sets `wellFormed: false`, and the caller renders `raw` as one block
  * so no output is ever lost. Pure, so the renderer re-parses cached raw text and
@@ -21,10 +22,19 @@ export interface OverviewLookIntoItem {
   refs: OverviewRef[]
 }
 
+/** One stop of the reading order: a short title, what to take from it, and where it is. */
+export interface OverviewReadingStep {
+  title: string
+  /** The item's prose without its citations. */
+  summary: string
+  refs: OverviewRef[]
+}
+
 export interface OverviewSections {
   what?: string
   why?: string
   impact?: string
+  readingOrder?: OverviewReadingStep[]
   lookInto?: OverviewLookIntoItem[]
 }
 
@@ -60,7 +70,8 @@ export interface ParsedOverview {
 
 type SectionKey = keyof OverviewSections
 
-const SECTION_KEYS: SectionKey[] = ['what', 'why', 'impact', 'lookInto']
+const SECTION_KEYS: SectionKey[] = ['what', 'why', 'impact', 'readingOrder', 'lookInto']
+const OPTIONAL_SECTIONS = new Set<SectionKey>(['readingOrder'])
 
 /**
  * Heading text (lower-cased, colon and closing hashes stripped) → section. The
@@ -72,6 +83,9 @@ const HEADINGS: Record<string, SectionKey> = {
   why: 'why',
   impact: 'impact',
   'impact / public api': 'impact',
+  'reading order': 'readingOrder',
+  'suggested reading order': 'readingOrder',
+  'review order': 'readingOrder',
   'look into': 'lookInto',
   'what to look into': 'lookInto',
   'what to look into in more detail': 'lookInto',
@@ -131,14 +145,15 @@ export function parseOverview(text: string): ParsedOverview {
   for (const key of SECTION_KEYS) {
     const body = bodies.get(key)
     if (!body) {
-      wellFormed = false
+      if (!OPTIONAL_SECTIONS.has(key)) wellFormed = false
       continue
     }
     const markdown = body.join('\n').trim()
-    if (key === 'lookInto') {
-      const list = parseLookInto(markdown)
-      sections.lookInto = list.items
+    if (key === 'lookInto' || key === 'readingOrder') {
+      const list = parseList(markdown)
       if (!list.clean) wellFormed = false
+      if (key === 'lookInto') sections.lookInto = list.items.map((md) => ({ markdown: md, refs: extractRefs(md) }))
+      else sections.readingOrder = list.items.map(readingStep)
     } else {
       sections[key] = markdown
     }
@@ -150,13 +165,13 @@ const ORDERED_ITEM_RE = /^ ?(\d{1,3})[.)][ \t]+(.*)$/
 const BULLET_ITEM_RE = /^ ?[-*+][ \t]+(.*)$/
 
 /**
- * Split the Look-into section into its list items. The first item decides the
+ * Split a list section (Look into, Reading order) into its items' markdown. The first item decides the
  * marker kind, so a nested `-` list inside a numbered item stays part of that
  * item. `clean` is false when text sits outside any item — a lead-in sentence,
  * or an unindented paragraph after a blank line, which ends the list in
  * CommonMark — since the item list alone would silently drop it.
  */
-function parseLookInto(markdown: string): { items: OverviewLookIntoItem[]; clean: boolean } {
+function parseList(markdown: string): { items: string[]; clean: boolean } {
   const items: string[][] = []
   let kind: 'ordered' | 'bullet' | null = null
   let clean = true
@@ -186,13 +201,43 @@ function parseLookInto(markdown: string): { items: OverviewLookIntoItem[]; clean
     prevBlank = !line.trim()
   }
 
-  return {
-    items: items.map((lines) => {
-      const md = lines.join('\n').trim()
-      return { markdown: md, refs: extractRefs(md) }
-    }),
-    clean,
+  return { items: items.map((lines) => lines.join('\n').trim()), clean }
+}
+
+const TITLE_WORDS = 8
+
+/**
+ * A reading-order item as `**Title** — summary `path:1-9``. Without the bold,
+ * the title is the text before the first ` — ` or `: `, else its first words
+ * (and the summary keeps the whole text).
+ */
+function readingStep(markdown: string): OverviewReadingStep {
+  const refs = extractRefs(markdown)
+  const prose = markdown
+    .replace(/(`+)([^`]+?)\1(?!`)/g, (span, _ticks: string, body: string) =>
+      body.split(/[\s,]+/).some((t) => parseRef(t)) ? '' : span
+    )
+    .replace(/\(\s*[,;]?\s*\)/g, '')
+    .replace(/[ \t]+([,.;:])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[\s,;:—–-]+$/, '')
+    .trim()
+  const bold = /^(\*\*|__)(.+?)\1[ \t]*(?:[—–:-][ \t]*)?([\s\S]*)$/.exec(prose)
+  if (bold) return { title: bold[2].trim().replace(/:$/, ''), summary: bold[3].trim(), refs }
+  const sep = /[ \t][—–][ \t]|:[ \t]/.exec(prose)
+  if (sep && sep.index > 0) {
+    return { title: prose.slice(0, sep.index).trim(), summary: prose.slice(sep.index + sep[0].length).trim(), refs }
   }
+  const words = prose.split(/\s+/).filter(Boolean)
+  const title = words.slice(0, TITLE_WORDS).join(' ') + (words.length > TITLE_WORDS ? ' …' : '')
+  return { title, summary: prose, refs }
+}
+
+/** The distinct paths a reading order cites, in reading order. */
+export function readingOrderPaths(steps: readonly OverviewReadingStep[]): string[] {
+  const out: string[] = []
+  for (const step of steps) for (const ref of step.refs) if (!out.includes(ref.path)) out.push(ref.path)
+  return out
 }
 
 /**

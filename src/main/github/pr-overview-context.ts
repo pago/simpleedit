@@ -3,9 +3,11 @@
  * (reused from triage and `stack-base.ts`), commits, linked issues, the
  * discussion, the changeset, CI, key files at head and on the default branch,
  * the nearest `CLAUDE.md`, and the findings triage and deep review already made.
+ * The repo's `REVIEW.md` rubric is fetched by the caller (`review-rubric.ts`),
+ * since the cache fingerprint needs it before anything is gathered.
  *
  * `renderOverviewInput` fills one ~150 KB prompt input in that order, except
- * that the existing findings go before the files.
+ * that the rubric follows the meta and the existing findings go before the files.
  * Each source has its own cap too, so a huge diff can't starve the discussion.
  * Whatever is cut is listed in the input, so the model can say "not seen"
  * instead of guessing. The parsers and the budgeting are pure and unit-tested;
@@ -16,6 +18,7 @@ import { runGh } from './gh'
 import { parsePrCommits, repoOf, type BaseResolver } from './stack-base'
 import type { DeepFinding, PrContext, TriageFinding } from '../../shared/screenprs'
 import type { OverviewFacts } from '../../shared/pr-overview'
+import { REVIEW_RUBRIC_CAP, rubricAttrs, rubricBody, type ReviewRubric } from './review-rubric'
 
 // ── diff files ──────────────────────────────────────────────────────────────
 
@@ -295,6 +298,8 @@ export interface OverviewContext {
   changeset: ChangesetInfo
   keyFiles: KeyFile[]
   guides: { path: string; text: string }[]
+  /** The repo's nearest `REVIEW.md` at the head, if it has one. */
+  rubric?: ReviewRubric
   triage: TriageFinding[]
   deep: DeepFinding[]
   /** Sources that could not be fetched. */
@@ -319,6 +324,8 @@ export interface InputSection {
   body: string
   /** This section's own ceiling, before the shared budget. */
   cap: number
+  /** Attributes for the opening tag, e.g. `path="REVIEW.md"`. */
+  attrs?: string
 }
 
 const kb = (n: number): string => `${Math.max(1, Math.round(n / 1000))} KB`
@@ -353,7 +360,7 @@ export function assembleInput(sections: InputSection[], budget = OVERVIEW_INPUT_
       notSeen.push(`${s.tag}: truncated to ${kb(body.length)} of ${kb(s.body.length)}`)
     }
     used += body.length
-    parts.push(`<${s.tag}>\n${body}\n</${s.tag}>`)
+    parts.push(`<${s.tag}${s.attrs ? ` ${s.attrs}` : ''}>\n${body}\n</${s.tag}>`)
   }
   return { text: parts.join('\n\n'), notSeen }
 }
@@ -437,6 +444,9 @@ export function renderOverviewInput(ctx: OverviewContext, budget = OVERVIEW_INPU
   const commits = ctx.commits.map((s) => `- ${s}`).join('\n')
   const sections: InputSection[] = [
     { tag: 'pr', body: metaSection(ctx), cap: 8_000 },
+    ...(ctx.rubric
+      ? [{ tag: 'review-rubric', attrs: rubricAttrs(ctx.rubric), body: rubricBody(ctx.rubric), cap: REVIEW_RUBRIC_CAP + 200 }]
+      : []),
     { tag: 'diff', body: ctx.pr.diff || '(empty diff)', cap: 80_000 },
     {
       tag: 'commits',
@@ -503,7 +513,7 @@ async function settle<T>(p: Promise<T>, name: string, unavailable: string[], fal
  */
 export async function gatherOverviewContext(
   pr: PrContext,
-  opts: { handle: string; resolver: BaseResolver; triage?: TriageFinding[]; deep?: DeepFinding[] }
+  opts: { handle: string; resolver: BaseResolver; rubric?: ReviewRubric; triage?: TriageFinding[]; deep?: DeepFinding[] }
 ): Promise<OverviewContext> {
   const repo = repoOf(pr.url)
   const api = (path: string): Promise<string> =>
@@ -584,6 +594,7 @@ export async function gatherOverviewContext(
     changeset: changesetInfo(files, comments, stackedOn),
     keyFiles,
     guides,
+    ...(opts.rubric ? { rubric: opts.rubric } : {}),
     triage: opts.triage ?? [],
     deep: opts.deep ?? [],
     unavailable,

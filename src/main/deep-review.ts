@@ -23,6 +23,9 @@ import { withBackendGate } from './agent-tasks/gate'
 import { makeLensTask, makeSynthesisTask, DEEP_REVIEW_PROMPT_VERSION } from './tasks/deep-review-lenses'
 import { resolveInstructions, instructionsHash } from './prompts/overrides'
 import { analysisFingerprint, getCachedDeep, putDeep } from './screenprs-cache'
+import { withGhSignal } from './github/gh'
+import { diffFiles } from './github/pr-overview-context'
+import { fetchReviewRubric, rubricFingerprint, type ReviewRubric } from './github/review-rubric'
 
 /**
  * One deep review per PR, app-wide, reported to every client (`out`). A second
@@ -38,6 +41,8 @@ interface ActiveDeep {
 }
 const activeDeep = new Map<string, ActiveDeep>()
 const states = new Map<string, DeepReviewState>()
+/** Rubric reads not yet owned by a run, so quit can still kill their `gh`. */
+const preparing = new Set<AbortController>()
 
 function setState(url: string, patch: Partial<DeepReviewState>): void {
   const cur = states.get(url) ?? { status: 'idle', lenses: {}, findings: [] }
@@ -69,7 +74,8 @@ function enabledLenses(): Array<{ lens: DeepLensId; model?: ModelRef; instructio
 export function deepReviewFingerprint(
   lenses: Array<{ lens: DeepLensId; model?: ModelRef; instructions: string }>,
   synthModel: ModelRef | undefined,
-  synthInstructions: string
+  synthInstructions: string,
+  rubric?: ReviewRubric
 ): string {
   return analysisFingerprint({
     lenses: lenses.map(({ lens, model, instructions }) => ({
@@ -79,6 +85,7 @@ export function deepReviewFingerprint(
     })),
     synthesis: targetFromModelRef(synthModel),
     synthesisInstructions: instructionsHash(synthInstructions),
+    rubric: rubricFingerprint(rubric),
     promptVersion: DEEP_REVIEW_PROMPT_VERSION,
     schemaVersion: 1,
   })
@@ -89,13 +96,19 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
   const lenses = enabledLenses()
   const synthModel = getModelConfig().deepReview?.synthesisModel ?? getModelConfig().defaults.screenPrs ?? DEFAULT_TRIAGE_MODEL
   const synthInstructions = resolveInstructions('deep-review/synthesis').text
-  const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions)
+  // Read before the cache check: the rubric is part of the fingerprint.
+  const controller = new AbortController()
+  preparing.add(controller)
+  const rubric = await withGhSignal(controller.signal, () =>
+    fetchReviewRubric(ctx.url, ctx.headSha, diffFiles(ctx.diff).map((f) => f.path))
+  ).finally(() => preparing.delete(controller))
+  if (controller.signal.aborted) return { joined: false }
+  const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions, rubric)
   const running = activeDeep.get(ctx.url)
   if (running) {
     if (running.headSha === ctx.headSha && running.fingerprint === deepFingerprint) return { joined: true }
     cancelDeepReview(ctx.url)
   }
-  const controller = new AbortController()
   const mine: ActiveDeep = { controller, out, headSha: ctx.headSha, fingerprint: deepFingerprint }
   activeDeep.set(ctx.url, mine)
   const live = (): boolean => activeDeep.get(ctx.url) === mine && !controller.signal.aborted
@@ -136,7 +149,7 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
       const perLens = await Promise.all(
         lenses.map(({ lens, model, instructions }) =>
           withBackendGate(model, () =>
-            collect(runTask(makeLensTask(lens, instructions), ctx, { runner: runnerFor(model, analysisDir), model, signal: controller.signal }))
+            collect(runTask(makeLensTask(lens, instructions, rubric), ctx, { runner: runnerFor(model, analysisDir), model, signal: controller.signal }))
           )
             .then((findings) => {
               sendLens(lens, 'done')
@@ -159,7 +172,7 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
       if (raw.length > 0) {
         try {
           curated = await withBackendGate(synthModel, () =>
-            collect(runTask(makeSynthesisTask(synthInstructions), { ctx, raw }, { runner: runnerFor(synthModel, analysisDir), model: synthModel, signal: controller.signal }))
+            collect(runTask(makeSynthesisTask(synthInstructions, rubric), { ctx, raw }, { runner: runnerFor(synthModel, analysisDir), model: synthModel, signal: controller.signal }))
           )
         } catch {
           curated = []
@@ -196,7 +209,9 @@ export function cancelDeepReview(url: string): void {
 /** Abort at quit: nobody is left to tell. */
 export function cancelAllDeepReviews(): void {
   for (const { controller } of activeDeep.values()) controller.abort()
+  for (const controller of preparing) controller.abort()
   activeDeep.clear()
+  preparing.clear()
 }
 
 /** Every PR's deep review this launch, for a client that missed the events. */

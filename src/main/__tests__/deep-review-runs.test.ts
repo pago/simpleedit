@@ -34,6 +34,7 @@ vi.mock('../tasks/deep-review-lenses', () => ({
   makeSynthesisTask: () => ({}),
   DEEP_REVIEW_PROMPT_VERSION: 1,
 }))
+vi.mock('../github/review-rubric', () => ({ fetchReviewRubric: async () => undefined, rubricFingerprint: () => 'none' }))
 vi.mock('../prompts/overrides', () => ({ resolveInstructions: () => ({ text: 'i' }), instructionsHash: (t: string) => t }))
 vi.mock('../screenprs-cache', () => ({
   analysisFingerprint: () => 'fp',
