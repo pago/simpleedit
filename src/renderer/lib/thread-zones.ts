@@ -30,6 +30,8 @@ interface Zone {
  * content. Keys typed in it stay out of Monaco, whose keybindings listen on
  * the editor's container (⌘I, ⌘S, this module's ⌘⇧M). It is pinned to the
  * visible width, not the scroll width, so long lines don't stretch it.
+ * It is raised above Monaco's text layer, which otherwise covers it and takes
+ * every click.
  */
 function svelteZone(
   editor: monaco.editor.ICodeEditor,
@@ -38,6 +40,7 @@ function svelteZone(
 ): Zone {
   const domNode = document.createElement('div')
   domNode.className = 'thread-zone'
+  domNode.style.zIndex = '1'
   const inner = document.createElement('div')
   domNode.append(inner)
   for (const type of ['keydown', 'keyup', 'keypress'] as const) domNode.addEventListener(type, (e) => e.stopPropagation())
