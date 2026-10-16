@@ -12,7 +12,7 @@ import { parseUnifiedDiff } from './parseDiff'
 
 /**
  * `none` = nothing ran (no checks, or only skipped optional ones), which is not a
- * pass. `attention` = a check was cancelled, or a required one skipped.
+ * pass. `attention` = a check was cancelled, unrecognised, or a required one skipped.
  */
 export type PrCiStatus = 'green' | 'pending' | 'failing' | 'attention' | 'none'
 export const CI_TONE: Record<PrCiStatus, string> = {
@@ -88,7 +88,7 @@ export interface PrContext extends PrRef {
   ci: PrCiStatus
   /** Names of the failing checks (for the "waiting on author" one-liner). */
   ciFailing: string[]
-  /** Cancelled or required-but-skipped checks; absent on a context that predates the field. */
+  /** Cancelled, unrecognised or required-but-skipped checks; absent on a context that predates the field. */
   ciAttention?: string[]
   reviewers: PrReviewer[]
   /** Approved by someone *other* than the current user. */

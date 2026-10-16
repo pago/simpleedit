@@ -71,7 +71,6 @@
     return 'changeset: none'
   })
 
-
   const refLabel = (r: OverviewRef): string => (r.line ? `${r.path}:${r.line}` : r.path)
   const html = (md: string): string => renderMarkdown(md)
   const PROSE = 'prose prose-invert prose-sm max-w-none text-[12px] leading-relaxed text-zinc-300 prose-p:my-1.5 prose-ul:my-1.5 prose-li:my-0.5 prose-code:text-[11px]'

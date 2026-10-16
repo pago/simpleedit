@@ -61,6 +61,29 @@ describe('parseChecks', () => {
     const required = rows({ name: 'deploy', state: 'SKIPPED', bucket: 'skipping' })
     expect(parseChecks(json, required)).toEqual({ ci: 'attention', ciFailing: [], ciAttention: ['deploy'] })
   })
+  it('matches required checks by workflow as well as name', () => {
+    const json = JSON.stringify([
+      { name: 'build', state: 'SUCCESS', bucket: 'pass', workflow: 'A' },
+      { name: 'build', state: 'SKIPPED', bucket: 'skipping', workflow: 'B' },
+    ])
+    const required = JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass', workflow: 'A' }])
+    expect(parseChecks(json, required).ci).toBe('green')
+  })
+  it('does not flag a NEUTRAL required check', () => {
+    const json = rows(pass, { name: 'gate', state: 'NEUTRAL', bucket: 'skipping' })
+    expect(parseChecks(json, rows({ name: 'gate', state: 'NEUTRAL', bucket: 'skipping' })).ci).toBe('green')
+  })
+  it('flags every skipped check when the required lookup failed', () => {
+    const json = rows(pass, { name: 'deploy', state: 'SKIPPED', bucket: 'skipping' })
+    expect(parseChecks(json, null)).toEqual({ ci: 'attention', ciFailing: [], ciAttention: ['deploy'] })
+  })
+  it('keeps the cancelled names while still pending', () => {
+    const json = rows(
+      { name: 'build', state: 'IN_PROGRESS', bucket: 'pending' },
+      { name: 'e2e', state: 'CANCELLED', bucket: 'cancel' }
+    )
+    expect(parseChecks(json).ciAttention).toEqual(['e2e'])
+  })
   it('reads a PR with only skipped optional checks as none', () => {
     const json = rows({ name: 'deploy', state: 'SKIPPED', bucket: 'skipping' })
     expect(parseChecks(json)).toEqual(none)
@@ -86,6 +109,12 @@ describe('parseChecks', () => {
 })
 
 describe('assembleMeta', () => {
+  it('threads the required-checks lookup into the CI status', () => {
+    const view = JSON.stringify({ additions: 1, deletions: 0, changedFiles: 1, baseRefName: 'main', headRefOid: 'a', body: '' })
+    const checks = JSON.stringify([{ name: 'deploy', state: 'SKIPPED', bucket: 'skipping' }])
+    expect(assembleMeta(ref, view, checks, 'pago', '[]').ci).toBe('none')
+    expect(assembleMeta(ref, view, checks, 'pago', null).ci).toBe('attention')
+  })
   const ref: PrRef = {
     owner: 'acme', repo: 'ui-pack', number: 7, url: 'u', title: 't', author: 'bob', updatedAt: 'd',
   }

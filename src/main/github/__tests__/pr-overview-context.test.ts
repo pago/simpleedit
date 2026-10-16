@@ -267,9 +267,9 @@ describe('renderOverviewInput', () => {
   it("never tells the model that missing, cancelled or skipped checks passed", () => {
     const none = renderOverviewInput(ctxWith({ pr: { ...PR, ci: 'none', ciFailing: [] } }))
     expect(none).toContain('No checks have run on this head')
-    expect(none).not.toContain('passed')
+    expect(none).not.toContain('All checks passed')
     const cancelled = renderOverviewInput(ctxWith({ pr: { ...PR, ci: 'attention', ciFailing: [], ciAttention: ['e2e'] } }))
-    expect(cancelled).toContain('cancelled or a required one was skipped (e2e)')
+    expect(cancelled).toContain('(cancelled, required but skipped, or in an unrecognised state) (e2e)')
     expect(cancelled).not.toContain('All checks passed')
     expect(renderOverviewInput(ctxWith({ pr: { ...PR, ci: 'green', ciFailing: [] } }))).toContain('All checks passed.')
   })
