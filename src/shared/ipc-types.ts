@@ -14,6 +14,15 @@ import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-
 import type { MemoryHealthReport } from './memory-health'
 import type { SessionOwner } from './session-owner'
 import type { ReviewChange, ReviewSnapshot } from './review-room'
+import type {
+  ReviewCompanionCreateRequest,
+  ReviewCompanionInfo,
+  ReviewLayerDiff,
+  ReviewLayerInfo,
+  ReviewOpenResult,
+  ReviewSinceStatus,
+  ReviewSubmitResult,
+} from './review-room-ipc'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -598,6 +607,36 @@ export interface ScreenPrsInvokeMap {
   'review:load': { args: []; result: ReviewSnapshot }
   /** Apply one validated Review Room client operation. */
   'review:op': { args: [request: unknown]; result: ReviewChange | null }
+  /** Open (or reuse) the open review of the stack `url` belongs to. */
+  'review:open': { args: [url: unknown]; result: ReviewOpenResult }
+  /** Layer metadata of an existing review (a reload, another window). */
+  'review:layers': { args: [reviewId: unknown]; result: ReviewLayerInfo[] }
+  /** One layer's review diff at the head the review records. */
+  'review:layer-diff': { args: [reviewId: unknown, prUrl: unknown]; result: ReviewLayerDiff }
+  /** §8: the user opened a layer (records `lastSeenHead` the first time) and what changed since. */
+  'review:since': { args: [reviewId: unknown, prUrl: unknown]; result: ReviewSinceStatus }
+  /** §8: the interdiff since `lastSeenHead` ("Show only the new changes"). */
+  'review:since-diff': { args: [reviewId: unknown, prUrl: unknown]; result: string }
+  /** §8 *Got it*: advance `lastSeenHead` to the current head. */
+  'review:ack-head': { args: [reviewId: unknown, prUrl: unknown]; result: void }
+  /** Tick or untick a tour step as read. */
+  'review:mark-step': { args: [reviewId: unknown, stepId: unknown, read: unknown]; result: void }
+  /** Move a whole-stack thread's draft to another layer. */
+  'review:move-draft': { args: [threadId: unknown, toUrl: unknown]; result: void }
+  /** Pick the companion agent; ends a running companion (the next Ask starts the new one). */
+  'review:set-companion-agent': { args: [reviewId: unknown, target: unknown]; result: void }
+  /** Start the companion without a question (the dock's Start). */
+  'review:companion-start': { args: [reviewId: unknown]; result: void }
+  /** The renderer's answer to `review:companion-create-request`. Desktop only. */
+  'review:companion-created': { args: [correlationId: unknown, outcome: unknown]; result: void }
+  /** A resumed owned placeholder got a new terminal id: rebind the claim. Desktop only. */
+  'review:companion-rebind': { args: [reviewId: unknown, fromSessionId: unknown, toSessionId: unknown]; result: boolean }
+  /** Where the companion lives, as seen from the calling window. */
+  'review:companion-info': { args: [reviewId: unknown]; result: ReviewCompanionInfo | null }
+  /** Post the review, one GitHub review per layer (GraphQL pending review). */
+  'review:submit': { args: [request: unknown]; result: ReviewSubmitResult }
+  /** Discard the review: deletes SimpleEdit's pending reviews on GitHub, ends the companion, removes checkouts. */
+  'review:discard': { args: [reviewId: unknown]; result: void }
   /** The saved org + cutoff every client screens with. */
   'screenprs:filter-get': { args: []; result: ScreenPrsFilterSnapshot }
   /** Replace the saved filter. Main validates, persists, and broadcasts `screenprs:filter-changed`. */
@@ -676,6 +715,8 @@ export interface ScreenPrsEventMap {
   /** A thread changed (`thread: null`: removed), from any client or the agent — sent to every window and phone. */
   'agent-threads:changed': ThreadChange
   'review:changed': ReviewChange
+  /** Main asks the claiming window to create the owned companion session. */
+  'review:companion-create-request': ReviewCompanionCreateRequest
   /** The saved filter changed, from any client — sent to every window and phone. */
   'screenprs:filter-changed': ScreenPrsFilterSnapshot
   'screenprs:schedule-changed': ScreenPrsSchedule
@@ -1101,6 +1142,8 @@ export interface ModelConfig {
   lastUsed?: ModelRef
   /** Deep-review lens config (Screen PRs). */
   deepReview?: DeepReviewConfig
+  /** The Review Room companion's default agent (Settings → Models allowlist). Absent: a plain new session's default. */
+  reviewCompanion?: InteractiveTarget
 }
 
 /** One NDJSON progress line from `POST /api/pull`, forwarded to the renderer. */
