@@ -16,6 +16,7 @@
   import { tourStore } from '../../stores/tourStore.svelte'
   import { tabsStore, tabIdFor, type FileTab, type ComposedTab } from '../../stores/tabsStore.svelte'
   import { sessionsStore, viewRootFor } from '../../stores/sessions.svelte'
+  import { uiView } from '../../stores/uiView.svelte'
   import { providerLabel } from '../../stores/agent-capabilities.svelte'
   import { worktreeLabel } from '../../lib/worktreeLabel'
   import {
@@ -63,14 +64,16 @@
   // Directory creation, `git init` and a first commit raise no watcher event
   // (the dir isn't watched while missing, `.git` is ignored), so the visible
   // view re-resolves on a timer until there's nothing left to wait for.
-  let isActiveSession = $derived(sessionsStore.activeSessionId() === sessionId)
+  // Every workspace stays mounted, the active one included while Backlog or
+  // Screen PRs fills the main area, so being the active session isn't enough.
+  let onScreen = $derived(sessionsStore.activeSessionId() === sessionId && uiView.current() === 'workspace')
   let memoryPollMs = $derived(
     !memoryView || memoryView.refused ? 0 : !memoryView.exists ? 5_000 : memoryView.git === null ? 30_000 : 0,
   )
   $effect(() => {
     const ms = memoryPollMs
     const from = launchDir
-    if (!isActiveSession || ms === 0) return
+    if (!onScreen || ms === 0) return
     const timer = setInterval(() => void memoryViewStore.reresolve(from), ms)
     return () => clearInterval(timer)
   })
@@ -647,7 +650,7 @@
             style:width="{rightColumnWidth}px"
           >
             {#if threadsOpen}
-              <ThreadsPanel {sessionId} visible={isActiveSession} onopen={openThreadAnchor} />
+              <ThreadsPanel {sessionId} visible={onScreen} onopen={openThreadAnchor} />
             {/if}
             <!-- Hidden, not unmounted, under the threads: the tree keeps its expanded folders. -->
             <div class="min-h-0 flex-1 flex-col {threadsOpen ? 'hidden' : 'flex'}">
@@ -755,7 +758,7 @@
       {:else}
         <Terminal
           terminalId={sessionId}
-          active={sessionsStore.activeSessionId() === sessionId}
+          active={onScreen}
           provider={session.provider}
           ontitlechange={(title) => sessionsStore.applyOscTitle(sessionId, title)}
         />

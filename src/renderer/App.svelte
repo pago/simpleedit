@@ -270,9 +270,13 @@
           <ScreenPrsView />
         {:else if uiView.current() === 'backlog'}
           <BacklogView />
-        {:else}
-          <WorkspaceManager />
         {/if}
+        <!-- Hidden, not unmounted, behind the other views: a remount rebuilds
+             every terminal from a truncated replay, loses editor state, and
+             drops agent pushes (show_diff, tours) that arrive meanwhile. -->
+        <div class="h-full" class:hidden={uiView.current() !== 'workspace'}>
+          <WorkspaceManager />
+        </div>
       </main>
     </div>
     <BacklogArrivalNotice />
