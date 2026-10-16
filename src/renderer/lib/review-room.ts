@@ -291,8 +291,9 @@ export type UnreadReason = 'not-loaded' | 'truncated'
 
 export function unreadReason(layer: ReviewLayerInfo, diff: ReviewLayerDiff | undefined): UnreadReason | null {
   if (!diff || diff.headSha !== layer.headSha) return 'not-loaded'
-  // A diff cut to fit a socket was not read in full.
-  return diff.diff.includes(DIFF_TRUNCATED_MARKER) ? 'truncated' : null
+  // A diff cut to fit a socket was not read in full. The cut ends with the
+  // marker; a PR that merely quotes it (a change to ipc-types.ts) is not cut.
+  return diff.diff.trimEnd().endsWith(DIFF_TRUNCATED_MARKER) ? 'truncated' : null
 }
 
 /**

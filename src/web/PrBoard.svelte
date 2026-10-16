@@ -107,8 +107,8 @@
   let grouped = $derived(stacksByBucket(byBucket))
   let requested = $derived(reviewRoom.requested())
 
-  /** `owner/name`, as a card's `repo` reads. */
-  const repoOf = (url: string): string => new URL(url).pathname.split('/').slice(1, 3).join('/')
+  /** The repo's name, as a card's `repo` reads. */
+  const repoOf = (url: string): string => new URL(url).pathname.split('/')[2] ?? ''
 
   /** A requested review opens on its top layer, which is all a Requested row knows. */
   function openRequested(r: Review): void {

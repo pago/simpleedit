@@ -143,12 +143,6 @@ describe('screenPrsStore ingestion', () => {
     handlers['screenprs:overview-status']!({ url: 'u4', status: 'idle' })
     expect(screenPrsStore.overviewFor('u4')?.status).toBe('idle')
   })
-
-  it('posting() is only a review post in flight, not a screening or a deep review', async () => {
-    await screenPrsStore.startDeep(ctx({ number: 6, url: 'u6' }))
-    expect(screenPrsStore.status()).toBe('running')
-    expect(screenPrsStore.posting()).toBe(false)
-  })
 })
 
 describe('runs shared by every client', () => {

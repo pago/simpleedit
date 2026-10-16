@@ -125,6 +125,41 @@ describe('ReviewSubmitSheet', () => {
     expect(reviewSubmits.latched(REVIEW_ID)).toBe(false)
   })
 
+  it('shows main’s refusal without latching: nothing was posted', async () => {
+    answer = () => {
+      throw new Error('This review is already being submitted')
+    }
+    await loadDiffs()
+    mount()
+    await fireEvent.click(screen.getByTestId('submit-reviews'))
+    await waitFor(() => expect(screen.getByTestId('submit-error')).toHaveTextContent('already being submitted'))
+    expect(reviewSubmits.latched(REVIEW_ID)).toBe(false)
+  })
+
+  it('keeps the latch for the tab, so a reload doesn’t re-arm Submit', () => {
+    reviewSubmits.latch(REVIEW_ID)
+    expect(JSON.parse(sessionStorage.getItem('simpleedit.reviewSubmitLatch') ?? '[]')).toEqual([REVIEW_ID])
+    reviewSubmits.unlatch(REVIEW_ID)
+    expect(sessionStorage.getItem('simpleedit.reviewSubmitLatch')).toBeNull()
+  })
+
+  it('takes one submit for a double tap while the review body is still being saved', async () => {
+    await loadDiffs()
+    mount()
+    const button = screen.getByTestId('submit-reviews')
+    await Promise.all([fireEvent.click(button), fireEvent.click(button)])
+    await waitFor(() => expect(submits()).toHaveLength(1))
+  })
+
+  it('posts a layer whose diff only quotes the truncation marker', async () => {
+    diffs[U2] = `diff --git a/x b/x\n+const M = '${DIFF_TRUNCATED_MARKER}'\n context\n`
+    await loadDiffs()
+    mount()
+    await fireEvent.click(screen.getByTestId('submit-reviews'))
+    await waitFor(() => expect(submits()).toHaveLength(1))
+    expect(submits()[0].layers.map((l) => l.prUrl)).toEqual([U1, U2])
+  })
+
   it('holds Back while the answer is owed', async () => {
     let finish: (r: ReviewSubmitResult) => void = () => {}
     answer = () => new Promise((resolve) => (finish = resolve))

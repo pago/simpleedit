@@ -92,7 +92,7 @@ describe('PrBoard — stacks and requested reviews', () => {
     expect(row).toHaveTextContent('Top layer')
     expect(row).toHaveTextContent('stack of 2')
     await fireEvent.click(row)
-    expect(opened).toMatchObject([{ url: 'https://github.com/acme/app/pull/184', repo: 'acme/app', number: 184 }])
+    expect(opened).toMatchObject([{ url: 'https://github.com/acme/app/pull/184', repo: 'app', number: 184 }])
     _resetReviewRoomForTests()
   })
 })

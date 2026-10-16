@@ -164,10 +164,6 @@
     })
   }
 
-  async function forceSend(sessionId: string | undefined): Promise<void> {
-    if (sessionId) await run(() => agentThreadsStore.forceSend(sessionId))
-  }
-
   async function done(reason?: ReviewCloseReason): Promise<void> {
     confirmingDone = false
     await run(() => reviewRoom.setStatus(reviewId, thread.id, 'done', reason))
@@ -369,7 +365,8 @@
                     <button type="button" class={SMALL_BTN} disabled={!to} onclick={() => retry(m.id, to)}>Retry</button>
                     {#if !to}<span class="text-zinc-500">{m.toAuthor ? 'The requesting session has ended.' : 'No companion is running.'}</span>{/if}
                   {:else if info.action === 'force-send'}
-                    <button type="button" class={SMALL_BTN} onclick={() => forceSend(to)}>Its prompt is empty, send</button>
+                    <!-- That prompt is on the Mac: only someone looking at it can say it's empty. -->
+                    <span class="text-zinc-500">Clear its prompt on the Mac, or send from there.</span>
                   {/if}
                 </div>
               {/if}

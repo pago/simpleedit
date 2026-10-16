@@ -16,7 +16,9 @@
  *     marker, so a layer that answered `unknown` is not latched: its Retry is
  *     what resumes it.
  *
- * Page-lifetime: a reconnect keeps them, a reload drops them.
+ * A reconnect keeps them. The latch also survives a reload of this tab
+ * (sessionStorage): the version check reloads right after a reconnect, which
+ * is exactly when an answer goes missing.
  */
 import type { AgentStatus } from '../../shared/ipc-types'
 import type { Review } from '../../shared/review-room'
@@ -105,8 +107,28 @@ export function companionLine(
   }
 }
 
+const LATCH_KEY = 'simpleedit.reviewSubmitLatch'
+
+function loadLatched(): Set<string> {
+  try {
+    const raw: unknown = JSON.parse(sessionStorage.getItem(LATCH_KEY) ?? '[]')
+    return new Set(Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveLatched(ids: Set<string>): void {
+  try {
+    if (ids.size) sessionStorage.setItem(LATCH_KEY, JSON.stringify([...ids]))
+    else sessionStorage.removeItem(LATCH_KEY)
+  } catch {
+    // Storage blocked: the latch still holds for this page.
+  }
+}
+
 let submitting = $state<Set<string>>(new Set())
-let unknown = $state<Set<string>>(new Set())
+let unknown = $state<Set<string>>(loadLatched())
 
 function withOut(set: Set<string>, id: string): Set<string> {
   const next = new Set(set)
@@ -128,14 +150,18 @@ export const reviewSubmits = {
   latched: (reviewId: string): boolean => unknown.has(reviewId),
   latch(reviewId: string): void {
     unknown = new Set(unknown).add(reviewId)
+    saveLatched(unknown)
   },
   /** "I checked": or a submit that did come back. */
   unlatch(reviewId: string): void {
+    if (!unknown.has(reviewId)) return
     unknown = withOut(unknown, reviewId)
+    saveLatched(unknown)
   },
   /** Tests only. */
   _reset(): void {
     submitting = new Set()
     unknown = new Set()
+    saveLatched(unknown)
   },
 }

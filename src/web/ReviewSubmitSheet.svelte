@@ -20,7 +20,7 @@
   import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
   import { reviewRoom } from '../renderer/stores/reviewRoom.svelte'
   import { commentWhere, defaultVerdict, draftsMarkdown, layerPreview, postedComments, readHeadOf, unreadReason } from '../renderer/lib/review-room'
-  import { NotSentError } from './api-shim'
+  import { ConnectionLostError, NotSentError } from './api-shim'
   import { copyText } from './lib/copy-text'
   import { reviewSubmits } from './lib/review-phone.svelte'
 
@@ -113,7 +113,17 @@
       return
     }
     error = null
-    await Promise.all(urls.map((url) => screenPrsStore.flushSummary(url)))
+    // In flight from the first tap: the flush is a round trip a second tap could slip into.
+    reviewSubmits.begin(reviewId)
+    try {
+      await Promise.all(urls.map((url) => screenPrsStore.flushSummary(url)))
+      await send(urls)
+    } finally {
+      reviewSubmits.end(reviewId)
+    }
+  }
+
+  async function send(urls: string[]): Promise<void> {
     const request: ReviewSubmitRequest = {
       reviewId,
       layers: layers.flatMap((l) => {
@@ -124,7 +134,6 @@
       destination: { session: toSession, github: toGithub },
     }
     if (!request.layers.length) return
-    reviewSubmits.begin(reviewId)
     try {
       const result = await window.api.invoke('review:submit', request)
       for (const o of result.layers) outcomes[o.prUrl] = o
@@ -133,15 +142,16 @@
     } catch (err) {
       if (err instanceof NotSentError) {
         error = 'The connection went before the submit was sent: nothing was posted.'
-      } else {
+      } else if (err instanceof ConnectionLostError) {
         // It went and the answer never came: main may still be posting.
         error =
           'The answer to this submit never arrived, so it may still be posting on the Mac. ' +
           'Check the PRs on GitHub (or what the Mac recorded, below) before submitting again.'
         reviewSubmits.latch(reviewId)
+      } else {
+        // Main answered with a refusal: nothing was posted.
+        error = `Couldn’t submit: ${err instanceof Error ? err.message : String(err)}`
       }
-    } finally {
-      reviewSubmits.end(reviewId)
     }
   }
 
