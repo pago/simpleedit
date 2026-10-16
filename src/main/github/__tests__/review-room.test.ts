@@ -1,6 +1,19 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const runGhMock = vi.hoisted(() => vi.fn<(args: string[], opts?: { input?: string }) => Promise<string>>())
+vi.mock('electron', () => ({ app: { getPath: () => '/nonexistent' } }))
+vi.mock('../gh', async (orig) => ({ ...(await orig<typeof import('../gh')>()), runGh: runGhMock }))
+
 import type { ScreenPrCard } from '../../../shared/screenprs'
-import { fetchGithubReviewThreads, mapGithubReviewThreads, type GithubReviewThread } from '../review-threads'
+import { openDb, useDbForTests } from '../../db'
+import { createReview, threadsForReview } from '../../review-room-store'
+import {
+  fetchGithubReviewThreads,
+  importGithubReviewThreads,
+  mapGithubReviewThreads,
+  resetGithubReviewThreadsCache,
+  type GithubReviewThread,
+} from '../review-threads'
 import { pickStackParent, resolveStack } from '../stack-base'
 
 function card(number: number, headRefName: string, baseRefName: string, bucket: ScreenPrCard['bucket']): ScreenPrCard {
@@ -75,7 +88,7 @@ describe('GitHub review thread import', () => {
   it('maps only lines present in the isolated review diff', () => {
     const thread = (over: Partial<GithubReviewThread>): GithubReviewThread => ({
       id: 'node', isResolved: false, isOutdated: false, path: 'src/a.ts', line: 1,
-      diffSide: 'RIGHT', comments: [{ id: 'comment', databaseId: 7, author: 'alice', body: 'note' }], ...over,
+      diffSide: 'RIGHT', comments: [{ id: 'comment', databaseId: '7', author: 'alice', body: 'note' }], ...over,
     })
     const mapped = mapGithubReviewThreads(layer, diff, [
       thread({ id: 'right' }),
@@ -83,11 +96,24 @@ describe('GitHub review thread import', () => {
       thread({ id: 'lower', path: 'src/lower.ts' }),
       thread({ id: 'outdated', isOutdated: true }),
     ], true)
-    expect(mapped[0].anchor.kind).toBe('line')
+    expect(mapped[0]).toMatchObject({
+      anchor: { kind: 'line', pr: 42, headSha: 'abc', path: 'src/a.ts', side: 'RIGHT', startLine: 1, endLine: 1, snippet: 'new' },
+      origin: { kind: 'github', threadNodeId: 'right', rootCommentId: '7', author: 'alice', isResolved: false },
+      status: 'open',
+      messages: [{ author: 'reviewer', body: 'note' }],
+    })
     for (const imported of mapped.slice(1)) {
       expect(imported.anchor).toEqual({ kind: 'pr', pr: 42 })
       expect(imported.messages[0].body).toContain('outside this layer')
     }
+  })
+
+  it('skips a thread whose root comment has no REST id, since a reply could not be posted to it', () => {
+    const mapped = mapGithubReviewThreads(layer, diff, [{
+      id: 'no-db-id', isResolved: false, isOutdated: false, path: 'src/a.ts', line: 1, diffSide: 'RIGHT',
+      comments: [{ id: 'comment', author: 'alice', body: 'note' }],
+    }])
+    expect(mapped).toEqual([])
   })
 
   it('paginates thread and nested comment connections', async () => {
@@ -113,5 +139,112 @@ describe('GitHub review thread import', () => {
     expect(threads.map((thread) => thread.id)).toEqual(['t1', 't2'])
     expect(threads[0].comments.map((comment) => comment.id)).toEqual(['c1', 'c2'])
     expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('takes the REST id from fullDatabaseId, which outgrows the Int32 databaseId', async () => {
+    const run = vi.fn(async () => ({ data: { repository: { pullRequest: { reviewThreads: {
+      nodes: [{
+        id: 't1', isResolved: false, isOutdated: false, path: 'src/a.ts', line: 1, diffSide: 'RIGHT',
+        comments: { nodes: [
+          { id: 'c1', databaseId: null, fullDatabaseId: '3000000000', author: { login: 'alice' }, body: 'big id' },
+          { id: 'c2', databaseId: 5, author: { login: 'bob' }, body: 'old id' },
+        ], pageInfo: { hasNextPage: false } },
+      }],
+      pageInfo: { hasNextPage: false },
+    } } } } }))
+    const [thread] = await fetchGithubReviewThreads(layer, run)
+    expect(thread?.comments.map((comment) => comment.databaseId)).toEqual(['3000000000', '5'])
+  })
+})
+
+describe('importGithubReviewThreads', () => {
+  const layer = { url: 'https://github.com/acme/repo/pull/42', number: 42, headSha: 'abc' }
+  const diff = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -1,2 +1,2 @@',
+    '-old',
+    '+new',
+    ' context',
+  ].join('\n')
+
+  interface Comment { id: string; databaseId: number; body: string }
+
+  /** One page of GraphQL answer with the given threads. */
+  function answer(threads: Array<{ id: string; isResolved?: boolean; comments: Comment[] }>): string {
+    return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
+      nodes: threads.map((thread) => ({
+        id: thread.id, isResolved: thread.isResolved ?? false, isOutdated: false, path: 'src/a.ts', line: 1, diffSide: 'RIGHT',
+        comments: {
+          nodes: thread.comments.map((comment) => ({ ...comment, author: { login: 'alice' } })),
+          pageInfo: { hasNextPage: false },
+        },
+      })),
+      pageInfo: { hasNextPage: false },
+    } } } } })
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-16T10:00:00Z'))
+    runGhMock.mockReset()
+    resetGithubReviewThreadsCache()
+    useDbForTests(openDb(':memory:'))
+    createReview({ id: 'r_review01', repo: 'github.com/acme/repo', layers: [layer], companionAgent: { provider: 'claude', model: 'sonnet' } })
+  })
+
+  afterEach(() => {
+    useDbForTests(null)
+    vi.useRealTimers()
+  })
+
+  const imported = () => threadsForReview('r_review01').filter((thread) => thread.origin.kind === 'github')
+
+  it('does not keep a failed fetch, so the next import tries again', async () => {
+    runGhMock.mockRejectedValueOnce(new Error('rate limited'))
+    await expect(importGithubReviewThreads('r_review01', layer, diff)).rejects.toThrow('rate limited')
+    runGhMock.mockResolvedValueOnce(answer([{ id: 't1', comments: [{ id: 'c1', databaseId: 1, body: 'first' }] }]))
+    await importGithubReviewThreads('r_review01', layer, diff)
+    expect(imported()).toHaveLength(1)
+    expect(runGhMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('adds each thread once when two imports run at the same time', async () => {
+    runGhMock.mockResolvedValue(answer([
+      { id: 't1', comments: [{ id: 'c1', databaseId: 1, body: 'first' }, { id: 'c2', databaseId: 2, body: 'reply' }] },
+      { id: 't2', comments: [{ id: 'c3', databaseId: 3, body: 'other' }] },
+    ]))
+    await Promise.all([importGithubReviewThreads('r_review01', layer, diff), importGithubReviewThreads('r_review01', layer, diff)])
+    expect(imported().map((thread) => thread.origin.kind === 'github' && thread.origin.threadNodeId).sort()).toEqual(['t1', 't2'])
+    expect(imported().find((thread) => thread.origin.kind === 'github' && thread.origin.threadNodeId === 't1')?.messages.map((m) => m.body))
+      .toEqual(['first', 'reply'])
+  })
+
+  it('picks up new replies and the resolved flag once the cache has expired', async () => {
+    runGhMock.mockResolvedValueOnce(answer([{ id: 't1', comments: [{ id: 'c1', databaseId: 1, body: 'first' }] }]))
+    await importGithubReviewThreads('r_review01', layer, diff)
+    runGhMock.mockResolvedValueOnce(answer([{
+      id: 't1', isResolved: true,
+      comments: [{ id: 'c1', databaseId: 1, body: 'first' }, { id: 'c2', databaseId: 2, body: 'late reply' }],
+    }]))
+
+    await importGithubReviewThreads('r_review01', layer, diff)
+    expect(runGhMock).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(new Date('2026-10-16T10:02:00Z'))
+    await importGithubReviewThreads('r_review01', layer, diff)
+    const [thread] = imported()
+    expect(imported()).toHaveLength(1)
+    expect(thread?.messages.map((message) => message.body)).toEqual(['first', 'late reply'])
+    expect(thread?.origin).toMatchObject({ kind: 'github', isResolved: true })
+  })
+
+  it('stores an empty GitHub comment as a placeholder rather than failing the import', async () => {
+    runGhMock.mockResolvedValueOnce(answer([{
+      id: 't1', comments: [{ id: 'c1', databaseId: 1, body: 'first' }, { id: 'c2', databaseId: 2, body: '   ' }],
+    }]))
+    await importGithubReviewThreads('r_review01', layer, diff)
+    expect(imported()[0]?.messages.map((message) => message.body)).toEqual(['first', '(empty comment)'])
   })
 })

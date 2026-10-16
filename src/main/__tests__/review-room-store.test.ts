@@ -3,17 +3,23 @@ import type { ReviewOp, ReviewThreadAnchor } from '../../shared/review-room'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/nonexistent' } }))
 
-import { openDb, useDbForTests } from '../db'
+import { getDb, openDb, useDbForTests } from '../db'
 import {
   applyReviewOp,
   carryReviewThreads,
   claimCompanion,
+  clearCompanion,
   createReview,
   getReview,
   getReviewThread,
+  isReviewCompanionSession,
   loadReviews,
+  reviewMessagesInState,
+  reviewsForSession,
   setReviewDelivery,
+  setReviewLayerHead,
   setReviewProposal,
+  setReviewStatus,
 } from '../review-room-store'
 
 const agent = { provider: 'claude', model: 'sonnet' }
@@ -119,5 +125,83 @@ describe('review room store', () => {
       anchor: { headSha: 'head2', startLine: 8 },
       outdated: false,
     })
+  })
+
+  it('drops a done thread without a reason and keeps an unplaceable one outdated on its old anchor', () => {
+    create()
+    applyReviewOp('r_aaaaaa', addThread('rt_plain01', 'rm_plain01'))
+    applyReviewOp('r_aaaaaa', { kind: 'set-status', threadId: 'rt_plain01', status: 'done' })
+    applyReviewOp('r_aaaaaa', addThread('rt_lost01', 'rm_lost01'))
+    create('r_bbbbbb', { previousReviewId: 'r_aaaaaa', round: 2, layers: [{ ...layers[0]!, headSha: 'head2' }] })
+
+    const changes = carryReviewThreads('r_aaaaaa', 'r_bbbbbb', () => null)
+    expect(changes).toHaveLength(1)
+    expect(changes[0]?.thread).toMatchObject({ carriedFrom: 'rt_lost01', outdated: true, anchor })
+  })
+
+  it('carries messages as history: in-flight questions become unanswered and Ask author closes', () => {
+    create()
+    for (const [thread, message] of [
+      ['rt_held01', 'rm_held01'],
+      ['rt_send01', 'rm_send01'],
+      ['rt_deli01', 'rm_deli01'],
+      ['rt_answ01', 'rm_answ01'],
+    ] as const) applyReviewOp('r_aaaaaa', addThread(thread, message))
+    setReviewDelivery(['rm_send01'], { delivery: 'sending' })
+    setReviewDelivery(['rm_deli01'], { delivery: 'delivered' })
+    setReviewDelivery(['rm_answ01'], { delivery: 'answered' })
+    getDb().prepare('UPDATE review_threads SET ask_author_open = 1 WHERE id = ?').run('rt_answ01')
+    create('r_bbbbbb', { previousReviewId: 'r_aaaaaa', round: 2 })
+
+    const carried = new Map(
+      carryReviewThreads('r_aaaaaa', 'r_bbbbbb', (old) => old).map((change) => [change.thread?.carriedFrom, change.thread]),
+    )
+    for (const id of ['rt_held01', 'rt_send01', 'rt_deli01']) {
+      expect(carried.get(id)?.messages[0]).toMatchObject({
+        delivery: 'unanswered',
+        failedReason: 'Asked in round 1 and not answered there',
+      })
+      expect(carried.get(id)?.messages[0]).not.toHaveProperty('heldReason')
+    }
+    expect(carried.get('rt_answ01')?.messages[0]).toMatchObject({ delivery: 'answered' })
+    expect(carried.get('rt_answ01')?.askAuthorOpen).toBe(false)
+    expect(getReviewThread('rt_answ01')?.askAuthorOpen).toBe(true)
+  })
+
+  it('keeps the companion lookups in step with claim and clear', () => {
+    create()
+    create('r_bbbbbb', { requesterSessionId: 'requester' })
+    applyReviewOp('r_aaaaaa', addThread())
+    expect(isReviewCompanionSession('session-a')).toBe(false)
+    expect(reviewMessagesInState('session-a', ['held'])).toEqual([])
+
+    claimCompanion('r_aaaaaa', 1, 'req-a', 'session-a', agent)
+    expect(isReviewCompanionSession('session-a')).toBe(true)
+    expect(reviewMessagesInState('session-a', ['held']).map(({ message }) => message.id)).toEqual(['rm_aaaaaa'])
+    expect(reviewMessagesInState('session-a', ['sending'])).toEqual([])
+    expect(reviewsForSession('session-a').map((review) => review.id)).toEqual(['r_aaaaaa'])
+    expect(reviewsForSession('requester').map((review) => review.id)).toEqual(['r_bbbbbb'])
+
+    expect(clearCompanion('r_aaaaaa', 'someone-else')).toBeNull()
+    expect(clearCompanion('r_aaaaaa', 'session-a')?.review?.companion).toBeUndefined()
+    expect(isReviewCompanionSession('session-a')).toBe(false)
+    expect(reviewMessagesInState('session-a', ['held'])).toEqual([])
+    expect(reviewsForSession('session-a')).toEqual([])
+  })
+
+  it('refuses a companion claim on a review that is not open', () => {
+    create()
+    setReviewStatus('r_aaaaaa', 'submitted')
+    expect(claimCompanion('r_aaaaaa', 1, 'req-a', 'session-a', agent)).toEqual({ won: false, change: null })
+    expect(isReviewCompanionSession('session-a')).toBe(false)
+  })
+
+  it('records a pushed layer head and ignores the same head or an unknown layer', () => {
+    create()
+    expect(setReviewLayerHead('r_aaaaaa', 12, 'head1')).toBeNull()
+    expect(setReviewLayerHead('r_aaaaaa', 99, 'head2')).toBeNull()
+    expect(setReviewLayerHead('r_aaaaaa', 12, 'head2')?.review?.layers).toEqual([{ ...layers[0]!, headSha: 'head2' }])
+    expect(getReview('r_aaaaaa')?.layers[0]?.headSha).toBe('head2')
+    expect(() => setReviewLayerHead('r_aaaaaa', 12, '')).toThrow(/Malformed/)
   })
 })
