@@ -89,6 +89,7 @@ export interface ReviewRoomTools {
   listThreads(terminalId: string, input: Record<string, unknown>): Record<string, unknown>
   reply(terminalId: string, threadId: string, body: string): { ok: true } | { ok: false; error: string }
   getDiff(terminalId: string, reviewId: string, pr: number): Promise<Record<string, unknown>>
+  checkoutHead(terminalId: string, reviewId: string, pr: number | undefined): Promise<Record<string, unknown>>
   proposeDraft(terminalId: string, threadId: string, text: string, severity?: string): { ok: true } | { ok: false; error: string }
 }
 
@@ -676,6 +677,17 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     const pr = typeof args['pr'] === 'number' ? args['pr'] : NaN
     try {
       return { status: 200, body: await reviewRoomTools.getDiff(terminalId, reviewId, pr) }
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : String(err) } }
+    }
+  }
+
+  if (tool === 'checkout_review_head') {
+    if (!reviewRoomTools) return { status: 400, body: { error: 'Review threads are unavailable.' } }
+    const reviewId = typeof args['review_id'] === 'string' ? args['review_id'] : ''
+    const pr = args['pr'] === undefined ? undefined : typeof args['pr'] === 'number' ? args['pr'] : NaN
+    try {
+      return { status: 200, body: await reviewRoomTools.checkoutHead(terminalId, reviewId, pr) }
     } catch (err) {
       return { status: 400, body: { error: err instanceof Error ? err.message : String(err) } }
     }

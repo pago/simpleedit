@@ -761,6 +761,26 @@ server.registerTool(
 )
 
 server.registerTool(
+  'checkout_review_head',
+  {
+    description: [
+      'Check out the head of one layer of the current Review Room review, read-only, and return its',
+      'absolute path. Use it when you need code outside the diff (callers, types, tests); read the',
+      'files there by absolute path. Never modify them. The first call for a repo can take a while.',
+    ].join('\n'),
+    inputSchema: {
+      review_id: z.string().min(1).describe('Review id, e.g. "r_…".'),
+      pr: z.number().int().min(1).optional().describe('Pull request number of the layer; the top layer when omitted.'),
+    },
+  },
+  async ({ review_id, pr }) => {
+    const result = await postToBridge('checkout_review_head', { review_id, ...(pr === undefined ? {} : { pr }) })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(JSON.stringify(result.data ?? {}, null, 2))
+  },
+)
+
+server.registerTool(
   'propose_draft',
   {
     description: [

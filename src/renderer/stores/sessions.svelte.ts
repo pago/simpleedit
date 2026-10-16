@@ -23,6 +23,8 @@ import {
 } from './worktrees.svelte'
 import { resolveSpawnModelRef } from '../lib/agentModels'
 import { isOwned, type SessionOwner } from '../../shared/session-owner'
+import type { Review } from '../../shared/review-room'
+import type { ReviewCompanionCreateRequest } from '../../shared/review-room-ipc'
 
 export type SessionKind = 'agent' | 'agents' | 'terminal'
 
@@ -137,6 +139,12 @@ export interface Session {
    */
   groupId?: string
   owner?: SessionOwner
+  /**
+   * A restored companion placeholder: the terminal id main's claim still
+   * names. Resume rebinds the claim from it to this session's id before
+   * spawning, so main derives the companion's launch options for the new id.
+   */
+  companionClaimId?: string
 }
 
 export interface MemoryView {
@@ -185,6 +193,8 @@ export interface AgentCreateOptions {
   target?: { groupId?: string; index: number }
   owner?: SessionOwner
   select?: boolean
+  /** The terminal id main reserved for this session (a review companion). */
+  id?: string
 }
 
 /** Auto-assigned to new groups, cycled by group count. */
@@ -342,7 +352,7 @@ export const sessionsStore = {
     // rather than at each `invoke` keeps the two calls below from disagreeing,
     // and stops the new session aliasing the source session's target object.
     const target = $state.snapshot(rawTarget) as InteractiveTarget
-    const id = `agent-${target.provider}-${crypto.randomUUID()}`
+    const id = opts.id ?? `agent-${target.provider}-${crypto.randomUUID()}`
     const model = opts.model ?? (target.provider === 'claude' ? target.model : undefined)
     const caps = capabilitiesFor(target.provider)
     const name = providerLabel(target.provider)
@@ -421,7 +431,8 @@ export const sessionsStore = {
               ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}),
             }
           : undefined
-    void window.api.invoke('models:config-set', { lastUsed })
+    // A companion's agent is the review's setting, not the user's last pick.
+    if (!isOwned(newSession)) void window.api.invoke('models:config-set', { lastUsed })
     // For cloud Claude, upgrade the raw model id to its human display name once
     // the catalog resolves — best-effort, leaves the id if not found.
     // Skip when the caller supplied any label: the upgrade only prettifies the
@@ -618,11 +629,24 @@ export const sessionsStore = {
     const model = target.provider === 'claude' ? target.model : undefined
     this.update(id, { pendingResume: undefined, resumeError: undefined })
     if (!isOwned(session)) select(id)
+    const owner = session.owner
+    const claimId = session.companionClaimId ?? id
     // Main reports its own spawn failures into the terminal. Anything thrown
     // here never got that far, so there is no terminal to show it in: put the
     // placeholder back, or the workspace is left black with nothing behind it.
     void (async () => {
       try {
+        // A companion's claim moves to this id FIRST: main derives its
+        // read-only launch from the claim. Refused, this placeholder is no
+        // longer the review's companion, and the room offers a new one.
+        if (owner) {
+          const rebound = await window.api.invoke('review:companion-rebind', owner.reviewId, claimId, id)
+          if (!rebound) {
+            sessionsStore.close(id)
+            return
+          }
+          sessionsStore.update(id, { companionClaimId: undefined })
+        }
         await window.api.invoke('agent:spawn', {
           id,
           worktreePath: session.launchDir,
@@ -639,6 +663,25 @@ export const sessionsStore = {
         })
       }
     })()
+  },
+
+  /**
+   * Close the owned sessions no review claims any more: a review that is no
+   * longer open, or a claim that moved on (ended, replaced, timed out).
+   * `reviews` is every review main knows, or just the changed ones with
+   * `only` naming them.
+   */
+  dropUnclaimedCompanions(reviews: readonly Review[], only?: ReadonlySet<string>): void {
+    const byId = new Map(reviews.map((review) => [review.id, review]))
+    for (const session of [..._sessions]) {
+      const reviewId = session.owner?.reviewId
+      if (!reviewId || (only && !only.has(reviewId))) continue
+      const review = byId.get(reviewId)
+      const claimed = review?.status === 'open' && review.companion
+        ? review.companion.sessionId === session.id || review.companion.sessionId === session.companionClaimId
+        : false
+      if (!claimed) this.close(session.id)
+    }
   },
 
   rename(id: string, label: string): void {
@@ -995,6 +1038,7 @@ export const sessionsStore = {
     groupId?: string
     seedPrompt?: string
     owner?: SessionOwner
+    companionClaimId?: string
   }): string | null {
     // Restore the persisted trail; fall back to the workspace worktree so the
     // current location still shows in the pickers for pre-trail blobs.
@@ -1044,6 +1088,7 @@ export const sessionsStore = {
         ...(input.groupId ? { groupId: input.groupId } : {}),
         ...(input.seedPrompt ? { seedPrompt: input.seedPrompt } : {}),
         ...(input.owner ? { owner: input.owner } : {}),
+        ...(input.owner && input.companionClaimId ? { companionClaimId: input.companionClaimId } : {}),
         // A restored session needs the trust-grant band as much as a fresh one —
         // arguably more, since the user has quit and relaunched since granting.
         // Without this, resuming a Codex session gives degraded status and
@@ -1223,6 +1268,38 @@ async function createSessionFromBrief(
     // a throw here — it only sees silence, which it remembers as "a session
     // may exist" and will not let the user retry. The bridge throwing
     // synchronously on an unclonable payload is the realistic one.
+    answer({ ok: false, reason: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/**
+ * Handle a `review:companion-create-request`: main claimed this window to host
+ * a review's companion, under the terminal id it reserved. Hidden and owned;
+ * never selected, so the user's view stays put. Every path answers, as
+ * `createSessionFromBrief` does: main clears the claim on a refusal or silence.
+ */
+export function createReviewCompanion(data: ReviewCompanionCreateRequest): void {
+  const answer = (outcome: { ok: true } | { ok: false; reason: string }): void => {
+    void window.api.invoke('review:companion-created', data.correlationId, outcome)
+  }
+  try {
+    const wt = mainWorktree()
+    const root = projectRoot() ?? wt?.path
+    if (!root || !wt) {
+      answer({ ok: false, reason: 'That SimpleEdit window has no repo open yet.' })
+      return
+    }
+    if (!sessionsStore.get(data.sessionId)) {
+      sessionsStore.createAgent(data.target, root, wt.path, {
+        id: data.sessionId,
+        owner: { kind: 'review', reviewId: data.reviewId },
+        select: false,
+        initialPrompt: data.brief,
+        label: data.label,
+      })
+    }
+    answer({ ok: true })
+  } catch (err) {
     answer({ ok: false, reason: err instanceof Error ? err.message : String(err) })
   }
 }
@@ -1436,6 +1513,17 @@ export function initSessionListeners(): () => void {
     void createSessionFromBrief(data)
   })
 
+  // Main claimed this window to host a review's companion.
+  const offCompanion = window.api.on('review:companion-create-request', (data) => {
+    createReviewCompanion(data)
+  })
+
+  // A companion whose claim ended (or moved on) has nothing left to do here.
+  const offReviewChanged = window.api.on('review:changed', (change) => {
+    if (!('review' in change)) return
+    sessionsStore.dropUnclaimedCompanions(change.review ? [change.review] : [], new Set([change.reviewId]))
+  })
+
   // Keep the messaging bus's peer list current. Labels, provider and status live
   // here, so main can't derive them — this pushes a fresh snapshot whenever any
   // of them changes. $effect.root because this runs outside a component.
@@ -1459,6 +1547,8 @@ export function initSessionListeners(): () => void {
     offRepoTouch()
     offSpawn()
     offCreate()
+    offCompanion()
+    offReviewChanged()
     stopPeerSync()
   }
 }

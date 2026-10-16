@@ -802,6 +802,11 @@ export interface SerializedAgentSession {
    */
   seedPrompt?: string
   owner?: SessionOwner
+  /**
+   * An owned session's terminal id as main's companion claim names it. Restore
+   * mints a new id, so Resume rebinds the claim from this one.
+   */
+  companionClaimId?: string
   tabs: SerializedTab[]
   activeTabId: string | null
   unread: string[]

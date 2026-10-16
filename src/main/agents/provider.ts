@@ -32,6 +32,18 @@ export interface LaunchContext {
   provider?: AgentProviderId
   reasoningEffort?: ReasoningEffort
   target?: InteractiveTarget
+  /**
+   * Launch as a Review Room companion: read-only, plus read access to the
+   * review's checkout dir. Main derives it from the review store for the
+   * reserved terminal id; it is never taken from a client's spawn payload.
+   */
+  reviewCompanion?: ReviewCompanionLaunch
+}
+
+export interface ReviewCompanionLaunch {
+  reviewId: string
+  /** `userData/review-checkouts/<reviewId>`, created before launch. */
+  extraReadDir: string
 }
 
 /**
@@ -106,6 +118,11 @@ export interface AgentProvider {
    * response body can carry mail. Returns false when delivery is impossible.
    */
   deliverMessage?(terminalId: string, text: string): Promise<boolean>
+  /**
+   * Whether a `reviewCompanion` launch actually stops the agent writing, or
+   * only asks it not to. Absent: by instruction.
+   */
+  reviewCompanionReadOnly?: 'enforced' | 'by-instruction'
   capabilities: AgentCapabilities
 }
 

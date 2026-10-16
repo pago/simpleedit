@@ -101,6 +101,11 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   const effort: ReasoningEffort | undefined =
     ctx.target?.provider === 'codex' ? ctx.target.reasoningEffort : ctx.reasoningEffort
   const args = ['-C', ctx.worktreePath, ...bridgeArgs(ctx)]
+  // Read-only sandbox, default approval policy: a write still surfaces as a
+  // permission prompt the user can refuse, and reads reach the checkout dir
+  // without granting it. The companion needs no network (diffs and threads
+  // come over MCP).
+  if (ctx.reviewCompanion) args.push('--sandbox', 'read-only')
 
   if (model) args.push('--model', validId(model, 'model id'))
   if (effort) args.push(...config('model_reasoning_effort', tomlString(effort)))
@@ -123,6 +128,7 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
 export const codexProvider = {
   id: 'codex',
   buildLaunch,
+  reviewCompanionReadOnly: 'enforced',
   capabilities: {
     status: 'precise',
     resume: true,

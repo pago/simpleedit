@@ -99,7 +99,7 @@ export function serializeSession(repoPath: string): SerializedSession {
         : {}),
       ...(session.groupId ? { groupId: session.groupId } : {}),
       ...(session.seedPrompt ? { seedPrompt: session.seedPrompt } : {}),
-      ...(session.owner ? { owner: session.owner } : {}),
+      ...(session.owner ? { owner: session.owner, companionClaimId: session.companionClaimId ?? session.id } : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
       unread,
@@ -205,6 +205,7 @@ export function hydrateSession(session: SerializedSession): {
       ...(s.groupId ? { groupId: s.groupId } : {}),
       ...(s.seedPrompt ? { seedPrompt: s.seedPrompt } : {}),
       ...(owner ? { owner } : {}),
+      ...(owner && typeof s.companionClaimId === 'string' ? { companionClaimId: s.companionClaimId } : {}),
     })
     if (s.repoPath) trailRepos.add(s.repoPath)
     if (!newId) {
@@ -237,6 +238,15 @@ export function hydrateSession(session: SerializedSession): {
   sessionsStore.finalizeRestoredGroups()
 
   if (activeNewId) sessionsStore.select(activeNewId)
+
+  // Companion placeholders whose review closed, or whose claim ended, while
+  // the app was away are dropped; the rest wait in the room for Resume.
+  if (sessionsStore.sessions().some((s) => isOwned(s))) {
+    void window.api
+      .invoke('review:load')
+      .then((snapshot) => sessionsStore.dropUnclaimedCompanions(snapshot.reviews))
+      .catch((err: unknown) => console.warn('[ReviewRoom] Could not check restored companions:', err))
+  }
 
   for (const repo of trailRepos) void refreshWorktreesFor(repo)
 

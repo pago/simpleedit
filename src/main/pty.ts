@@ -3,7 +3,7 @@ import type { RemoteClient } from './client-hub'
 import { existsSync } from 'fs'
 import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtyClientId, PtyInvokeMap, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
-import { getProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
+import { getProvider, type AgentProvider, type LaunchContext, type LaunchPlan, type ReviewCompanionLaunch } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
 import { applyAgentSignal } from './mcp-bridge'
 import { sendAgentStatus } from './agent-status'
@@ -351,10 +351,16 @@ export function spawnTerminal(
   })
 }
 
+/**
+ * `mainOnly` carries what main derived for this terminal id itself. It is a
+ * separate argument so nothing a client put in `options` can reach it: the
+ * spawn payload arrives from the renderer and the phone alike.
+ */
 export async function spawnAgentTerminalForProvider(
   options: AgentSpawnOptions,
   webContents: RemoteClient,
   owner: PtyClientId,
+  mainOnly: { reviewCompanion?: ReviewCompanionLaunch } = {},
 ): Promise<void> {
   const { id, worktreePath, bridgePort, bridgeToken, resumeSessionId, forkSession, model, initialPrompt, target } = options
 
@@ -383,6 +389,7 @@ export async function spawnAgentTerminalForProvider(
     ...(bridgeToken != null ? { bridgeToken } : {}),
     ...(model ? { model } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
+    ...(mainOnly.reviewCompanion ? { reviewCompanion: mainOnly.reviewCompanion } : {}),
   }
   let plan: LaunchPlan
   let killed: boolean
@@ -604,6 +611,11 @@ export function killTerminal(id: string): void {
   backlogs.delete(id)
   ptyOwner.delete(id)
   ptyClients.delete(id)
+}
+
+/** A PTY exists for `id`, or its launch is being built. */
+export function isTerminalLive(id: string): boolean {
+  return terminals.has(id) || spawning.has(id)
 }
 
 export function getActiveTerminalIds(): string[] {
