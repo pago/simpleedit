@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ChildProcess } from 'child_process'
 import { spawn } from 'child_process'
 import { join } from 'path'
-import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver, setRepoDiscoverer, revokeBridgeSession } from '../mcp-bridge'
+import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver, setRepoDiscoverer, revokeBridgeSession, setWorkflowTools } from '../mcp-bridge'
 import { attachToTerminal, detachFromTerminal } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import { pendingCount, resetBus, resolveSpawn, syncPeers } from '../agent-bus'
@@ -613,6 +613,51 @@ describe('MCP Bridge — open_worktree / show_diff tools', () => {
     expect(wc.send).toHaveBeenCalledWith('agent-session:spawn', expect.objectContaining({ brief: 'carry on', target: 'replace' }))
   })
 
+  it('spawn_session replace hands the caller\'s workflows to its successor', async () => {
+    const handoff = vi.fn()
+    const leadHandoff = vi.fn(() => handoff)
+    setWorkflowTools({ call: vi.fn(), turnStarted: vi.fn(), turnEnded: vi.fn(), leadHandoff })
+    const res = await post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'carry on', target: 'replace' } })
+    expect(res.status).toBe(200)
+    expect(leadHandoff).toHaveBeenCalledWith('term-1')
+    const sent = wc.send.mock.calls.find((c) => c[0] === 'agent-session:spawn')!
+    resolveSpawn((sent[1] as { correlationId: string }).correlationId, {
+      terminalId: 'claude-next',
+      label: 'carry on',
+      provider: 'claude',
+      worktreePath: '/repo/main',
+      status: 'unknown',
+    })
+    await vi.waitFor(() => expect(handoff).toHaveBeenCalledWith('claude-next'))
+  })
+
+  it('spawn_session refuses replace from a workflow worker', async () => {
+    syncPeers([{ terminalId: 'worker-1', label: 'w', provider: 'claude', worktreePath: '/repo/main', status: 'idle', owner: { kind: 'workflow', workflowId: 'wf_abcdefgh', taskId: 'a', attempt: 1 } }], bridgeWebContentsId)
+    const res = await post({ tool: 'spawn_session', terminalId: 'worker-1', args: { brief: 'carry on', target: 'replace' } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/workflow worker can't replace itself/)
+    expect(wc.send).not.toHaveBeenCalledWith('agent-session:spawn', expect.anything())
+    resetBus()
+  })
+
+  it('a tool that throws answers 500 with the reason; only unparseable bodies are invalid JSON', async () => {
+    setWorkflowTools({
+      call: vi.fn(async () => {
+        throw new Error('database is locked')
+      }),
+      turnStarted: vi.fn(),
+      turnEnded: vi.fn(),
+      leadHandoff: () => null,
+    })
+    const res = await post({ tool: 'get_workflow', terminalId: 'term-1', args: {} })
+    expect(res.status).toBe(500)
+    expect(res.body.error).toContain('database is locked')
+
+    const raw = await fetch(`http://127.0.0.1:${port}/${token}/tool-call`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{nope' })
+    expect(raw.status).toBe(400)
+    expect(((await raw.json()) as Record<string, unknown>).error).toBe('Invalid JSON body')
+  })
+
   it('spawn_session returns the session handle once the renderer reports it', async () => {
     const pending = post({ tool: 'spawn_session', terminalId: 'term-1', args: { brief: 'fan out' } })
 
@@ -1122,6 +1167,30 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
       stop_hook_active: true,
     })
     expect(reply['decision']).toBeUndefined()
+  })
+
+  describe('workflow turn edges', () => {
+    let turnEnded: ReturnType<typeof vi.fn<(terminalId: string) => void>>
+    beforeEach(() => {
+      turnEnded = vi.fn<(terminalId: string) => void>()
+      setWorkflowTools({ call: vi.fn(), turnStarted: vi.fn(), turnEnded, leadHandoff: () => null })
+    })
+
+    it('a Stop with stop_hook_active that is not blocked ends the worker\'s turn', async () => {
+      registerSession('sess-b', 'claude-b')
+      await callTool('send_message', { to: 'beta', text: 'more work' }, 'claude-a')
+      const reply = await postHook({ session_id: 'sess-b', cwd: '/repo/b', hook_event_name: 'Stop', stop_hook_active: true })
+      expect(reply['decision']).toBeUndefined()
+      expect(turnEnded).toHaveBeenCalledWith('claude-b')
+    })
+
+    it('a blocked Stop does not end the turn', async () => {
+      registerSession('sess-b', 'claude-b')
+      await callTool('send_message', { to: 'beta', text: 'please rebase' }, 'claude-a')
+      const reply = await postHook({ session_id: 'sess-b', cwd: '/repo/b', hook_event_name: 'Stop', stop_hook_active: false })
+      expect(reply['decision']).toBe('block')
+      expect(turnEnded).not.toHaveBeenCalled()
+    })
   })
 
   it('returns an inert body on a Stop with no mail', async () => {

@@ -102,10 +102,12 @@ import { forceSend, initThreadDelivery, markThreadReplied, moveSession, noteThre
 import { parseMessageIdRequest, parseThreadOp, type ThreadChange } from '../shared/agent-threads'
 import { getPeer } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
-import { createSessionOnce, resolveSessionCreate, type ModelCatalog } from './session-create'
+import { createSessionOnce, resolveSessionCreate, unknownModelReason, type ModelCatalog } from './session-create'
 import { applyBacklogOps, loadBacklog, parseBacklogOps, type Origin } from './backlog-store'
 import { parseStartRequest, startBacklogItem } from './backlog-start'
 import { closeDb } from './db'
+import { initWorkflows } from './workflow-host'
+import type { WorkflowEngine } from './workflow-engine'
 import { applyReviewOp, isReviewCompanionSession, loadReviews } from './review-room-store'
 import { isReviewHandBackId, isReviewMessageId, parseReviewOpRequest, type ReviewChange, type ReviewSnapshot } from '../shared/review-room'
 import { prUrlInRepo } from './github/repo-remote'
@@ -461,7 +463,8 @@ configurePush({
     getWindowSessions(windowId).find((session) => session.terminalId === terminalId)?.label ?? null,
   windowOf: (terminalId) =>
     liveWindowContents().find((wc) => getWindowSessions(wc.id).some((s) => s.terminalId === terminalId))?.id ?? null,
-  ignoreSession: isReviewCompanionSession,
+  // An owned session (a review companion, a workflow worker) asks for the user through its owner's surface.
+  ignoreSession: (terminalId) => isReviewCompanionSession(terminalId) || getPeer(terminalId)?.owner !== undefined,
   onStatusChange: broadcastPushStatus,
 })
 
@@ -642,6 +645,8 @@ function createWindow(repoPath?: string): BrowserWindow {
     closeSocketsForHub(webContentsId)
     endCompanionsOfWindow(webContentsId)
     stopBridge(webContentsId)
+    // Before the bus forgets the window's peers: its workers vanishing must read as a closed window, not as failures.
+    workflows?.onWindowClosed(webContentsId)
     forgetWindow(webContentsId)
     unwatchAllWorktreeListsForWindow(webContentsId)
     unwatchAllEditorFilesForWindow(webContentsId)
@@ -734,7 +739,25 @@ function createSettingsWindow(): BrowserWindow {
 
 // ── IPC registration (global, routes per sender) ──────────
 
+let workflows: WorkflowEngine | null = null
+
 function registerAllHandlers(): void {
+  workflows = initWorkflows({
+    projectOf: getRepoForSender,
+    windowContents: (windowId) => {
+      const window = getWindowForContents(windowId)
+      return window && !window.isDestroyed() ? window.webContents : null
+    },
+    broadcast: broadcastToAllClients,
+    localModels: MODEL_CATALOG.ollama,
+    async unknownModel(provider, model) {
+      if (provider === 'codex') return unknownModelReason({ provider: 'codex', model }, MODEL_CATALOG)
+      const local = (await MODEL_CATALOG.ollama().catch((): string[] => [])).includes(model)
+      return unknownModelReason({ provider: 'claude', model: { provider: local ? 'ollama' : 'anthropic', model } }, MODEL_CATALOG)
+    },
+    killTerminal,
+  })
+
   // ── App ─────────────────────────────────────────────────
   handleInvoke('app:get-repo', (event) => {
     return getRepoForSender(event.sender.id)
@@ -931,7 +954,10 @@ function registerAllHandlers(): void {
     writeToTerminal(id, data)
     noteUserInput(id, data)
     const keys = userKeys(data)
-    if (keys) noteThreadUserInput(id, keys)
+    if (keys) {
+      noteThreadUserInput(id, keys)
+      workflows?.onUserInput(id)
+    }
   })
 
   // The client id is stamped from the IPC event, never taken from the args —

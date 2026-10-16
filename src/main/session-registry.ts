@@ -48,8 +48,7 @@ function sameInput(a: WindowSession, b: WindowSessionInput): boolean {
     a.provider === b.provider &&
     a.worktreePath === b.worktreePath &&
     a.status === b.status &&
-    a.owner?.kind === b.owner?.kind &&
-    a.owner?.reviewId === b.owner?.reviewId &&
+    JSON.stringify(a.owner ?? null) === JSON.stringify(b.owner ?? null) &&
     sameTrail(a.trail, b.trail)
   )
 }
