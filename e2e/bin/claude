@@ -37,16 +37,45 @@
 #    with that code, simulating a spawn failure/crash (for the exited-state
 #    UI). Used instead of nuking PATH, which would also break Electron's own
 #    launch under CI.
+#  - SIMPLEEDIT_FAKE_CLAUDE_PRINT_EXIT=1: a `--print` run (a bounded task such
+#    as Screen PRs triage) exits at once with no result, instead of idling
+#    until the task's timeout.
+#  - SIMPLEEDIT_FAKE_CLAUDE_COMPANION=1, for a session SimpleEdit wired to its
+#    bridge (`--settings` + `--mcp-config`): act like a review companion via
+#    e2e/support/fake-claude-bridge.mjs. The launch turn ends with a `Stop`
+#    hook, and every typed `[Review thread rt_… · …]` prompt is confirmed with
+#    `UserPromptSubmit`, answered with `reply_to_thread`, and ended with `Stop`.
 if [ -n "${SIMPLEEDIT_FAKE_CLAUDE_EXIT:-}" ]; then
   echo "fake claude: simulated spawn failure"
   exit "${SIMPLEEDIT_FAKE_CLAUDE_EXIT}"
 fi
 session_id=""
+resume_id=""
+settings=""
+mcp_config=""
+print_mode=""
 prev=""
 for arg in "$@"; do
-  if [ "$prev" = "--session-id" ]; then session_id="$arg"; fi
+  case "$prev" in
+    --session-id) session_id="$arg" ;;
+    --resume) resume_id="$arg" ;;
+    --settings) settings="$arg" ;;
+    --mcp-config) mcp_config="$arg" ;;
+  esac
+  if [ "$arg" = "--print" ]; then print_mode=1; fi
   prev="$arg"
 done
+if [ -n "$print_mode" ] && [ "${SIMPLEEDIT_FAKE_CLAUDE_PRINT_EXIT:-}" = "1" ]; then
+  exit 0
+fi
+companion=""
+if [ "${SIMPLEEDIT_FAKE_CLAUDE_COMPANION:-}" = "1" ] && [ -n "$settings" ] && [ -n "$mcp_config" ] && [ -n "${session_id:-$resume_id}" ]; then
+  companion=1
+fi
+bridge_js="$(cd "$(dirname "$0")/../support" && pwd)/fake-claude-bridge.mjs"
+companion_bridge() {
+  node "$bridge_js" "$1" "$settings" "$mcp_config" "${session_id:-$resume_id}" "${2:-}" "${3:-}"
+}
 if [ -n "$session_id" ] && [ -n "${SIMPLEEDIT_FAKE_CLAUDE_ENV_DUMP:-}" ]; then
   env > "${SIMPLEEDIT_FAKE_CLAUDE_ENV_DUMP}"
 fi
@@ -58,10 +87,17 @@ echo "fake claude ready"
 if [ "${SIMPLEEDIT_FAKE_CLAUDE_OSC:-}" = "1" ]; then
   printf '\033]0;\342\234\263 Claude Code\007'
 fi
+if [ -n "$companion" ]; then companion_bridge stop; fi
 while true; do
   if IFS= read -r -t 3600 line; then
     case "$line" in
       *"/exit"*) exit 0 ;;
+      *"[Review thread rt_"*)
+        if [ -n "$companion" ]; then
+          thread_id="$(printf '%s' "$line" | sed -n 's/.*\[Review thread \(rt_[A-Za-z0-9-]*\).*/\1/p')"
+          if [ -n "$thread_id" ]; then companion_bridge answer "$thread_id" "$line"; fi
+        fi
+        ;;
       *'"subtype":"initialize"'*)
         echo '{"type":"control_response","response":{"subtype":"success","request_id":"models","response":{"models":[{"value":"sonnet","displayName":"Sonnet (fake)"}]}}}'
         ;;
