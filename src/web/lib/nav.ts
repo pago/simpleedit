@@ -33,13 +33,13 @@ export type NavLayer =
   /** The Changes pane is showing one entry's diff rather than the log. */
   | { kind: 'changes-diff'; terminalId: string }
   | { kind: 'new-session' }
+  /** The Review Room of the stack this PR is in. */
   | { kind: 'pr'; pr: PrRef }
-  | { kind: 'compose'; url: string }
-  | { kind: 'confirm-submit'; url: string }
+  /** The room's outline and its submit sheet, over the room. */
+  | { kind: 'review-outline'; url: string }
+  | { kind: 'review-submit'; url: string }
   /** Which of the Mac's projects (windows) the phone is attached to. */
   | { kind: 'projects' }
-  /** Discuss with Agent's model picker, over the PR it discusses. */
-  | { kind: 'discuss'; url: string }
   /** The backlog's add/edit sheet: an item's id, or null for a new one. */
   | { kind: 'backlog-item'; itemId: string | null }
 
@@ -77,10 +77,9 @@ export function isOverlay(entry: NavEntry | null): boolean {
   return (
     entry !== null &&
     (entry.kind === 'new-session' ||
-      entry.kind === 'compose' ||
-      entry.kind === 'confirm-submit' ||
+      entry.kind === 'review-outline' ||
+      entry.kind === 'review-submit' ||
       entry.kind === 'projects' ||
-      entry.kind === 'discuss' ||
       entry.kind === 'backlog-item')
   )
 }

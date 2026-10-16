@@ -91,28 +91,12 @@ export async function prDiffAt(pr: Pick<PrRef, 'url'>, headSha: string | undefin
   return headRefOid === headSha ? latest : compareDiff(pr.url, baseRefOid, headSha)
 }
 
-async function roomLinked(request: SubmitReviewRequest): Promise<boolean> {
-  // Imported here: the drafts module pulls in Electron and the database,
-  // which `review-graphql.ts` (and its tests) reach through this file.
-  const { loadDrafts } = await import('../screenprs-drafts')
-  const linked = new Set(
-    (loadDrafts().drafts[request.pr.url]?.comments ?? []).filter((c) => c.threadId || c.inReplyTo).map((c) => c.id)
-  )
-  return request.draft.comments.some((c) => linked.has(c.id))
-}
-
 /**
  * Post a review draft. A failed fetch of GitHub's diff doesn't block the
  * submit: the anchors then go unchecked, as they did before checking existed,
  * and `postReview`'s fallback is what catches a bad one.
  */
 export async function submitReview(request: SubmitReviewRequest): Promise<{ reviewUrl?: string; folded: ReviewFolds }> {
-  // This path can't attach a reply to its thread: it would post it as a new
-  // top-level comment. The client's copy may have lost the link, so main's
-  // stored draft is asked too.
-  if (request.draft.comments.some((c) => c.threadId || c.inReplyTo) || (await roomLinked(request))) {
-    throw new Error('This draft belongs to a Review Room thread; post it from the Review Room.')
-  }
   let commentable: Map<string, CommentableSides> | undefined
   try {
     commentable = commentableLines(await prDiffAt(request.pr, request.headSha))

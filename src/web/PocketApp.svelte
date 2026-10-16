@@ -43,11 +43,11 @@
   import SessionScreen from './SessionScreen.svelte'
   import NewSessionSheet from './NewSessionSheet.svelte'
   import PrBoard from './PrBoard.svelte'
-  import PrDetail from './PrDetail.svelte'
+  import ReviewScreen from './ReviewScreen.svelte'
   import ProjectSheet from './ProjectSheet.svelte'
   import BacklogScreen from './BacklogScreen.svelte'
   import BacklogSheet from './BacklogSheet.svelte'
-  import { screenPrsStore } from '../renderer/stores/screenprs.svelte'
+  import { reviewSubmits } from './lib/review-phone.svelte'
   import { AttachSequence, attachNotice, loadRememberedProject, rememberProject, type RememberedProject } from './lib/project'
   import PairScreen from './PairScreen.svelte'
   import UpdateBanner from './UpdateBanner.svelte'
@@ -143,6 +143,8 @@
   /** The window the current socket joined, from its `hello`. */
   let attachedWindow = $state<number | null>(null)
   let projects = $state<RemoteProject[]>([])
+  /** The project list was answered at least once since the phone attached. */
+  let projectsKnown = $state(false)
   const currentProject = $derived(projects.find((p) => p.windowId === attachedWindow) ?? null)
   /** Said whenever the project changed without the user picking it. */
   let projectNotice = $state<string | null>(null)
@@ -188,9 +190,6 @@
    * started is pushed before main's list has caught up with it.
    */
   const everListed = new Set<string>()
-  const STARTED_GRACE_MS = 30_000
-  /** Names of sessions this phone started, for the screen shown until they are listed. */
-  let startedLabels = $state<Record<string, string>>({})
 
   // Untracked: `onIdentity` answers at once when a socket is already up, and
   // what `attached` reads must not re-subscribe this and run it again.
@@ -206,7 +205,6 @@
   function leaveWindow(): void {
     nav.leaveWindow()
     everListed.clear()
-    startedLabels = {}
     known = {}
     pendingSession = null
     startedNote = null
@@ -228,6 +226,7 @@
     if (!judged) return
     const { chosen } = judged
     projects = list
+    projectsKnown = true
     const landed = list.find((p) => p.windowId === windowId) ?? null
     // The backlog is the project's: a reopened window of the same repo keeps
     // the sheet and its text. Another project's would save into the wrong one.
@@ -259,7 +258,7 @@
     }
     if (threadDrafts.any()) out.push('your unsent comments on a diff')
     if (newSessionEntry && newSheet?.atRisk() === 'starting') out.push('the result of starting a new session')
-    if (screenPrsStore.posting()) out.push('the result of the review being posted')
+    if (reviewSubmits.any()) out.push('the result of the review being submitted')
     return [...out, ...unsavedWork()]
   }
 
@@ -294,11 +293,8 @@
     if (newSessionEntry && newSheet?.atRisk() === 'starting') {
       return 'A new session is still starting. Switch once it has.'
     }
-    if (nav.stack('prs').some((e) => e.kind === 'discuss')) {
-      return 'Discuss with Agent is open, and its session would start in the window being left. Close it first.'
-    }
-    if (screenPrsStore.posting()) {
-      return 'A review is still being posted, and its answer comes back over this connection. Switch once it has.'
+    if (reviewSubmits.any()) {
+      return 'A review is still being submitted, and its answer comes back over this connection. Switch once it has.'
     }
     return null
   }
@@ -433,32 +429,6 @@
     )
   }
 
-  /**
-   * A Discuss with Agent session: opened over the PR it discusses, on the PRs
-   * tab's stack, so Back returns to the PR.
-   */
-  function openStartedFromPr(created: SessionCreateResult): void {
-    const { terminalId } = created
-    startedLabels = { ...startedLabels, [terminalId]: created.label }
-    const entry: NavEntry = nav.push(
-      { kind: 'session', terminalId, fromNotification: false },
-      () => holdSession(entry),
-    )
-    // A broadcast lost while the socket was down would leave "Starting…" up
-    // for good, so after a while the list is asked once and decides.
-    setTimeout(() => {
-      if (everListed.has(terminalId)) return
-      void window.api
-        .invoke('session:list')
-        .then((sessions) => {
-          const match = sessions.find((s) => s.terminalId === terminalId)
-          if (match) remember(match)
-          else nav.close(entry.id)
-        })
-        .catch(() => {})
-    }, STARTED_GRACE_MS)
-  }
-
   function openNewSession(): void {
     nav.push({ kind: 'new-session' }, () => newSheet?.holdForDraft() ?? false)
   }
@@ -489,8 +459,11 @@
     nav.stack('sessions').filter((e): e is SessionEntry => e.kind === 'session'),
   )
   const prEntries = $derived(nav.stack('prs').filter((e): e is PrEntry => e.kind === 'pr'))
-  const prSessionEntries = $derived(
-    nav.stack('prs').filter((e): e is SessionEntry => e.kind === 'session'),
+  /** A window without a project can't host a review companion; one running elsewhere still answers. */
+  const hostBlocked = $derived(
+    attachedWindow !== null && projectsKnown && !currentProject
+      ? 'The Mac window this phone is joined to has no project open, so it can’t start a review companion. Switch project, or ask at the desk.'
+      : null,
   )
   const newSessionEntry = $derived(nav.stack('sessions').find((e) => e.kind === 'new-session') ?? null)
   const backlogItemEntry = $derived(nav.stack('backlog').find((e) => e.kind === 'backlog-item') ?? null)
@@ -500,7 +473,7 @@
   const tabLabel = $derived(TABS.find((t) => t.id === tab)?.label ?? '')
 
   function titleOf(entry: NavEntry | null): string {
-    if (entry?.kind === 'session') return known[entry.terminalId]?.label ?? startedLabels[entry.terminalId] ?? 'Session'
+    if (entry?.kind === 'session') return known[entry.terminalId]?.label ?? 'Session'
     if (entry?.kind === 'pr') return `${entry.pr.repo}#${entry.pr.number}`
     return tabLabel
   }
@@ -536,10 +509,6 @@
         visible={tab === on && shown?.id === entry.id && top?.kind !== 'new-session'}
       />
     </div>
-  {:else if shown?.id === entry.id && startedLabels[entry.terminalId]}
-    <p class="p-4 text-sm text-zinc-500" data-testid="session-starting">
-      Starting “{startedLabels[entry.terminalId]}”…
-    </p>
   {/if}
 {/snippet}
 
@@ -693,11 +662,8 @@
       </div>
       {#each prEntries as entry (entry.id)}
         <div class={prScreen?.id === entry.id ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          <PrDetail pr={entry.pr} connected={connState === 'open'} onstarted={openStartedFromPr} />
+          <ReviewScreen url={entry.pr.url} connected={connState === 'open'} visible={tab === 'prs' && prScreen?.id === entry.id} {hostBlocked} />
         </div>
-      {/each}
-      {#each prSessionEntries as entry (entry.id)}
-        {@render sessionView(entry, 'prs', prScreen)}
       {/each}
     </div>
 

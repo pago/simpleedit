@@ -583,9 +583,6 @@ export interface ScreenPrsInvokeMap {
   /** Stops the app's screening, whichever client started it. */
   'screenprs:cancel': { args: []; result: void }
   'screenprs:state': { args: []; result: ScreenPrsState }
-  /** One PR's unified diff, on demand — board cards reach a remote client with
-   *  `diff` emptied, because a board is dozens of them. */
-  'screenprs:pr-diff': { args: [pr: Pick<PrRef, 'url'> & { headSha?: string }]; result: string }
   /** Run a deep review on one PR (full context is passed — triage doesn't retain it). */
   'screenprs:deep-start': { args: [context: PrContext]; result: ScreenPrsStartResult }
   'screenprs:deep-cancel': { args: [url: string]; result: void }

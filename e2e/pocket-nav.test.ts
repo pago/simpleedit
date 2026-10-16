@@ -80,16 +80,49 @@ const CARD: ScreenPrCard = {
   impact: 'low', findings: [], bucket: 'quick',
 }
 
+const REVIEW_ID = 'r_e2e000001'
+
+/**
+ * What main would answer for the PR's Review Room, which otherwise needs `gh`:
+ * the stack (one layer), its diff and "since you last looked". The review
+ * record itself arrives as `review:changed`, as main broadcasts it on open.
+ */
+const ROOM: Record<string, (socket: WebSocketRoute, ...args: unknown[]) => unknown> = {
+  'review:open': (socket) => {
+    const now = '2026-10-16T00:00:00Z'
+    const review = {
+      id: REVIEW_ID, repo: 'github.com/acme/widgets', layers: [{ url: CARD.url, number: 7, headSha: 'sha1', title: CARD.title }],
+      status: 'open', companionAgent: { provider: 'claude', model: '' }, lastSeenHead: {}, readSteps: [], round: 1, submissions: [], createdAt: now, updatedAt: now,
+    }
+    setTimeout(() => socket.send(JSON.stringify({ kind: 'event', channel: 'review:changed', data: { reviewId: REVIEW_ID, review, rev: 1 } })))
+    return {
+      reviewId: REVIEW_ID,
+      layers: [{ ...CARD, isDraft: false, state: 'OPEN', title: CARD.title, diff: undefined }],
+    }
+  },
+  'review:layer-diff': (_socket, _reviewId, url) => ({ url, headSha: 'sha1', diff: '' }),
+  'review:since': () => ({ kind: 'identical' }),
+  'review:companion-info': () => null,
+}
+
 /**
  * Open the phone with its socket routed through the test, so a screened PR can
  * be delivered without `gh` or a model: screening is main pushing
- * `screenprs:*` events down this socket, and this pushes the same frames.
+ * `screenprs:*` events down this socket, and this pushes the same frames. The
+ * room's `review:*` calls are answered here (`ROOM`); everything else goes to
+ * main.
  */
 async function openPhone(browser: Browser, url: string): Promise<{ page: Page; socket: () => WebSocketRoute }> {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
   let route: WebSocketRoute | null = null
   await page.routeWebSocket(/\/ws(\?|$)/, (ws) => {
-    ws.connectToServer()
+    const server = ws.connectToServer()
+    ws.onMessage((message) => {
+      const frame = typeof message === 'string' ? (JSON.parse(message) as { kind: string; id: number; channel: string; args: unknown[] }) : null
+      const fake = frame?.kind === 'invoke' ? ROOM[frame.channel] : undefined
+      if (frame && fake) ws.send(JSON.stringify({ kind: 'result', id: frame.id, ok: true, value: fake(ws, ...frame.args) }))
+      else server.send(message)
+    })
     route = ws
   })
   await page.goto(url)
@@ -122,23 +155,20 @@ test('browser Back closes a sheet, then the PR under it, then stays in the app',
   await page.getByTestId('pr-card').click()
   await expect(page.getByTestId('screen-title')).toHaveText('acme/widgets#7')
   await expect(page.getByTestId('back')).toHaveText(/PRs/)
+  await expect(page.getByTestId('review-screen')).toBeVisible()
 
-  // A sheet on top of the PR: Back takes the sheet, and only the sheet.
-  await page.getByTestId('review-toggle').click()
-  await page.getByTestId('dictate-summary').click()
-  await expect(page.getByTestId('compose-sheet')).toBeVisible()
+  // A sheet on top of the room: Back takes the sheet, and only the sheet.
+  await page.getByTestId('open-outline').click()
+  await expect(page.getByTestId('outline-sheet')).toBeVisible()
   await page.goBack()
-  await expect(page.getByTestId('compose-sheet')).toHaveCount(0)
+  await expect(page.getByTestId('outline-sheet')).toHaveCount(0)
   await expect(page.getByTestId('screen-title')).toHaveText('acme/widgets#7')
 
-  // With text in it, Back asks instead of discarding, and the text survives.
-  await page.getByTestId('dictate-summary').click()
-  await visibleComposer(page).fill('Ship it once the gate flips')
+  await page.getByTestId('open-submit').click()
+  await expect(page.getByTestId('submit-sheet')).toBeVisible()
   await page.goBack()
-  await expect(page.getByTestId('compose-discard-confirm')).toBeVisible()
-  await expect(visibleComposer(page)).toHaveValue('Ship it once the gate flips')
-  await page.getByTestId('compose-discard-confirmed').click()
-  await expect(page.getByTestId('compose-sheet')).toHaveCount(0)
+  await expect(page.getByTestId('submit-sheet')).toHaveCount(0)
+  await expect(page.getByTestId('review-screen')).toBeVisible()
 
   await page.goBack()
   await expect(page.getByTestId('screen-title')).toHaveText('PRs')
@@ -249,7 +279,7 @@ test('switching tabs keeps the other tab\'s screen, and Back never switches tabs
   deliverPr(socket())
   await page.getByTestId('tab-prs-button').click()
   await page.getByTestId('pr-card').click()
-  await page.getByTestId('pane-files').click()
+  await expect(page.getByTestId('review-screen')).toBeVisible()
 
   // Back to Sessions: the session is still open, on the pane it was left on.
   await page.getByTestId('tab-sessions-button').click()
@@ -257,10 +287,10 @@ test('switching tabs keeps the other tab\'s screen, and Back never switches tabs
   await expect(page.getByTestId('changes-pane')).toBeVisible()
   await expect(page.getByTestId('screen-title')).not.toHaveText('Sessions')
 
-  // And the PR is still open on Files.
+  // And the PR's room is still open.
   await page.getByTestId('tab-prs-button').click()
   await expect(page.getByTestId('screen-title')).toHaveText('acme/widgets#7')
-  await expect(page.getByTestId('pane-files')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('review-screen')).toBeVisible()
 
   // Back walks this tab only: out of the PR to the board, then no further.
   await page.goBack()
@@ -268,48 +298,6 @@ test('switching tabs keeps the other tab\'s screen, and Back never switches tabs
   await page.getByTestId('tab-sessions-button').click()
   await expect(visibleSession(page, terminalId)).toBeVisible()
 
-  await page.close()
-})
-
-test('Discuss with Agent opens the new session over the PR, and Back returns to the PR', async ({ window, browser }) => {
-  // The fake Claude CLI answers the catalog; allowlisting one of its models puts
-  // it in the picker, and an explicit pick goes through main's model check.
-  const claude = await window.evaluate(async () => {
-    const api = (window as unknown as { api: Api }).api
-    const [first] = (await api.invoke('models:claude')) as { model: string; displayName: string }[]
-    await api.invoke('models:config-set', { submenuAllowlist: [first.model] })
-    return first
-  })
-
-  const url = await phoneUrl(window)
-  const { page, socket } = await openPhone(browser, url)
-
-  deliverPr(socket())
-  await page.getByTestId('tab-prs-button').click()
-  await page.getByTestId('pr-card').click()
-  await expect(page.getByTestId('screen-title')).toHaveText('acme/widgets#7')
-
-  await page.getByTestId('discuss').click()
-  await expect(page.getByTestId('discuss-sheet')).toBeVisible()
-  await page.getByTestId('discuss-model').filter({ hasText: `Claude · ${claude.displayName}` }).click({ timeout: 15_000 })
-  await expect(page.getByTestId('discuss-start')).toHaveText(`Start with Claude · ${claude.displayName}`)
-  await page.getByTestId('discuss-start').click()
-
-  await expect(page.getByTestId('discuss-sheet')).toHaveCount(0, { timeout: 20_000 })
-  await expect(page.getByTestId('screen-title')).toHaveText('review acme/widgets#7', { timeout: 20_000 })
-  await expect(page.locator('[data-testid="session-screen"]:visible')).toHaveCount(1, { timeout: 20_000 })
-  // Still on the PRs tab: the session sits on the PR's stack.
-  await expect(page.getByTestId('tab-prs-button')).toHaveAttribute('aria-current', 'page')
-
-  // A session of the window, under the PR's name.
-  const sessions = (await window.evaluate(() =>
-    (window as unknown as { api: Api }).api.invoke('session:list'),
-  )) as { label: string }[]
-  expect(sessions.filter((s) => s.label === 'review acme/widgets#7')).toHaveLength(1)
-
-  await page.goBack()
-  await expect(page.getByTestId('screen-title')).toHaveText('acme/widgets#7')
-  await expect(page.getByTestId('pr-detail').locator('visible=true')).toHaveCount(1)
   await page.close()
 })
 

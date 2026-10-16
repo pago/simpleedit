@@ -66,8 +66,8 @@ describe('the stack', () => {
     expect(isOverlay(topOf(state))).toBe(true)
     expect(screenOf(state)).toBeNull()
     const withPr = push(selectTab(state, 'prs'), { kind: 'pr', pr: PR }).state
-    const composing = push(withPr, { kind: 'compose', url: PR.url }).state
-    expect(screenOf(composing)).toMatchObject({ kind: 'pr' })
+    const outline = push(withPr, { kind: 'review-outline', url: PR.url }).state
+    expect(screenOf(outline)).toMatchObject({ kind: 'pr' })
   })
 
   it('removes a closed session and its diff wherever they sit', () => {
@@ -154,9 +154,9 @@ describe('a session opened from a PR', () => {
     expect(topOf(pop(state))).toMatchObject({ kind: 'pr' })
   })
 
-  it('treats the model picker as an overlay over the PR', () => {
+  it('treats the submit sheet as an overlay over the room', () => {
     const onPrs = push(selectTab(initialNav(), 'prs'), { kind: 'pr', pr: PR }).state
-    const picking = push(onPrs, { kind: 'discuss', url: PR.url }).state
+    const picking = push(onPrs, { kind: 'review-submit', url: PR.url }).state
     expect(isOverlay(topOf(picking))).toBe(true)
     expect(screenOf(picking)).toMatchObject({ kind: 'pr' })
   })
