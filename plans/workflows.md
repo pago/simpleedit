@@ -60,6 +60,9 @@ Delegation already works: a lead can `spawn_session` and collect with
 - **Cancelling a running task detaches its worker.** The task becomes `cancelled`, and its
   session drops the `workflow` field and appears in the sidebar as a normal session the user
   can keep or close. Nothing is disposed, so no work in progress is lost.
+- **Finished workflows keep their workers until dismissed.** After a workflow ends, its
+  worker sessions stay reachable from their cards in the Workflow tab. **Dismiss** in the tab
+  disposes them and archives the workflow record.
 - **Waking the lead at judgment points is fine** (rare by design). The workflow record is
   the durable memory, so the user may compact the lead once the workflow is prepared.
 - **Visualization: layered graph.** Columns = dependency depth, cards carry status, a
@@ -222,8 +225,5 @@ The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.
 
 ## Open questions
 
-- **Workflow end:** when a workflow finishes, do its worker sessions get disposed, or
-  archived and reachable from the Workflow tab? Proposal: kept until the workflow is
-  dismissed.
 - **Budgets:** a per-workflow cap on concurrent workers and total rounds beyond the backend
   gate.
