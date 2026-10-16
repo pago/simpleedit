@@ -18,7 +18,7 @@ beforeEach(async () => {
 
 const LAYERS = [layer(183, URL_1), layer(184, URL_2)]
 
-function show(t: ReviewThread, opts: { draft?: PrReviewComment; companionSessionId?: string } = {}) {
+function show(t: ReviewThread, opts: { draft?: PrReviewComment; companionSessionId?: string; requesterSessionId?: string } = {}) {
   return render(ReviewThreadCard, {
     props: {
       reviewId: REVIEW_ID,
@@ -27,6 +27,7 @@ function show(t: ReviewThread, opts: { draft?: PrReviewComment; companionSession
       layers: LAYERS,
       ...(opts.draft ? { draft: { url: URL_1, comment: opts.draft } } : {}),
       ...(opts.companionSessionId ? { companionSessionId: opts.companionSessionId } : {}),
+      ...(opts.requesterSessionId ? { requesterSessionId: opts.requesterSessionId } : {}),
     },
   })
 }
@@ -240,5 +241,32 @@ describe('ReviewThreadCard — a closed review', () => {
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull()
     expect(screen.getByTestId('draft-box')).toHaveTextContent('mine')
+  })
+})
+
+describe('ReviewThreadCard — Ask author', () => {
+  it('offers Ask author only while the requesting session lives, and sends the question to it', async () => {
+    const { unmount } = show(expanded())
+    expect(screen.queryByTestId('ask-author')).toBeNull()
+    unmount()
+
+    show(expanded(), { requesterSessionId: 'agent-claude-author' })
+    await fireEvent.input(screen.getByLabelText('Ask the companion'), { target: { value: 'Why 10?' } })
+    await fireEvent.click(screen.getByTestId('ask-author'))
+    expect(api.ops.at(-1)).toMatchObject({ reviewId: REVIEW_ID, op: { kind: 'ask-author', threadId: 'rt_thread01', message: { body: 'Why 10?' } } })
+  })
+
+  it('shows the author in the conversation and retries a question to the author through the requester', async () => {
+    const t = expanded({
+      askAuthorOpen: true,
+      messages: [msg('tool', 'finding'), msg('user', 'Why 10?', { toAuthor: true, delivery: 'unanswered' }), msg('author', 'The API caps it.')],
+    })
+    show(t, { companionSessionId: 'companion-1', requesterSessionId: 'agent-claude-author' })
+    expect(screen.getByText('You, the companion and the PR author')).toBeTruthy()
+    expect(screen.getByText('You · to the PR author')).toBeTruthy()
+    expect(screen.getByText('PR author')).toBeTruthy()
+    expect(screen.getByText('Waiting for the PR author’s answer.')).toBeTruthy()
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(api.invoke).toHaveBeenCalledWith('agent-threads:retry', 'agent-claude-author', t.messages[1]!.id)
   })
 })

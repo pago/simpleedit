@@ -3,6 +3,7 @@
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { triageModel } from '../../stores/triageModel.svelte'
   import { sidebarRail } from '../../stores/sidebarRail.svelte'
+  import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import type { ScreenPrCard, ScreenPrBucket, PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
   import { CI_TONE, ciLabel } from '../../../shared/screenprs'
   import { BUCKET_ORDER, groupStacks, emptyReviewDraft } from '../../../shared/screenprs'
@@ -19,6 +20,8 @@
   let byBucket = $derived(screenPrsStore.byBucket())
   let pending = $derived(screenPrsStore.pending())
   let selectedKey = $derived(screenPrsStore.selectedKey())
+  // Reviews an agent asked for: listed here, never opened for the user (they may not be in the screened queue).
+  let requested = $derived(reviewRoom.requested())
 
   let done = $derived([...Object.values(byBucket)].reduce((n, arr) => n + arr.length, 0))
   let hasAny = $derived(done > 0 || pending.length > 0)
@@ -121,6 +124,39 @@
 {/snippet}
 
 <div class="@container overflow-y-auto px-3 py-4 {className}" data-testid="screenprs-queue">
+  {#if requested.length > 0}
+    <div class="mb-5" data-testid="screenprs-requested">
+      <div class="mb-2 flex items-center gap-2">
+        <span class="h-3.5 w-[3px] flex-none rounded-sm bg-violet-500"></span>
+        <span class="min-w-0 truncate whitespace-nowrap text-[11px] font-semibold uppercase tracking-wider text-violet-300">Requested</span>
+        <span class="flex-none rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{requested.length}</span>
+        <span class="hidden min-w-0 truncate text-[10px] italic text-zinc-600 @2xs:inline">an agent asked for your review</span>
+      </div>
+      <div class="flex flex-col gap-2">
+        {#each requested as r (r.id)}
+          {@const top = r.layers[r.layers.length - 1]}
+          {#if top}
+            {@const repo = new URL(top.url).pathname.split('/')[2] ?? ''}
+            <button
+              class="flex w-full flex-col gap-1.5 rounded-lg border bg-zinc-900 p-3 text-left transition-colors hover:bg-zinc-800/60
+                {selectedKey === top.url ? 'border-blue-500' : 'border-violet-500/30 hover:border-violet-500/60'}"
+              onclick={() => pick(top.url)}
+            >
+              <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <span class="flex-none font-mono text-[11px] text-zinc-500"><b class="font-semibold text-zinc-300">{repo}</b>#{top.number}</span>
+                <span class="min-w-[min(8rem,100%)] flex-1 text-[12.5px] font-medium leading-snug text-zinc-100 [overflow-wrap:anywhere]">{top.title ?? 'Pull request'}</span>
+              </div>
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-zinc-500">
+                {#if r.layers.length > 1}<span class="text-violet-300">⛓ stack of {r.layers.length}</span>{/if}
+                {#if r.round > 1}<span class="{r.round >= 3 ? 'text-amber-300' : ''}">round {r.round}</span>{/if}
+                {#if r.authorBriefing}<span>briefing</span>{/if}
+              </div>
+            </button>
+          {/if}
+        {/each}
+      </div>
+    </div>
+  {/if}
   {#if !hasAny}
     <div class="flex flex-col items-center gap-3 py-16 text-zinc-600">
       {#if status === 'error'}

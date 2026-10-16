@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import SessionList from './SessionList.svelte'
   import SidebarSection from './SidebarSection.svelte'
   import NewSessionButtons from './NewSessionButtons.svelte'
@@ -9,14 +10,13 @@
   import ScreenPrsButton from '../screenprs/ScreenPrsButton.svelte'
   import SectionIcon from './SectionIcon.svelte'
   import { uiView } from '../../stores/uiView.svelte'
-  import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { backlogStore } from '../../stores/backlog.svelte'
   import { currentSessionsAttention } from '../../stores/sessionAttention.svelte'
   import { attentionTooltip } from '../../lib/sessionsAttention'
 
   let view = $derived(uiView.current())
   let sessionsAttention = $derived(currentSessionsAttention())
-  let attention = $derived(screenPrsStore.attentionCount())
+  let attention = $derived(reviewRoom.screenPrsAttention())
   let backlogCount = $derived(backlogStore.items.length)
 </script>
 

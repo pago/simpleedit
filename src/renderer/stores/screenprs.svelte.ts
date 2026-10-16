@@ -313,6 +313,7 @@ export const screenPrsStore = {
   },
 
   attentionCount: (): number => [..._entries.values()].filter((e) => e.card?.bucket === 'attention').length,
+  attentionUrls: (): string[] => [..._entries.values()].flatMap((e) => (e.card?.bucket === 'attention' ? [e.card.url] : [])),
 
   selectedCard(): ScreenPrCard | undefined {
     return _selected ? _entries.get(_selected)?.card : undefined

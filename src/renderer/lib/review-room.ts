@@ -3,11 +3,12 @@
  * thread is labelled and filtered, how a layer's diff is cut into the
  * overview's reading order, and which row a line thread sits under.
  */
-import type { ReviewMessage, ReviewThread, ReviewThreadAnchor } from '../../shared/review-room'
+import type { ReviewMessage, ReviewReportLayer, ReviewThread, ReviewThreadAnchor } from '../../shared/review-room'
 import type { ReviewVerdict } from '../../shared/review-room-ipc'
 import type { DiffFile, DiffRow } from '../../shared/parseDiff'
 import { parseLineRange, type PrReviewComment } from '../../shared/screenprs'
 import { parseOverview, resolveRefPath, type OverviewReadingStep } from '../../shared/pr-overview'
+import type { Briefing } from '../../shared/review-briefing'
 
 export type Side = 'LEFT' | 'RIGHT'
 
@@ -45,7 +46,7 @@ export function originBadge(t: ReviewThread): OriginBadge {
 export function messageAuthor(t: ReviewThread, m: ReviewMessage, first: boolean): string {
   switch (m.author) {
     case 'user':
-      return 'You'
+      return m.toAuthor ? 'You · to the PR author' : 'You'
     case 'companion':
       return 'Companion'
     case 'author':
@@ -164,6 +165,44 @@ export function stepId(prNumber: number, index: number, title: string): string {
 /** The overview's reading order, when it has one (older overviews don't). */
 export function readingOrderOf(overviewText: string | undefined): OverviewReadingStep[] {
   return overviewText ? (parseOverview(overviewText).sections.readingOrder ?? []) : []
+}
+
+const REPORT_VERDICT: Record<ReviewReportLayer['verdict'], string> = { approve: 'Approve', comment: 'Comment', request_changes: 'Request changes' }
+
+/** A submitted review as markdown, from what the submission recorded (the drafts are gone by then). */
+export function reportMarkdown(report: readonly ReviewReportLayer[]): string {
+  return report
+    .map((layer) => {
+      const comments = layer.comments.map((c) => {
+        const where = c.reply ? 'reply' : c.path ? `${c.path}${c.line ? `:${c.startLine ? `${c.startLine}-` : ''}${c.line}` : ''}` : 'PR comment'
+        return `- \`${where}\`${c.severity ? ` **${c.severity}:**` : ''} ${c.body.trim()}`
+      })
+      return [`## #${layer.number} — ${REPORT_VERDICT[layer.verdict]}`, ...(layer.summary.trim() ? ['', layer.summary.trim()] : []), ...(comments.length ? ['', ...comments] : [])].join('\n')
+    })
+    .join('\n\n')
+}
+
+/** The author's reading order as tour steps (refs already resolved against the layer's diff by main). */
+export function briefingSteps(briefing: Briefing | undefined): OverviewReadingStep[] {
+  return (briefing?.readingOrder ?? []).map((section) => ({
+    title: section.title,
+    summary: section.summary,
+    refs: section.refs.map((ref) => ({
+      path: ref.path,
+      ...(ref.startLine ? { line: ref.endLine && ref.endLine !== ref.startLine ? `${ref.startLine}-${ref.endLine}` : String(ref.startLine) } : {}),
+    })),
+  }))
+}
+
+/**
+ * Whose reading order the layer's tour follows: the independent overview's
+ * once it ran, else the author's briefing, else none (path order).
+ */
+export function tourSteps(overviewText: string | undefined, briefing: Briefing | undefined): { steps: OverviewReadingStep[]; by: 'overview' | 'author' | null } {
+  const fromOverview = readingOrderOf(overviewText)
+  if (fromOverview.length) return { steps: fromOverview, by: 'overview' }
+  const fromAuthor = briefingSteps(briefing)
+  return fromAuthor.length ? { steps: fromAuthor, by: 'author' } : { steps: [], by: null }
 }
 
 /** A layer's tour steps as the outline lists them, and how many are ticked. */

@@ -18,7 +18,7 @@ import {
   type ReviewThread,
   type ReviewThreadAnchor,
 } from '../../shared/review-room'
-import type { ReviewLayerDiff, ReviewLayerInfo, ReviewOpenResult, ReviewSinceStatus } from '../../shared/review-room-ipc'
+import type { ReviewLayerDiff, ReviewLayerInfo, ReviewOpenResult, ReviewRequesterInfo, ReviewSinceStatus } from '../../shared/review-room-ipc'
 import { truncateSnippet } from '../../shared/review-drafts'
 import { hasUnreadMessages, newestSeq } from '../lib/review-room'
 import { screenPrsStore } from './screenprs.svelte'
@@ -40,6 +40,8 @@ let _diffs = $state<Map<string, ReviewLayerDiff>>(new Map())
 let _since = $state<Map<string, ReviewSinceStatus>>(new Map())
 /** Unsent ask text per thread (and per new-thread composer key), so a remount keeps it. */
 let _askDrafts = $state<Record<string, string>>({})
+/** The requesting session per review, as main last answered (`null`: none). */
+let _requesters = $state<Map<string, ReviewRequesterInfo | null>>(new Map())
 
 const layerKey = (reviewId: string, url: string): string => `${reviewId}|${url}`
 
@@ -105,6 +107,21 @@ export const reviewRoom = {
   },
   thread(threadId: string): ReviewThread | undefined {
     return _threads.get(threadId)
+  },
+  /** Open reviews an agent asked for (`request_review`), newest first: the queue's Requested group. */
+  requested(): Review[] {
+    return [..._reviews.values()]
+      .filter((r) => r.status === 'open' && !!r.requesterSessionId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  },
+  /** The Screen PRs badge: PRs needing attention plus requested reviews, each PR once. */
+  screenPrsAttention(): number {
+    const urls = new Set(screenPrsStore.attentionUrls())
+    for (const review of reviewRoom.requested()) {
+      const top = review.layers[review.layers.length - 1]
+      if (top) urls.add(top.url)
+    }
+    return urls.size
   },
   /** A review's threads, oldest first. */
   threadsFor(reviewId: string): ReviewThread[] {
@@ -231,6 +248,20 @@ export const reviewRoom = {
   ask(reviewId: string, threadId: string, body: string): Promise<void> {
     return sendOp(reviewId, { kind: 'append', threadId, message: { id: newReviewMessageId(), body } })
   },
+  /** Ask author: the question goes to the session that requested the review. */
+  askAuthor(reviewId: string, threadId: string, body: string): Promise<void> {
+    return sendOp(reviewId, { kind: 'ask-author', threadId, message: { id: newReviewMessageId(), body } })
+  },
+  requester(reviewId: string): ReviewRequesterInfo | null | undefined {
+    return _requesters.get(reviewId)
+  },
+  async loadRequester(reviewId: string): Promise<void> {
+    try {
+      _requesters = setIn(_requesters, reviewId, await window.api.invoke('review:requester-info', reviewId))
+    } catch (err) {
+      console.warn('[review] loading the requester failed:', err)
+    }
+  },
   setStatus(reviewId: string, threadId: string, status: 'open' | 'done', closeReason?: ReviewCloseReason): Promise<void> {
     if (status === 'open') return sendOp(reviewId, { kind: 'set-status', threadId, status })
     return sendOp(reviewId, { kind: 'set-status', threadId, status, ...(closeReason ? { closeReason } : {}) })
@@ -277,6 +308,7 @@ export function _resetReviewRoomForTests(): void {
   _diffs = new Map()
   _since = new Map()
   _askDrafts = {}
+  _requesters = new Map()
 }
 
 /** Tests only: what `review:changed` would deliver. */
