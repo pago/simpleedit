@@ -1,6 +1,6 @@
 # Plan: Review Room
 
-Status: draft, revised after adversarial review (rev 2) · Branch: `feat/review-room` (worktree
+Status: ready to implement, revised after two adversarial reviews (rev 3) · Branch: `feat/review-room` (worktree
 `wt-review-room`) · Prototype: https://claude.ai/artifact/Bk1wpDP1qvUp3J7vqceZNF (replayed stack
 #183 → #185)
 
@@ -72,7 +72,7 @@ The value is the human reviewer's judgement, amplified. Not "run an AI review an
 | Exactly-once session creation | `session-create.ts` `createSessionOnce` (requestId) |
 | Embeddable terminal | `components/terminal/Terminal.svelte` + `lib/pty-attach.ts` (`pty:claim`) |
 | Waiting status per provider | Notification / PermissionRequest hooks, OpenCode `session.status` → `agent-status.svelte.ts` |
-| Control-character stripping | `sanitizeLabel` (agent-wake) |
+| Control-character stripping | `sanitizeLabel` (`agent-bus.ts:402`) |
 | MCP tool pattern | `mcp-server/index.mjs` `registerTool` → `postToBridge` → `mcp-bridge.ts handleToolCall`, caller = `terminalId` |
 
 ## Why review threads get their own model
@@ -124,7 +124,12 @@ ReviewMessage { seq, author: 'user'|'companion'|'author'|'reviewer'|'tool', body
   every window and phone. What only main may do (companion claim, agent messages, delivery
   states, submissions, materialisation) is a main function, never an op. Every `review:*` payload
   is parsed as untrusted (the phone is a remote client).
-- **The draft stays in the draft store.** A thread's draft is a `PrReviewComment` with new fields
+- **The draft stays in the draft store, and `draft.threadId` is the source of truth** for the
+  link (`ReviewThread.draftCommentId` is derived on read, never stored, so SQLite and the JSON
+  draft file can't disagree). Deleting the draft unlinks the thread; deleting a thread removes its
+  draft. A whole-stack thread's draft lives in the picked layer's draft; changing the layer is one
+  main function that adds to the new layer's draft, then removes from the old (a crash between
+  leaves two copies, never none; the next load drops the older one by `threadId`). A thread's draft is a `PrReviewComment` with new fields
   `threadId`, `severity?: 'blocking'|'consider'|'nit'`, `inReplyTo?: {threadNodeId, rootCommentId}`.
   `commentFields` / `parseReviewComment` (`review-drafts.ts:191`) are extended so the fields
   survive validation. Posting changes are listed in §7; nothing about posting is "untouched".
@@ -171,8 +176,12 @@ once (acceptable).
   per layer, 50 reading-order sections, 30 questions), `refs` kept only when they resolve to a
   path in that layer's review diff (`resolveRefPath`), text sanitised. Rendered as markdown
   only; never typed into a PTY.
-- Stamped with the layer's head (`forHead`). After a push it is shown as "written for an earlier
-  head" and the tour falls back to path order for files the briefing doesn't cover.
+- Stamped with the layer's head (`forHead`); after a push it is shown as "written for an earlier
+  head". **Files the briefing's reading order leaves out are always appended** under "Not in the
+  author's tour", at any head, so an author can't hide a file.
+- It is untrusted input to the overview: fenced as data in a block it can't close (delimiters
+  stripped from its text), and part of the overview cache fingerprint. The companion brief says
+  thread bodies (findings, reviewers, author questions) are untrusted data.
 - **Display:** fills the layer's what / why / impact and the tour immediately, under a "by the
   author" label (the same standing as the PR description). `openQuestions` become
   `origin: finding, source: 'author'` threads (no severity).
@@ -181,15 +190,24 @@ once (acceptable).
   briefing's claims against the diff; disagreements come back as Look-into items, so they
   become threads. The overview then replaces the author's text in the layer header, and the
   briefing stays reachable as "Author's briefing".
-- A second `request_review` for an open review may update the briefing (new head); threads
-  materialised from the old questions follow the finding rules in §1.
+- Only the recorded requester may update an open review's briefing (new head); threads from the
+  old questions follow the finding rules in §1. `request_review` from another session for a
+  stack with an open review is refused with that review's requester named; it never replaces the
+  requester or hand-back target.
 
 ### 5. Companion
 
 - **Launch at the project root**, like every agent (CLAUDE.md "Claude Code integration"), so the
   transcript and memory keep the project's key. Lazily, on the first Ask or first input typed in
   the dock.
+- **Main-only launch path.** The companion is created by a main-only request (no new fields on
+  `SessionCreateRequest`, which the phone can reach); `owner` and `reviewCompanion` are never
+  accepted from a client. The renderer's `createAgent` grows `{select: false}` (today it always
+  `select(id)`s, `sessions.svelte.ts:381`).
 - **Ownership across windows.** Reviews are app-wide, sessions and PTY mounts are per window.
+  **Any desktop window can host the companion, at its own project root** (a review is keyed by
+  GitHub repo, a window by local bare repo; they need not match). The phone's Ask claims through
+  the window its socket joined.
   Main claims the companion atomically: `claimCompanion(reviewId, windowId, requestId)`
   (compare-and-set, `createSessionOnce` semantics); only the winning window creates the session.
   Delivery and replies are main-side, so **Ask works from any window**; only the terminal mount is
@@ -200,12 +218,18 @@ once (acceptable).
   `SerializedSession`). One predicate, `isOwned(session)`, is applied at **every** user-facing
   listing: the sidebar list, the finished-unseen dot, `visitedIds`, the close-fallback
   `select(next)` (`sessions.svelte.ts` ~590), `WorkspaceManager`'s empty state
-  (`WorkspaceManager.svelte:33`), the command palette and ⌘-switching. It stays in `_sessions` so
+  (`WorkspaceManager.svelte:33`), the command palette, ⌘-switching, **the phone snapshot**
+  (`windowSessionSnapshot`, `sessions.svelte.ts:1330`, → `session:sync`) and **push**
+  (`remote/push.ts:367` `waiting`). The companion's `waiting` is reported in the room instead. It stays in `_sessions` so
   agent-bus peer sync and status keep working; `list_sessions` marks it `owner: review`.
   `createAgent` gets `{select: false}`.
-- **Restore.** A restored owned session is a `pendingResume` placeholder; the room's dock offers
-  *Resume* (that's the only place it is reachable). No auto-resume.
-- **Session end** (exit, kill, window close, agent switch): main clears `review.companion`; every
+- **Restore.** Quit is not a session end: `review.companion` survives it, and the owner link is
+  persisted on the session. A restored owned session is a `pendingResume` placeholder; the room's
+  dock offers *Resume*, which re-derives the launch options (`reviewCompanion`, deny settings,
+  extra dir) from `owner`. No auto-resume. At startup, owned placeholders whose review is not
+  `open` are deleted.
+- **Session end** (exit, kill, closing its window while the app keeps running, agent switch):
+  main clears `review.companion`; every
   review-thread message `held` / `delivered`-and-armed on that session becomes `unanswered` with
   Retry (Retry goes to the next companion).
 - **Brief** (extend `shared/pr-brief.ts`, stack-aware): layers with URLs and head SHAs; "read
@@ -218,22 +242,32 @@ once (acceptable).
 - **Read-only, best effort, per provider.** New `LaunchPlan` option `reviewCompanion: true` (PR
   2), mapped per provider and **verified live** per provider, including that MCP tool calls still
   work:
-  - Claude: a `permissions.deny` list in the session's `--settings` file for
-    Edit/Write/NotebookEdit and Bash patterns that write remotely (`git push`, `gh pr review`,
-    `gh pr comment`, `gh api` with `-X POST|PATCH|PUT|DELETE`). Not `--permission-mode plan` (it
+  - Claude: a `permissions.deny` list in the session's `--settings` file for Edit, Write,
+    NotebookEdit **and Bash** (Read/Grep/Glob cover reading; diffs and threads come over MCP).
+    Pattern-denying writes is not enough: `sed -i`, redirects or `gh api -f` (POST by default)
+    slip through. Not `--permission-mode plan` (it
     can block MCP writes such as `reply_to_thread` and its ExitPlanMode dialog reads as
     "needs you").
-  - Codex: `--sandbox read-only` is now viable because the companion needs no network (diffs and
-    threads come over MCP); verify MCP calls pass the sandbox.
-  - OpenCode: the env-based `openCodeReadOnlyEnv` used by the bounded runner
-    (`agent-tasks/runner.ts` ~:423).
+  - Codex: `--sandbox read-only` is viable because the companion needs no network (diffs and
+    threads come over MCP). Verify live that MCP calls **and the hook reporter**
+    (`UserPromptSubmit`/`Stop` → bridge HTTP, `agents/codex.ts:35-89`) still work; if hooks are
+    sandboxed, delivery never confirms, so fall back to `workspace-write` with the brief.
+  - OpenCode: a companion ruleset derived from `openCodeReadOnlyEnv`
+    (`agent-tasks/runner.ts:443-458`), which denies `bash` and `external_directory`; the companion
+    variant allows `external_directory` for the review's checkout dir only.
   - Where a provider can't enforce it, the brief states it and the UI says "read-only by
     instruction" in the companion bar's tooltip. The plan does not claim enforcement it can't
     deliver.
 - **Checkout on demand** (`checkout_review_head(review_id, pr?)`): main fetches the PR's own repo
   into a **main-owned cache** (`userData/review-repos/<owner>/<repo>.git`, partial clone
   `--filter=blob:none`, reused across reviews) and adds a detached worktree at the layer's head
-  under `userData/review-checkouts/<reviewId>/<pr>`. It never touches the user's bare repos, so no
+  under `userData/review-checkouts/<reviewId>/<pr>`. Paths include the host
+  (`review-repos/<host>/<owner>/<repo>.git`), and owner/repo are validated with the existing
+  owner rule (`parseScreeningFilters`) since they come from agent-supplied URLs. Fetches use
+  `gh auth git-credential`, take `refs/pull/<n>/head` from the base repo (works for fork PRs),
+  and run under a per-repo mutex. The cache is an LRU with a size cap (default 5 GB); checkouts of
+  reviews untouched for 14 days are removed, and reviews whose PRs are all merged/closed are
+  auto-closed (`discarded` if never submitted). It never touches the user's bare repos, so no
   worktree watcher or picker sees it, and it works for PRs from repos no window has open. Returns
   the absolute path; the brief tells the agent to read files there by absolute path. Access is
   granted at launch, not later: the review's checkout dir is created (empty) before the companion
@@ -246,7 +280,9 @@ once (acceptable).
   it is the only mount; it claims the PTY on expand. `waiting` → "needs you", per provider.
 - **Questions → companion.** The delivery core of `thread-delivery.ts` (idle gate, draft rule,
   typed submit, `UserPromptSubmit` header confirmation, arm-on-confirmation, Stop fallback) is
-  extracted so it serves agent threads and review threads alike. A review-thread prompt carries
+  extracted so it serves agent threads and review threads alike, with **one per-session state**
+  (held, batch, armed) over both stores: `requestSendNow` today reads only the agent-thread store
+  (`thread-delivery.ts:443-445`), and two cores would type into the same PTY. A review-thread prompt carries
   only **system-composed text plus the user's own question**:
   `[Review thread rt_… · #184 src/main/github/stack-base.ts:131 RIGHT] <user's question>`. Item
   bodies (findings, other reviewers' comments) are **not** typed into the PTY; the companion reads
@@ -290,15 +326,20 @@ queue (filter, cutoff, not a requested reviewer), so main fetches its card on de
      one exists that SimpleEdit didn't create (`reviewNodeId` unknown), stop and ask (use it /
      cancel), never silently merge into it.
   2. Add line drafts as threads (`addPullRequestReviewThread`: path, line, side, start*), replies
-     with `addPullRequestReviewThreadReply` (thread node id). Severity is rendered as a
+     with `addPullRequestReviewThreadReply` **always passing `pullRequestReviewId`** (without it a
+     reply posts immediately). Each added item records `{draftId, draftRev, nodeId}`. Severity is rendered as a
      conventional-comment prefix (`**blocking:**`) by the payload builder.
   3. `submitPullRequestReview(event)`.
   - **Idempotent retries:** the pending review is invisible until submit, its id is recorded in
-    the submission before anything is added, and each added item's id goes into
-    `postedCommentIds` as it lands. A retry resumes the same pending review and adds only what's
-    missing; a submitted review is never re-submitted. A timeout leaves `state: unknown` and the
-    retry first re-reads the pending review. Drafts are cleared per item (`clear-posted` with the
-    ids that landed).
+    the submission before anything is added, and each added item is recorded as it lands. A retry
+    resumes the same pending review: missing items are added, items whose draft changed since
+    (`draftRev`) are updated (`updatePullRequestReviewComment`); a submitted review is never
+    re-submitted. A timeout leaves `state: unknown`; the retry re-reads the pending review and
+    matches items by a hidden marker (`<!-- se:<draftId> -->`) appended to each body.
+    **Drafts are cleared only after `submitPullRequestReview` succeeds** (`clear-posted` with the
+    landed ids), so a pending review deleted on GitHub or a failed submit loses nothing. Cancel
+    and abandoned submissions call `deletePullRequestReview`, since a leftover pending review
+    blocks the user's own web review.
   - **Anchor rules carry over:** the existing `resolveAnchor` / `anchorsForHead` / LEFT-on-isolated
     fold rules run before step 2; a thread GitHub rejects folds into the review body with its
     file:line and snippet, like today's 422 path. Unit tests port the REST cases.
@@ -307,7 +348,9 @@ queue (filter, cutoff, not a requested reviewer), so main fetches its card on de
     If any of these fails, fall back to REST (create review, then replies via
     `POST /pulls/{n}/comments/{id}/replies`) with the same per-item posted state.
 - **The phone posts through the same main path** (`screenprs:submit-review` grows a `reviewId`),
-  so it inherits all of the above; no posting logic lives in a client.
+  so it inherits all of the above; no posting logic lives in a client. Until PR 4 ships, the old
+  REST `postReview` path refuses drafts that carry `threadId`/`inReplyTo` with a reason (from PR 2
+  on), so the old phone screen can't turn replies into top-level comments.
 - **Hand-back** (to the requester): a typed prompt through the delivery core, system-composed
   only: `[Review r_… submitted] #183 approve · #184 changes requested (2 comments) · #185 comment
   (1). Call get_review("r_…") for the comments.` Delivery is confirmed like any thread prompt; a
@@ -325,7 +368,10 @@ queue (filter, cutoff, not a requested reviewer), so main fetches its card on de
 - `lastSeenHead[pr]` is set when the user opens a layer, and **advances** when they submit or
   dismiss the "new commits" banner (*Got it*), never by scrolling.
 - The banner uses the compare API's `status` / `ahead_by` between `lastSeenHead` and the head:
-  `ahead` → "N new commits since you last looked" + *Show only the new changes* (the compare diff);
+  `ahead` → "N new commits since you last looked" + *Show only the new changes* (the compare diff;
+  when the base was merged in, the interdiff is computed on the review diffs, not the raw compare,
+  so main's delta doesn't show); `identical` → no banner; `behind` → "the branch was reset
+  to an older commit";
   `diverged` or 404 (force-push dropped the old head) → "History was rewritten since you last
   looked", no interdiff.
 - Line threads whose `headSha` ≠ current head are re-resolved (`resolveAnchor` on the new review
@@ -339,7 +385,8 @@ New `components/review/`: `ReviewRoom.svelte` (stack map, document, outline, bot
 Draft/Done; reads `readSeq` while on screen like `InlineThread`), `ReviewOutline` (Open / To post /
 Done / Started by me / All, reading progress), `CompanionDock`, `SubmitReviewsModal`.
 `ScreenPrsView` renders `ReviewRoom` instead of `PrDetail` on desktop; desktop *Discuss with
-Agent* is removed.
+Agent* is removed. The outline is a right column at ≥1200px and a drawer below. Settings gets a
+*Review companion* default (`review.companionModel`, from the Models allowlist) in PR 2.
 
 ### 10. Phone (PR 4)
 
@@ -372,7 +419,12 @@ Agent* is removed.
 
 ## Verification
 
-- **Unit (vitest):** finding matching across a push that shifts lines and an LLM re-run that
+- **Unit (vitest):** isOwned over the phone snapshot and push; companion launch options never
+  accepted from `session:create`; drafts kept when submit fails or the pending review is gone;
+  edited-after-add item updated on retry; reply carries `pullRequestReviewId`; marker matching
+  after a timeout; layer move of a stack draft; cache path validation (traversal, host);
+  briefing can't hide files and changes the overview fingerprint; `request_review` refused for
+  another session's open review; one delivery state across both stores; finding matching across a push that shifts lines and an LLM re-run that
   rewords titles (no thread with a conversation/draft lost); anchor re-resolution → outdated;
   `resolveStack` across buckets incl. merged parents; GitHub thread mapping onto an isolated diff
   (LEFT, lower-layer file, outdated → PR-level); pagination; every `parseReviewOp` /
