@@ -61,6 +61,11 @@ describe('session registry', () => {
     expect(syncWindowSessions(1, [], 4000)).toBe(true)
   })
 
+  it('reports a change when session ownership changes', () => {
+    syncWindowSessions(1, [session()], 1000)
+    expect(syncWindowSessions(1, [session({ owner: { kind: 'review', reviewId: 'r_review01' } })], 2000)).toBe(true)
+  })
+
   it('treats an empty first sync as a change, so a client hears the empty list', () => {
     expect(syncWindowSessions(1, [], 1000)).toBe(true)
     expect(syncWindowSessions(1, [], 2000)).toBe(false)

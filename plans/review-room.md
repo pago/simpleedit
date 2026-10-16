@@ -462,6 +462,29 @@ Agent* is removed. The outline is a right column at ≥1200px and a drawer below
    Ask author.
 4. **Phone** — §10.
 
+### PR 1 implementation notes
+
+- `ReviewMessage` has a stable `rm_…` id in addition to `seq`. The shared delivery core needs an
+  idempotent cross-store delivery/retry reference; `seq` remains the display order within a thread.
+- `claimCompanion` reserves the future terminal id inside the same compare-and-set that records the
+  winning window. PR 2 consumes that id when it asks the renderer to create the owned session and
+  clears only the matching claim if creation fails.
+- Restoring a renderer session currently mints a new terminal id. PR 1 persists `Session.owner`, but
+  PR 2 must rebind the surviving review claim when its owned placeholder is resumed; owner metadata
+  alone does not repair the old `Review.companion.sessionId`.
+- The current app has no per-session command-palette provider or session-cycle shortcut. PR 1 filters
+  the concrete user-facing surfaces that exist (sidebar, attention, visited workspaces, close
+  fallback, empty state, phone snapshot and push) and leaves no invented navigation path behind.
+- `get_review_diff` accepts a cached diff only when both the recorded head and current base key
+  match. A live fetch verifies the head first and then refuses the result if the head or base moved
+  while loading, rather than labelling mutable content with the review's stored SHA.
+- A finding closed with a reason is retained as outdated when it disappears, even without a
+  conversation, draft or proposal. Otherwise a later re-report could not attach to that reasoned
+  thread as required.
+- MCP bridge credentials are now per session (the window bridge keeps a master credential only for
+  internal/tests), so tool calls and hooks cannot name a sibling terminal id to bypass persisted
+  review roles.
+
 ## Verification
 
 - **Unit (vitest):** preExisting marking (context rows, outside the diff); a re-reported finding

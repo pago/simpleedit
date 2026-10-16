@@ -13,7 +13,7 @@
   import { uiView } from '../../stores/uiView.svelte'
   import { sidebarRail } from '../../stores/sidebarRail.svelte'
 
-  let sessions = $derived(sessionsStore.sessions())
+  let sessions = $derived(sessionsStore.visibleSessions())
   let activeId = $derived(sessionsStore.activeSessionId())
 
   /** Group members are kept contiguous in `sessions`, so a single linear walk

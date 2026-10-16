@@ -119,6 +119,7 @@ interface Deps {
    * already on the screen in front of you.
    */
   userIsPresent: () => boolean
+  ignoreSession: (terminalId: string) => boolean
   onStatusChange?: (status: PushStatus) => void
 }
 
@@ -131,6 +132,7 @@ let deps: Deps = {
   // notify rather than stay silent, since a duplicate costs a glance and a
   // miss costs the whole reason the phone is in your pocket.
   userIsPresent: () => false,
+  ignoreSession: () => false,
 }
 
 export function configurePush(next: Partial<Deps>): void {
@@ -521,6 +523,8 @@ export function handleAgentStatus(event: AgentStatusEvent, windowId: number): vo
     hookTurns.delete(event.terminalId)
     return
   }
+
+  if (deps.ignoreSession(event.terminalId)) return
 
   // A new turn re-arms the thread-reply buzz. Not out of `waiting`: that is a
   // dialog inside the same turn. A session whose hooks report turn starts is

@@ -40,6 +40,7 @@ interface BridgeInstance {
   port: number
   token: string
   webContents: RemoteClient
+  sessionTokens: Map<string, string>
 }
 
 const bridges = new Map<number, BridgeInstance>()
@@ -82,6 +83,19 @@ let backlogTools: BacklogTools | null = null
 
 export function setBacklogTools(tools: BacklogTools): void {
   backlogTools = tools
+}
+
+export interface ReviewRoomTools {
+  listThreads(terminalId: string, input: Record<string, unknown>): Record<string, unknown>
+  reply(terminalId: string, threadId: string, body: string): { ok: true } | { ok: false; error: string }
+  getDiff(terminalId: string, reviewId: string, pr: number): Promise<Record<string, unknown>>
+  proposeDraft(terminalId: string, threadId: string, text: string, severity?: string): { ok: true } | { ok: false; error: string }
+}
+
+let reviewRoomTools: ReviewRoomTools | null = null
+
+export function setReviewRoomTools(tools: ReviewRoomTools): void {
+  reviewRoomTools = tools
 }
 
 function projectName(project: string): string {
@@ -568,6 +582,7 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
           provider: p.provider ?? 'unknown',
           worktree: p.worktreePath,
           status: p.status,
+          ...(p.owner ? { owner: p.owner.kind, review_id: p.owner.reviewId } : {}),
           unread: p.unread,
           ...(p.unread > 0 ? { mail: outlookNote(p.terminalId) } : {}),
         })),
@@ -638,7 +653,40 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     const threadId = typeof args['thread_id'] === 'string' ? args['thread_id'] : ''
     const body = typeof args['body'] === 'string' ? args['body'] : ''
     if (!threadId) return { status: 400, body: { error: 'reply_to_thread requires `thread_id`' } }
-    const result = replyToThread(terminalId, threadId, body)
+    const result = threadId.startsWith('t_')
+      ? replyToThread(terminalId, threadId, body)
+      : threadId.startsWith('rt_') && reviewRoomTools
+        ? reviewRoomTools.reply(terminalId, threadId, body)
+        : { ok: false as const, error: `Unknown thread id "${threadId}".` }
+    return result.ok ? { status: 200, body: { ok: true } } : { status: 400, body: { error: result.error } }
+  }
+
+  if (tool === 'list_threads') {
+    if (!reviewRoomTools) return { status: 400, body: { error: 'Review threads are unavailable.' } }
+    try {
+      return { status: 200, body: reviewRoomTools.listThreads(terminalId, args) }
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : String(err) } }
+    }
+  }
+
+  if (tool === 'get_review_diff') {
+    if (!reviewRoomTools) return { status: 400, body: { error: 'Review threads are unavailable.' } }
+    const reviewId = typeof args['review_id'] === 'string' ? args['review_id'] : ''
+    const pr = typeof args['pr'] === 'number' ? args['pr'] : NaN
+    try {
+      return { status: 200, body: await reviewRoomTools.getDiff(terminalId, reviewId, pr) }
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : String(err) } }
+    }
+  }
+
+  if (tool === 'propose_draft') {
+    if (!reviewRoomTools) return { status: 400, body: { error: 'Review threads are unavailable.' } }
+    const threadId = typeof args['thread_id'] === 'string' ? args['thread_id'] : ''
+    const text = typeof args['text'] === 'string' ? args['text'] : ''
+    const severity = typeof args['severity'] === 'string' ? args['severity'] : undefined
+    const result = reviewRoomTools.proposeDraft(terminalId, threadId, text, severity)
     return result.ok ? { status: 200, body: { ok: true } } : { status: 400, body: { error: result.error } }
   }
 
@@ -763,14 +811,21 @@ async function locateWorktree(
  * paid once per new repo per window. A pathological path (network FS, huge
  * repo) would stall the CLI's hook here.
  */
-async function handleHook(body: string, webContents: RemoteClient): Promise<Record<string, unknown>> {
+async function handleHook(
+  body: string,
+  webContents: RemoteClient,
+  boundTerminalId?: string,
+): Promise<Record<string, unknown>> {
   let parsed: unknown
   try {
     parsed = JSON.parse(body)
   } catch {
     return {}
   }
-  const signal = parseHookBody(parsed)
+  const parsedSignal = parseHookBody(parsed)
+  const signal = parsedSignal && boundTerminalId
+    ? { ...parsedSignal, terminalId: boundTerminalId }
+    : parsedSignal
   if (!signal) return {}
   return applyAgentSignal(signal, webContents)
 }
@@ -986,22 +1041,27 @@ function registerCodexIdentityAndStatus(
   }
 }
 
-function createBridgeServer(token: string, webContents: RemoteClient): Server {
+function createBridgeServer(token: string, sessionTokens: Map<string, string>, webContents: RemoteClient): Server {
   return createServer(async (req, res) => {
-    // Validate token from URL path: /<token>/tool-call
-    const expectedPath = `/${token}/tool-call`
-    const hooksPath = `/${token}/hooks`
+    const match = req.url?.match(/^\/([^/]+)\/(tool-call|hooks)$/)
+    const suppliedToken = match?.[1] ?? ''
+    const endpoint = match?.[2]
+    const boundTerminalId = suppliedToken === token ? undefined : sessionTokens.get(suppliedToken)
+    if (suppliedToken !== token && !boundTerminalId) {
+      jsonResponse(res, 404, { error: 'Not found' })
+      return
+    }
 
     // Location-tracking hook endpoint (Stage 2). Token-authed via the path,
     // same scheme as tool-call. Body = the raw hook input JSON from the CLI.
-    if (req.method === 'POST' && req.url === hooksPath) {
+    if (req.method === 'POST' && endpoint === 'hooks') {
       // The response body is a real channel back into the agent (a Stop hook
       // delivery), so it must carry handleHook's result — but a throw here must
       // still degrade to an inert 200 rather than stalling the CLI's hook.
       let hookResult: Record<string, unknown> = {}
       try {
         const body = await readBody(req)
-        hookResult = await handleHook(body, webContents)
+        hookResult = await handleHook(body, webContents, boundTerminalId)
       } catch {
         hookResult = {}
       }
@@ -1009,7 +1069,7 @@ function createBridgeServer(token: string, webContents: RemoteClient): Server {
       return
     }
 
-    if (req.method === 'POST' && req.url === expectedPath) {
+    if (req.method === 'POST' && endpoint === 'tool-call') {
       try {
         const body = await readBody(req)
         const payload = JSON.parse(body) as ToolCallPayload
@@ -1020,6 +1080,10 @@ function createBridgeServer(token: string, webContents: RemoteClient): Server {
         }
         if (!payload.terminalId || typeof payload.terminalId !== 'string') {
           jsonResponse(res, 400, { error: 'Missing or invalid "terminalId" field' })
+          return
+        }
+        if (boundTerminalId && payload.terminalId !== boundTerminalId) {
+          jsonResponse(res, 403, { error: 'Bridge credential does not belong to this session' })
           return
         }
 
@@ -1042,13 +1106,14 @@ export function startBridge(webContentsId: number, webContents: RemoteClient): P
   }
 
   const token = randomBytes(16).toString('hex')
-  const server = createBridgeServer(token, webContents)
+  const sessionTokens = new Map<string, string>()
+  const server = createBridgeServer(token, sessionTokens, webContents)
 
   // Registered BEFORE `listen` resolves. A window closing during the listen
   // would otherwise find nothing in `bridges` to stop, and the server would
   // outlive it with nothing left holding a reference. `port: 0` marks it as
   // not yet listening, which `getBridgeInfo` reports as unavailable.
-  bridges.set(webContentsId, { server, port: 0, token, webContents })
+  bridges.set(webContentsId, { server, port: 0, token, webContents, sessionTokens })
 
   return new Promise((resolve, reject) => {
     server.listen(0, '127.0.0.1', () => {
@@ -1068,7 +1133,7 @@ export function startBridge(webContentsId: number, webContents: RemoteClient): P
         resolve(port)
         return
       }
-      bridges.set(webContentsId, { server, port, token, webContents })
+      bridges.set(webContentsId, { server, port, token, webContents, sessionTokens })
       console.log(`[MCP Bridge] Started for webContents ${webContentsId} on 127.0.0.1:${port}`)
       resolve(port)
     })
@@ -1095,10 +1160,16 @@ export function stopAllBridges(): void {
   }
 }
 
-export function getBridgeInfo(webContentsId: number): { port: number; token: string } | null {
+export function getBridgeInfo(webContentsId: number, terminalId?: string): { port: number; token: string } | null {
   const bridge = bridges.get(webContentsId)
   // `port: 0` is a bridge registered but not yet listening — it has no address
   // to hand an agent yet.
   if (!bridge || bridge.port === 0) return null
-  return { port: bridge.port, token: bridge.token }
+  if (!terminalId) return { port: bridge.port, token: bridge.token }
+  for (const [sessionToken, id] of bridge.sessionTokens) {
+    if (id === terminalId) return { port: bridge.port, token: sessionToken }
+  }
+  const sessionToken = randomBytes(16).toString('hex')
+  bridge.sessionTokens.set(sessionToken, terminalId)
+  return { port: bridge.port, token: sessionToken }
 }

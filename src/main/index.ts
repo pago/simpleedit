@@ -40,7 +40,7 @@ import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot, isScreening, onScreeningStarted } from './screenprs'
 import { startScreeningSchedule, stopScreeningSchedule, rescheduleScreening, noteScreeningStarted, screeningSchedule } from './screenprs-schedule'
-import { loadDrafts, applyOp as applyDraftOp } from './screenprs-drafts'
+import { assertReviewDraftOp, loadDrafts, applyOp as applyDraftOp, draftLinksForThread, removeDraftsForThread } from './screenprs-drafts'
 import { loadFilter, setFilter } from './screenprs-filter'
 import { parseScreeningFilters, screeningFilters } from '../shared/screenprs-filter'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
@@ -49,7 +49,7 @@ import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnap
 import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
-import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer, setBacklogTools } from './mcp-bridge'
+import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer, setBacklogTools, setReviewRoomTools } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, everyClient, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
@@ -97,7 +97,7 @@ import { forgetWindow, onMailDropped, queuedSnapshot, syncPeers, resolveSpawn } 
 import { initAgentWake, noteUserInput, userKeys } from './agent-wake'
 import { applyThreadOp, assertKnownWorktree, loadThreads, reassignSession, removeSessionThreads } from './agent-threads-store'
 import { noteAnchorChanges, startThreadAnchorWatch, stopThreadAnchorWatch } from './thread-anchor-watch'
-import { forceSend, initThreadDelivery, moveSession, noteThreadStatus, noteThreadUserInput, requestSend, retryMessage } from './thread-delivery'
+import { forceSend, initThreadDelivery, markThreadReplied, moveSession, noteThreadStatus, noteThreadUserInput, requestSend, retryMessage } from './thread-delivery'
 import { parseMessageIdRequest, parseThreadOp, type ThreadChange } from '../shared/agent-threads'
 import { getPeer } from './agent-bus'
 import { syncWindowSessions, getWindowSessions, forgetWindowSessions } from './session-registry'
@@ -105,6 +105,9 @@ import { createSessionOnce, resolveSessionCreate, type ModelCatalog } from './se
 import { applyBacklogOps, loadBacklog, parseBacklogOps, type Origin } from './backlog-store'
 import { parseStartRequest, startBacklogItem } from './backlog-start'
 import { closeDb } from './db'
+import { applyReviewOp, isReviewCompanionSession, loadReviews } from './review-room-store'
+import { parseReviewOpRequest, type ReviewChange, type ReviewSnapshot } from '../shared/review-room'
+import { createReviewRoomTools } from './review-room-tools'
 import { getProvider, registeredProviderIds } from './agents/provider'
 import { isExecutableAvailable } from './lib/shell-path'
 import { listCodexModels, cancelCodexDiscovery } from './models/codex-catalog'
@@ -447,6 +450,7 @@ configurePush({
     getWindowSessions(windowId).find((session) => session.terminalId === terminalId)?.label ?? null,
   windowOf: (terminalId) =>
     liveWindowContents().find((wc) => getWindowSessions(wc.id).some((s) => s.terminalId === terminalId))?.id ?? null,
+  ignoreSession: isReviewCompanionSession,
   onStatusChange: broadcastPushStatus,
 })
 
@@ -461,6 +465,26 @@ function broadcastThreadChanges(changes: ThreadChange[]): void {
   for (const change of changes) broadcastToAllClients('agent-threads:changed', change)
 }
 
+function broadcastReviewChanges(changes: ReviewChange[]): void {
+  for (const change of changes) broadcastToAllClients('review:changed', change)
+}
+
+setReviewRoomTools(createReviewRoomTools({
+  broadcast: broadcastReviewChanges,
+  markReplied: markThreadReplied,
+}))
+
+function reviewSnapshot(): ReviewSnapshot {
+  const snapshot = loadReviews()
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) => {
+      const draftCommentId = draftLinksForThread(thread.id)[0]?.commentId
+      return draftCommentId ? { ...thread, draftCommentId } : thread
+    }),
+  }
+}
+
 // Deferred to app-ready: the store opens the database under userData.
 function startThreadDelivery(): void {
   initThreadDelivery({
@@ -468,6 +492,7 @@ function startThreadDelivery(): void {
     write: writeToTerminal,
     push: pushToAgent,
     broadcast: broadcastThreadChanges,
+    broadcastReview: broadcastReviewChanges,
     onAgentReply: handleThreadReply,
   })
   onAgentStatus((event) => noteThreadStatus(event.terminalId, event.status))
@@ -1002,7 +1027,7 @@ function registerAllHandlers(): void {
 
   // ── Interactive agents ──────────────────────────────────
   handleInvoke('agent:spawn', async (event, options: AgentSpawnOptions) => {
-    const bridge = getBridgeInfo(event.sender.id)
+    const bridge = getBridgeInfo(event.sender.id, options.id)
     const client = hubFor(event.sender)
     // Awaited and caught. `buildLaunch` validates ids that reach a login-shell
     // command string, so it rejects on input an agent supplied — a bad
@@ -1149,7 +1174,23 @@ function registerAllHandlers(): void {
 
   handleInvoke('screenprs:draft-op', (_event, request: unknown) => {
     const { url, op } = parseDraftOpRequest(request)
+    assertReviewDraftOp(url, op)
     return applyAndBroadcastDraftOp(url, op)
+  })
+
+  handleInvoke('review:load', () => reviewSnapshot())
+
+  handleInvoke('review:op', (_event, raw: unknown) => {
+    const { reviewId, op } = parseReviewOpRequest(raw)
+    const { change, queued } = applyReviewOp(reviewId, op)
+    if (change && op.kind === 'remove-thread') {
+      for (const { url, result } of removeDraftsForThread(op.threadId)) {
+        broadcastToAllClients('screenprs:draft-changed', { url, ...result })
+      }
+    }
+    if (change) broadcastReviewChanges([change])
+    if (queued?.sessionId) requestSend(queued.sessionId)
+    return change
   })
 
   handleInvoke('agent-threads:load', () => loadThreads())
@@ -1371,10 +1412,12 @@ function registerAllHandlers(): void {
   // Keyed by window: each renderer lists only its own sessions, so one
   // window's sync must not forget another's.
   handleInvoke('agent-bus:sync', (event, peers: AgentPeer[]) => {
+    if (event.sender.clientKey !== undefined) throw new Error('agent-bus:sync is not available to remote clients')
     syncPeers(peers, event.sender.id)
   })
 
   handleInvoke('agent-bus:spawned', (event, correlationId: string, peer: AgentPeer) => {
+    if (event.sender.clientKey !== undefined) throw new Error('agent-bus:spawned is not available to remote clients')
     resolveSpawn(correlationId, peer, event.sender.id)
   })
 

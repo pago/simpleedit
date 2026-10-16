@@ -700,6 +700,26 @@ server.registerTool(
 )
 
 server.registerTool(
+  'list_threads',
+  {
+    description: [
+      'List SimpleEdit comment threads you are allowed to read. This includes your code threads',
+      'and Review Room threads for reviews where you are the companion or requester. Pass a',
+      'review_id to return only that review. Read the thread before answering it.',
+    ].join('\n'),
+    inputSchema: {
+      status: z.enum(['open', 'done']).optional().describe('Only threads in this state.'),
+      review_id: z.string().optional().describe('Only threads in this Review Room review.'),
+    },
+  },
+  async ({ status, review_id }) => {
+    const result = await postToBridge('list_threads', { status, review_id })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(JSON.stringify(result.data ?? {}, null, 2))
+  },
+)
+
+server.registerTool(
   'reply_to_thread',
   {
     description: [
@@ -718,6 +738,45 @@ server.registerTool(
     const result = await postToBridge('reply_to_thread', { thread_id, body })
     if (!result.ok) return errorResult(`Error: ${result.error}`)
     return okResult(`Answered in thread ${thread_id}.`)
+  },
+)
+
+server.registerTool(
+  'get_review_diff',
+  {
+    description: [
+      'Read one layer of the current Review Room review. This is the isolated review diff;',
+      'use it instead of `gh pr diff`, which can include lower layers of a stacked PR.',
+    ].join('\n'),
+    inputSchema: {
+      review_id: z.string().min(1).describe('Review id, e.g. "r_…".'),
+      pr: z.number().int().min(1).describe('Pull request number of the layer.'),
+    },
+  },
+  async ({ review_id, pr }) => {
+    const result = await postToBridge('get_review_diff', { review_id, pr })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(JSON.stringify(result.data ?? {}, null, 2))
+  },
+)
+
+server.registerTool(
+  'propose_draft',
+  {
+    description: [
+      'Propose replacement text for a Review Room thread draft. This records a proposal for the',
+      'reviewer to accept; it never edits or posts the draft itself.',
+    ].join('\n'),
+    inputSchema: {
+      thread_id: z.string().min(1).describe('Review thread id, e.g. "rt_…".'),
+      text: z.string().min(1).describe('Proposed review comment text.'),
+      severity: z.enum(['blocking', 'consider', 'nit']).optional(),
+    },
+  },
+  async ({ thread_id, text, severity }) => {
+    const result = await postToBridge('propose_draft', { thread_id, text, severity })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(`Proposal recorded for ${thread_id}.`)
   },
 )
 
