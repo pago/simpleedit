@@ -14,7 +14,7 @@
 import type { Task } from '../agent-tasks/orchestrator'
 import { renderOverviewInput, type OverviewContext } from '../github/pr-overview-context'
 
-export const OVERVIEW_PROMPT_VERSION = 1
+export const OVERVIEW_PROMPT_VERSION = 2
 
 /** The overridable part: what the briefing covers and how it is written. */
 export const OVERVIEW_INSTRUCTIONS = `You are writing a reviewer's briefing on a GitHub pull request, read before the diff. It answers four things: what changed, why, what it affects, and where to spend review time. It is not a review: point at risk, don't adjudicate it. Deep review exists for findings.

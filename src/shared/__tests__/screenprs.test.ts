@@ -44,6 +44,7 @@ function card(over: Partial<ScreenPrCard>): ScreenPrCard {
 describe('ciLabel', () => {
   it('names the checks behind a bad state and never calls nothing a pass', () => {
     expect(ciLabel({ ci: 'green', ciFailing: [] })).toBe('CI passing')
+    expect(ciLabel({ ci: 'pending', ciFailing: [] })).toBe('CI pending')
     expect(ciLabel({ ci: 'none', ciFailing: [] })).toBe('No CI checks')
     expect(ciLabel({ ci: 'failing', ciFailing: ['lint', 'e2e'] })).toBe('CI failing: lint, e2e')
     expect(ciLabel({ ci: 'attention', ciFailing: [], ciAttention: ['e2e'] })).toBe('CI needs attention: e2e')
@@ -70,6 +71,8 @@ describe('bucketOf', () => {
   })
   it('routes unapproved PRs by criticality', () => {
     expect(bucketOf({ ci: 'green', approvedByOther: false, impact: 'low', findings: [issue] })).toBe('attention')
+    expect(bucketOf({ ci: 'none', approvedByOther: false, impact: 'low', findings: [] })).toBe('quick')
+    expect(bucketOf({ ci: 'attention', approvedByOther: false, impact: 'low', findings: [] })).toBe('quick')
     expect(bucketOf({ ci: 'pending', approvedByOther: false, impact: 'low', findings: [] })).toBe('quick')
   })
 })

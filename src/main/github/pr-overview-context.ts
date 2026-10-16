@@ -404,7 +404,7 @@ function ciSection(pr: PrContext): string {
   switch (pr.ci) {
     case 'failing': return `Failing: ${pr.ciFailing.join(', ') || 'unknown checks'}`
     case 'pending': return 'Checks are still running.'
-    case 'attention': return `No check failed, but some were cancelled or a required one was skipped${attention}. This is not a pass; say so.`
+    case 'attention': return `No check failed, but some did not pass (cancelled, required but skipped, or in an unrecognised state)${attention}. This is not a pass; say so.`
     case 'none': return 'No checks have run on this head (none registered yet, none triggered, or only optional ones skipped). Do not describe the PR as passing CI.'
     case 'green': return 'All checks passed.'
   }

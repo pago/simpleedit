@@ -161,6 +161,7 @@ interface RawCheck {
   name: string
   state: string
   bucket?: string
+  workflow?: string
 }
 
 const FAIL_STATES = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'])
@@ -190,24 +191,30 @@ function kindOf(r: RawCheck): CheckKind {
  * Derive a single CI status from `gh pr checks --json`, plus the names behind it.
  *
  * `gh` has no `required` JSON field, so the required checks come from a second
- * call (`--required`) and are matched by name. A skipped check is quiet unless
- * it is required; a cancelled or unrecognised one never counts as a pass. Green
+ * call (`--required`), matched by workflow + name. A skipped check is quiet
+ * unless it is required (or `requiredJson` is null: the lookup failed, so any
+ * skipped check might be); a cancelled or unrecognised one never counts as a pass. Green
  * means something actually passed: no rows, or only skipped optional ones, is
  * `none`.
  */
 export function parseChecks(
   json: string,
-  requiredJson = ''
+  requiredJson: string | null = ''
 ): { ci: PrCiStatus; ciFailing: string[]; ciAttention: string[] } {
   const rows = (JSON.parse(json || '[]') as RawCheck[]) ?? []
-  const required = new Set(((JSON.parse(requiredJson || '[]') as RawCheck[]) ?? []).map((r) => r.name))
+  const key = (r: RawCheck): string => `${r.workflow ?? ''}/${r.name}`
+  const required =
+    requiredJson === null ? null : new Set(((JSON.parse(requiredJson || '[]') as RawCheck[]) ?? []).map(key))
+  // GitHub counts a NEUTRAL conclusion as passing, so only SKIPPED can be a missing required check.
+  const skippedRequired = (r: RawCheck): boolean =>
+    kindOf(r) === 'skip' && r.state !== 'NEUTRAL' && (required === null || required.has(key(r)))
   const named = (kinds: CheckKind[]): string[] => rows.filter((r) => kinds.includes(kindOf(r))).map((r) => r.name)
 
   const failing = named(['fail'])
   const attention = rows
     .filter((r) => {
       const kind = kindOf(r)
-      return kind === 'cancel' || kind === 'unknown' || (kind === 'skip' && required.has(r.name))
+      return kind === 'cancel' || kind === 'unknown' || skippedRequired(r)
     })
     .map((r) => r.name)
   const none = { ci: 'none' as const, ciFailing: [], ciAttention: [] }
@@ -252,7 +259,7 @@ export function assembleMeta(
   viewJson: string,
   checksJson: string,
   handle: string,
-  requiredJson = ''
+  requiredJson: string | null = ''
 ): PrMeta {
   const view = JSON.parse(viewJson) as RawPrView
   const reviews = view.latestReviews ?? []
@@ -281,14 +288,26 @@ export function assembleMeta(
 
 const VIEW_FIELDS = 'additions,deletions,changedFiles,baseRefName,baseRefOid,headRefName,headRefOid,body,latestReviews'
 
+const CHECK_FIELDS = 'name,state,bucket,workflow'
+
+/** The required checks' JSON, '' when none are required, null when the lookup failed
+ *  (so the caller must not read that as "nothing is required"). */
+async function getRequiredChecks(url: string): Promise<string | null> {
+  try {
+    return await runGh(['pr', 'checks', url, '--required', '--json', CHECK_FIELDS])
+  } catch (e) {
+    if (e instanceof GhAbortError) throw e
+    return e instanceof Error && e.message.includes('no required checks reported') ? '' : null
+  }
+}
+
 /** The cheap half: metadata + CI + head SHA (no diff). Always refetched so a
  *  cached PR still gets current CI/reviews and an accurate bucket. */
 export async function getPrMeta(ref: PrRef, handle: string): Promise<PrMeta> {
   const [viewJson, checksJson, requiredJson] = await Promise.all([
     runGh(['pr', 'view', ref.url, '--json', VIEW_FIELDS]),
-    runGh(['pr', 'checks', ref.url, '--json', 'name,state,bucket'], { allowFail: true }),
-    // Exits nonzero with empty stdout when the base branch requires nothing.
-    runGh(['pr', 'checks', ref.url, '--required', '--json', 'name,state,bucket'], { allowFail: true }),
+    runGh(['pr', 'checks', ref.url, '--json', CHECK_FIELDS], { allowFail: true }),
+    getRequiredChecks(ref.url),
   ])
   return assembleMeta(ref, viewJson, checksJson, handle, requiredJson)
 }
