@@ -7,7 +7,7 @@ import type { Tour, WorktreeInfo } from '../shared/ipc-types'
 import { saveTour, tourKey } from './tour'
 import { getWorktreeForTerminal } from './claude-stream'
 import { validateSpec, validateSpecActions } from './gen-ui-validate'
-import { parseHookBody, matchWorktree, terminalForSession, type HookSignal } from './cwd-tracker'
+import { parseHookBody, matchWorktree, registerSession, terminalForSession, type HookSignal } from './cwd-tracker'
 import {
   awaitSpawn,
   captureImplicitReplies,
@@ -18,6 +18,7 @@ import {
   formatForDelivery,
   getPeer,
   listPeers,
+  peersWithWindows,
   messageState,
   pendingCount,
   sanitizeLabel,
@@ -97,6 +98,27 @@ export interface ReviewRoomTools {
 }
 
 let reviewRoomTools: ReviewRoomTools | null = null
+
+/**
+ * Workflows (`workflow-host.ts`): the five tools, plus the turn edges the
+ * engine reads a worker's state from. Registered by index.ts.
+ */
+export interface WorkflowTools {
+  call(tool: WorkflowToolName, args: Record<string, unknown>, terminalId: string, webContentsId: number): Promise<{ status: number; body: Record<string, unknown> }>
+  turnStarted(terminalId: string): void
+  turnEnded(terminalId: string): void
+  /** A session is replacing itself: what to do with its successor's terminal id, or null when it leads no workflow. */
+  leadHandoff(terminalId: string): ((successorTerminalId: string) => void) | null
+}
+
+export const WORKFLOW_TOOLS = ['create_workflow', 'patch_workflow', 'start_workflow', 'get_workflow', 'report_result'] as const
+export type WorkflowToolName = (typeof WORKFLOW_TOOLS)[number]
+
+let workflowTools: WorkflowTools | null = null
+
+export function setWorkflowTools(tools: WorkflowTools): void {
+  workflowTools = tools
+}
 
 export function setReviewRoomTools(tools: ReviewRoomTools): void {
   reviewRoomTools = tools
@@ -194,6 +216,8 @@ const MAX_REPLY_WAIT_S = 600
  * fallback quickly than stall it.
  */
 const SPAWN_HANDLE_WAIT_MS = 1500
+/** Nobody waits on a hand-off's successor, so its handle may take as long as a worker's. */
+const HANDOFF_WAIT_MS = 10_000
 
 /**
  * Mirror every message to the renderer so the exchange is visible to the user.
@@ -208,6 +232,23 @@ function announceDelivered(webContents: RemoteClient, terminalId: string, messag
   console.log(`[AgentBus] Delivered to ${terminalId} via ${via}: ${messages.map((m) => m.id).join(', ')}`)
   if (webContents.isDestroyed()) return
   webContents.send('agent-message:delivered', { terminalId, messageIds: messages.map((m) => m.id) })
+}
+
+/**
+ * Mail from SimpleEdit itself (`from` is a synthetic sender, e.g. a workflow)
+ * to a live session, through the same queue and wake as agent mail.
+ */
+export function sendSystemMail(from: string, to: string, text: string): string | null {
+  const windowId = peersWithWindows().find((p) => p.terminalId === to)?.windowId
+  const webContents = windowId === undefined ? undefined : bridges.get(windowId)?.webContents
+  if (!webContents) return null
+  const queued = enqueue({ from, to, text })
+  if ('error' in queued) {
+    console.warn(`[AgentBus] System mail from ${from} to ${to} refused: ${queued.error}`)
+    return null
+  }
+  afterEnqueue(webContents, queued.message)
+  return queued.message.id
 }
 
 /** After a message is queued: wake its recipient if it's idle, or announce it if a waiter already took it. */
@@ -549,6 +590,9 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     }
     // Default 'new-pane'; only 'replace' is the other accepted value.
     const target = args['target'] === 'replace' ? 'replace' : 'new-pane'
+    if (target === 'replace' && getPeer(terminalId)?.owner?.kind === 'workflow') {
+      return { status: 400, body: { error: 'A workflow worker can\'t replace itself: its task is bound to this session. Finish with report_result instead.' } }
+    }
 
     // The worktree is optional (renderer defaults to the caller's workspace).
     // When the agent names one, validate it against the repo like show_diff so
@@ -591,7 +635,11 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
 
     // 'replace' disposes the caller, so there is nobody left to use a handle —
     // waiting would only delay this session's own teardown.
-    if (target === 'replace') return { status: 200, body: { ok: true } }
+    if (target === 'replace') {
+      const handoff = workflowTools?.leadHandoff(terminalId)
+      if (handoff) void awaitSpawn(correlationId, HANDOFF_WAIT_MS).then((peer) => peer && handoff(peer.terminalId))
+      return { status: 200, body: { ok: true } }
+    }
 
     const peer = await awaitSpawn(correlationId, SPAWN_HANDLE_WAIT_MS)
     if (!peer) {
@@ -614,7 +662,8 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
           provider: p.provider ?? 'unknown',
           worktree: p.worktreePath,
           status: p.status,
-          ...(p.owner ? { owner: p.owner.kind, review_id: p.owner.reviewId } : {}),
+          ...(p.owner?.kind === 'review' ? { owner: p.owner.kind, review_id: p.owner.reviewId } : {}),
+          ...(p.owner?.kind === 'workflow' ? { owner: p.owner.kind, workflow_id: p.owner.workflowId, task_id: p.owner.taskId } : {}),
           unread: p.unread,
           ...(p.unread > 0 ? { mail: outlookNote(p.terminalId) } : {}),
         })),
@@ -757,6 +806,11 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
   if (tool === 'open_thread') {
     const result = await openThreadTool(args, terminalId, webContents.id)
     return 'error' in result ? { status: 400, body: { error: result.error } } : { status: 200, body: { ok: true, thread_id: result.threadId } }
+  }
+
+  if ((WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
+    if (!workflowTools) return { status: 400, body: { error: 'Workflows are not available in this window.' } }
+    return workflowTools.call(tool as WorkflowToolName, args, terminalId, webContents.id)
   }
 
   if (tool === 'list_backlog' || tool === 'edit_backlog') {
@@ -917,7 +971,10 @@ export async function applyAgentSignal(
   // HTTP hooks don't, so those route by session_id through the registry.
   const terminalId = signal.terminalId ?? terminalForSession(signal.sessionId)
   if (!terminalId) return {}
-  if (signal.eventName === 'UserPromptSubmit') noteTurnStarted(terminalId)
+  if (signal.eventName === 'UserPromptSubmit') {
+    noteTurnStarted(terminalId)
+    workflowTools?.turnStarted(terminalId)
+  }
   if (signal.eventName !== 'Stop') {
     // Before anything awaits: a PermissionRequest must mark the dialog before
     // this hook's answer lets the dialog render.
@@ -939,6 +996,8 @@ export async function applyAgentSignal(
     result = await applyRoutedSignal(signal, terminalId, webContents, opts)
     return result
   } finally {
+    // A block continues the turn, and a stop a hook already continued is not the turn's end either.
+    if (result['decision'] !== 'block') workflowTools?.turnEnded(terminalId)
     endStop(terminalId)
     // A block continues the turn for a hook-driven provider; a pushed provider
     // ignores the answer, and its push starts a turn of its own.
@@ -1084,6 +1143,8 @@ function registerCodexIdentityAndStatus(
   worktreePath: string,
   webContents: RemoteClient,
 ): void {
+  // Claude and OpenCode register at launch; Codex's id is first known here.
+  if (signal.sessionId) registerSession(signal.sessionId, terminalId)
   if (webContents.isDestroyed()) return
   webContents.send('agent:session-id', { terminalId, sessionId: signal.sessionId })
   const statusByEvent: Record<string, 'initializing' | 'running' | 'waiting' | 'idle' | 'exited'> = {
@@ -1134,10 +1195,18 @@ function createBridgeServer(token: string, sessionTokens: Map<string, string>, w
     }
 
     if (req.method === 'POST' && endpoint === 'tool-call') {
+      let payload: ToolCallPayload
       try {
-        const body = await readBody(req)
-        const payload = JSON.parse(body) as ToolCallPayload
-
+        payload = JSON.parse(await readBody(req)) as ToolCallPayload
+      } catch {
+        jsonResponse(res, 400, { error: 'Invalid JSON body' })
+        return
+      }
+      try {
+        if (typeof payload !== 'object' || payload === null) {
+          jsonResponse(res, 400, { error: 'Invalid JSON body' })
+          return
+        }
         if (!payload.tool || typeof payload.tool !== 'string') {
           jsonResponse(res, 400, { error: 'Missing or invalid "tool" field' })
           return
@@ -1153,8 +1222,9 @@ function createBridgeServer(token: string, sessionTokens: Map<string, string>, w
 
         const result = await handleToolCall(payload, webContents)
         jsonResponse(res, result.status, result.body)
-      } catch {
-        jsonResponse(res, 400, { error: 'Invalid JSON body' })
+      } catch (error) {
+        console.error(`[MCP Bridge] ${payload.tool} failed:`, error)
+        jsonResponse(res, 500, { error: `SimpleEdit failed to run ${payload.tool}: ${error instanceof Error ? error.message : String(error)}` })
       }
       return
     }

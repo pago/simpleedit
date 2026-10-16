@@ -12,7 +12,8 @@ import type { BacklogOpResult, BacklogSnapshot } from './backlog'
 import type { OverviewFacts, OverviewState, OverviewStatus } from './pr-overview'
 import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-filter'
 import type { MemoryHealthReport } from './memory-health'
-import type { SessionOwner } from './session-owner'
+import type { SessionOwner, WorkflowOwner } from './session-owner'
+import type { WorkflowList, WorkflowSettings, WorkflowSnapshot } from './workflow'
 import type { ReviewChange, ReviewSnapshot } from './review-room'
 import type {
   ReviewCompanionCreateRequest,
@@ -754,6 +755,7 @@ export type SerializedTab =
   | { kind: 'file'; id: string; path: string }
   | { kind: 'diff'; id: string; worktreePath: string; commitHash: string | null; commitMessage: string }
   | { kind: 'tour'; id: string; worktreePath: string; commitHash: string | null; commitMessage: string }
+  | { kind: 'workflow'; id: string; workflowId: string; title: string }
 
 /** One persisted agent session plus its workspace state. */
 export interface SerializedAgentSession {
@@ -1033,6 +1035,33 @@ export interface BacklogInvokeMap {
     args: [request: { id: string; requestId: string }]
     result: SessionCreateResult
   }
+}
+
+// ── Workflows ─────────────────────────────────────────────
+// Like the backlog, no channel names a project: main takes it from the
+// caller's window and refuses a workflow id from another project.
+export interface WorkflowInvokeMap {
+  'workflow:list': { args: []; result: WorkflowList }
+  /** The user's Start on a draft. */
+  'workflow:start': { args: [id: string]; result: WorkflowSnapshot }
+  /** Running tasks' workers are detached into the sidebar, never stopped. */
+  'workflow:cancel': { args: [id: string]; result: WorkflowSnapshot }
+  /** Disposes the workflow's workers and archives it. Refused while running. */
+  'workflow:dismiss': { args: [id: string]; result: void }
+  /**
+   * The lead sessions a window holds, live or waiting to be resumed, by
+   * stable key: what binds a workflow to its lead's window. Desktop only.
+   */
+  'workflow:hosts': { args: [keys: string[]]; result: void }
+  'workflow:settings-get': { args: []; result: WorkflowSettings }
+  'workflow:settings-set': { args: [settings: WorkflowSettings]; result: WorkflowSettings }
+}
+
+export interface WorkflowEventMap {
+  /** One workflow changed, to every window and phone; each keeps its own project's. */
+  'workflow:changed': WorkflowSnapshot
+  /** To the window holding a worker: drop its owner (`detach`) or close it (`dispose`). */
+  'workflow:worker': { terminalId: string; action: 'detach' | 'dispose' }
 }
 
 export interface BacklogEventMap {
@@ -1675,6 +1704,8 @@ export interface AgentPanelEventMap {
      * dispose the caller and take its slot (the in-place reset / hand-off).
      */
     target?: 'new-pane' | 'replace'
+    /** A workflow worker: created hidden, owned by its workflow task. */
+    owner?: WorkflowOwner
   }
 }
 
@@ -1802,7 +1833,8 @@ export type InvokeMap = WorktreeInvokeMap &
   PushInvokeMap &
   SttInvokeMap &
   AgentBusInvokeMap &
-  BacklogInvokeMap
+  BacklogInvokeMap &
+  WorkflowInvokeMap
 
 export type SendMap = LspSendMap
 
@@ -1822,4 +1854,5 @@ export type EventMap = WorktreeEventMap &
   RemoteEventMap &
   SessionEventMap &
   ModelsEventMap &
-  BacklogEventMap
+  BacklogEventMap &
+  WorkflowEventMap

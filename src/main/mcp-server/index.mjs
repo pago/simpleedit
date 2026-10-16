@@ -591,6 +591,164 @@ server.registerTool(
   },
 )
 
+// ── Workflows ──────────────────────────────────────────────────────────────
+
+const workflowWorktree = z
+  .object({
+    branch: z.string().describe('Branch to work on. Its worktree is created next to the bare repo if it does not exist.'),
+    base: z.string().optional().describe('Where a new branch starts. Default: the repo HEAD.'),
+  })
+  .describe('Omit for a task that works in your (the lead\'s) worktree, e.g. a read-only one.')
+
+const workflowTaskFields = {
+  title: z.string().describe('A few words for the graph card.'),
+  after: z.array(z.string()).optional().describe('Ids of tasks that must be done first.'),
+  brief: z
+    .string()
+    .describe(
+      'The worker\'s opening message: self-contained, as for a fresh session. May use {{task.<id>.result.summary|branch|changedFiles|items}} for a task it runs after.',
+    ),
+  acceptance: z.string().optional().describe('What done means. Added to the brief.'),
+  provider: z.enum(['claude', 'codex']).optional().describe('Agent for this task. Default claude.'),
+  model: z.string().optional().describe('Model id. Default: the agent\'s default.'),
+  effort: z.string().optional().describe('Codex only: reasoning effort.'),
+  worktree: workflowWorktree.optional(),
+  onFailure: z.enum(['retry', 'escalate']).optional().describe('retry: one fresh worker, then escalate. escalate (default): you are woken.'),
+  shape: z.enum(['single', 'stack', 'separate']).optional().describe('integrate only: one PR, a stack, or one PR per branch.'),
+}
+
+const workflowTask = z.object({
+  id: z.string().describe('Lower-case id, unique in the workflow, e.g. "store".'),
+  kind: z.enum(['agent', 'integrate']).optional().describe('agent (default): one worker. integrate: combines the branches of its after tasks.'),
+  ...workflowTaskFields,
+})
+
+function workflowText(data) {
+  const { ok: _ok, ...rest } = data ?? {}
+  return JSON.stringify(rest, null, 2)
+}
+
+server.registerTool(
+  'create_workflow',
+  {
+    description: [
+      'Turn a plan into a SimpleEdit workflow: a task graph SimpleEdit runs for you. Each task gets its own worker session (hidden from the sidebar, shown in your Workflow tab); a task starts once every task in its `after` is done.',
+      'Use it when a plan splits into several agent tasks, so you are not woken for every report. You are woken only at judgment points: a task that failed under onFailure "escalate", a worker that asks for a decision, or a graph that is stuck.',
+      'You pick the split, the dependencies and the agent/model per task. Kinds: "agent" (one worker), "integrate" (a worker that combines the branches of its after tasks into the given PR shape).',
+      'Give each writing task its own worktree branch so parallel workers do not collide.',
+      'The workflow starts as a draft. Starting it is normally the user\'s call (Start in the Workflow tab); the answer says what to do next.',
+      'Workers finish with report_result. You may compact your context once the workflow is prepared: get_workflow tells you its state.',
+    ].join('\n'),
+    inputSchema: {
+      title: z.string().describe('Short name, shown on the tab.'),
+      goal: z.string().describe('What the whole workflow achieves, in a few sentences.'),
+      tasks: z.array(workflowTask).min(1),
+    },
+  },
+  async (args) => {
+    const result = await postToBridge('create_workflow', args)
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(workflowText(result.data))
+  },
+)
+
+server.registerTool(
+  'patch_workflow',
+  {
+    description: [
+      'Change a workflow you created, against the version you last read (all ops or none).',
+      '- add: { op: "add", task: {...} } adds a task.',
+      '- update: { op: "update", id, patch: {...fields} } changes a QUEUED task (null clears an optional field).',
+      '- cancel: { op: "cancel", id } drops a task. A running worker is not stopped: it leaves the workflow and appears in the user\'s sidebar.',
+      '- retry: { op: "retry", id, brief? } queues a FAILED task again with a fresh worker.',
+      'A task that runs after a cancelled or failed task waits until you change its `after` or retry the failed one.',
+    ].join('\n'),
+    inputSchema: {
+      workflowId: z.string(),
+      baseVersion: z.number().int().describe('The version from create_workflow or get_workflow.'),
+      ops: z
+        .array(
+          z.discriminatedUnion('op', [
+            z.object({ op: z.literal('add'), task: workflowTask }),
+            z.object({
+              op: z.literal('update'),
+              id: z.string(),
+              patch: z.object({
+                ...workflowTaskFields,
+                title: workflowTaskFields.title.optional(),
+                brief: workflowTaskFields.brief.optional(),
+                acceptance: z.string().nullable().optional(),
+                model: z.string().nullable().optional(),
+                effort: z.string().nullable().optional(),
+                worktree: workflowWorktree.nullable().optional(),
+              }),
+            }),
+            z.object({ op: z.literal('cancel'), id: z.string() }),
+            z.object({ op: z.literal('retry'), id: z.string(), brief: z.string().optional() }),
+          ]),
+        )
+        .min(1),
+    },
+  },
+  async (args) => {
+    const result = await postToBridge('patch_workflow', args)
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(workflowText(result.data))
+  },
+)
+
+server.registerTool(
+  'start_workflow',
+  {
+    description:
+      'Start a draft workflow you created. Usually refused: starting is the user\'s call unless they allowed leads to start workflows in Settings. When refused, ask the user to press Start in the Workflow tab.',
+    inputSchema: { workflowId: z.string() },
+  },
+  async (args) => {
+    const result = await postToBridge('start_workflow', args)
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(workflowText(result.data))
+  },
+)
+
+server.registerTool(
+  'get_workflow',
+  {
+    description:
+      'The state of a workflow you created: each task\'s state, results, open questions and the version to patch against. Without workflowId, lists your workflows.',
+    inputSchema: { workflowId: z.string().optional() },
+  },
+  async (args) => {
+    const result = await postToBridge('get_workflow', args)
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(workflowText(result.data))
+  },
+)
+
+server.registerTool(
+  'report_result',
+  {
+    description: [
+      'Workflow workers only: report the outcome of your task, once, when you are finished.',
+      'status "done": the task is complete (give branch and changedFiles if you changed code). "failed": you can\'t complete it; say why. "needs_lead": you need a decision; put the question in summary and wait for the answer in your inbox.',
+    ].join('\n'),
+    inputSchema: {
+      status: z.enum(['done', 'failed', 'needs_lead']),
+      summary: z.string().describe('A few lines: what you did, why it failed, or the question.'),
+      branch: z.string().optional(),
+      changedFiles: z.array(z.string()).optional(),
+      items: z.array(z.string()).optional().describe('A list later tasks may use.'),
+      verdict: z.enum(['clean', 'findings']).optional().describe('Review tasks: the verdict.'),
+      findings: z.array(z.string()).optional(),
+    },
+  },
+  async (args) => {
+    const result = await postToBridge('report_result', args)
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(result.data?.next ?? 'Recorded.')
+  },
+)
+
 // ── Agent-to-agent messaging ───────────────────────────────────────────────
 
 server.registerTool(

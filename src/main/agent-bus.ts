@@ -100,6 +100,7 @@ const peerOwners = new Map<string, number>()
  */
 const chainHops = new Map<string, number>()
 let dropListener: (terminalId: string, messageIds: string[]) => void = () => {}
+let peersListener: () => void = () => {}
 
 // -- Peer registry ---------------------------------------------
 
@@ -120,11 +121,23 @@ export function syncPeers(incoming: Peer[], owner = 0): void {
   for (const id of [...peers.keys()]) {
     if (!seen.has(id) && peerOwners.get(id) === owner) forget(id)
   }
+  peersListener()
+}
+
+/** Called after every change to the peer set: a sync, a spawn handle, a closed window. */
+export function onPeersChanged(listener: () => void): void {
+  peersListener = listener
+}
+
+/** Every peer with the window whose renderer listed it. */
+export function peersWithWindows(): Array<Peer & { windowId: number }> {
+  return [...peers.values()].map((p) => ({ ...p, windowId: peerOwners.get(p.terminalId) ?? 0 }))
 }
 
 /** A window closed: its sessions can no longer be reached. */
 export function forgetWindow(owner: number): void {
   for (const [id, o] of [...peerOwners]) if (o === owner) forget(id)
+  peersListener()
 }
 
 export function onMailDropped(listener: (terminalId: string, messageIds: string[]) => void): void {
@@ -533,6 +546,7 @@ export function awaitSpawn(correlationId: string, timeoutMs: number): Promise<Pe
 export function resolveSpawn(correlationId: string, peer: Peer, owner = 0): void {
   peers.set(peer.terminalId, peer)
   peerOwners.set(peer.terminalId, owner)
+  peersListener()
   const waiter = spawnWaiters.get(correlationId)
   if (!waiter) return
   spawnWaiters.delete(correlationId)

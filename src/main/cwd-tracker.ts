@@ -195,13 +195,27 @@ export async function resolveBareRepo(cwd: string): Promise<string | null> {
 // routes by terminalId. Providers register the mapping once both are known.
 
 const sessionToTerminal = new Map<string, string>()
+let sessionListener: (sessionId: string, terminalId: string) => void = () => {}
 
 export function registerSession(sessionId: string, terminalId: string): void {
   sessionToTerminal.set(sessionId, terminalId)
+  sessionListener(sessionId, terminalId)
+}
+
+/** Called on every registration (the workflows' lead keys follow a terminal to its session id). */
+export function onSessionRegistered(listener: (sessionId: string, terminalId: string) => void): void {
+  sessionListener = listener
 }
 
 export function terminalForSession(sessionId: string): string | null {
   return sessionToTerminal.get(sessionId) ?? null
+}
+
+/** The provider session id a terminal last registered, the identity that survives a restart. */
+export function sessionForTerminal(terminalId: string): string | null {
+  let found: string | null = null
+  for (const [sid, tid] of sessionToTerminal) if (tid === terminalId) found = sid
+  return found
 }
 
 export function unregisterTerminal(terminalId: string): void {
