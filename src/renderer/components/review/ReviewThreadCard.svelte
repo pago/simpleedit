@@ -20,20 +20,35 @@
   import { tick } from 'svelte'
   import type { ReviewCloseReason, ReviewSeverity, ReviewThread } from '../../../shared/review-room'
   import type { ReviewLayerInfo } from '../../../shared/review-room-ipc'
-  import type { PrReviewComment, PrReviewCommentSource } from '../../../shared/screenprs'
-  import { truncateSnippet } from '../../../shared/review-drafts'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import { agentThreadsStore } from '../../stores/agentThreads.svelte'
   import { renderMarkdown } from '../../lib/markdown'
   import { deliveryInfo, type DeliveryInfo } from '../../lib/thread-labels'
-  import { anchorLabel, hasUnreadMessages, isPreExisting, messageAuthor, originBadge, splitMessages, threadTitle } from '../../lib/review-room'
+  import {
+    CLOSE_REASONS,
+    REDRAFT_PROMPT,
+    SEVERITIES,
+    anchorLabel,
+    draftWhere as draftWhereOf,
+    hasUnreadMessages,
+    isFolded,
+    isPreExisting,
+    messageAuthor,
+    originBadge,
+    splitMessages,
+    threadChips,
+    threadDraft,
+    threadStatusLabel,
+    threadTitle,
+    type ThreadDraft,
+  } from '../../lib/review-room'
 
   interface Props {
     reviewId: string
     thread: ReviewThread
     /** The thread's draft, found in the draft mirror by `threadId`. */
-    draft?: { url: string; comment: PrReviewComment }
+    draft?: ThreadDraft
     /** Where a new draft goes: the anchor's layer, or the top layer for a whole-stack thread. */
     draftUrl: string
     /** Bottom → top: the layers a whole-stack thread's draft can be posted on. */
@@ -47,19 +62,6 @@
 
   let { reviewId, thread, draft, draftUrl, layers, companionSessionId, readonly = false, requesterSessionId }: Props = $props()
 
-  const CLOSE_REASONS: { key: ReviewCloseReason; label: string }[] = [
-    { key: 'fixed', label: 'Fixed' },
-    { key: 'not-a-problem', label: 'Not a problem' },
-    { key: 'intentional', label: 'Intentional' },
-    { key: 'wont-fix', label: 'Won’t fix' },
-  ]
-  const REASON_LABEL: Record<ReviewCloseReason, string> = {
-    fixed: 'fixed',
-    'not-a-problem': 'not a problem',
-    intentional: 'intentional',
-    'wont-fix': 'won’t fix',
-  }
-  const SEVERITIES: ReviewSeverity[] = ['blocking', 'consider', 'nit']
   const SEVERITY_CLASS: Record<ReviewSeverity, string> = {
     blocking: 'bg-red-500/15 text-red-300',
     consider: 'bg-amber-500/15 text-amber-300',
@@ -80,18 +82,10 @@
   let proposedSeverity = $derived(thread.origin.kind === 'finding' ? thread.origin.severity : undefined)
   let preExisting = $derived(isPreExisting(thread))
   let isReply = $derived(thread.origin.kind === 'github')
-  let collapsed = $derived(
-    thread.origin.kind === 'finding' && thread.status === 'open' && !draft && parts.conversation.length === 0 && !thread.proposal && !expanded[thread.id],
-  )
+  let collapsed = $derived(isFolded(thread, !!draft) && !expanded[thread.id])
   let hasCompanionAnswer = $derived(parts.conversation.some((m) => m.author === 'companion'))
 
-  let statusLabel = $derived(
-    thread.status === 'done'
-      ? `done${thread.closeReason ? ` · ${REASON_LABEL[thread.closeReason]}` : ''} · ${draft ? 'your comment will be posted' : 'nothing will be posted'}`
-      : draft
-        ? 'open · comment drafted'
-        : 'open',
-  )
+  let statusLabel = $derived(threadStatusLabel(thread, !!draft))
 
   // ── Read state: only while on screen in a focused, visible window ──
   let root: HTMLDivElement | undefined = $state()
@@ -177,21 +171,7 @@
     }
   }
 
-  let chips = $derived.by(() => {
-    const out: { label: string; body: string }[] = []
-    const o = thread.origin
-    if (o.kind === 'github' || (o.kind === 'finding' && o.source === 'author')) {
-      out.push({ label: 'Fact-check this', body: 'Fact-check this against the code: does it hold?' })
-    }
-    if (o.kind === 'finding' && o.source !== 'author') {
-      out.push({ label: 'Is this real?', body: 'Is this a real problem?' })
-      out.push({ label: 'Right severity?', body: o.severity ? `Is ${o.severity} the right severity?` : 'What severity is this, if any?' })
-    }
-    if (thread.anchor.kind === 'line') out.push({ label: 'What depends on this?', body: 'What depends on this code, and what breaks if it is wrong?' })
-    else out.push({ label: 'What is riskiest here?', body: 'What is the riskiest change here, and why?' })
-    const asked = new Set(parts.conversation.filter((m) => m.author === 'user').map((m) => m.body))
-    return out.filter((c) => !asked.has(c.body))
-  })
+  let chips = $derived(threadChips(thread))
 
   /** A question to the author goes to the requester; everything else to the companion. */
   const recipientOf = (m: { toAuthor?: boolean }): string | undefined => (m.toAuthor ? requesterSessionId : companionSessionId)
@@ -225,37 +205,10 @@
     if (!editing) text = saved
   })
 
-  function sourceOf(): PrReviewCommentSource {
-    const o = thread.origin
-    if (o.kind === 'finding' && o.source !== 'author') return o.source
-    return 'you'
-  }
-
-  function newDraft(body: string, severity?: ReviewSeverity): Omit<PrReviewComment, 'id'> {
-    const a = thread.anchor
-    const o = thread.origin
-    return {
-      source: sourceOf(),
-      file: a.kind === 'line' ? a.path : '',
-      text: body,
-      threadId: thread.id,
-      ...(a.kind === 'line'
-        ? {
-            line: a.startLine === a.endLine ? String(a.startLine) : `${a.startLine}-${a.endLine}`,
-            side: a.side,
-            snippet: truncateSnippet(a.snippet),
-            sha: a.headSha,
-          }
-        : {}),
-      ...(o.kind === 'github' ? { inReplyTo: { threadNodeId: o.threadNodeId, rootCommentId: o.rootCommentId } } : {}),
-      ...(severity && o.kind !== 'github' ? { severity } : {}),
-    }
-  }
-
   async function startDraft(): Promise<void> {
     const item = parts.item[0]?.body ?? ''
     const seed = thread.origin.kind === 'finding' ? item : ''
-    screenPrsStore.addComment(draftUrl, newDraft(seed, proposedSeverity))
+    screenPrsStore.addComment(draftUrl, threadDraft(thread, seed, proposedSeverity))
     await tick()
     field?.focus()
   }
@@ -299,23 +252,17 @@
     const p = thread.proposal
     if (!p) return
     if (draft) screenPrsStore.updateComment(draft.url, draft.comment.id, { text: p.text, ...(p.severity && !isReply ? { severity: p.severity } : {}) })
-    else screenPrsStore.addComment(draftUrl, newDraft(p.text, p.severity))
+    else screenPrsStore.addComment(draftUrl, threadDraft(thread, p.text, p.severity))
     editing = false
     text = p.text
     await run(() => reviewRoom.clearProposal(reviewId, thread.id))
   }
 
   function redraft(): void {
-    void ask('Redraft my comment from our conversation: call propose_draft for this thread with the text (and severity) you would post. Don’t change anything else.')
+    void ask(REDRAFT_PROMPT)
   }
 
-  let draftWhere = $derived.by(() => {
-    if (thread.origin.kind === 'github') return `Reply on GitHub to @${thread.origin.author}`
-    const a = thread.anchor
-    if (a.kind === 'line') return `Your comment on #${a.pr} · ${a.path.split('/').pop()}:${a.endLine}`
-    if (a.kind === 'pr') return `Your comment on #${a.pr}`
-    return 'Your comment on'
-  })
+  let draftWhere = $derived(draftWhereOf(thread))
 </script>
 
 {#snippet head(compact: boolean)}

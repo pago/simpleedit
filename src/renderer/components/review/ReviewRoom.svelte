@@ -7,11 +7,10 @@
    */
   import { tick } from 'svelte'
   import type { ReviewThreadAnchor } from '../../../shared/review-room'
-  import type { PrReviewComment } from '../../../shared/screenprs'
   import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { scrollBehavior } from '../../lib/diffReveal'
-  import { readingProgress, reportMarkdown, tourSteps, type LayerFigures } from '../../lib/review-room'
+  import { readingProgress, reportMarkdown, reviewDrafts, tourSteps, type LayerFigures } from '../../lib/review-room'
   import StackMap from './StackMap.svelte'
   import LayerSection from './LayerSection.svelte'
   import ReviewOutline from './ReviewOutline.svelte'
@@ -34,14 +33,13 @@
    * only link. These are exactly what main posts per layer (with its summary);
    * other comments in a layer's draft are left alone.
    */
-  let drafts = $derived.by(() => {
-    const ids = new Set(threads.map((t) => t.id))
-    const out = new Map<string, { url: string; comment: PrReviewComment }>()
-    for (const l of layers) {
-      for (const c of screenPrsStore.draftFor(l.url).comments) if (c.threadId && ids.has(c.threadId)) out.set(c.threadId, { url: l.url, comment: c })
-    }
-    return out
-  })
+  let drafts = $derived(
+    reviewDrafts(
+      threads,
+      layers.map((l) => l.url),
+      (url) => screenPrsStore.draftFor(url),
+    ),
+  )
 
   let reading = $derived(
     new Map(

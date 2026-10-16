@@ -9,10 +9,9 @@
   import { onMount, untrack } from 'svelte'
   import type { ReviewLayerInfo, ReviewLayerSubmitOutcome, ReviewSubmitRequest, ReviewVerdict } from '../../../shared/review-room-ipc'
   import type { PrReviewComment } from '../../../shared/screenprs'
-  import { anchorCounts, anchorsForHead, buildReviewPayload, commentableLines } from '../../../shared/screenprs'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { reviewRoom } from '../../stores/reviewRoom.svelte'
-  import { defaultVerdict } from '../../lib/review-room'
+  import { commentWhere as where, defaultVerdict, draftsMarkdown, layerPreview, postedComments as postedOf, readHeadOf } from '../../lib/review-room'
 
   interface Props {
     reviewId: string
@@ -54,7 +53,7 @@
   let threadIds = $derived(new Set(reviewRoom.threadsFor(reviewId).map((t) => t.id)))
   /** A layer's comments that main posts: those of this review's threads. */
   function postedComments(url: string, ids: ReadonlySet<string> = threadIds): PrReviewComment[] {
-    return screenPrsStore.draftFor(url).comments.filter((c) => c.threadId !== undefined && ids.has(c.threadId))
+    return postedOf(screenPrsStore.draftFor(url), ids)
   }
 
   let verdicts = $state(initial((l) => defaultVerdict(postedComments(l.url, new Set(reviewRoom.threadsFor(reviewId).map((t) => t.id))))))
@@ -68,37 +67,9 @@
   /** Layers refused as moved, then reloaded by the room at their new head: the head they can post at now. */
   let reloaded = $state<Record<string, string>>({})
 
-  interface LayerPreview {
-    comments: PrReviewComment[]
-    replies: number
-    folded: number
-    moved: number
-    unverified: number
-    unchecked: boolean
-  }
-
-  function preview(l: ReviewLayerInfo): LayerPreview {
-    const draft = { ...screenPrsStore.draftFor(l.url), comments: postedComments(l.url) }
-    const lineDraft = { ...draft, comments: draft.comments.filter((c) => !c.inReplyTo) }
-    const diff = reviewRoom.layerDiff(reviewId, l.url)
-    const head = readHead(l) ?? l.headSha
-    const base = diff?.base ?? l.base
-    const isolatedBase = base?.kind === 'polluted' && base.isolated
-    // Only GitHub's own diff says which lines GitHub takes; an isolated one doesn't.
-    const commentable = diff && !isolatedBase ? commentableLines(diff.diff) : undefined
-    const payload = buildReviewPayload(anchorsForHead(lineDraft, head), { isolatedBase, commentable })
-    const counts = anchorCounts(lineDraft, head)
-    return {
-      comments: draft.comments,
-      replies: draft.comments.length - lineDraft.comments.length,
-      folded: lineDraft.comments.length - payload.comments.length,
-      moved: counts.moved,
-      unverified: counts.unverified,
-      unchecked: !commentable && payload.comments.length > 0,
-    }
-  }
-
-  let previews = $derived(new Map(layers.map((l) => [l.url, preview(l)])))
+  let previews = $derived(
+    new Map(layers.map((l) => [l.url, layerPreview(l, screenPrsStore.draftFor(l.url), postedComments(l.url), reviewRoom.layerDiff(reviewId, l.url))])),
+  )
   /**
    * The head the user is reading, which main checks the layer against and
    * pins the review to. Null unless the diff on screen is at the layer's
@@ -106,8 +77,7 @@
    * a push, was not read at the head that would be posted.
    */
   function readHead(l: ReviewLayerInfo): string | null {
-    const diff = reviewRoom.layerDiff(reviewId, l.url)
-    return diff && diff.headSha === l.headSha ? diff.headSha : null
+    return readHeadOf(l, reviewRoom.layerDiff(reviewId, l.url))
   }
 
   // A layer refused as moved can go again once the room has its diff at the
@@ -216,27 +186,17 @@
 
   /** The review as markdown, for a requester that is gone or a review kept off GitHub. */
   async function copyMarkdown(): Promise<void> {
-    const VERDICT_TEXT: Record<ReviewVerdict, string> = { approve: 'Approve', comment: 'Comment', request_changes: 'Request changes' }
-    const text = layers
-      .filter((l) => included[l.url])
-      .map((l) => {
-        const summary = screenPrsStore.draftFor(l.url).summary.trim()
-        const comments = postedComments(l.url).map((c) => `- \`${where(c)}\`${c.severity ? ` **${c.severity}:**` : ''} ${c.text.trim()}`)
-        return [`## #${l.number} ${l.title} — ${VERDICT_TEXT[verdicts[l.url]]}`, ...(summary ? ['', summary] : []), ...(comments.length ? ['', ...comments] : [])].join('\n')
-      })
-      .join('\n\n')
+    const text = draftsMarkdown(
+      layers
+        .filter((l) => included[l.url])
+        .map((l) => ({ number: l.number, title: l.title, verdict: verdicts[l.url], summary: screenPrsStore.draftFor(l.url).summary, comments: postedComments(l.url) })),
+    )
     try {
       await navigator.clipboard.writeText(text)
       copied = true
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
     }
-  }
-
-  function where(c: PrReviewComment): string {
-    if (c.inReplyTo) return 'reply'
-    if (!c.file) return 'PR comment'
-    return c.line ? `${c.file}:${c.line}` : c.file
   }
 </script>
 
