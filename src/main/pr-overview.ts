@@ -21,7 +21,8 @@ import { makeOverviewTask, OVERVIEW_PROMPT_VERSION } from './tasks/overview-task
 import { resolveInstructions, instructionsHash } from './prompts/overrides'
 import { currentHandle, withGhSignal } from './github/gh'
 import { createBaseResolver } from './github/stack-base'
-import { gatherOverviewContext, overviewFacts } from './github/pr-overview-context'
+import { diffFiles, gatherOverviewContext, overviewFacts } from './github/pr-overview-context'
+import { fetchReviewRubric, rubricFingerprint, type ReviewRubric } from './github/review-rubric'
 import { analysisFingerprint, getCachedFindings, getCachedOverview, putOverview } from './screenprs-cache'
 import { reviewDiffFor } from './screenprs'
 
@@ -34,6 +35,8 @@ interface ActiveOverview {
 const activeOverviews = new Map<string, ActiveOverview>()
 /** Each PR's latest overview this launch, for a client that missed the events. */
 const states = new Map<string, OverviewState>()
+/** Pre-start reads (diff, rubric) not yet owned by a run, so quit can still kill their `gh`. */
+const preparing = new Set<AbortController>()
 
 function setState(url: string, patch: Partial<OverviewState>): void {
   states.set(url, { ...(states.get(url) ?? { status: 'idle' }), ...patch })
@@ -43,11 +46,12 @@ export function overviewModel(): ModelRef {
   return getModelConfig().defaults.prOverview ?? DEFAULT_OVERVIEW_MODEL
 }
 
-export function overviewFingerprint(model: ModelRef | undefined, instructions: string): string {
+export function overviewFingerprint(model: ModelRef | undefined, instructions: string, rubric?: ReviewRubric): string {
   return analysisFingerprint({
     target: targetFromModelRef(model),
     promptVersion: OVERVIEW_PROMPT_VERSION,
     instructions: instructionsHash(instructions),
+    rubric: rubricFingerprint(rubric),
     schemaVersion: 1,
   })
 }
@@ -57,13 +61,37 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
   // Resolved once so the fingerprint and the model call see the same text.
   const instructions = resolveInstructions('overview').text
   const model = overviewModel()
-  const fingerprint = overviewFingerprint(model, instructions)
+  // The rubric is part of the fingerprint, so it is read before the cache
+  // check, and its candidates come from the diff. A caller that didn't carry
+  // the diff (the phone before it opened Files) gets the review diff the board
+  // was screened from.
+  const controller = new AbortController()
+  preparing.add(controller)
+  let pr: PrContext
+  let rubric: ReviewRubric | undefined
+  try {
+    ;({ pr, rubric } = await withGhSignal(controller.signal, async () => {
+      const withDiff = ctx.diff ? ctx : { ...ctx, diff: await reviewDiffFor(ctx) }
+      const paths = diffFiles(withDiff.diff).map((f) => f.path)
+      return { pr: withDiff, rubric: await fetchReviewRubric(ctx.url, ctx.headSha, paths) }
+    }))
+  } catch (err: unknown) {
+    if (controller.signal.aborted) return { joined: false }
+    // A run still going for this PR keeps the board; the caller hears why this start failed.
+    if (activeOverviews.has(ctx.url)) throw err
+    const error = err instanceof Error ? err.message : String(err)
+    states.set(ctx.url, { status: 'error', error, headSha: ctx.headSha })
+    out.send('screenprs:overview-status', { url: ctx.url, status: 'error', error })
+    return { joined: false }
+  } finally {
+    preparing.delete(controller)
+  }
+  const fingerprint = overviewFingerprint(model, instructions, rubric)
   const running = activeOverviews.get(ctx.url)
   if (running) {
     if (running.headSha === ctx.headSha && running.fingerprint === fingerprint) return { joined: true }
     cancelOverview(ctx.url)
   }
-  const controller = new AbortController()
   const mine: ActiveOverview = { controller, out, headSha: ctx.headSha, fingerprint }
   activeOverviews.set(ctx.url, mine)
   const live = (): boolean => activeOverviews.get(ctx.url) === mine && !controller.signal.aborted
@@ -88,14 +116,12 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
       return { joined: false }
     }
 
-    // A caller that didn't carry the diff (the phone before it opened Files)
-    // still gets the review diff the board was screened from.
     const context = await withGhSignal(controller.signal, async () => {
-      const pr = ctx.diff ? ctx : { ...ctx, diff: await reviewDiffFor(ctx) }
       const handle = await currentHandle().catch(() => '')
       return gatherOverviewContext(pr, {
         handle,
         resolver: createBaseResolver(),
+        rubric,
         ...getCachedFindings(ctx.url, ctx.headSha),
       })
     })
@@ -146,7 +172,9 @@ export function cancelOverview(url: string): void {
 /** Abort at quit: nobody is left to tell. */
 export function cancelAllOverviews(): void {
   for (const { controller } of activeOverviews.values()) controller.abort()
+  for (const controller of preparing) controller.abort()
   activeOverviews.clear()
+  preparing.clear()
 }
 
 /** Every PR's overview this launch, for a client that missed the events. */

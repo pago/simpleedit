@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseOverview, extractRefs, resolveRefPath } from '../pr-overview'
+import { parseOverview, extractRefs, resolveRefPath, readingOrderPaths } from '../pr-overview'
 
 /** A well-formed answer in the shape the overview contract asks for. */
 const WELL_FORMED = `## What changed
@@ -258,5 +258,77 @@ describe('resolveRefPath', () => {
     expect(resolveRefPath(paths, 'types.ts')).toBeUndefined()
     expect(resolveRefPath(paths, 'able-body.tsx')).toBeUndefined()
     expect(resolveRefPath(paths, 'src/missing.ts')).toBeUndefined()
+  })
+})
+
+describe('parseOverview — reading order', () => {
+  const WITH_READING_ORDER = WELL_FORMED.replace(
+    '## Look into',
+    `## Reading order
+1. **Runner text mode** — The new \`output: 'text'\` branch; every runner yields its final message. \`src/main/agent-tasks/runner.ts:20-60\`
+2. **Orchestrator** — How a text task skips the JSON scan.
+   \`src/main/agent-tasks/orchestrator.ts:40-52\`, \`src/main/agent-tasks/runner.ts:92\`
+3. Parser: splits the answer on render (\`src/shared/pr-overview.ts:1-40\`).
+4. Tests cover both modes and the empty answer case \`src/main/agent-tasks/__tests__/runner.test.ts\`
+
+## Look into`
+  )
+
+  it('is well-formed and yields one step per item with title, summary and refs', () => {
+    const parsed = parseOverview(WITH_READING_ORDER)
+    expect(parsed.wellFormed).toBe(true)
+    expect(parsed.sections.lookInto).toHaveLength(3)
+    const steps = parsed.sections.readingOrder ?? []
+    expect(steps).toHaveLength(4)
+    expect(steps[0]).toEqual({
+      title: 'Runner text mode',
+      summary: "The new `output: 'text'` branch; every runner yields its final message.",
+      refs: [{ path: 'src/main/agent-tasks/runner.ts', line: '20-60' }],
+    })
+    expect(steps[1]).toEqual({
+      title: 'Orchestrator',
+      summary: 'How a text task skips the JSON scan.',
+      refs: [
+        { path: 'src/main/agent-tasks/orchestrator.ts', line: '40-52' },
+        { path: 'src/main/agent-tasks/runner.ts', line: '92' },
+      ],
+    })
+  })
+
+  it('falls back to the text before a colon or dash, else the first words, for an unbolded title', () => {
+    const steps = parseOverview(WITH_READING_ORDER).sections.readingOrder ?? []
+    expect(steps[2]).toMatchObject({ title: 'Parser', summary: 'splits the answer on render.' })
+    expect(steps[3].title).toBe('Tests cover both modes and the empty answer …')
+    expect(steps[3].summary).toBe('Tests cover both modes and the empty answer case')
+    expect(steps[3].refs).toEqual([{ path: 'src/main/agent-tasks/__tests__/runner.test.ts' }])
+  })
+
+  it('a cached overview from the four-section contract stays well-formed, without a reading order', () => {
+    const parsed = parseOverview(WELL_FORMED)
+    expect(parsed.wellFormed).toBe(true)
+    expect(parsed.sections.readingOrder).toBeUndefined()
+  })
+
+  it('a reading order with text outside its list is not well-formed, like Look into', () => {
+    const parsed = parseOverview(
+      WELL_FORMED.replace('## Look into', '## Reading order\nStart here:\n1. **A** — a. `src/a.ts:1`\n\n## Look into')
+    )
+    expect(parsed.wellFormed).toBe(false)
+    expect(parsed.sections.readingOrder).toHaveLength(1)
+  })
+
+  it('a second Reading order heading is not well-formed', () => {
+    const one = '## Reading order\n1. **A** — a. `src/a.ts:1`\n\n'
+    expect(parseOverview(WELL_FORMED.replace('## Look into', `${one}${one}## Look into`)).wellFormed).toBe(false)
+  })
+
+  it('readingOrderPaths lists each cited path once, in reading order', () => {
+    const steps = parseOverview(WITH_READING_ORDER).sections.readingOrder ?? []
+    expect(readingOrderPaths(steps)).toEqual([
+      'src/main/agent-tasks/runner.ts',
+      'src/main/agent-tasks/orchestrator.ts',
+      'src/shared/pr-overview.ts',
+      'src/main/agent-tasks/__tests__/runner.test.ts',
+    ])
   })
 })
