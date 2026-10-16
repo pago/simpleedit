@@ -8,9 +8,9 @@
  * from a spawn payload, which the phone can send too.
  */
 import { randomUUID } from 'crypto'
-import type { InteractiveTarget, ModelConfig } from '../shared/ipc-types'
+import type { AgentStatus, AgentStatusEvent, InteractiveTarget, ModelConfig } from '../shared/ipc-types'
 import type { ReviewAgent, Review, ReviewChange } from '../shared/review-room'
-import type { ReviewCompanionCreateOutcome, ReviewCompanionCreateRequest, ReviewCompanionInfo } from '../shared/review-room-ipc'
+import type { ReviewCompanionCreateOutcome, ReviewCompanionCreateRequest, ReviewCompanionInfo, ReviewCompanionStatus } from '../shared/review-room-ipc'
 import { buildCompanionBrief } from '../shared/pr-brief'
 import { parseSessionOwner } from '../shared/session-owner'
 import { parseCreateTarget, unknownModelReason, type ModelCatalog } from './session-create'
@@ -78,6 +78,7 @@ export function resetReviewCompanion(): void {
   inFlight.clear()
   waiters.clear()
   resuming.clear()
+  statuses.clear()
 }
 
 // -- agent <-> stored companion agent --------------------------------------
@@ -362,8 +363,28 @@ export function endReviewCompanion(reviewId: string): void {
   if (review) endClaim(review)
 }
 
+// -- status ---------------------------------------------------------------------
+
+/** Each companion's last reported status, by terminal id. */
+const statuses = new Map<string, AgentStatus>()
+
+/**
+ * An `agent:status` report. A companion's goes to every client as
+ * `review:companion-status` (returned here for the caller to broadcast), since
+ * the event itself reaches only the hosting window and its phones. Null when
+ * it isn't a companion or nothing changed.
+ */
+export function noteCompanionStatus(event: AgentStatusEvent): ReviewCompanionStatus | null {
+  if (statuses.get(event.terminalId) === event.status) return null
+  const review = reviewsWithCompanionSession(event.terminalId)[0]
+  if (!review) return null
+  statuses.set(event.terminalId, event.status)
+  return { reviewId: review.id, sessionId: event.terminalId, status: event.status }
+}
+
 /** A PTY exited (exit, kill). Its claims end, unless the app is quitting. */
 export function onCompanionExited(sessionId: string): void {
+  statuses.delete(sessionId)
   if (quitting || !deps) return
   for (const review of reviewsWithCompanionSession(sessionId)) {
     console.log(`[ReviewRoom] Companion ${sessionId} of ${review.id} ended`)
@@ -431,6 +452,7 @@ export function companionInfo(reviewId: unknown, askingWindowId: number): Review
     hostedHere: companion.windowId === askingWindowId,
     live: need().isLive(companion.sessionId),
     readOnly: companionReadOnly(companion.agent.provider),
+    ...(statuses.has(companion.sessionId) ? { status: statuses.get(companion.sessionId) } : {}),
   }
 }
 

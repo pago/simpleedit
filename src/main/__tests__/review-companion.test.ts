@@ -20,6 +20,7 @@ import {
   ensureCompanion,
   initReviewCompanion,
   markCompanionQuitting,
+  noteCompanionStatus,
   onCompanionExited,
   rebindCompanionSession,
   resetReviewCompanion,
@@ -287,6 +288,29 @@ describe('rebind on resume', () => {
     const { companion } = claimCompanion(REVIEW, 1, 'req')
     expect(() => rebindCompanionSession({ id: 1, clientKey: 'w1' }, REVIEW, companion!.sessionId, 'agent-claude-new')).toThrow('remote')
     expect(getReview(REVIEW)!.companion?.sessionId).toBe(companion!.sessionId)
+  })
+})
+
+describe('companion status', () => {
+  const report = (terminalId: string, status: 'running' | 'waiting' | 'idle') => ({ worktreePath: '/w', terminalId, status, precise: true })
+
+  it('relays a companion\'s status once per change, for clients of other windows', () => {
+    const { companion } = claimCompanion(REVIEW, 1, 'req')
+    const id = companion!.sessionId
+    expect(noteCompanionStatus(report(id, 'waiting'))).toEqual({ reviewId: REVIEW, sessionId: id, status: 'waiting' })
+    expect(noteCompanionStatus(report(id, 'waiting'))).toBeNull()
+    expect(companionInfo(REVIEW, 2)).toMatchObject({ hostedHere: false, status: 'waiting' })
+  })
+
+  it('ignores sessions that are not companions', () => {
+    expect(noteCompanionStatus(report('agent-claude-other', 'waiting'))).toBeNull()
+  })
+
+  it('forgets the status when the terminal exits', () => {
+    const { companion } = claimCompanion(REVIEW, 1, 'req')
+    noteCompanionStatus(report(companion!.sessionId, 'running'))
+    onCompanionExited(companion!.sessionId)
+    expect(companionInfo(REVIEW, 1)?.status).toBeUndefined()
   })
 })
 

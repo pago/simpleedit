@@ -16,6 +16,7 @@ import type { SessionOwner } from './session-owner'
 import type { ReviewChange, ReviewSnapshot } from './review-room'
 import type {
   ReviewCompanionCreateRequest,
+  ReviewCompanionStatus,
   ReviewCompanionInfo,
   ReviewRequesterInfo,
   ReviewLayerDiff,
@@ -726,6 +727,7 @@ export interface ScreenPrsEventMap {
   'review:changed': ReviewChange
   /** Main asks the claiming window to create the owned companion session. */
   'review:companion-create-request': ReviewCompanionCreateRequest
+  'review:companion-status': ReviewCompanionStatus
   /** The saved filter changed, from any client — sent to every window and phone. */
   'screenprs:filter-changed': ScreenPrsFilterSnapshot
   'screenprs:schedule-changed': ScreenPrsSchedule
