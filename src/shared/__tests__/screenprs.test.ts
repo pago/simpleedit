@@ -14,6 +14,7 @@ import {
   describeFolds,
   reviewSubmitError,
   groupStacks,
+  stacksByBucket,
   type ScreenPrCard,
   type TriageFinding,
   type DeepFinding,
@@ -417,6 +418,23 @@ describe('reviewSubmitError', () => {
     expect(reviewSubmitError(draft({
       verdict: 'request_changes', comments: [{ id: 'c8', source: 'you', file: 'a.ts', line: '1', text: 'fix' }],
     }))).toBeNull()
+  })
+})
+
+describe('stacksByBucket', () => {
+  const empty = () => ({ attention: [], quick: [], waiting: [], fyi: [] })
+  it('keeps a stack whole, in the most urgent bucket any of its PRs is in', () => {
+    const base = card({ number: 1, bucket: 'quick', headRefName: 'base', baseRefName: 'main' })
+    const top = card({ number: 2, bucket: 'attention', headRefName: 'top', baseRefName: 'base' })
+    const solo = card({ number: 3, bucket: 'quick', headRefName: 'solo', baseRefName: 'main' })
+    const out = stacksByBucket({ ...empty(), attention: [top], quick: [solo, base] })
+    expect(out.attention.map((g) => g.cards.map((c) => c.number))).toEqual([[1, 2]])
+    expect(out.quick.map((g) => g.cards.map((c) => c.number))).toEqual([[3]])
+  })
+  it('keeps the buckets\' order for standalone cards', () => {
+    const a = card({ number: 1, bucket: 'waiting', headRefName: 'a', baseRefName: 'main' })
+    const b = card({ number: 2, bucket: 'waiting', headRefName: 'b', baseRefName: 'main' })
+    expect(stacksByBucket({ ...empty(), waiting: [b, a] }).waiting.map((g) => g.cards[0].number)).toEqual([2, 1])
   })
 })
 

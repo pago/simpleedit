@@ -701,6 +701,27 @@ export function groupStacks(cards: ScreenPrCard[]): PrGroup[] {
 }
 
 /**
+ * The board's groups per bucket with every stack kept whole: `groupStacks`
+ * over all the board's cards, each stack shown once, in the most urgent bucket
+ * any of its PRs is in, at the place of its most urgent PR. A stack split
+ * across buckets would have the reviewer open its top layer without seeing the
+ * bottom one it needs (the room reviews the whole stack either way).
+ */
+export function stacksByBucket(byBucket: Record<ScreenPrBucket, ScreenPrCard[]>): Record<ScreenPrBucket, PrGroup[]> {
+  const all = BUCKET_ORDER.flatMap((bucket) => byBucket[bucket].map((card) => ({ card, bucket })))
+  const rank = new Map(all.map(({ card }, i) => [card, i]))
+  const placed = groupStacks(all.map(({ card }) => card))
+    .map((g) => {
+      const first = Math.min(...g.cards.map((c) => rank.get(c) ?? Infinity))
+      return { group: g, first, bucket: all[first].bucket }
+    })
+    .sort((a, b) => a.first - b.first)
+  const out = { attention: [], quick: [], waiting: [], fyi: [] } as Record<ScreenPrBucket, PrGroup[]>
+  for (const p of placed) out[p.bucket].push(p.group)
+  return out
+}
+
+/**
  * Within a bucket: attention worst-first (high impact, most issues), quick
  * smallest-first (fastest to clear), everything else newest-first. Total order,
  * stable for equal keys via the PR number tiebreak.
