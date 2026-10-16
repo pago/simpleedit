@@ -54,6 +54,9 @@ Delegation already works: a lead can `spawn_session` and collect with
 - **Permissions are not a workflow concern.** No provider launch passes a permission or
   approval flag (`main/agents/*.ts`), so workers get the user's own CLI defaults (in
   practice auto mode). A rare prompt is an ordinary Needs you item.
+- **The user starts a workflow.** By default `start_workflow` is refused and the lead is
+  told to ask the user to press **Start** in the Workflow tab after reviewing the graph. An
+  opt-in setting ("lead may start workflows") lets the lead start it directly.
 - **Waking the lead at judgment points is fine** (rare by design). The workflow record is
   the durable memory, so the user may compact the lead once the workflow is prepared.
 - **Visualization: layered graph.** Columns = dependency depth, cards carry status, a
@@ -126,8 +129,8 @@ There is no "task done" signal today, only turn ends (`handleTurnEnd`,
   session. Returns validation errors in a form the agent can fix.
 - `patch_workflow({workflowId, baseVersion, ops})`: add/update/cancel. Only `queued` tasks
   can be updated. `cancel` on a running task stops its worker.
-- `start_workflow({workflowId})`: the lead may start it, but the Workflow tab also has
-  **Start**, so the user can review the graph first.
+- `start_workflow({workflowId})`: refused unless the "lead may start workflows" setting is
+  on (see Decisions); the Workflow tab's **Start** is the default path.
 - `get_workflow({workflowId})`: compact status for a woken lead (no worker transcripts).
 - `report_result(...)`: workers only (above).
 - Exposed to Claude via `--mcp-config` (`agents/claude.ts:33-45`), Codex via `-c
@@ -216,9 +219,6 @@ The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.
 
 ## Open questions
 
-- **Who may start:** should `start_workflow` from the lead start immediately, or always
-  wait for the user's Start in the Workflow tab? Proposal: user Start by default, plus an
-  opt-in "lead may start" setting.
 - **Cancelling a running task:** dispose the session, or detach it into a normal sidebar
   session the user can keep? Proposal: detach.
 - **Workflow end:** when a workflow finishes, do its worker sessions get disposed, or
