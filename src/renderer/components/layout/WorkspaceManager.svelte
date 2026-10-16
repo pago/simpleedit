@@ -30,7 +30,7 @@
 </script>
 
 <div class="h-full">
-  {#if sessionsStore.sessions().length === 0}
+  {#if sessionsStore.visibleSessions().length === 0}
     <!-- New-session panel: what you see when a project is freshly opened. -->
     <div class="flex h-full flex-col items-center justify-center gap-4">
       <p class="text-sm text-zinc-500">Start a session to get going</p>

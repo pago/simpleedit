@@ -9,7 +9,7 @@
  * check the renderer.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type { AgentPeer, WorktreeInfo } from '../../../shared/ipc-types'
+import type { AgentPeer, WindowSessionInput, WorktreeInfo } from '../../../shared/ipc-types'
 import { sessionsStore, initSessionListeners } from '../sessions.svelte'
 import { setProjectRoot, refreshWorktreesFor } from '../worktrees.svelte'
 
@@ -24,6 +24,11 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 function lastSyncedPeers(): AgentPeer[] | undefined {
   const calls = invoke.mock.calls.filter(([channel]) => channel === 'agent-bus:sync')
   return calls.at(-1)?.[1] as AgentPeer[] | undefined
+}
+
+function lastWindowSessions(): WindowSessionInput[] | undefined {
+  const calls = invoke.mock.calls.filter(([channel]) => channel === 'session:sync')
+  return calls.at(-1)?.[1] as WindowSessionInput[] | undefined
 }
 
 beforeEach(async () => {
@@ -104,6 +109,24 @@ describe('agent-bus peer snapshot', () => {
       const ids = (lastSyncedPeers() ?? []).map((p) => p.terminalId)
       expect(ids).not.toContain(dead)
       expect(ids).not.toContain(asleep)
+    } finally {
+      off()
+    }
+  })
+
+  it('keeps an owned companion on the agent bus but out of user-facing session sync', async () => {
+    const off = initSessionListeners()
+    sessionsStore.markHydrated()
+    try {
+      const id = sessionsStore.createAgent({ provider: 'claude' }, ROOT, MAIN_WT, {
+        owner: { kind: 'review', reviewId: 'r_review01' },
+        select: false,
+      })
+      await flush()
+
+      expect(lastSyncedPeers()?.find((peer) => peer.terminalId === id)?.owner).toEqual({ kind: 'review', reviewId: 'r_review01' })
+      expect(lastWindowSessions()?.some((session) => session.terminalId === id)).toBe(false)
+      expect(sessionsStore.activeSessionId()).toBeNull()
     } finally {
       off()
     }

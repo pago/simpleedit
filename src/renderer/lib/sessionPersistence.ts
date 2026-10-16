@@ -15,6 +15,7 @@ import type {
 import { worktreeList, projectRoot, refreshWorktreesFor } from '../stores/worktrees.svelte'
 import { sessionsStore, isInMemoryDir } from '../stores/sessions.svelte'
 import { tabsStore, type Tab } from '../stores/tabsStore.svelte'
+import { isOwned, parseSessionOwner } from '../../shared/session-owner'
 
 const SAVE_VERSION = 4
 
@@ -98,6 +99,7 @@ export function serializeSession(repoPath: string): SerializedSession {
         : {}),
       ...(session.groupId ? { groupId: session.groupId } : {}),
       ...(session.seedPrompt ? { seedPrompt: session.seedPrompt } : {}),
+      ...(session.owner ? { owner: session.owner } : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
       unread,
@@ -174,6 +176,7 @@ export function hydrateSession(session: SerializedSession): {
   const trailRepos = new Set<string>()
 
   session.sessions.forEach((s, index) => {
+    const owner = parseSessionOwner(s.owner)
     // A session pointed at a non-primary repo keeps its remembered worktree
     // (that repo isn't loaded yet, so knownPaths can't validate it — the
     // workspace loads the repo lazily on activation). Primary-repo sessions
@@ -201,6 +204,7 @@ export function hydrateSession(session: SerializedSession): {
       ...(s.sessionId ? { sessionId: s.sessionId } : {}),
       ...(s.groupId ? { groupId: s.groupId } : {}),
       ...(s.seedPrompt ? { seedPrompt: s.seedPrompt } : {}),
+      ...(owner ? { owner } : {}),
     })
     if (s.repoPath) trailRepos.add(s.repoPath)
     if (!newId) {
@@ -225,7 +229,7 @@ export function hydrateSession(session: SerializedSession): {
       tabsStore.focus(newId, s.activeTabId)
     }
 
-    if (session.activeIndex === index) activeNewId = newId
+    if (session.activeIndex === index && !isOwned({ owner })) activeNewId = newId
   })
 
   // Restore order + drop groups that lost too many members (e.g. all-terminal

@@ -21,6 +21,7 @@
  */
 import { randomUUID } from 'crypto'
 import type { AgentStatus } from '../shared/ipc-types'
+import type { SessionOwner } from '../shared/session-owner'
 
 /** A session an agent can address. Mirrors the renderer's session registry. */
 export interface Peer {
@@ -30,6 +31,7 @@ export interface Peer {
   provider?: string
   worktreePath: string
   status: AgentStatus | 'unknown'
+  owner?: SessionOwner
 }
 
 /**

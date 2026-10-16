@@ -22,6 +22,7 @@ import {
   mainWorktree,
 } from './worktrees.svelte'
 import { resolveSpawnModelRef } from '../lib/agentModels'
+import { isOwned, type SessionOwner } from '../../shared/session-owner'
 
 export type SessionKind = 'agent' | 'agents' | 'terminal'
 
@@ -135,6 +136,7 @@ export interface Session {
    * `normalizeGroups`.
    */
   groupId?: string
+  owner?: SessionOwner
 }
 
 export interface MemoryView {
@@ -181,6 +183,8 @@ export interface AgentCreateOptions {
    */
   provisionalLabel?: string
   target?: { groupId?: string; index: number }
+  owner?: SessionOwner
+  select?: boolean
 }
 
 /** Auto-assigned to new groups, cycled by group count. */
@@ -290,6 +294,10 @@ export const sessionsStore = {
     return _sessions
   },
 
+  visibleSessions(): Session[] {
+    return _sessions.filter((session) => !isOwned(session))
+  },
+
   activeSessionId(): string | null {
     return _activeId
   },
@@ -299,7 +307,7 @@ export const sessionsStore = {
   },
 
   visitedIds(): string[] {
-    return _visitedIds
+    return _visitedIds.filter((id) => !isOwned(findSession(id)))
   },
 
   groups(): SessionGroup[] {
@@ -315,7 +323,7 @@ export const sessionsStore = {
   },
 
   select(id: string): void {
-    if (!findSession(id)) return
+    if (isOwned(findSession(id))) return
     select(id)
   },
 
@@ -365,6 +373,7 @@ export const sessionsStore = {
       ...(model ? { model } : {}),
       ...(opts.initialPrompt ? { seedPrompt: opts.initialPrompt } : {}),
       ...(opts.target?.groupId ? { groupId: opts.target.groupId } : {}),
+      ...(opts.owner ? { owner: opts.owner } : {}),
       launchDir,
       worktreePath,
       touchedWorktrees: [worktreePath],
@@ -378,7 +387,7 @@ export const sessionsStore = {
     } else {
       _sessions = [newSession, ..._sessions]
     }
-    select(id)
+    if (!isOwned(newSession) && (opts.select ?? true)) select(id)
     void window.api.invoke('agent:spawn', {
       id,
       worktreePath: launchDir,
@@ -588,7 +597,8 @@ export const sessionsStore = {
     dissolveIfOrphaned(closedGroup)
 
     if (_activeId === id) {
-      const next = _sessions[Math.min(idx, _sessions.length - 1)]
+      const visible = _sessions.filter((candidate) => !isOwned(candidate))
+      const next = visible.find((candidate) => _sessions.indexOf(candidate) >= idx) ?? visible.at(-1)
       select(next?.id ?? null)
     }
   },
@@ -607,7 +617,7 @@ export const sessionsStore = {
     // local one loses the endpoint it ran against.
     const model = target.provider === 'claude' ? target.model : undefined
     this.update(id, { pendingResume: undefined, resumeError: undefined })
-    select(id)
+    if (!isOwned(session)) select(id)
     // Main reports its own spawn failures into the terminal. Anything thrown
     // here never got that far, so there is no terminal to show it in: put the
     // placeholder back, or the workspace is left black with nothing behind it.
@@ -984,6 +994,7 @@ export const sessionsStore = {
     sessionId?: string
     groupId?: string
     seedPrompt?: string
+    owner?: SessionOwner
   }): string | null {
     // Restore the persisted trail; fall back to the workspace worktree so the
     // current location still shows in the pickers for pre-trail blobs.
@@ -1032,6 +1043,7 @@ export const sessionsStore = {
         touchedWorktrees,
         ...(input.groupId ? { groupId: input.groupId } : {}),
         ...(input.seedPrompt ? { seedPrompt: input.seedPrompt } : {}),
+        ...(input.owner ? { owner: input.owner } : {}),
         // A restored session needs the trust-grant band as much as a fresh one —
         // arguably more, since the user has quit and relaunched since granting.
         // Without this, resuming a Codex session gives degraded status and
@@ -1300,6 +1312,7 @@ function peerSnapshot(): AgentPeer[] {
       provider: s.provider ?? 'claude',
       worktreePath: s.worktreePath,
       status: getAgentStatusForTerminal(s.id),
+      ...(s.owner ? { owner: s.owner } : {}),
     }))
 }
 
@@ -1329,7 +1342,7 @@ function trailFor(session: Session): SessionRepoTrail[] {
 
 function windowSessionSnapshot(): WindowSessionInput[] {
   return _sessions
-    .filter((s) => !s.pendingResume)
+    .filter((s) => !s.pendingResume && !isOwned(s))
     .map((s) => ({
       terminalId: s.id,
       label: s.label,

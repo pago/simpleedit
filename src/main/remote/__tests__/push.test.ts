@@ -101,6 +101,7 @@ beforeEach(() => {
     // Away from the desk: the state this whole feature exists for. The tests
     // that care about presence set it explicitly.
     userIsPresent: () => false,
+    ignoreSession: () => false,
     onStatusChange: undefined,
     transport: (url, headers, body) => transportReturning(statusFor)(url, headers, body),
   })
@@ -248,6 +249,16 @@ describe('the trigger', () => {
     handleAgentStatus(waiting({ precise: false }), 7)
     await new Promise((r) => setTimeout(r, 20))
     expect(sent).toHaveLength(0)
+  })
+
+  it('does not notify for an owned review companion or consume its debounce', async () => {
+    configurePush({ ignoreSession: (terminalId) => terminalId === 'companion' })
+    handleAgentStatus(waiting({ terminalId: 'companion' }), 7)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sent).toHaveLength(0)
+
+    handleAgentStatus(waiting({ terminalId: 't1' }), 7)
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
   })
 
   it('stays silent while a session is already waiting', async () => {

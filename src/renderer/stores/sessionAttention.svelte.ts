@@ -105,7 +105,7 @@ export function sessionAttentionLevelFor(session: Session): AttentionLevel {
 
 /** The aggregate over every current session, for the Sessions header dot. */
 export function currentSessionsAttention(): SessionsAttention {
-  return sessionsAttention(sessionsStore.sessions().map(summaryFor))
+  return sessionsAttention(sessionsStore.visibleSessions().map(summaryFor))
 }
 
 export function _resetSessionAttentionForTests(): void {

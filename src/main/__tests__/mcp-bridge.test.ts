@@ -93,6 +93,16 @@ describe('MCP Bridge — HTTP endpoints', () => {
     expect(res.status).toBe(404)
   })
 
+  it('binds spawned-session credentials to one terminal id', async () => {
+    const sessionToken = getBridgeInfo(bridgeWebContentsId, 'term-owned')!.token
+    const res = await post(`/${sessionToken}/tool-call`, {
+      tool: 'list_sessions',
+      terminalId: 'term-other',
+      args: {},
+    })
+    expect(res.status).toBe(403)
+  })
+
   it('returns 400 for missing tool field', async () => {
     const res = await post(`/${token}/tool-call`, {
       terminalId: 'term-1',
@@ -338,8 +348,8 @@ describe('MCP Bridge — location-tracking hooks', () => {
     unregisterTerminal('hook-term')
   })
 
-  async function postHook(body: unknown): Promise<number> {
-    const res = await fetch(`http://127.0.0.1:${port}/${token}/hooks`, {
+  async function postHook(body: unknown, credential = token): Promise<number> {
+    const res = await fetch(`http://127.0.0.1:${port}/${credential}/hooks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: typeof body === 'string' ? body : JSON.stringify(body),
@@ -361,6 +371,18 @@ describe('MCP Bridge — location-tracking hooks', () => {
       worktreePath: '/repo/feature',
       repoPath: null,
     })
+  })
+
+  it('binds hook identity to the session credential instead of the posted terminal id', async () => {
+    const sessionToken = getBridgeInfo(bridgeWebContentsId, 'bound-term')!.token
+    await postHook({
+      session_id: 'forged-session',
+      simpleedit_terminal_id: 'other-term',
+      cwd: '/repo/feature/src',
+      hook_event_name: 'PostToolUse',
+    }, sessionToken)
+    expect(wc.send).toHaveBeenCalledWith('session:cwd', expect.objectContaining({ terminalId: 'bound-term' }))
+    expect(wc.send).not.toHaveBeenCalledWith('session:cwd', expect.objectContaining({ terminalId: 'other-term' }))
   })
 
   it('emits worktreePath + repoPath null when cwd is outside every worktree and no repo is discoverable', async () => {
@@ -1004,7 +1026,10 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
     resetBus()
     syncPeers([
       { terminalId: 'claude-a', label: 'alpha', provider: 'claude', worktreePath: '/repo/a', status: 'idle' },
-      { terminalId: 'claude-b', label: 'beta', provider: 'claude', worktreePath: '/repo/b', status: 'idle' },
+      {
+        terminalId: 'claude-b', label: 'beta', provider: 'claude', worktreePath: '/repo/b', status: 'idle',
+        owner: { kind: 'review', reviewId: 'r_review01' },
+      },
     ])
   })
 
@@ -1039,6 +1064,7 @@ describe('MCP Bridge — agent-to-agent messaging', () => {
     expect(sessions).toHaveLength(1)
     expect(sessions[0]['session_id']).toBe('claude-b')
     expect(sessions[0]['label']).toBe('beta')
+    expect(sessions[0]).toMatchObject({ owner: 'review', review_id: 'r_review01' })
   })
 
   it('send_message queues mail and mirrors it to the renderer', async () => {

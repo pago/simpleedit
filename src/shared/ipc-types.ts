@@ -12,6 +12,8 @@ import type { BacklogOpResult, BacklogSnapshot } from './backlog'
 import type { OverviewFacts, OverviewState, OverviewStatus } from './pr-overview'
 import type { ScreenPrsFilterPrefs, ScreenPrsFilterSnapshot } from './screenprs-filter'
 import type { MemoryHealthReport } from './memory-health'
+import type { SessionOwner } from './session-owner'
+import type { ReviewChange, ReviewSnapshot } from './review-room'
 
 // ── Worktree ──────────────────────────────────────────────
 export interface WorktreeInfo {
@@ -592,6 +594,10 @@ export interface ScreenPrsInvokeMap {
    * with `successor` (its threads move there).
    */
   'agent-threads:session-ended': { args: [sessionId: string, successor: string | null]; result: void }
+  /** Main-owned Review Room state. */
+  'review:load': { args: []; result: ReviewSnapshot }
+  /** Apply one validated Review Room client operation. */
+  'review:op': { args: [request: unknown]; result: ReviewChange | null }
   /** The saved org + cutoff every client screens with. */
   'screenprs:filter-get': { args: []; result: ScreenPrsFilterSnapshot }
   /** Replace the saved filter. Main validates, persists, and broadcasts `screenprs:filter-changed`. */
@@ -669,6 +675,7 @@ export interface ScreenPrsEventMap {
   'screenprs:draft-changed': { url: string } & DraftOpResult
   /** A thread changed (`thread: null`: removed), from any client or the agent — sent to every window and phone. */
   'agent-threads:changed': ThreadChange
+  'review:changed': ReviewChange
   /** The saved filter changed, from any client — sent to every window and phone. */
   'screenprs:filter-changed': ScreenPrsFilterSnapshot
   'screenprs:schedule-changed': ScreenPrsSchedule
@@ -753,6 +760,7 @@ export interface SerializedAgentSession {
    * out on the next save — it is never retained past the session's lifetime.
    */
   seedPrompt?: string
+  owner?: SessionOwner
   tabs: SerializedTab[]
   activeTabId: string | null
   unread: string[]
@@ -823,6 +831,7 @@ export interface WindowSessionInput {
    * renderer has ever synced. The desktop repo picker reads the same trail.
    */
   trail: SessionRepoTrail[]
+  owner?: SessionOwner
 }
 
 export interface WindowSession extends WindowSessionInput {
@@ -1622,6 +1631,7 @@ export interface AgentPeer {
   provider?: string
   worktreePath: string
   status: AgentStatus | 'unknown'
+  owner?: SessionOwner
 }
 
 export interface AgentBusInvokeMap {
