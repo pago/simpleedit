@@ -272,6 +272,42 @@ test.describe('Terminal/PTY lifecycle', () => {
     expect(status).toBe('ALIVE')
   })
 
+  // Backlog and Screen PRs fill the main area while the workspaces stay
+  // mounted behind them. A remount would rebuild every terminal from a
+  // truncated replay, garbling agent TUIs until their next real resize.
+  test('PTY + xterm survive a visit to Backlog and Screen PRs', async () => {
+    const { termA, termB } = await spawnTwoTerminals()
+    const marker = `MARKER_${Date.now()}`
+    await page.evaluate(
+      ({ id, marker }) => window.api.invoke('pty:write', id, `echo ${marker}\r`),
+      { id: termB, marker },
+    )
+    await expect.poll(async () => await readTerminalText(page), { timeout: 5_000 }).toContain(marker)
+
+    const before = await readLifecycle(page)
+
+    await page.getByRole('button', { name: /^Backlog/ }).first().click()
+    await page.getByRole('button', { name: /^Screen PRs/ }).first().click()
+    await page.getByRole('button', { name: /^Sessions/ }).first().click()
+    await page.waitForTimeout(300)
+
+    const after = await readLifecycle(page)
+    for (const id of [termA, termB]) {
+      expect(after.filter((e) => e.id === id).length, `terminal ${id} was rebuilt`).toBe(
+        before.filter((e) => e.id === id).length,
+      )
+    }
+    // Only the shown terminal: hidden sessions' rows are in the DOM too.
+    const visibleText = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.xterm-rows'))
+        .filter((rows) => rows.checkVisibility())
+        .map((rows) => rows.textContent ?? '')
+        .join('\n'),
+    )
+    expect(visibleText).toContain(marker)
+    await assertNoTerminalIdCollisions(page)
+  })
+
   test('fresh PTY output still reaches xterm after a session switch', async () => {
     const { termA } = await spawnTwoTerminals()
 

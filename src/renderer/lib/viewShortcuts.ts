@@ -20,8 +20,11 @@ export function viewForShortcut(
 /**
  * Sidebar shortcuts unmount the open section's body, and with it any modal it
  * opened (a hand-off brief, a rename, a review confirmation), so they wait
- * while one is open or something already handled the key.
+ * while one is open or something already handled the key. Only a modal on
+ * screen counts: one left open in a hidden session workspace would otherwise
+ * hold the shortcuts from a view that can't even show it.
  */
 export function sidebarShortcutsBlocked(e: Pick<KeyboardEvent, 'defaultPrevented'>, doc: Document = document): boolean {
-  return e.defaultPrevented || doc.querySelector('[aria-modal="true"]') !== null
+  if (e.defaultPrevented) return true
+  return [...doc.querySelectorAll('[aria-modal="true"]')].some((el) => el.checkVisibility())
 }

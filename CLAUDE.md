@@ -743,12 +743,18 @@ always open, and the sidebar can never disagree with the main area. Clicking
 the open header does nothing; ⌘1/⌘2/⌘3 (Ctrl+1–3 off macOS only: on macOS
 Ctrl+digits stay with terminal programs) and the palette's "Show …" entries
 switch. **Sidebar shortcuts (⌘1–3, ⌘B) wait while a modal is open**
-(`aria-modal="true"` anywhere, or the key was already `preventDefault`ed,
+(a visible `aria-modal="true"`, or the key was already `preventDefault`ed,
 `sidebarShortcutsBlocked`): switching unmounts the section body, and with it
 a modal it opened (hand-off brief, rename, review confirmation). New modals
 must carry `aria-modal="true"`. The main area shows the matching view:
 `WorkspaceManager`, or the view's header + detail (`BacklogView`,
-`ScreenPrsView`; a one-line hint until something is picked). The sidebar has
+`ScreenPrsView`; a one-line hint until something is picked).
+`WorkspaceManager` stays mounted, hidden, under the other two, so a session
+counts as on screen only while it is active AND `uiView` is `'workspace'`
+(`SessionWorkspace`'s `onScreen`, which gates the terminal's `active`, thread
+reads and the memory poll). A hidden terminal must never be fitted:
+FitAddon shrinks it to a few columns under `display:none` without the PTY
+knowing, and the agent never repaints what wrapped there. The sidebar has
 one drag handle, but each section remembers its own width
 (`lib/sidebarWidth.ts`, `localStorage`, defaults 260/340/380, clamped
 180–500); the title-bar block follows the current width. Section bodies are

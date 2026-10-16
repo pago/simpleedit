@@ -44,6 +44,18 @@ describe('sidebarShortcutsBlocked', () => {
     expect(sidebarShortcutsBlocked({ defaultPrevented: false })).toBe(true)
   })
 
+  it('does not count a modal left open in a hidden session workspace', () => {
+    const hidden = document.createElement('div')
+    hidden.className = 'hidden'
+    hidden.style.display = 'none'
+    const el = document.createElement('div')
+    el.setAttribute('aria-modal', 'true')
+    hidden.append(el)
+    document.body.append(hidden)
+    expect(sidebarShortcutsBlocked({ defaultPrevented: false })).toBe(false)
+    hidden.remove()
+  })
+
   it('does not count a non-modal dialog, such as the rail overlay', () => {
     const el = document.createElement('div')
     el.setAttribute('role', 'dialog')
