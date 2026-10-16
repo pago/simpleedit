@@ -12,7 +12,8 @@ import type { InteractiveTarget, ModelConfig } from '../shared/ipc-types'
 import type { ReviewAgent, Review, ReviewChange } from '../shared/review-room'
 import type { ReviewCompanionCreateOutcome, ReviewCompanionCreateRequest, ReviewCompanionInfo } from '../shared/review-room-ipc'
 import { buildCompanionBrief } from '../shared/pr-brief'
-import { parseCreateTarget } from './session-create'
+import { parseSessionOwner } from '../shared/session-owner'
+import { parseCreateTarget, unknownModelReason, type ModelCatalog } from './session-create'
 import { registeredProviderIds, tryGetProvider, type ReviewCompanionLaunch } from './agents/provider'
 import {
   claimCompanion,
@@ -24,7 +25,7 @@ import {
   reviewsWithCompanionSession,
   setCompanionAgent,
 } from './review-room-store'
-import { ensureReviewCheckoutDir, sweepReviewCheckouts } from './review-checkout'
+import { ensureReviewCheckoutDir, setProtectedReviews, sweepReviewCheckouts } from './review-checkout'
 import { fetchReviewRubric, renderRubricBlock } from './github/review-rubric'
 
 export interface ReviewCompanionDeps {
@@ -45,6 +46,10 @@ let quitting = false
 
 export function initReviewCompanion(d: ReviewCompanionDeps): void {
   deps = d
+  // A live companion may be reading its checkout: the repo cache keeps it.
+  setProtectedReviews(() =>
+    new Set(reviewsWithCompanion().filter((r) => r.status === 'open' && r.companion && isLiveOrResuming(r.companion.sessionId)).map((r) => r.id)),
+  )
 }
 
 function need(): ReviewCompanionDeps {
@@ -57,12 +62,22 @@ export function markCompanionQuitting(): void {
   quitting = true
 }
 
+/**
+ * Whether a PTY exit should settle that session's deliveries. Not while
+ * quitting: a question held for a companion must survive the restart, and
+ * what was in flight is settled at the next start.
+ */
+export function exitSettlesDelivery(): boolean {
+  return !quitting
+}
+
 /** Test seam. */
 export function resetReviewCompanion(): void {
   deps = null
   quitting = false
   inFlight.clear()
   waiters.clear()
+  resuming.clear()
 }
 
 // -- agent <-> stored companion agent --------------------------------------
@@ -147,6 +162,30 @@ export function companionLaunchFor(terminalId: string): ReviewCompanionLaunch | 
   return { reviewId: review.id, extraReadDir: ensureReviewCheckoutDir(review.id) }
 }
 
+/**
+ * The launch an `agent:spawn` for `terminalId` gets, or a refusal. A claimed
+ * id launches only as its review's companion. The payload's `owner` can only
+ * add a restriction: an owned spawn with no open claim behind it (the claim
+ * ended, timed out or moved meanwhile) is refused rather than started writable.
+ */
+export function companionSpawnFor(terminalId: string, owner: unknown): ReviewCompanionLaunch | undefined {
+  const launch = companionLaunchFor(terminalId)
+  if (launch) {
+    if (owner !== undefined && parseSessionOwner(owner)?.reviewId !== launch.reviewId) throw new Error('That session belongs to another review')
+    return launch
+  }
+  assertUnclaimed(terminalId)
+  if (owner !== undefined) throw new Error("This review companion's claim has ended; start a new one from the review")
+  return undefined
+}
+
+/** Any other spawn path (plain terminal, Agent View) may not take an id a companion claim names. */
+export function assertUnclaimed(terminalId: unknown): void {
+  if (typeof terminalId === 'string' && reviewsWithCompanionSession(terminalId).length) {
+    throw new Error('That terminal id belongs to a review companion')
+  }
+}
+
 // -- create ---------------------------------------------------------------------
 
 /** How long the claiming window gets to create the session, as `session:create`. */
@@ -154,6 +193,25 @@ export const COMPANION_CREATE_TIMEOUT_MS = 15_000
 const RUBRIC_TIMEOUT_MS = 10_000
 
 const inFlight = new Map<string, Promise<string>>()
+/**
+ * Ids a resume just rebound a claim to, until their spawn is live. Between the
+ * rebind and the spawn there is no PTY, and an Ask in that gap must not take
+ * the claim as stale and replace it.
+ */
+const resuming = new Map<string, number>()
+export const RESUME_GRACE_MS = 30_000
+
+function isLiveOrResuming(sessionId: string): boolean {
+  if (need().isLive(sessionId)) {
+    resuming.delete(sessionId)
+    return true
+  }
+  const until = resuming.get(sessionId)
+  if (until === undefined) return false
+  if (Date.now() < until) return true
+  resuming.delete(sessionId)
+  return false
+}
 const waiters = new Map<string, (outcome: ReviewCompanionCreateOutcome) => void>()
 
 function parseOutcome(raw: unknown): ReviewCompanionCreateOutcome {
@@ -230,11 +288,11 @@ function broadcastChange(change: ReviewChange | null): void {
 export function ensureCompanion(reviewId: string, windowId: number, requestId: string = randomUUID()): Promise<string> {
   const pending = inFlight.get(reviewId)
   if (pending) return pending
-  const d = need()
+  need()
   const review = getReview(reviewId)
   if (!review || review.status !== 'open') return Promise.reject(new Error('That review is not open'))
   if (review.companion) {
-    if (d.isLive(review.companion.sessionId)) return Promise.resolve(review.companion.sessionId)
+    if (isLiveOrResuming(review.companion.sessionId)) return Promise.resolve(review.companion.sessionId)
     broadcastChange(clearCompanion(reviewId, review.companion.sessionId))
   }
   const run = startCompanion(reviewId, windowId, requestId).finally(() => inFlight.delete(reviewId))
@@ -244,6 +302,10 @@ export function ensureCompanion(reviewId: string, windowId: number, requestId: s
 
 async function startCompanion(reviewId: string, windowId: number, requestId: string): Promise<string> {
   const d = need()
+  const before = getReview(reviewId)
+  if (!before || before.status !== 'open') throw new Error('That review is not open')
+  // Before claiming: the claim's create window must be the renderer's alone.
+  const rubric = await (d.rubric ?? defaultRubric)(before).catch(() => undefined)
   const claim = claimCompanion(reviewId, windowId, requestId)
   broadcastChange(claim.change)
   if (!claim.companion) throw new Error('That review is not open')
@@ -254,7 +316,6 @@ async function startCompanion(reviewId: string, windowId: number, requestId: str
     if (!review) throw new Error('That review is gone')
     ensureReviewCheckoutDir(reviewId)
     const target = targetFromReviewAgent(agent)
-    const rubric = await (d.rubric ?? defaultRubric)(review).catch(() => undefined)
     const brief = buildCompanionBrief({
       reviewId,
       layers: review.layers,
@@ -322,7 +383,8 @@ export function rebindCompanionSession(caller: CompanionCaller, reviewId: unknow
   refuseRemote(caller, 'review:companion-rebind')
   const windowId = caller.id
   if (typeof reviewId !== 'string' || typeof fromSessionId !== 'string' || typeof toSessionId !== 'string') return false
-  if (need().isLive(toSessionId)) return false
+  // A live from-id is a running companion, not a placeholder being resumed.
+  if (need().isLive(toSessionId) || need().isLive(fromSessionId)) return false
   let change: ReviewChange | null
   try {
     change = rebindCompanion(reviewId, fromSessionId, toSessionId, windowId)
@@ -330,15 +392,20 @@ export function rebindCompanionSession(caller: CompanionCaller, reviewId: unknow
     return false
   }
   broadcastChange(change)
+  if (change) resuming.set(toSessionId, Date.now() + RESUME_GRACE_MS)
   if (change) console.log(`[ReviewRoom] Companion of ${reviewId} rebound ${fromSessionId} → ${toSessionId} in window ${windowId}`)
   return change !== null
 }
 
 /** Settings → which agent the companion is. A running one ends; the next Ask starts the new agent. */
-export function setReviewCompanionAgent(reviewId: unknown, rawTarget: unknown): void {
+export async function setReviewCompanionAgent(reviewId: unknown, rawTarget: unknown, catalog?: ModelCatalog): Promise<void> {
   if (typeof reviewId !== 'string') throw new Error('Malformed review id')
   // null is the picker's "Default": what Settings (or a plain new session) would start.
-  const agent = rawTarget === null ? defaultCompanionAgent() : reviewAgentFromTarget(parseCreateTarget(rawTarget))
+  const target = rawTarget === null ? null : parseCreateTarget(rawTarget)
+  // Refused here, where the client sees why, not at launch inside a hidden session.
+  const unknownModel = target && catalog ? await unknownModelReason(target, catalog) : null
+  if (unknownModel) throw new Error(unknownModel)
+  const agent = target ? reviewAgentFromTarget(target) : defaultCompanionAgent()
   const review = getReview(reviewId)
   if (!review) throw new Error('That review is gone')
   const change = setCompanionAgent(reviewId, agent)

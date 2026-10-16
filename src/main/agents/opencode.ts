@@ -127,7 +127,14 @@ function bridgeConfigEnv(ctx: LaunchContext): Record<string, string> {
  * deny comes first.
  */
 export function openCodeCompanionEnv(extraReadDir: string): Record<string, string> {
-  const ruleset = JSON.parse(openCodeReadOnlyEnv()['OPENCODE_PERMISSION'] ?? '{}') as Record<string, unknown>
+  // Permission keys are wildcards over tool ids, last match wins: deny every
+  // tool first (the user's own MCP servers included), then allow the reading
+  // tools and SimpleEdit's (`simpleedit_<tool>`) back.
+  const ruleset: Record<string, unknown> = {
+    '*': 'deny',
+    ...(JSON.parse(openCodeReadOnlyEnv()['OPENCODE_PERMISSION'] ?? '{}') as Record<string, unknown>),
+    'simpleedit_*': 'allow',
+  }
   const dir = extraReadDir.replaceAll('\\', '/').replace(/\/+$/, '')
   ruleset['external_directory'] = { '*': 'deny', [`${dir}/*`]: 'allow', [`${dir}/**`]: 'allow' }
   return { OPENCODE_PERMISSION: JSON.stringify(ruleset) }

@@ -29,7 +29,9 @@ describe('Claude companion launch', () => {
     const plan = claudeProvider.buildLaunch({ terminalId: 'c1', worktreePath: '/repo', ...bridge, reviewCompanion: companion, initialPrompt: 'brief' })
     try {
       const settings = settingsOf(plan)
-      expect(settings['permissions']).toEqual({ deny: ['Edit', 'Write', 'NotebookEdit', 'Bash'] })
+      expect(settings['permissions']).toEqual({ deny: ['Edit', 'Write', 'NotebookEdit', 'Bash', 'WebFetch', 'WebSearch'] })
+      // Only SimpleEdit's MCP server: a user's own could write or reach the network.
+      expect(plan.args).toContain('--strict-mcp-config')
       expect(Object.keys(settings['hooks'] as object)).toContain('Stop')
       expect(plan.args).toContain('--mcp-config')
       expect(plan.args).not.toContain('--permission-mode')
@@ -68,6 +70,7 @@ describe('Claude companion launch', () => {
     try {
       expect(settingsOf(plan)['permissions']).toBeUndefined()
       expect(plan.args).not.toContain('--add-dir')
+      expect(plan.args).not.toContain('--strict-mcp-config')
     } finally {
       plan.cleanup?.()
     }
@@ -82,6 +85,7 @@ describe('Codex companion launch', () => {
     expect(plan.args[at + 1]).toBe('read-only')
     expect(plan.args.join(' ')).not.toMatch(/approval|dangerously|--full-auto/)
     expect(plan.args.join(' ')).toContain('mcp_servers.simpleedit')
+    expect(plan.args.join(' ')).toContain('web_search="disabled"')
   })
 
   it('leaves a normal session as it was', () => {
@@ -100,6 +104,12 @@ describe('OpenCode companion launch', () => {
     try {
       const permission = JSON.parse(plan.env!['OPENCODE_PERMISSION']!) as Record<string, unknown>
       expect(permission).toMatchObject({ edit: 'deny', bash: 'deny', webfetch: 'deny', task: 'deny', read: 'allow' })
+      // Every tool denied first, the user's MCP servers included; ours allowed last.
+      const keys = Object.keys(permission)
+      expect(keys[0]).toBe('*')
+      expect(permission['*']).toBe('deny')
+      expect(keys.at(-1)).toBe('simpleedit_*')
+      expect(permission['simpleedit_*']).toBe('allow')
       const external = permission['external_directory'] as Record<string, string>
       expect(Object.keys(external)[0]).toBe('*')
       expect(external['*']).toBe('deny')
@@ -123,7 +133,7 @@ describe('OpenCode companion launch', () => {
 })
 
 describe('read-only claim per provider', () => {
-  it('is stated for every provider', () => {
-    expect([claudeProvider, codexProvider, opencodeProvider].map((p) => p.reviewCompanionReadOnly)).toEqual(['enforced', 'enforced', 'enforced'])
+  it("is claimed only where the user's MCP servers are shut out too", () => {
+    expect([claudeProvider, codexProvider, opencodeProvider].map((p) => p.reviewCompanionReadOnly)).toEqual(['enforced', 'by-instruction', 'enforced'])
   })
 })

@@ -34,6 +34,7 @@ import { MAX_SNIPPET } from '../shared/agent-threads'
 import { fromAgentOps, toAgentItem, type ClaudeModelResolver } from './backlog-agent'
 import type { Origin } from './backlog-store'
 import type { BacklogOpResult, BacklogSnapshot } from '../shared/backlog'
+import { isReviewCompanionSession } from './review-room-store'
 
 interface BridgeInstance {
   server: Server
@@ -289,8 +290,36 @@ function jsonResponse(res: ServerResponse, status: number, body: Record<string, 
 
 // -- Tool call handling ----------------------------------------
 
+/**
+ * Everything a review companion may call: its own review's threads, diffs,
+ * proposals and checkout, all scoped to that review by the tools themselves.
+ * An allowlist because every other tool acts outside the review — a spawned or
+ * messaged session is writable, a backlog edit or opened worktree is a write.
+ * `check_inbox` is out too: no mail can reach a companion (see `send_message`).
+ */
+export const COMPANION_TOOLS: ReadonlySet<string> = new Set([
+  'list_threads',
+  'reply_to_thread',
+  'get_review_diff',
+  'propose_draft',
+  'checkout_review_head',
+])
+
+function isCompanion(terminalId: string): boolean {
+  try {
+    return isReviewCompanionSession(terminalId)
+  } catch {
+    // No database: no review store, so nothing can have been claimed as a companion.
+    return false
+  }
+}
+
 async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClient): Promise<{ status: number; body: Record<string, unknown> }> {
   const { tool, args, terminalId } = payload
+
+  if (!COMPANION_TOOLS.has(tool) && isCompanion(terminalId)) {
+    return { status: 403, body: { error: `A review companion is read-only and can't use ${tool}.` } }
+  }
 
   if (tool === 'complete_task') {
     const tour = args['tour'] as Tour | undefined
@@ -595,6 +624,9 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     const to = typeof args['to'] === 'string' ? args['to'] : ''
     const text = typeof args['text'] === 'string' ? args['text'] : ''
     if (!to) return { status: 400, body: { error: 'send_message requires `to`' } }
+    // Its answer (`last_assistant_message`) would carry a read-only session's
+    // words to a writable one as instructions.
+    if (isCompanion(to)) return { status: 400, body: { error: 'That session is a review companion; it takes questions only through its review.' } }
 
     const result = enqueue({ from: terminalId, to, text, expectsReply: args['wait_for_reply'] === true })
     if ('error' in result) return { status: 400, body: { error: result.error } }

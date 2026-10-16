@@ -10,8 +10,11 @@ import { claimCompanion, createReview, getReview, rebindCompanion, setReviewStat
 import { setReviewCacheRootForTests } from '../review-checkout'
 import {
   COMPANION_CREATE_TIMEOUT_MS,
+  assertUnclaimed,
   companionInfo,
   companionLaunchFor,
+  companionSpawnFor,
+  exitSettlesDelivery,
   defaultCompanionAgent,
   endCompanionsOfWindow,
   ensureCompanion,
@@ -165,6 +168,12 @@ describe('ending a companion', () => {
     expect(getReview(REVIEW)!.companion).toBeUndefined()
   })
 
+  it('quitting leaves held deliveries for the next start', () => {
+    expect(exitSettlesDelivery()).toBe(true)
+    markCompanionQuitting()
+    expect(exitSettlesDelivery()).toBe(false)
+  })
+
   it('quitting does not', () => {
     const { companion } = claimCompanion(REVIEW, 1, 'req')
     markCompanionQuitting()
@@ -184,7 +193,62 @@ describe('ending a companion', () => {
   })
 })
 
+describe('spawn guards', () => {
+  it('a claimed id launches only as the companion, and no other spawn path may take it', () => {
+    const { companion } = claimCompanion(REVIEW, 1, 'req')
+    const id = companion!.sessionId
+    expect(companionSpawnFor(id, undefined)).toMatchObject({ reviewId: REVIEW })
+    expect(companionSpawnFor(id, { kind: 'review', reviewId: REVIEW })).toMatchObject({ reviewId: REVIEW })
+    expect(() => companionSpawnFor(id, { kind: 'review', reviewId: 'r_review02' })).toThrow('another review')
+    expect(() => assertUnclaimed(id)).toThrow('companion')
+    expect(() => assertUnclaimed('agent-claude-plain')).not.toThrow()
+  })
+
+  it('refuses an owned spawn whose claim is gone, instead of starting it writable', () => {
+    const { companion } = claimCompanion(REVIEW, 1, 'req')
+    onCompanionExited(companion!.sessionId)
+    expect(() => companionSpawnFor(companion!.sessionId, { kind: 'review', reviewId: REVIEW })).toThrow('claim has ended')
+    expect(companionSpawnFor('agent-claude-plain', undefined)).toBeUndefined()
+  })
+
+  it("refuses a closed review's claimed id on every path", () => {
+    const { companion } = claimCompanion(REVIEW, 1, 'req')
+    setReviewStatus(REVIEW, 'discarded')
+    expect(() => companionSpawnFor(companion!.sessionId, undefined)).toThrow('companion')
+  })
+})
+
+describe('timing', () => {
+  it('fetches the rubric before claiming, so it cannot eat the create window', async () => {
+    let release!: (rubric: string) => void
+    deps.rubric = () => new Promise((resolve) => (release = resolve))
+    const started = ensureCompanion(REVIEW, 1)
+    await flush()
+    expect(getReview(REVIEW)!.companion).toBeUndefined()
+    release('rubric')
+    await flush()
+    expect(getReview(REVIEW)!.companion).toBeDefined()
+    answerLast({ ok: true })
+    await started
+  })
+
+  it('does not replace a claim a resume just rebound, before its spawn is live', async () => {
+    const { companion } = claimCompanion(REVIEW, 1, 'req')
+    expect(rebindCompanionSession({ id: 1 }, REVIEW, companion!.sessionId, 'agent-claude-resumed')).toBe(true)
+    await expect(ensureCompanion(REVIEW, 2)).resolves.toBe('agent-claude-resumed')
+    expect(sent).toHaveLength(0)
+    expect(getReview(REVIEW)!.companion?.sessionId).toBe('agent-claude-resumed')
+  })
+})
+
 describe('rebind on resume', () => {
+  it('refuses when the from-id is a live companion', () => {
+    const { companion } = claimCompanion(REVIEW, 1, 'req')
+    live.add(companion!.sessionId)
+    expect(rebindCompanionSession({ id: 1 }, REVIEW, companion!.sessionId, 'agent-claude-new')).toBe(false)
+    expect(getReview(REVIEW)!.companion?.sessionId).toBe(companion!.sessionId)
+  })
+
   it('moves the claim from the right id to the resuming window', () => {
     const { companion } = claimCompanion(REVIEW, 1, 'req')
     expect(rebindCompanionSession({ id: 3 }, REVIEW, 'agent-claude-wrong', 'agent-claude-new')).toBe(false)
@@ -203,15 +267,23 @@ describe('rebind on resume', () => {
 })
 
 describe('switching agent', () => {
-  it('validates the target', () => {
-    expect(() => setReviewCompanionAgent(REVIEW, { provider: 'bash' })).toThrow()
-    expect(() => setReviewCompanionAgent(REVIEW, { provider: 'codex', model: '--yolo' })).toThrow()
+  it('validates the target', async () => {
+    await expect(setReviewCompanionAgent(REVIEW, { provider: 'bash' })).rejects.toThrow()
+    await expect(setReviewCompanionAgent(REVIEW, { provider: 'codex', model: '--yolo' })).rejects.toThrow()
   })
 
-  it('stores the agent and ends a running companion', () => {
+  it('refuses a model the catalog does not offer, saying why', async () => {
+    const catalog = { claude: async () => [], codex: async () => ['gpt-5'], opencode: async () => [], ollama: async () => [] }
+    await expect(setReviewCompanionAgent(REVIEW, { provider: 'codex', model: 'gpt-nope' }, catalog)).rejects.toThrow(/doesn't offer/)
+    expect(getReview(REVIEW)!.companionAgent).toEqual({ provider: 'claude', model: 'default' })
+    await setReviewCompanionAgent(REVIEW, { provider: 'codex', model: 'gpt-5' }, catalog)
+    expect(getReview(REVIEW)!.companionAgent).toEqual({ provider: 'codex', model: 'gpt-5' })
+  })
+
+  it('stores the agent and ends a running companion', async () => {
     const { companion } = claimCompanion(REVIEW, 1, 'req')
     live.add(companion!.sessionId)
-    setReviewCompanionAgent(REVIEW, { provider: 'codex', model: 'gpt-5', reasoningEffort: 'high' })
+    await setReviewCompanionAgent(REVIEW, { provider: 'codex', model: 'gpt-5', reasoningEffort: 'high' })
     expect(getReview(REVIEW)!.companionAgent).toEqual({ provider: 'codex', model: 'gpt-5#high' })
     expect(deps.kill).toHaveBeenCalledWith(companion!.sessionId)
     expect(getReview(REVIEW)!.companion).toBeUndefined()
