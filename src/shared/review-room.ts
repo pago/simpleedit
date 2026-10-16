@@ -47,7 +47,6 @@ export interface Review {
   companionAgent: ReviewAgent
   lastSeenHead: Record<string, string>
   readSteps: string[]
-  authorBriefing?: unknown
   round: number
   previousReviewId?: string
   submissions: ReviewSubmission[]

@@ -81,7 +81,6 @@ const MIGRATIONS: string[] = [
     companion_agent TEXT NOT NULL,
     last_seen_head TEXT NOT NULL,
     read_steps TEXT NOT NULL,
-    author_briefing TEXT,
     round INTEGER NOT NULL,
     previous_review_id TEXT,
     submissions TEXT NOT NULL,

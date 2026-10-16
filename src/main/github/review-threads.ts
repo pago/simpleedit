@@ -8,7 +8,8 @@ import { runGh } from './gh'
 
 interface GithubComment {
   id: string
-  databaseId?: number
+  /** The REST id (`fullDatabaseId`: `databaseId` is an Int32 that newer ids outgrow). */
+  databaseId?: string
   author: string
   body: string
 }
@@ -40,6 +41,7 @@ interface PageInfo {
 interface RawComment {
   id?: unknown
   databaseId?: unknown
+  fullDatabaseId?: unknown
   author?: { login?: unknown } | null
   body?: unknown
 }
@@ -67,7 +69,7 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $cursor) {
-        nodes { id isResolved isOutdated path line originalLine diffSide comments(first: 100) { nodes { id databaseId author { login } body } pageInfo { hasNextPage endCursor } } }
+        nodes { id isResolved isOutdated path line originalLine diffSide comments(first: 100) { nodes { id databaseId fullDatabaseId author { login } body } pageInfo { hasNextPage endCursor } } }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -76,7 +78,7 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
 
 const COMMENTS_QUERY = `
 query ReviewThreadComments($id: ID!, $cursor: String) {
-  node(id: $id) { ... on PullRequestReviewThread { comments(first: 100, after: $cursor) { nodes { id databaseId author { login } body } pageInfo { hasNextPage endCursor } } } }
+  node(id: $id) { ... on PullRequestReviewThread { comments(first: 100, after: $cursor) { nodes { id databaseId fullDatabaseId author { login } body } pageInfo { hasNextPage endCursor } } } }
 }`
 
 function parsedComments(value: unknown): GithubComment[] {
@@ -86,7 +88,10 @@ function parsedComments(value: unknown): GithubComment[] {
     const row = entry as RawComment
     if (typeof row.id !== 'string' || typeof row.body !== 'string') return []
     const author = typeof row.author?.login === 'string' ? row.author.login : 'unknown'
-    return [{ id: row.id, ...(typeof row.databaseId === 'number' ? { databaseId: row.databaseId } : {}), author, body: row.body }]
+    const restId = typeof row.fullDatabaseId === 'string' && /^\d+$/.test(row.fullDatabaseId)
+      ? row.fullDatabaseId
+      : typeof row.databaseId === 'number' && Number.isSafeInteger(row.databaseId) ? String(row.databaseId) : undefined
+    return [{ id: row.id, ...(restId ? { databaseId: restId } : {}), author, body: row.body }]
   })
 }
 
@@ -195,7 +200,7 @@ export function mapGithubReviewThreads(
       origin: {
         kind: 'github',
         threadNodeId: thread.id,
-        rootCommentId: String(root.databaseId),
+        rootCommentId: root.databaseId,
         author: root.author,
         isResolved: thread.isResolved,
       },

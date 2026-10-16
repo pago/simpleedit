@@ -389,6 +389,8 @@ function sessionGone(sessionId: string): void {
   clearTimeout(t.confirmTimer)
   clearTimeout(t.settleTimer)
   patch(t.sending, { delivery: 'failed', failedReason: 'The session ended before the agent received it' })
+  // The sweep above already settled this session's review messages.
+  for (const threadId of [...t.armed.keys()]) if (threadId.startsWith('rt_')) t.armed.delete(threadId)
   settleArms(sessionId, t, null, 'The session ended before the agent answered')
   tracks.delete(sessionId)
   refreshHeld(sessionId)
