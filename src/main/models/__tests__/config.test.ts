@@ -66,6 +66,16 @@ describe('model config persistence', () => {
     expect(cfg.defaults.tour).toEqual({ provider: 'anthropic', model: 'claude-haiku' })
   })
 
+  it('persists the review companion default, validated, and clears it', () => {
+    setModelConfig({ reviewCompanion: { provider: 'codex', model: 'gpt-5' } })
+    setModelConfig({ submenuAllowlist: ['x'] })
+    expect(getModelConfig().reviewCompanion).toEqual({ provider: 'codex', model: 'gpt-5' })
+    setModelConfig({ reviewCompanion: { provider: 'claude', model: { provider: 'ollama', model: 'q', endpoint: 'http://evil' } } as never })
+    expect(getModelConfig().reviewCompanion).toEqual({ provider: 'claude', model: { provider: 'ollama', model: 'q' } })
+    setModelConfig({ reviewCompanion: undefined })
+    expect(getModelConfig().reviewCompanion).toBeUndefined()
+  })
+
   it('persists lastUsed and preserves it across unrelated updates', () => {
     setModelConfig({ lastUsed: { provider: 'anthropic', model: 'claude-opus' } })
     setModelConfig({ submenuAllowlist: ['x'] })

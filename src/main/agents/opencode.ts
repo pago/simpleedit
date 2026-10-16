@@ -19,6 +19,7 @@ import { createServer } from 'net'
 import { join } from 'path'
 import { registerSession, unregisterTerminal, type HookSignal } from '../cwd-tracker'
 import { openCodeBaseEnv } from '../lib/opencode-env'
+import { openCodeReadOnlyEnv } from '../agent-tasks/runner'
 import {
   registerProvider,
   type AgentAttachSink,
@@ -119,6 +120,19 @@ function bridgeConfigEnv(ctx: LaunchContext): Record<string, string> {
   return { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) }
 }
 
+/**
+ * The bounded tasks' read-only ruleset, except that the review's checkout dir
+ * is readable. OpenCode asks `external_directory` for `<parent dir>/*` with
+ * forward slashes, and a pattern object is last match wins, so the catch-all
+ * deny comes first.
+ */
+export function openCodeCompanionEnv(extraReadDir: string): Record<string, string> {
+  const ruleset = JSON.parse(openCodeReadOnlyEnv()['OPENCODE_PERMISSION'] ?? '{}') as Record<string, unknown>
+  const dir = extraReadDir.replaceAll('\\', '/').replace(/\/+$/, '')
+  ruleset['external_directory'] = { '*': 'deny', [`${dir}/*`]: 'allow', [`${dir}/**`]: 'allow' }
+  return { OPENCODE_PERMISSION: JSON.stringify(ruleset) }
+}
+
 async function buildLaunch(ctx: LaunchContext): Promise<LaunchPlan> {
   const port = await reservePort()
   const model = ctx.target?.provider === 'opencode' ? ctx.target.model : undefined
@@ -157,7 +171,11 @@ async function buildLaunch(ctx: LaunchContext): Promise<LaunchPlan> {
   return {
     executable: 'opencode',
     args,
-    env: { ...openCodeBaseEnv(), ...bridgeConfigEnv(ctx) },
+    env: {
+      ...openCodeBaseEnv(),
+      ...bridgeConfigEnv(ctx),
+      ...(ctx.reviewCompanion ? openCodeCompanionEnv(ctx.reviewCompanion.extraReadDir) : {}),
+    },
     cleanup: () => {
       controlPorts.delete(ctx.terminalId)
       liveSessions.delete(ctx.terminalId)
@@ -542,6 +560,7 @@ export const opencodeProvider: AgentProvider = {
   buildLaunch,
   attach,
   deliverMessage,
+  reviewCompanionReadOnly: 'enforced',
   capabilities: {
     // Precise, and without Codex's one-time trust grant: the status comes from
     // the server OpenCode itself is hosting, not from a hook it must be

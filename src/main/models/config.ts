@@ -5,7 +5,8 @@
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { configDir } from '../config-dir'
-import type { ModelConfig, ModelRef } from '../../shared/ipc-types'
+import type { InteractiveTarget, ModelConfig, ModelRef } from '../../shared/ipc-types'
+import { parseCreateTarget } from '../session-create'
 
 /**
  * Deep-review defaults: mostly-local. Intent/tests/soundness on by default and
@@ -69,6 +70,7 @@ function migrateRetiredModels(config: ModelConfig): ModelConfig {
     ),
     submenuAllowlist: config.submenuAllowlist.map(succeed),
     lastUsed: succeedRef(config.lastUsed),
+    reviewCompanion: config.reviewCompanion,
     deepReview: config.deepReview && {
       ...config.deepReview,
       lenses,
@@ -85,10 +87,20 @@ export function getModelConfig(): ModelConfig {
       defaults: parsed.defaults ?? {},
       submenuAllowlist: parsed.submenuAllowlist ?? [],
       lastUsed: parsed.lastUsed,
+      reviewCompanion: reviewCompanionTarget(parsed.reviewCompanion),
       deepReview: parsed.deepReview ?? defaultDeepReview(),
     })
   } catch {
     return defaults()
+  }
+}
+
+function reviewCompanionTarget(raw: unknown): InteractiveTarget | undefined {
+  if (raw === undefined || raw === null) return undefined
+  try {
+    return parseCreateTarget(raw)
+  } catch {
+    return undefined
   }
 }
 
@@ -100,6 +112,8 @@ export function setModelConfig(partial: Partial<ModelConfig>): ModelConfig {
     submenuAllowlist: partial.submenuAllowlist ?? current.submenuAllowlist,
     // Distinguish "not provided" from an explicit clear to null/undefined.
     lastUsed: 'lastUsed' in partial ? partial.lastUsed : current.lastUsed,
+    // Reachable from the phone, and it becomes launch arguments: rebuilt from known fields only.
+    reviewCompanion: 'reviewCompanion' in partial ? reviewCompanionTarget(partial.reviewCompanion) : current.reviewCompanion,
     deepReview: partial.deepReview ?? current.deepReview,
   }
   writeFileSync(filePath(), JSON.stringify(next, null, 2), 'utf-8')

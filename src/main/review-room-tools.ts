@@ -12,6 +12,7 @@ import {
 } from './review-room-store'
 import type { ReviewRoomTools } from './mcp-bridge'
 import { draftLinksForThread } from './screenprs-drafts'
+import { checkoutReviewHead } from './review-checkout'
 import { isReviewId, type Review, type ReviewChange, type ReviewPrRef, type ReviewSeverity } from '../shared/review-room'
 
 type ReviewRole = 'companion' | 'requester'
@@ -93,6 +94,7 @@ export function createReviewRoomTools(deps: {
   markReplied: (sessionId: string, threadId: string) => void
   diffForLayer?: (layer: ReviewPrRef) => Promise<string>
   draftCommentId?: (threadId: string) => string | undefined
+  checkoutHead?: typeof checkoutReviewHead
 }): ReviewRoomTools {
   return {
     listThreads(terminalId, input) {
@@ -147,6 +149,24 @@ export function createReviewRoomTools(deps: {
       if (!layer) throw new Error(`PR #${pr} is not a layer of this review`)
       const diff = await (deps.diffForLayer ?? diffForLayer)(layer)
       return { ok: true, review_id: review.id, pr: layer.number, url: layer.url, head_sha: layer.headSha, ...capReviewDiff(diff) }
+    },
+    async checkoutHead(terminalId, reviewId, pr) {
+      if (!isReviewId(reviewId) || (pr !== undefined && (!Number.isSafeInteger(pr) || pr < 1))) {
+        throw new Error('Malformed checkout request')
+      }
+      const review = getReview(reviewId)
+      if (!review || review.status !== 'open' || review.companion?.sessionId !== terminalId) {
+        throw new Error('Only this review\'s companion may check out its code')
+      }
+      const result = await (deps.checkoutHead ?? checkoutReviewHead)(review, pr)
+      return {
+        ok: true,
+        review_id: review.id,
+        pr: result.pr,
+        head_sha: result.headSha,
+        path: result.path,
+        note: 'A read-only checkout of the PR head. Read files here by absolute path; do not modify them.',
+      }
     },
     proposeDraft(terminalId, threadId, text, severity) {
       if (!text.trim() || text.length > 64 * 1024) return { ok: false, error: 'propose_draft needs non-empty text within 65536 characters.' }

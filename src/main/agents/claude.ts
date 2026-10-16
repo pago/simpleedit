@@ -59,6 +59,15 @@ function cleanupMcpConfig(terminalId: string): void {
 }
 
 /**
+ * What a review companion may not run. `Edit` covers every built-in
+ * file-editing tool (MultiEdit included). `Bash` goes whole: pattern rules
+ * can't stop `sed -i`, a redirect or a `gh api` POST. MCP tools stay allowed,
+ * which is why this is a deny list and not `--permission-mode plan` (that can
+ * block `reply_to_thread`, and its exit dialog reads as "needs you").
+ */
+export const REVIEW_COMPANION_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash'] as const
+
+/**
  * Write a Claude settings file wiring location-tracking hooks to the bridge.
  * Verified on CLI 2.1.175 (Stage 2 Part A): `--settings <path>` accepts a
  * `hooks` config; `type: "http"` hooks POST the hook input JSON (carrying
@@ -70,9 +79,8 @@ function cleanupMcpConfig(terminalId: string): void {
  * the agent read/edited in a sibling repo it never `cd`'d into (see
  * cwd-tracker's parseHookBody / mcp-bridge's handleHook).
  */
-function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: string): string {
+function writeHookSettings(terminalId: string, bridge: { port: number; token: string } | null, readOnly: boolean): string {
   const settingsPath = join(tmpdir(), `simpleedit-hooks-${terminalId}.json`)
-  const endpoint = { type: 'http', url: `http://127.0.0.1:${bridgePort}/${bridgeToken}/hooks`, timeout: 5 }
   // Stop carries the agent-messaging channel (see agent-bus.ts): its response
   // body can deliver queued peer mail, and its `last_assistant_message` is how
   // the turn's answer gets routed back to whoever asked.
@@ -84,21 +92,24 @@ function writeHookSettings(terminalId: string, bridgePort: number, bridgeToken: 
   // running, and has no third answer. Without this hook a Claude session never
   // reports `waiting` by any route, which made the push notification silent for
   // the one provider its own copy named. See `blocked-signal.test.ts`.
+  const endpoint = bridge ? { type: 'http', url: `http://127.0.0.1:${bridge.port}/${bridge.token}/hooks`, timeout: 5 } : null
+  const hooks = endpoint && {
+    UserPromptSubmit: [{ hooks: [endpoint] }],
+    PostToolUse: [{ hooks: [endpoint] }],
+    Stop: [{ hooks: [endpoint] }],
+    Notification: [{ hooks: [endpoint] }],
+    // Agent threads must never type into a dialog. These arrive BEFORE their
+    // dialog renders, unlike `Notification`; the tool's result (or a denial,
+    // a failure, a Stop) says it closed. See thread-delivery.ts.
+    PermissionRequest: [{ hooks: [endpoint] }],
+    PreToolUse: [{ matcher: DIALOG_TOOLS.join('|'), hooks: [endpoint] }],
+    PostToolUseFailure: [{ hooks: [endpoint] }],
+    PermissionDenied: [{ hooks: [endpoint] }],
+    StopFailure: [{ hooks: [endpoint] }],
+  }
   const settings = {
-    hooks: {
-      UserPromptSubmit: [{ hooks: [endpoint] }],
-      PostToolUse: [{ hooks: [endpoint] }],
-      Stop: [{ hooks: [endpoint] }],
-      Notification: [{ hooks: [endpoint] }],
-      // Agent threads must never type into a dialog. These arrive BEFORE their
-      // dialog renders, unlike `Notification`; the tool's result (or a denial,
-      // a failure, a Stop) says it closed. See thread-delivery.ts.
-      PermissionRequest: [{ hooks: [endpoint] }],
-      PreToolUse: [{ matcher: DIALOG_TOOLS.join('|'), hooks: [endpoint] }],
-      PostToolUseFailure: [{ hooks: [endpoint] }],
-      PermissionDenied: [{ hooks: [endpoint] }],
-      StopFailure: [{ hooks: [endpoint] }],
-    },
+    ...(hooks ? { hooks } : {}),
+    ...(readOnly ? { permissions: { deny: [...REVIEW_COMPANION_DENY] } } : {}),
   }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return settingsPath
@@ -115,24 +126,30 @@ function cleanupHookSettings(terminalId: string): void {
 /**
  * Wire MCP config + location-tracking hooks for a Claude spawn and register
  * the session_id → terminalId mapping so hook POSTs route back. Returns the
- * extra CLI flags to append. No-op (empty string) when no bridge is available
- * (e.g. tests, or a window whose bridge failed to start).
+ * extra CLI flags to append. No bridge (tests, or a window whose bridge failed
+ * to start) wires nothing, except a read-only companion's deny list, which
+ * must never depend on the bridge being up.
  */
 function buildBridgeArgs(
   terminalId: string,
   sessionId: string,
   bridgePort: number | undefined,
   bridgeToken: string | undefined,
+  readOnly: boolean,
 ): string[] {
-  if (bridgePort == null || bridgeToken == null) return []
+  const bridge = bridgePort != null && bridgeToken != null ? { port: bridgePort, token: bridgeToken } : null
   const args: string[] = []
-  const configPath = writeMcpConfig(terminalId, bridgePort, bridgeToken)
-  mcpConfigPaths.set(terminalId, configPath)
-  args.push('--mcp-config', configPath)
-  const settingsPath = writeHookSettings(terminalId, bridgePort, bridgeToken)
-  hookSettingsPaths.set(terminalId, settingsPath)
-  args.push('--settings', settingsPath)
-  registerSession(sessionId, terminalId)
+  if (bridge) {
+    const configPath = writeMcpConfig(terminalId, bridge.port, bridge.token)
+    mcpConfigPaths.set(terminalId, configPath)
+    args.push('--mcp-config', configPath)
+  }
+  if (bridge || readOnly) {
+    const settingsPath = writeHookSettings(terminalId, bridge, readOnly)
+    hookSettingsPaths.set(terminalId, settingsPath)
+    args.push('--settings', settingsPath)
+  }
+  if (bridge) registerSession(sessionId, terminalId)
   return args
 }
 
@@ -191,7 +208,7 @@ async function preflight(ctx: LaunchContext): Promise<void> {
  * never fall through to it.
  */
 function buildLaunch(ctx: LaunchContext): LaunchPlan {
-  const { terminalId, resumeSessionId, forkSession, bridgePort, bridgeToken, model, initialPrompt } = ctx
+  const { terminalId, resumeSessionId, forkSession, bridgePort, bridgeToken, model, initialPrompt, reviewCompanion } = ctx
 
   const env: Record<string, string> = {}
   // Only `ollama` swaps the brain via an inline env override. It is prefixed
@@ -235,7 +252,11 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
 
   // MCP config + location-tracking hooks (Stage 2). Registers the
   // session_id → terminalId mapping so hook POSTs route back here.
-  const args = [...buildBridgeArgs(terminalId, sessionId, bridgePort, bridgeToken), ...sessionArgs]
+  const args = buildBridgeArgs(terminalId, sessionId, bridgePort, bridgeToken, !!reviewCompanion)
+  // `--add-dir` is variadic: it would swallow the positional prompt, so it
+  // goes before the session flags, never last.
+  if (reviewCompanion) args.push('--add-dir', reviewCompanion.extraReadDir)
+  args.push(...sessionArgs)
 
   if (model?.model) {
     if (!/^[A-Za-z0-9._:/-]+$/.test(model.model)) throw new Error(`Invalid model id: ${model.model}`)
@@ -293,6 +314,7 @@ export const claudeProvider = {
   id: 'claude',
   preflight,
   buildLaunch,
+  reviewCompanionReadOnly: 'enforced',
   detectStatus(chunk: string): AgentStatus | null {
     let status: AgentStatus | null = null
     for (const title of extractOscTitles(chunk)) {
