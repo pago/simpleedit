@@ -127,6 +127,15 @@ const MIGRATIONS: string[] = [
     at TEXT NOT NULL
   ) STRICT;
   `,
+  `
+  ALTER TABLE reviews ADD COLUMN author_briefing TEXT;
+  ALTER TABLE reviews ADD COLUMN focus TEXT;
+  ALTER TABLE reviews ADD COLUMN hand_back TEXT;
+  ALTER TABLE reviews ADD COLUMN hand_back_session_id TEXT;
+  ALTER TABLE reviews ADD COLUMN hand_back_delivery TEXT;
+  CREATE INDEX reviews_by_hand_back ON reviews(hand_back_session_id, hand_back_delivery);
+  ALTER TABLE review_messages ADD COLUMN to_author INTEGER NOT NULL DEFAULT 0;
+  `,
 ]
 
 let db: Db | null = null

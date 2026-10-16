@@ -1,4 +1,5 @@
 import type { DeliveryState, HeldReason } from './agent-threads'
+import type { AuthorBriefing } from './review-briefing'
 
 export type ReviewStatus = 'open' | 'submitted' | 'discarded'
 export type ReviewThreadStatus = 'open' | 'done'
@@ -10,6 +11,8 @@ export interface ReviewPrRef {
   url: string
   number: number
   headSha: string
+  /** For the queue's Requested group, which may list a PR no screening carded. */
+  title?: string
 }
 
 export interface ReviewAgent {
@@ -67,10 +70,42 @@ export interface ReviewLayerSubmission {
   sent?: { comments: Array<{ draftId: string; rev: string }>; summary: string; verdict: 'approve' | 'comment' | 'request_changes' }
 }
 
+/** What one layer's verdict said, as `get_review` hands it to the requester. */
+export interface ReviewReportLayer {
+  prUrl: string
+  number: number
+  verdict: 'approve' | 'comment' | 'request_changes'
+  summary: string
+  comments: Array<{
+    path?: string
+    line?: number
+    startLine?: number
+    side?: 'LEFT' | 'RIGHT'
+    severity?: ReviewSeverity
+    /** A reply on another reviewer's GitHub thread. */
+    reply?: boolean
+    body: string
+  }>
+}
+
 export interface ReviewSubmission {
   at: string
   destination: { session: boolean; github: boolean }
   layers: ReviewLayerSubmission[]
+  /** Recorded before anything is sent: the comments themselves leave the draft store once posted. */
+  report?: ReviewReportLayer[]
+}
+
+/** The submitted review on its way back to the requesting session (§7 hand-back). */
+export interface ReviewHandBack {
+  id: string
+  sessionId: string
+  /** The system-composed prompt, kept so a retry types the same text. */
+  body: string
+  at: string
+  delivery: DeliveryState
+  heldReason?: HeldReason
+  failedReason?: string
 }
 
 export interface Review {
@@ -87,6 +122,11 @@ export interface Review {
   round: number
   previousReviewId?: string
   submissions: ReviewSubmission[]
+  /** The requester's own account of its PR (§4a). Untrusted; rendered as markdown only. */
+  authorBriefing?: AuthorBriefing
+  /** The requester's `focus`, quoted into the companion's brief. */
+  focus?: string
+  handBack?: ReviewHandBack
   createdAt: string
   updatedAt: string
 }
@@ -135,6 +175,8 @@ export interface ReviewMessage {
   delivery?: DeliveryState
   heldReason?: HeldReason
   failedReason?: string
+  /** A user question for the requesting session (Ask author), not the companion. */
+  toAuthor?: boolean
 }
 
 export interface ReviewThread {
@@ -162,6 +204,8 @@ export type ReviewOp =
       message?: { id: string; body: string }
     }
   | { kind: 'append'; threadId: string; message: { id: string; body: string } }
+  /** Ask author: the question goes to the requesting session and opens its right to answer here. */
+  | { kind: 'ask-author'; threadId: string; message: { id: string; body: string } }
   | {
       kind: 'set-status'
       threadId: string
@@ -200,6 +244,7 @@ export interface ReviewThreadChange {
 const REVIEW_ID = /^r_[A-Za-z0-9-]{6,64}$/
 const THREAD_ID = /^rt_[A-Za-z0-9-]{6,64}$/
 const MESSAGE_ID = /^rm_[A-Za-z0-9-]{6,64}$/
+const HANDBACK_ID = /^rh_[A-Za-z0-9-]{6,64}$/
 const MAX_ID = 67
 export const REVIEW_MAX_BODY = 64 * 1024
 const MAX_BODY = REVIEW_MAX_BODY
@@ -242,6 +287,14 @@ export function newReviewId(): string {
 
 export function newReviewThreadId(): string {
   return `rt_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+}
+
+export function isReviewHandBackId(value: unknown): value is string {
+  return typeof value === 'string' && HANDBACK_ID.test(value)
+}
+
+export function newReviewHandBackId(): string {
+  return `rh_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
 }
 
 export function newReviewMessageId(): string {
@@ -291,7 +344,8 @@ export function parseReviewOp(raw: unknown): ReviewOp {
       if (!anchor) break
       return { kind: raw.kind, thread: { id: thread.id, anchor }, ...(message ? { message } : {}) }
     }
-    case 'append': {
+    case 'append':
+    case 'ask-author': {
       const message = parseNewMessage(raw.message)
       if (!isReviewThreadId(raw.threadId) || !message) break
       return { kind: raw.kind, threadId: raw.threadId, message }

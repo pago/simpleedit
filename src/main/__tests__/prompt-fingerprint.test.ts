@@ -36,4 +36,13 @@ describe('cache fingerprints hash the effective instructions', () => {
     expect(overviewFingerprint({ provider: 'anthropic', model: 'opus' }, 'x')).not.toBe(base)
     expect(overviewFingerprint({ provider: 'openai' }, 'x')).not.toBe(base)
   })
+
+  it('overview: an author briefing, or a changed one, changes the fingerprint', () => {
+    const sonnet = { provider: 'anthropic' as const, model: 'sonnet' }
+    const base = overviewFingerprint(sonnet, 'x')
+    const briefed = overviewFingerprint(sonnet, 'x', undefined, 'tests pass')
+    expect(briefed).not.toBe(base)
+    expect(overviewFingerprint(sonnet, 'x', undefined, 'tests pass')).toBe(briefed)
+    expect(overviewFingerprint(sonnet, 'x', undefined, 'tests pass, edited')).not.toBe(briefed)
+  })
 })

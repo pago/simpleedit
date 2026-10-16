@@ -41,6 +41,8 @@ beforeEach(async () => {
     getDiff: async () => ({ ok: true }),
     checkoutHead: async () => ({ ok: true }),
     proposeDraft: () => ({ ok: true }),
+    requestReview: async () => ({ ok: true }),
+    getReview: () => ({ ok: true }),
   })
   const wc = { id: ++webContentsId, isDestroyed: vi.fn(() => false), send: vi.fn() }
   port = await startBridge(webContentsId, wc as never)
@@ -79,6 +81,9 @@ describe('companion tool allowlist', () => {
     ['show_panel', { title: 'x' }],
     ['show_diff', {}],
     ['complete_task', {}],
+    // A companion requesting reviews of its own, or reading the verdict, would leave the review it serves.
+    ['request_review', { pr: 1 }],
+    ['get_review', { review_id: 'r_review01' }],
   ])('refuses %s from a companion', async (tool, args) => {
     const res = await call('companion', tool, args)
     expect(res.status).toBe(403)

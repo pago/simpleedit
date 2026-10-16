@@ -1,4 +1,5 @@
 import type { DeliveryState, HeldReason } from '../shared/agent-threads'
+import type { AuthorBriefing } from '../shared/review-briefing'
 import {
   isReviewId,
   isReviewMessageId,
@@ -11,6 +12,7 @@ import {
   type ReviewAgent,
   type ReviewCloseReason,
   type ReviewCompanion,
+  type ReviewHandBack,
   type ReviewMessage,
   type ReviewOp,
   type ReviewPrRef,
@@ -44,6 +46,9 @@ interface ReviewRow {
   round: number
   previous_review_id: string | null
   submissions: string
+  author_briefing: string | null
+  focus: string | null
+  hand_back: string | null
   created_at: string
   updated_at: string
 }
@@ -75,6 +80,7 @@ interface MessageRow {
   delivery: string | null
   held_reason: string | null
   failed_reason: string | null
+  to_author: number
 }
 
 function parseJson(raw: string): unknown {
@@ -97,6 +103,7 @@ function toMessage(row: MessageRow): ReviewMessage {
   if (row.delivery) message.delivery = row.delivery as DeliveryState
   if (row.held_reason) message.heldReason = row.held_reason as HeldReason
   if (row.failed_reason) message.failedReason = row.failed_reason
+  if (row.to_author === 1) message.toAuthor = true
   return message
 }
 
@@ -143,6 +150,9 @@ function toReview(row: ReviewRow): Review {
   if (row.requester_window_id !== null) review.requesterWindowId = row.requester_window_id
   if (row.companion) review.companion = json<ReviewCompanion>(row.companion)
   if (row.previous_review_id) review.previousReviewId = row.previous_review_id
+  if (row.author_briefing) review.authorBriefing = json<AuthorBriefing>(row.author_briefing)
+  if (row.focus) review.focus = row.focus
+  if (row.hand_back) review.handBack = json<ReviewHandBack>(row.hand_back)
   return review
 }
 
@@ -280,8 +290,8 @@ function insertMessage(d: Db, threadId: string, message: Omit<ReviewMessage, 'se
   }
   d.prepare(
     `INSERT INTO review_messages
-     (id, thread_id, seq, author, body, at, read_files, delivery, held_reason, failed_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     (id, thread_id, seq, author, body, at, read_files, delivery, held_reason, failed_reason, to_author)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     message.id,
     threadId,
@@ -292,7 +302,8 @@ function insertMessage(d: Db, threadId: string, message: Omit<ReviewMessage, 'se
     message.readFiles ? JSON.stringify(message.readFiles) : null,
     message.delivery ?? null,
     message.heldReason ?? null,
-    message.failedReason ?? null
+    message.failedReason ?? null,
+    message.toAuthor ? 1 : 0
   )
 }
 
@@ -314,6 +325,8 @@ export interface ReviewOpResult {
     threadId: string
     messageId: string
     sessionId?: string
+    /** Bound for the requesting session (Ask author), so no companion is started for it. */
+    toAuthor?: boolean
   }
 }
 
@@ -380,6 +393,29 @@ export function applyReviewOp(reviewId: string, op: ReviewOp, now = new Date()):
             messageId: op.message.id,
             ...(review.companion ? { sessionId: review.companion.sessionId } : {}),
           },
+        }
+      }
+      case 'ask-author': {
+        if (!review.requesterSessionId) throw new Error('This review has no requesting session to ask')
+        const row = d.prepare('SELECT review_id FROM review_threads WHERE id = ?').get(op.threadId) as { review_id: string } | undefined
+        if (!row || row.review_id !== reviewId || tombstoned(d, op.message.id) || exists(d, 'review_messages', op.message.id))
+          return { change: null }
+        insertMessage(d, op.threadId, {
+          id: op.message.id,
+          author: 'user',
+          body: op.message.body,
+          at,
+          delivery: 'held',
+          heldReason: 'not-running',
+          toAuthor: true,
+        })
+        d.prepare(`UPDATE review_threads SET status = 'open', close_reason = NULL, ask_author_open = 1, updated_at = ? WHERE id = ?`).run(
+          at,
+          op.threadId,
+        )
+        return {
+          change: changedThread(reviewId, op.threadId),
+          queued: { reviewId, threadId: op.threadId, messageId: op.message.id, sessionId: review.requesterSessionId, toAuthor: true },
         }
       }
       case 'set-status': {
@@ -644,6 +680,9 @@ export interface PendingReviewMessage {
 
 const IN_STATES = (count: number): string => Array.from({ length: count }, () => '?').join(', ')
 
+/** A user message goes to the companion, or (Ask author) to the requesting session. Binds the session id twice. */
+const ROUTED = '((r.companion_session_id = ? AND m.to_author = 0) OR (r.requester_session_id = ? AND m.to_author = 1))'
+
 /**
  * The user messages of `sessionId`'s companion reviews in `states`. Indexed:
  * the delivery core asks this on every hook, status change and keystroke.
@@ -656,9 +695,9 @@ export function reviewMessagesInState(sessionId: string, states: readonly Delive
       `SELECT m.thread_id AS thread_id, m.id AS message_id FROM reviews r
        JOIN review_threads t ON t.review_id = r.id
        JOIN review_messages m ON m.thread_id = t.id
-       WHERE r.companion_session_id = ? AND m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)})`
+       WHERE ${ROUTED} AND m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)})`
     )
-    .all(sessionId, ...states) as Array<{ thread_id: string; message_id: string }>
+    .all(sessionId, sessionId, ...states) as Array<{ thread_id: string; message_id: string }>
   const out: PendingReviewMessage[] = []
   const threads = new Map<string, ReviewThread | null>()
   const reviews = new Map<string, Review | null>()
@@ -678,13 +717,14 @@ export function reviewSessionsWithMessagesIn(states: readonly DeliveryState[]): 
   if (!states.length) return []
   const rows = getDb()
     .prepare(
-      `SELECT DISTINCT r.companion_session_id AS session_id FROM review_messages m
+      `SELECT DISTINCT CASE m.to_author WHEN 1 THEN r.requester_session_id ELSE r.companion_session_id END AS session_id
+       FROM review_messages m
        JOIN review_threads t ON t.id = m.thread_id
        JOIN reviews r ON r.id = t.review_id
-       WHERE m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)}) AND r.companion_session_id IS NOT NULL`
+       WHERE m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)})`
     )
-    .all(...states) as Array<{ session_id: string }>
-  return rows.map((row) => row.session_id)
+    .all(...states) as Array<{ session_id: string | null }>
+  return rows.flatMap((row) => (row.session_id ? [row.session_id] : []))
 }
 
 export function reviewHasMessagesInState(sessionId: string, states: readonly DeliveryState[]): boolean {
@@ -695,10 +735,10 @@ export function reviewHasMessagesInState(sessionId: string, states: readonly Del
         `SELECT 1 FROM reviews r
          JOIN review_threads t ON t.review_id = r.id
          JOIN review_messages m ON m.thread_id = t.id
-         WHERE r.companion_session_id = ? AND m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)})
+         WHERE ${ROUTED} AND m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)})
          LIMIT 1`
       )
-      .get(sessionId, ...states) !== undefined
+      .get(sessionId, sessionId, ...states) !== undefined
   )
 }
 
@@ -782,7 +822,8 @@ export function setReviewStepRead(reviewId: string, stepId: string, read: boolea
  * confirmation that can never come.
  */
 function carriedDelivery(message: ReviewMessage, round: number): Pick<ReviewMessage, 'delivery' | 'heldReason' | 'failedReason'> {
-  if (!message.delivery) return {}
+  // A question to the author belongs to the round it was asked in: the next round's requester may be another session.
+  if (!message.delivery || message.toAuthor) return {}
   if (message.delivery === 'held' || message.delivery === 'sending' || message.delivery === 'delivered') {
     return { delivery: 'unanswered', failedReason: `Asked in round ${round} and not answered there` }
   }
@@ -855,6 +896,7 @@ export function carryReviewThreads(previousReviewId: string, reviewId: string, r
           body: message.body,
           at: message.at,
           ...(message.readFiles ? { readFiles: message.readFiles } : {}),
+          ...(message.toAuthor ? { toAuthor: true } : {}),
           ...carriedDelivery(message, from.round),
         })
       }
@@ -969,6 +1011,135 @@ export function removeMainReviewThread(threadId: string, now = new Date()): Revi
   const thread = getReviewThread(threadId)
   if (!thread) return null
   return transaction(getDb(), () => removeThread(getDb(), thread.reviewId, thread.id, now.toISOString()))
+}
+
+// ── request_review: requester, briefing, hand-back ─────────────────────────
+
+/** Newest first: every review (any status) that has `url` as a layer, for rounds. */
+export function reviewsWithLayer(url: string): Review[] {
+  const rows = getDb()
+    .prepare("SELECT reviews.* FROM reviews, json_each(reviews.layers) AS layer WHERE json_extract(layer.value, '$.url') = ? ORDER BY created_at DESC, id DESC")
+    .all(url) as unknown as ReviewRow[]
+  return rows.map(toReview)
+}
+
+/**
+ * Records the requesting session on an open review that has none. Never
+ * replaces one: the requester is the hand-back target and the only session
+ * that may update the briefing.
+ */
+export function setReviewRequester(reviewId: string, sessionId: string, windowId: number, now = new Date()): ReviewRecordChange | null {
+  if (!isReviewId(reviewId) || !sessionId || sessionId.length > 256 || !Number.isSafeInteger(windowId) || windowId < 1) {
+    throw new Error('Malformed requester')
+  }
+  const d = getDb()
+  return transaction(d, () => {
+    const result = d
+      .prepare(
+        `UPDATE reviews SET requester_session_id = ?, requester_window_id = ?, updated_at = ?
+         WHERE id = ? AND status = 'open' AND requester_session_id IS NULL`
+      )
+      .run(sessionId, windowId, now.toISOString(), reviewId)
+    return result.changes ? changedReview(reviewId) : null
+  })
+}
+
+/** The requester's briefing and focus. Absent fields keep what is stored. */
+export function setReviewBriefing(
+  reviewId: string,
+  update: { authorBriefing?: AuthorBriefing; focus?: string },
+  now = new Date()
+): ReviewRecordChange | null {
+  if (update.focus !== undefined && update.focus.length > 4000) throw new Error('Malformed focus')
+  const d = getDb()
+  return transaction(d, () => {
+    const review = getReview(reviewId)
+    if (!review || review.status !== 'open') return null
+    const briefing = update.authorBriefing ?? review.authorBriefing
+    const focus = update.focus ?? review.focus
+    if (JSON.stringify(briefing) === JSON.stringify(review.authorBriefing) && focus === review.focus) return null
+    d.prepare('UPDATE reviews SET author_briefing = ?, focus = ?, updated_at = ? WHERE id = ?').run(
+      briefing ? JSON.stringify(briefing) : null,
+      focus ?? null,
+      now.toISOString(),
+      reviewId
+    )
+    return changedReview(reviewId)
+  })
+}
+
+/** Replaces the review's hand-back (a newer submission's supersedes an older one's). */
+export function setReviewHandBack(reviewId: string, handBack: ReviewHandBack, now = new Date()): ReviewRecordChange | null {
+  if (!handBack.sessionId || handBack.sessionId.length > 256 || !handBack.body || handBack.body.length > REVIEW_MAX_BODY) {
+    throw new Error('Malformed hand-back')
+  }
+  const d = getDb()
+  return transaction(d, () => {
+    const result = d
+      .prepare('UPDATE reviews SET hand_back = ?, hand_back_session_id = ?, hand_back_delivery = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(handBack), handBack.sessionId, handBack.delivery, now.toISOString(), reviewId)
+    return result.changes ? changedReview(reviewId) : null
+  })
+}
+
+/** The delivery core's patch for hand-backs, addressed by their `rh_` ids. */
+export function setHandBackDelivery(ids: Iterable<string>, patch: ReviewDeliveryPatch, now = new Date()): ReviewRecordChange[] {
+  const d = getDb()
+  return transaction(d, () => {
+    const changes: ReviewRecordChange[] = []
+    for (const id of ids) {
+      const row = d.prepare("SELECT * FROM reviews WHERE json_extract(hand_back, '$.id') = ?").get(id) as ReviewRow | undefined
+      const current = row ? toReview(row).handBack : undefined
+      if (!row || !current) continue
+      const next: ReviewHandBack = {
+        id: current.id,
+        sessionId: current.sessionId,
+        body: current.body,
+        at: current.at,
+        delivery: patch.delivery,
+        ...(patch.heldReason ? { heldReason: patch.heldReason } : {}),
+        ...(patch.failedReason ? { failedReason: patch.failedReason } : {}),
+      }
+      if (JSON.stringify(next) === JSON.stringify(current)) continue
+      d.prepare('UPDATE reviews SET hand_back = ?, hand_back_delivery = ?, updated_at = ? WHERE id = ?').run(
+        JSON.stringify(next),
+        next.delivery,
+        now.toISOString(),
+        row.id
+      )
+      changes.push(changedReview(row.id))
+    }
+    return changes
+  })
+}
+
+/** Hand-backs bound for `sessionId` in `states`. Indexed, like `reviewMessagesInState`. */
+export function handBacksInState(sessionId: string, states: readonly DeliveryState[]): Array<{ review: Review; handBack: ReviewHandBack }> {
+  if (!states.length) return []
+  const rows = getDb()
+    .prepare(`SELECT * FROM reviews WHERE hand_back_session_id = ? AND hand_back_delivery IN (${IN_STATES(states.length)})`)
+    .all(sessionId, ...states) as unknown as ReviewRow[]
+  return rows.flatMap((row) => {
+    const review = toReview(row)
+    return review.handBack ? [{ review, handBack: review.handBack }] : []
+  })
+}
+
+export function handBackSessionsIn(states: readonly DeliveryState[]): string[] {
+  if (!states.length) return []
+  const rows = getDb()
+    .prepare(`SELECT DISTINCT hand_back_session_id AS session_id FROM reviews WHERE hand_back_delivery IN (${IN_STATES(states.length)})`)
+    .all(...states) as Array<{ session_id: string | null }>
+  return rows.flatMap((row) => (row.session_id ? [row.session_id] : []))
+}
+
+export function hasHandBackInState(sessionId: string, states: readonly DeliveryState[]): boolean {
+  if (!states.length) return false
+  return (
+    getDb()
+      .prepare(`SELECT 1 FROM reviews WHERE hand_back_session_id = ? AND hand_back_delivery IN (${IN_STATES(states.length)}) LIMIT 1`)
+      .get(sessionId, ...states) !== undefined
+  )
 }
 
 /** Test seam. */

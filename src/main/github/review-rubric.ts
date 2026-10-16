@@ -108,9 +108,23 @@ export function rubricFingerprint(rubric: ReviewRubric | undefined): string {
   return rubric ? createHash('sha256').update(`${rubric.path}\0${rubric.text}`).digest('hex') : 'none'
 }
 
+/**
+ * `text` with every opening or closing `tag` removed, to a fixed point: one
+ * pass over `</ta</tag>g>` leaves a working `</tag>` behind.
+ */
+export function stripFence(text: string, tag: string): string {
+  const pattern = new RegExp(`<\\/?\\s*${tag}\\b[^>]*>?`, 'gi')
+  let out = text
+  for (;;) {
+    const next = out.replace(pattern, '')
+    if (next === out) return out
+    out = next
+  }
+}
+
 /** The rubric's text with anything that could close or reopen its data block removed. */
 export function rubricBody(rubric: ReviewRubric): string {
-  return rubric.text.replace(/<\/?\s*review-rubric\b[^>]*>?/gi, '')
+  return stripFence(rubric.text, 'review-rubric')
 }
 
 /** The `path="…"` attribute of the rubric's block; a changed directory's name may hold anything. */

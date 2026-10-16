@@ -5,9 +5,12 @@ import {
   addMainReviewThread,
   applyReviewOp,
   claimCompanion,
+  closeAskAuthor,
   createReview,
+  getReview,
   getReviewThread,
   setReviewDelivery,
+  setReviewHandBack,
 } from '../review-room-store'
 import { REVIEW_MAX_BODY } from '../../shared/review-room'
 import {
@@ -184,5 +187,110 @@ describe('review thread delivery', () => {
       broadcastReview: () => {},
     })
     expect(question()).toMatchObject({ delivery: 'unanswered', failedReason: 'SimpleEdit restarted before the agent answered' })
+  })
+
+  function writer(): { writes: Map<string, string[]> } {
+    const writes = new Map<string, string[]>()
+    initThreadDelivery({
+      provider: () => 'codex',
+      write: (id, data) => { writes.set(id, [...(writes.get(id) ?? []), data]) },
+      push: () => null,
+      broadcast: () => {},
+      broadcastReview: () => {},
+    })
+    return { writes }
+  }
+
+  it('sends Ask author to the requester only, and its answer closes the request as the author', async () => {
+    reviewWithQuestion()
+    applyReviewOp('r_review01', { kind: 'ask-author', threadId: 'rt_review01', message: { id: 'rm_author01', body: 'Why 10?' } })
+    expect(getReviewThread('rt_review01')?.askAuthorOpen).toBe(true)
+    const { writes } = writer()
+    noteThreadStatus(COMPANION, 'idle')
+    noteThreadStatus(REQUESTER, 'idle')
+    await vi.advanceTimersByTimeAsync(750)
+
+    const toRequester = writes.get(REQUESTER) ?? []
+    expect(toRequester).toHaveLength(1)
+    expect(toRequester[0]).toContain('[Review thread rt_review01 · question for the author]\nWhy 10?')
+    expect(toRequester[0]).not.toContain('Is this real?')
+    expect(writes.get(COMPANION)?.[0]).not.toContain('Why 10?')
+
+    noteThreadSignal(REQUESTER, { eventName: 'UserPromptSubmit', prompt: toRequester[0]! })
+    endThreadStop(REQUESTER, { continued: false, lastAssistantMessage: 'Because the API caps at 10.' })
+    const thread = getReviewThread('rt_review01')!
+    expect(thread.messages.at(-1)).toMatchObject({ author: 'author', body: 'Because the API caps at 10.' })
+    expect(thread.askAuthorOpen).toBe(false)
+    expect(thread.messages.find((m) => m.id === 'rm_author01')).toMatchObject({ delivery: 'answered-implicitly', toAuthor: true })
+  })
+
+  it('stops waiting for the author when the requester ends, and records no answer to a closed request', async () => {
+    reviewWithQuestion()
+    applyReviewOp('r_review01', { kind: 'ask-author', threadId: 'rt_review01', message: { id: 'rm_author01', body: 'Why 10?' } })
+    const { writes } = writer()
+    noteThreadStatus(REQUESTER, 'idle')
+    await vi.advanceTimersByTimeAsync(750)
+    noteThreadSignal(REQUESTER, { eventName: 'UserPromptSubmit', prompt: writes.get(REQUESTER)![0]! })
+    // The question is closed mid-turn (here: by an explicit answer of another path).
+    closeAskAuthor('rt_review01')
+    endThreadStop(REQUESTER, { continued: false, lastAssistantMessage: 'Late answer.' })
+    expect(getReviewThread('rt_review01')?.messages.find((m) => m.id === 'rm_author01')).toMatchObject({ delivery: 'unanswered' })
+    expect(getReviewThread('rt_review01')?.messages.some((m) => m.body === 'Late answer.')).toBe(false)
+
+    applyReviewOp('r_review01', { kind: 'ask-author', threadId: 'rt_review01', message: { id: 'rm_author02', body: 'And now?' } })
+    noteThreadStatus(REQUESTER, 'exited')
+    expect(getReviewThread('rt_review01')).toMatchObject({ askAuthorOpen: false })
+    expect(getReviewThread('rt_review01')?.messages.find((m) => m.id === 'rm_author02')).toMatchObject({
+      delivery: 'unanswered',
+      failedReason: 'The requesting session ended before it answered',
+    })
+  })
+
+  it('refuses Ask author on a review no session requested', () => {
+    createReview({
+      id: 'r_review02',
+      repo: 'github.com/acme/repo',
+      layers: [{ url: 'https://github.com/acme/repo/pull/42', number: 42, headSha: 'abc' }],
+      companionAgent: { provider: 'codex', model: 'gpt' },
+    })
+    addMainReviewThread({ id: 'rt_review02', reviewId: 'r_review02', anchor: { kind: 'pr', pr: 42 }, origin: { kind: 'user' }, author: 'user', body: 'q' })
+    expect(() => applyReviewOp('r_review02', { kind: 'ask-author', threadId: 'rt_review02', message: { id: 'rm_author02', body: 'Why?' } }))
+      .toThrow('no requesting session')
+  })
+
+  it('types the hand-back into the requester when it is idle and ends at delivered, never armed', async () => {
+    reviewWithQuestion()
+    const body = '[Review r_review01 submitted] #42 approve. It was not posted to GitHub. Call get_review("r_review01") for the comments.'
+    setReviewHandBack('r_review01', { id: 'rh_handback01', sessionId: REQUESTER, body, at: new Date().toISOString(), delivery: 'held', heldReason: 'not-running' })
+    const { writes } = writer()
+    noteThreadStatus(REQUESTER, 'running')
+    await vi.advanceTimersByTimeAsync(750)
+    expect(writes.get(REQUESTER)).toBeUndefined()
+    expect(getReview('r_review01')?.handBack).toMatchObject({ delivery: 'held', heldReason: 'busy' })
+
+    noteThreadStatus(REQUESTER, 'idle')
+    await vi.advanceTimersByTimeAsync(750)
+    expect(writes.get(REQUESTER)).toHaveLength(1)
+    expect(writes.get(REQUESTER)![0]).toContain(body)
+    expect(getReview('r_review01')?.handBack?.delivery).toBe('sending')
+
+    noteThreadSignal(REQUESTER, { eventName: 'UserPromptSubmit', prompt: writes.get(REQUESTER)![0]! })
+    expect(getReview('r_review01')?.handBack?.delivery).toBe('delivered')
+    endThreadStop(REQUESTER, { continued: false, lastAssistantMessage: 'Thanks, fixing.' })
+    expect(getReview('r_review01')?.handBack?.delivery).toBe('delivered')
+    expect(getReviewThread('rt_review01')?.messages.map((m) => m.author)).toEqual(['tool', 'user'])
+  })
+
+  it('fails a hand-back whose requester ends before receiving it, and keeps a delivered one across a restart', () => {
+    reviewWithQuestion()
+    setReviewHandBack('r_review01', { id: 'rh_handback02', sessionId: REQUESTER, body: '[Review r_review01 submitted] x', at: new Date().toISOString(), delivery: 'held' })
+    writer()
+    noteThreadStatus(REQUESTER, 'exited')
+    expect(getReview('r_review01')?.handBack).toMatchObject({ delivery: 'failed', failedReason: expect.stringContaining('ended') })
+
+    setReviewHandBack('r_review01', { id: 'rh_handback03', sessionId: REQUESTER, body: '[Review r_review01 submitted] x', at: new Date().toISOString(), delivery: 'delivered' })
+    resetThreadDelivery()
+    writer()
+    expect(getReview('r_review01')?.handBack?.delivery).toBe('delivered')
   })
 })

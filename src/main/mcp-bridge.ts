@@ -92,6 +92,8 @@ export interface ReviewRoomTools {
   getDiff(terminalId: string, reviewId: string, pr: number): Promise<Record<string, unknown>>
   checkoutHead(terminalId: string, reviewId: string, pr: number | undefined): Promise<Record<string, unknown>>
   proposeDraft(terminalId: string, threadId: string, text: string, severity?: string): { ok: true } | { ok: false; error: string }
+  requestReview(terminalId: string, windowId: number, input: Record<string, unknown>): Promise<Record<string, unknown>>
+  getReview(terminalId: string, input: Record<string, unknown>): Record<string, unknown>
 }
 
 let reviewRoomTools: ReviewRoomTools | null = null
@@ -732,6 +734,24 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
     const severity = typeof args['severity'] === 'string' ? args['severity'] : undefined
     const result = reviewRoomTools.proposeDraft(terminalId, threadId, text, severity)
     return result.ok ? { status: 200, body: { ok: true } } : { status: 400, body: { error: result.error } }
+  }
+
+  if (tool === 'request_review') {
+    if (!reviewRoomTools) return { status: 400, body: { error: 'The Review Room is unavailable.' } }
+    try {
+      return { status: 200, body: await reviewRoomTools.requestReview(terminalId, webContents.id, args) }
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : String(err) } }
+    }
+  }
+
+  if (tool === 'get_review') {
+    if (!reviewRoomTools) return { status: 400, body: { error: 'The Review Room is unavailable.' } }
+    try {
+      return { status: 200, body: reviewRoomTools.getReview(terminalId, args) }
+    } catch (err) {
+      return { status: 400, body: { error: err instanceof Error ? err.message : String(err) } }
+    }
   }
 
   if (tool === 'open_thread') {

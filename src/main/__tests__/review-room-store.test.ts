@@ -168,6 +168,19 @@ describe('review room store', () => {
     expect(getReviewThread('rt_answ01')?.askAuthorOpen).toBe(true)
   })
 
+  it('carries a question to the author as history only, so no later requester is typed into', () => {
+    create('r_aaaaaa', { requesterSessionId: 'author-1' })
+    applyReviewOp('r_aaaaaa', addThread('rt_ask01', 'rm_ask01'))
+    applyReviewOp('r_aaaaaa', { kind: 'ask-author', threadId: 'rt_ask01', message: { id: 'rm_ask02', body: 'Why?' } })
+    setReviewDelivery(['rm_ask02'], { delivery: 'unanswered', failedReason: 'gone' })
+    create('r_bbbbbb', { previousReviewId: 'r_aaaaaa', round: 2, requesterSessionId: 'author-2' })
+    const [change] = carryReviewThreads('r_aaaaaa', 'r_bbbbbb', (old) => old)
+    const carried = change?.thread?.messages.find((m) => m.body === 'Why?')
+    expect(carried).toMatchObject({ toAuthor: true })
+    expect(carried).not.toHaveProperty('delivery')
+    expect(reviewMessagesInState('author-2', ['held', 'failed', 'unanswered'])).toEqual([])
+  })
+
   it('keeps the companion lookups in step with claim and clear', () => {
     create()
     create('r_bbbbbb', { requesterSessionId: 'requester' })
