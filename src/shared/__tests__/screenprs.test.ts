@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   bucketOf,
+  ciLabel,
   isCritical,
   compareInBucket,
   compareDeepFindings,
@@ -39,6 +40,16 @@ function card(over: Partial<ScreenPrCard>): ScreenPrCard {
   const merged = { ...base, ...over }
   return { ...merged, bucket: bucketOf(merged) }
 }
+
+describe('ciLabel', () => {
+  it('names the checks behind a bad state and never calls nothing a pass', () => {
+    expect(ciLabel({ ci: 'green', ciFailing: [] })).toBe('CI passing')
+    expect(ciLabel({ ci: 'none', ciFailing: [] })).toBe('No CI checks')
+    expect(ciLabel({ ci: 'failing', ciFailing: ['lint', 'e2e'] })).toBe('CI failing: lint, e2e')
+    expect(ciLabel({ ci: 'attention', ciFailing: [], ciAttention: ['e2e'] })).toBe('CI needs attention: e2e')
+    expect(ciLabel({ ci: 'attention', ciFailing: [] })).toBe('CI needs attention')
+  })
+})
 
 describe('isCritical', () => {
   it('is true for high impact or any issue finding', () => {

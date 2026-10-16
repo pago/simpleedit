@@ -7,6 +7,7 @@
    * heading's job — a card repeating it would say the same thing twice.
    */
   import type { ScreenPrCard, PrCiStatus } from '../shared/screenprs'
+  import { CI_TONE } from '../shared/screenprs'
 
   interface Props {
     card: ScreenPrCard
@@ -17,12 +18,13 @@
 
   let { card, depth = 0, onopen }: Props = $props()
 
-  const CI_CLASS: Record<PrCiStatus, string> = {
-    green: 'text-emerald-400',
-    pending: 'text-amber-400',
-    failing: 'text-red-400',
+  const CI_LABEL: Record<PrCiStatus, string> = {
+    green: 'CI ✓',
+    pending: 'CI …',
+    failing: 'CI ✕',
+    attention: 'CI !',
+    none: 'No CI',
   }
-  const CI_LABEL: Record<PrCiStatus, string> = { green: 'CI ✓', pending: 'CI …', failing: 'CI ✕' }
 
   let issues = $derived(card.findings.filter((f) => f.label === 'issue').length)
 </script>
@@ -49,7 +51,7 @@
       ><b class="text-emerald-500">+{card.additions}</b>
       <b class="text-red-500">−{card.deletions}</b></span
     >
-    <span class={CI_CLASS[card.ci]}>{CI_LABEL[card.ci]}</span>
+    <span class={CI_TONE[card.ci]}>{CI_LABEL[card.ci]}</span>
     {#if card.impact === 'high'}
       <span class="rounded bg-red-500/15 px-1.5 py-0.5 font-semibold text-red-300">high impact</span>
     {/if}

@@ -264,6 +264,16 @@ describe('renderOverviewInput', () => {
     expect(input).not.toContain('<not-seen>')
   })
 
+  it("never tells the model that missing, cancelled or skipped checks passed", () => {
+    const none = renderOverviewInput(ctxWith({ pr: { ...PR, ci: 'none', ciFailing: [] } }))
+    expect(none).toContain('No checks have run on this head')
+    expect(none).not.toContain('passed')
+    const cancelled = renderOverviewInput(ctxWith({ pr: { ...PR, ci: 'attention', ciFailing: [], ciAttention: ['e2e'] } }))
+    expect(cancelled).toContain('cancelled or a required one was skipped (e2e)')
+    expect(cancelled).not.toContain('All checks passed')
+    expect(renderOverviewInput(ctxWith({ pr: { ...PR, ci: 'green', ciFailing: [] } }))).toContain('All checks passed.')
+  })
+
   it('lists what was cut or unavailable in a not-seen block', () => {
     const input = renderOverviewInput(ctxWith({ pr: { ...PR, diff: 'd\n'.repeat(60_000) }, unavailable: ['line comments'] }))
     expect(input).toMatch(/<not-seen>\n- line comments: could not be fetched\n- diff: truncated to 80 KB of 120 KB\n<\/not-seen>$/)
