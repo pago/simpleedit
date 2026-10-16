@@ -116,7 +116,7 @@ import {
 } from './review-room-service'
 import { removeReviewCheckouts } from './review-checkout'
 import {
-  assertUnclaimed, companionInfo, companionSpawnFor, exitSettlesDelivery, defaultCompanionAgent, endCompanionsOfWindow, endReviewCompanion, ensureCompanion, initReviewCompanion, markCompanionQuitting,
+  assertUnclaimed, companionInfo, companionSpawnFor, exitSettlesDelivery, defaultCompanionAgent, endCompanionsOfWindow, endReviewCompanion, ensureCompanion, initReviewCompanion, markCompanionQuitting, noteCompanionStatus,
   onCompanionExited, rebindCompanionSession, resolveCompanionCreated, setReviewCompanionAgent, sweepCompanionCheckouts,
 } from './review-companion'
 import { getProvider, registeredProviderIds } from './agents/provider'
@@ -469,6 +469,10 @@ configurePush({
 // wiring, so it is on before any window exists — a session can block while
 // the settings pane has never been opened.
 onAgentStatus((event, client) => handleAgentStatus(event, client.id))
+onAgentStatus((event) => {
+  const companion = noteCompanionStatus(event)
+  if (companion) broadcastToAllClients('review:companion-status', companion)
+})
 initAgentWake(writeToTerminal)
 
 function broadcastThreadChanges(changes: ThreadChange[]): void {
@@ -1248,9 +1252,12 @@ function registerAllHandlers(): void {
 
   handleInvoke('review:open', (_event, url: unknown) => openReview(url))
   handleInvoke('review:layers', (_event, reviewId: unknown) => reviewLayers(reviewId))
-  handleInvoke('review:layer-diff', (_event, reviewId: unknown, prUrl: unknown) => layerDiff(reviewId, prUrl))
+  handleInvoke('review:layer-diff', async (event, reviewId: unknown, prUrl: unknown) => {
+    const layer = await layerDiff(reviewId, prUrl)
+    return { ...layer, diff: capForClient(event.sender, layer.diff) }
+  })
   handleInvoke('review:since', (_event, reviewId: unknown, prUrl: unknown) => since(reviewId, prUrl))
-  handleInvoke('review:since-diff', (_event, reviewId: unknown, prUrl: unknown) => sinceDiff(reviewId, prUrl))
+  handleInvoke('review:since-diff', async (event, reviewId: unknown, prUrl: unknown) => capForClient(event.sender, await sinceDiff(reviewId, prUrl)))
   handleInvoke('review:ack-head', (_event, reviewId: unknown, prUrl: unknown) => ackHead(reviewId, prUrl))
   handleInvoke('review:mark-step', (_event, reviewId: unknown, stepId: unknown, read: unknown) => markStep(reviewId, stepId, read))
   handleInvoke('review:move-draft', (_event, threadId: unknown, toUrl: unknown) => moveDraft(threadId, toUrl))

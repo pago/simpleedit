@@ -7,7 +7,7 @@
  * Every request arrives from a client (the phone is a remote one), so main
  * parses each payload as untrusted.
  */
-import type { InteractiveTarget } from './ipc-types'
+import type { AgentStatus, InteractiveTarget } from './ipc-types'
 import type { BaseAnalysis, PrCiStatus } from './screenprs'
 import type { ReviewSeverity } from './review-room'
 
@@ -131,6 +131,19 @@ export interface ReviewCompanionInfo {
   live: boolean
   /** How read-only is enforced for this provider (tooltip). */
   readOnly: 'enforced' | 'by-instruction'
+  /** The companion's last reported status; absent until it reports one. */
+  status?: AgentStatus
+}
+
+/**
+ * A companion's status changed, sent to every window and phone. `agent:status`
+ * reaches only the hosting window's clients, and a phone joined to another
+ * window still has to say "needs you".
+ */
+export interface ReviewCompanionStatus {
+  reviewId: string
+  sessionId: string
+  status: AgentStatus
 }
 
 export type { ReviewSeverity }
