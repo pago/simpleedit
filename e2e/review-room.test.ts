@@ -172,6 +172,7 @@ function createStack(tag: string): Stack {
 async function launch(stack: Stack): Promise<{ app: ElectronApplication; window: Page }> {
   const root = stack.repo.root
   const env = launchEnv({
+    SIMPLEEDIT_FAKE_CLAUDE_GET_REVIEW_OUT: path.join(root, 'get-review.json'),
     SIMPLEEDIT_REPO: stack.repo.bareRepoPath,
     SIMPLEEDIT_E2E_SCREENPRS_FILTER: path.join(root, 'screenprs-filter.json'),
     SIMPLEEDIT_E2E_REMOTE_CONFIG: path.join(root, 'remote.json'),
@@ -510,5 +511,61 @@ test('a second window on the same review asks the same companion, whose terminal
     await discardReview(window, stack)
     await app.close()
     removeTempRepo(other)
+  }
+})
+
+// ── 5. request_review → Requested, Ask author, hand-back ────────────────────
+
+test('request_review from a session lists the review without switching the view, and the submitted review is handed back', async ({ stack }) => {
+  test.setTimeout(180_000)
+  const { app, window } = await launch(stack)
+  try {
+    await waitForWorktreesReady(window)
+    const author = await spawnClaudeSession(window)
+    // The fake author calls request_review over its bridge (a typed line it acts on).
+    await invoke(window, 'pty:write', author, `fake-request-review ${stack.topUrl}\r`)
+    await expect.poll(async () => (await reviewOf(window, stack))?.requesterSessionId, { timeout: 30_000 }).toBe(author)
+
+    // Listed, never shown: the user stays where they were.
+    await expect(window.getByTestId('review-room')).toHaveCount(0)
+    await expect(window.getByRole('listbox', { name: 'Sessions' })).toBeVisible()
+
+    await window.getByRole('region', { name: 'Screen PRs' }).getByRole('button', { name: /Screen PRs/ }).first().click()
+    const requested = window.getByTestId('screenprs-requested')
+    await expect(requested).toContainText(TOP_TITLE, { timeout: 15_000 })
+    await requested.getByRole('button', { name: new RegExp(TOP_TITLE) }).click()
+    await expect(window.getByTestId('review-room')).toBeVisible({ timeout: 30_000 })
+    await expect(window.getByTestId('requested-banner')).toBeVisible()
+    await expect(topLayer(window).getByTestId('layer-briefing')).toContainText('Adds clamp() over a named LIMIT.', { timeout: 15_000 })
+    await expect(topLayer(window).getByTestId('author-evidence')).toContainText('pnpm test')
+    await expect(topLayer(window).getByTestId('diff-line-comment').first()).toBeAttached({ timeout: 30_000 })
+
+    // The author's open question is a thread; Ask author reaches the author, who answers in it.
+    const question = window.locator('[data-thread-card]').filter({ hasText: 'Is 10 the right limit?' })
+    await expect(question).toBeVisible({ timeout: 15_000 })
+    await question.getByTestId('thread-collapsed').click()
+    await question.getByRole('textbox', { name: 'Ask the companion' }).fill('What did you measure?')
+    await question.getByTestId('ask-author').click()
+    await expect(question.getByTestId('message').filter({ hasText: 'PR author' })).toHaveCount(1, { timeout: 60_000 })
+    expect((await reviewOf(window, stack))?.companion).toBeUndefined()
+
+    await window.getByRole('button', { name: 'Submit reviews…' }).click()
+    const dialog = window.getByRole('dialog', { name: 'Submit reviews' })
+    await expect(dialog.getByTestId('send-to-session')).toBeChecked({ timeout: 15_000 })
+    await expect(dialog.getByTestId('post-to-github')).not.toBeChecked()
+    await dialog.getByRole('button', { name: /^Submit 2 reviews$/ }).click()
+    await expect(dialog.getByText(/Sent to the requesting session/)).toHaveCount(2, { timeout: 30_000 })
+
+    await expect.poll(async () => (await reviewOf(window, stack))?.handBack?.delivery, { timeout: 60_000 }).toBe('delivered')
+    const out = path.join(stack.repo.root, 'get-review.json')
+    await expect.poll(() => fs.existsSync(out), { timeout: 15_000 }).toBe(true)
+    const got = JSON.parse(fs.readFileSync(out, 'utf8')) as { status: string; posted_to_github: boolean; layers: Array<{ pr: number }> }
+    expect(got).toMatchObject({ status: 'submitted', posted_to_github: false })
+    expect(got.layers.map((layer) => layer.pr)).toEqual([BOTTOM, TOP])
+    // Nothing was posted: no review was created on GitHub.
+    expect(graphqlCalls(stack).filter((c) => c.operation === 'AddReview' || c.operation === 'SubmitReview')).toEqual([])
+  } finally {
+    await discardReview(window, stack)
+    await app.close()
   }
 })

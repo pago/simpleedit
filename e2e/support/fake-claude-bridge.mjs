@@ -8,6 +8,13 @@
  *   fake-claude-bridge.mjs answer <settings> <mcp-config> <session-id> <thread-id> <prompt>
  *     A typed review-thread prompt arrived: `UserPromptSubmit` carrying it,
  *     `reply_to_thread` over the MCP tool route, then `Stop`.
+ *   fake-claude-bridge.mjs request <settings> <mcp-config> <session-id> <pr-url> <prompt>
+ *     The author asks for a review: `UserPromptSubmit`, `request_review` with
+ *     a briefing, then `Stop`.
+ *   fake-claude-bridge.mjs handback <settings> <mcp-config> <session-id> <review-id> <prompt>
+ *     The submitted review came back: `UserPromptSubmit` carrying it,
+ *     `get_review` (its answer written to SIMPLEEDIT_FAKE_CLAUDE_GET_REVIEW_OUT),
+ *     then `Stop`.
  *
  * The URLs and credentials are the ones SimpleEdit wrote into the session's
  * `--settings` hooks and `--mcp-config` env, so this exercises the same
@@ -48,6 +55,34 @@ async function main() {
     })
     await hook('Stop', { stop_hook_active: false, last_assistant_message: `Answered ${threadId}.` })
     return `answered ${threadId}`
+  }
+  if (mode === 'request') {
+    const url = threadId
+    await hook('UserPromptSubmit', { prompt })
+    const answer = await post(toolUrl, {
+      tool: 'request_review',
+      terminalId: env.SIMPLEEDIT_TERMINAL_ID,
+      args: {
+        pr: url,
+        focus: 'the clamp',
+        briefing: {
+          what: 'Adds clamp() over a named LIMIT.',
+          why: 'Callers passed raw numbers.',
+          evidence: [{ command: 'pnpm test', output_excerpt: '3 passed', exit_code: 0 }],
+          open_questions: [{ text: 'Is 10 the right limit?', path: 'src/stack.ts', line: 1 }],
+        },
+      },
+    })
+    await hook('Stop', { stop_hook_active: false, last_assistant_message: 'Asked for a review.' })
+    return `requested ${JSON.parse(answer).review_id}`
+  }
+  if (mode === 'handback') {
+    const reviewId = threadId
+    await hook('UserPromptSubmit', { prompt })
+    const review = await post(toolUrl, { tool: 'get_review', terminalId: env.SIMPLEEDIT_TERMINAL_ID, args: { review_id: reviewId } })
+    if (process.env.SIMPLEEDIT_FAKE_CLAUDE_GET_REVIEW_OUT) fs.writeFileSync(process.env.SIMPLEEDIT_FAKE_CLAUDE_GET_REVIEW_OUT, review)
+    await hook('Stop', { stop_hook_active: false, last_assistant_message: 'Read the review.' })
+    return `read ${reviewId}`
   }
   throw new Error(`unknown mode ${mode}`)
 }
