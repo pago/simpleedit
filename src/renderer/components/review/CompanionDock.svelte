@@ -65,8 +65,10 @@
 
   let dock = $derived.by((): DockState => {
     if (!companion) return starting ? 'starting' : 'none'
-    if (info && !info.hostedHere) return 'elsewhere'
+    // Not-live first: window ids are reassigned on restart, so a dead claim's
+    // windowId says nothing about where its placeholder was restored.
     if (info && !info.live) return placeholder ? 'resume' : 'ended'
+    if (info && !info.hostedHere) return 'elsewhere'
     if (!info && placeholder) return 'resume'
     if (!local || local.exited) return info ? 'ended' : 'starting'
     switch (getAgentStatusForTerminal(local.id)) {
