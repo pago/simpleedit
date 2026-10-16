@@ -1,6 +1,6 @@
 # Plan: Review Room
 
-Status: ready to implement, revised after two adversarial reviews (rev 3) · Branch: `feat/review-room` (worktree
+Status: PRs 1–3 built (drafts #222, #225, PR 3), PR 4 next; revised after two adversarial reviews (rev 3) · Branch: `feat/review-room` (worktree
 `wt-review-room`) · Prototype: https://claude.ai/artifact/Bk1wpDP1qvUp3J7vqceZNF (replayed stack
 #183 → #185)
 
@@ -617,6 +617,92 @@ Where these differ from §1–§9, these win.
     layer's review body.
 - **Removed:** desktop `PrDetail`, `ReviewComposer`, `InlineCommentEditor`, `commentSource.ts`,
   `SplitButton` (only they used it). `ConfirmReviewModal` and `OverviewCard` stay.
+
+### PR 3 implementation notes
+
+Where these differ from §1–§9 and the PR 1/2 notes, these win.
+
+- **Before PR 3: #225's companion E2E tests failed** because `peerSnapshot()` and `serializeSession`
+  sent `Session.owner` (a Svelte `$state` proxy) over IPC; structured clone refused it, the
+  `agent-bus:sync` that registers peers failed silently, and every question to a companion sat
+  "session not running". Fixed on `feat/review-room-ui` (plain copies, a logged sync failure, and a
+  peers test whose `invoke` clones like IPC).
+- **Storage (migration 4):** `reviews.author_briefing` (JSON), `focus`, `hand_back` (JSON) with
+  `hand_back_session_id` + `hand_back_delivery` (indexed, for the delivery core's per-keystroke
+  query), and `review_messages.to_author`. `ReviewPrRef.title` is optional and set on new reviews,
+  so the Requested group can name a PR no screening carded.
+- **`request_review`** (`review-room-service.ts` `requestReview`, tool in `review-room-tools.ts`):
+  `pr` is a number (resolved against the calling window's project `origin` remote,
+  `github/repo-remote.ts`) or a url. It runs on the same serialised open path as `review:open`
+  (`openStack(url, requester)`): another session's open review is refused before anything
+  changes; an open review without a requester (the user opened it) is taken over
+  (`setReviewRequester`, compare-and-set on NULL). The same requester calling again replaces the
+  briefing layer by layer (and `focus`); author questions re-materialise by the §1 finding rules
+  (source `author`, keyed by path + text). **`screenprs:open-pr` was not built:** the room already
+  fetches every layer's metadata itself (`review:open`), so a Requested row needs only the stored
+  title.
+- **Briefing input** is snake_case (`reading_order`, `open_questions`, `evidence[].output_excerpt`,
+  `exit_code`, refs `start_line`/`end_line`), either one PR's fields at the top level or
+  `layers: [{pr, …}]` plus a stack `summary`. `shared/review-briefing.ts` parses it: fields
+  rebuilt, control characters out, prose 4000 / summaries 2000 chars, 50 sections, 30 questions,
+  10 × 4 KB evidence (cut with a note in the answer), and a layer over 20 KB is **refused** (the
+  agent is told to shorten it) rather than silently cut. Refs and question paths are kept only when
+  `resolveRefPath` finds them in the layer's review diff; the tool's answer lists what was dropped.
+- **Display:** without an overview the layer header shows the briefing's what/why/impact under
+  "By the author" (stale head noted) and the tour follows the author's reading order ("The author's
+  reading order…", leftovers under "Not in the author's tour", read ticks work the same). Once the
+  overview ran, it owns header and tour and the briefing is behind an "Author's briefing" toggle.
+  "Author ran" (evidence, labelled as unverified) shows whenever there is a briefing; none says so.
+- **Overview:** the briefing (`renderBriefingMarkdown`, with an "earlier head" line when stale) is a
+  `<author-briefing>` block after the PR meta, delimiters stripped from its text, capped at 24 KB,
+  and hashed into the overview fingerprint. `OVERVIEW_PROMPT_VERSION` is 3: the contract asks it to
+  check the briefing against the diff and to list contradicted or evidence-less claims as Look
+  into. Main hands it over through `setOverviewBriefingSource` (no import of the room from the
+  overview).
+- **Ask author** is a client op (`ask-author`): it appends a `toAuthor` user message, opens
+  `askAuthorOpen` and never starts a companion. `review:op` refuses it unless the requester's PTY
+  is live. The delivery core routes `to_author` messages to `requester_session_id` (the companion
+  never sees them typed) with a `[Review thread rt_… · question for the author]` header; the
+  requester's answer (explicit `reply_to_thread` or its turn's `last_assistant_message`) is
+  appended as `author` and closes the request. The room learns liveness from
+  `review:requester-info`, polled every 15 s while open.
+- **Submit destinations:** `ReviewSubmitRequest.destination` (absent = GitHub only, which is what
+  the phone's old screen sends). Session-only posts nothing: each layer is `sent`, its drafts are
+  cleared like a post, the review is `submitted`. Each attempt records a `report` (the drafts as
+  written, before folding); the hand-back and `get_review` use each layer's newest report across
+  attempts. *Copy review as markdown* is offered when the requester has ended.
+- **Hand-back** is a third pending kind in the delivery core (`rh_…` ids), typed as
+  `[Review r_… submitted] #12 changes requested (1 comment) · #13 approve. [Round n on this stack.]
+  It was (also/not) posted to GitHub. Call get_review("r_…") for the comments.` Confirmed by its
+  header in `UserPromptSubmit`; `delivered` is final (never armed, survives a restart); the
+  requester ending first fails it, and Retry (desktop, while the requester lives) goes through
+  `agent-threads:retry`.
+- **Rounds:** any new review of a stack whose newest closed review was `submitted` is the next round
+  (request_review or the user opening it again). Threads carry over (`carryReviewThreads`; line
+  anchors on an older head are re-placed by the §8 pass or outdated), and `lastSeenHead` starts at
+  the heads the previous round last saw, so "new commits since you last looked" is the interdiff
+  banner. Round 2 shows a note, round ≥ 3 the convergence warning; the hand-back names the round.
+  The deep review does not start from the interdiff (not built).
+- **After the adversarial review:**
+  - Fences are stripped to a fixed point (`stripFence`): one pass over `</author-</author-briefing>briefing>`
+    left a working closing tag. The `REVIEW.md` rubric (PR 2) had the same hole and uses it too.
+  - The briefing is parsed before the stack is opened, so a refused one creates or takes over nothing.
+  - A request for a PR stacked on top of a review's layers is that review's (any open review sharing
+    a layer of the resolved stack), so another session is refused there too; the new PR is not added
+    as a layer (PR 2 note).
+  - `focus` reaches the companion brief (quoted, capped at 2000 by the brief). `get_review` gives
+    each layer's `state` (`sent` when GitHub was not a destination).
+  - A failed hand-back offers *Copy review as markdown* from the submission's `report`, since a
+    session-only submit cleared the drafts.
+  - The requester ending closes its Ask-author requests; a turn-end answer to a request closed
+    meanwhile is `unanswered`, not "answered" with no message. Carried questions to the author keep
+    no delivery state, so the next round's requester is never typed into.
+  - Briefing text loses bidi overrides and zero-width characters.
+  - `request_review` returns once the stack is resolved and the briefing's diffs are read (seconds,
+    `gh` bound), not before.
+- **Not built:** *Make this a rule* (optional); the stack-level section of the overview.
+- **Live checks (user):** hand-back into idle Claude and idle Codex requesters (Claude needs its
+  `Stop` or `idle_prompt`); Ask author into both; `request_review` by number from a real project.
 
 ## Verification
 
