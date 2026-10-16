@@ -18,10 +18,27 @@
     reviewId: string
     /** Bottom → top. */
     layers: ReviewLayerInfo[]
+    /** The session that requested the review is alive, so the review can go back to it. */
+    requesterLive?: boolean
     onclose: () => void
   }
 
-  let { reviewId, layers, onclose }: Props = $props()
+  let { reviewId, layers, requesterLive = false, onclose }: Props = $props()
+
+  // ── Where it goes (§7): back to the requesting session by default, GitHub optional ──
+  const requested = untrack(() => !!reviewRoom.review(reviewId)?.requesterSessionId)
+  let toSession = $state(untrack(() => requested && requesterLive))
+  let toGithub = $state(untrack(() => !(requested && requesterLive)))
+  $effect(() => {
+    // The requester ended while the dialog was open: it can't receive the review any more.
+    if (!requesterLive && toSession) {
+      untrack(() => {
+        toSession = false
+        toGithub = true
+      })
+    }
+  })
+  let copied = $state(false)
 
   const VERDICTS: { key: ReviewVerdict; label: string; on: string }[] = [
     { key: 'approve', label: 'Approve', on: 'bg-emerald-500/15 text-emerald-300' },
@@ -116,7 +133,7 @@
   let pending = $derived(
     layers.filter((l) => {
       const kind = outcomes[l.url]?.kind
-      return included[l.url] && readHead(l) !== null && kind !== 'posted' && kind !== 'skipped' && kind !== 'foreign-pending' && kind !== 'head-moved'
+      return included[l.url] && readHead(l) !== null && kind !== 'posted' && kind !== 'sent' && kind !== 'skipped' && kind !== 'foreign-pending' && kind !== 'head-moved'
     }),
   )
 
@@ -133,6 +150,7 @@
         if (!urls.includes(l.url) || !head) return []
         return [{ prUrl: l.url, verdict: verdicts[l.url], readHead: head, ...(adopt[l.url] ? { adoptPendingReviewId: adopt[l.url] } : {}) }]
       }),
+      destination: { session: toSession, github: toGithub },
     }
     if (!request.layers.length) {
       submitting = false
@@ -196,6 +214,25 @@
     }
   }
 
+  /** The review as markdown, for a requester that is gone or a review kept off GitHub. */
+  async function copyMarkdown(): Promise<void> {
+    const VERDICT_TEXT: Record<ReviewVerdict, string> = { approve: 'Approve', comment: 'Comment', request_changes: 'Request changes' }
+    const text = layers
+      .filter((l) => included[l.url])
+      .map((l) => {
+        const summary = screenPrsStore.draftFor(l.url).summary.trim()
+        const comments = postedComments(l.url).map((c) => `- \`${where(c)}\`${c.severity ? ` **${c.severity}:**` : ''} ${c.text.trim()}`)
+        return [`## #${l.number} ${l.title} — ${VERDICT_TEXT[verdicts[l.url]]}`, ...(summary ? ['', summary] : []), ...(comments.length ? ['', ...comments] : [])].join('\n')
+      })
+      .join('\n\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      copied = true
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    }
+  }
+
   function where(c: PrReviewComment): string {
     if (c.inReplyTo) return 'reply'
     if (!c.file) return 'PR comment'
@@ -218,7 +255,23 @@
   >
     <div class="flex-none px-4 pt-4">
       <h2 class="text-sm font-semibold text-zinc-100">Submit reviews</h2>
-      <p class="mt-1 text-[11px] text-zinc-500">One review per layer: its review body and the comments you drafted in this review’s threads. Conversations with the companion are never posted. This posts to GitHub as you.</p>
+      <p class="mt-1 text-[11px] text-zinc-500">One review per layer: its review body and the comments you drafted in this review’s threads. Conversations with the companion are never sent.{requested ? '' : ' This posts to GitHub as you.'}</p>
+      {#if requested}
+        <div class="mt-2 flex flex-col gap-1 rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-2 text-[12px] text-zinc-200" data-testid="submit-destination">
+          <label class="flex items-center gap-2 {requesterLive ? '' : 'opacity-60'}">
+            <input type="checkbox" bind:checked={toSession} disabled={submitting || !requesterLive} data-testid="send-to-session" />
+            Send to the requesting session
+            {#if !requesterLive}<span class="text-[11px] text-amber-300/90">· it has ended</span>{/if}
+          </label>
+          <label class="flex items-center gap-2">
+            <input type="checkbox" bind:checked={toGithub} disabled={submitting} data-testid="post-to-github" />
+            Also post to GitHub as you
+          </label>
+          {#if !requesterLive}
+            <button type="button" class="self-start text-[11px] text-blue-400 hover:underline" onclick={copyMarkdown}>{copied ? 'Copied' : 'Copy review as markdown'}</button>
+          {/if}
+        </div>
+      {/if}
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -311,6 +364,8 @@
                 {/if}
               {:else if outcome.kind === 'skipped'}
                 <span class="text-zinc-500">Skipped.</span>
+              {:else if outcome.kind === 'sent'}
+                <span class="text-emerald-300">Sent to the requesting session (not posted to GitHub).</span>
               {:else if outcome.kind === 'foreign-pending'}
                 <div class="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-amber-100">
                   A pending review you started on GitHub exists ({outcome.commentCount} comment{outcome.commentCount === 1 ? '' : 's'}).
@@ -344,9 +399,9 @@
         <button
           type="button"
           class="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
-          disabled={submitting || pending.length === 0}
+          disabled={submitting || pending.length === 0 || (!toSession && !toGithub)}
           onclick={() => submit(pending.map((l) => l.url))}
-        >{submitting ? 'Posting…' : `Submit ${pending.length} review${pending.length === 1 ? '' : 's'}`}</button>
+        >{submitting ? (toGithub ? 'Posting…' : 'Sending…') : `Submit ${pending.length} review${pending.length === 1 ? '' : 's'}`}</button>
       {/if}
     </div>
   </div>

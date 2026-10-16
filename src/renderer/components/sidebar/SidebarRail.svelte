@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import { tick } from 'svelte'
   import SessionList from './SessionList.svelte'
   import NewSessionButtons from './NewSessionButtons.svelte'
@@ -11,7 +12,6 @@
   import { uiView, type UiView } from '../../stores/uiView.svelte'
   import { sidebarRail } from '../../stores/sidebarRail.svelte'
   import { sessionsStore } from '../../stores/sessions.svelte'
-  import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { backlogStore } from '../../stores/backlog.svelte'
   import { currentSessionsAttention } from '../../stores/sessionAttention.svelte'
   import { attentionTooltip } from '../../lib/sessionsAttention'
@@ -31,7 +31,7 @@
   let overlay = $derived(sidebarRail.overlay())
   let overlayLabel = $derived(SECTIONS.find((s) => s.view === overlay?.view)?.label ?? '')
   let sessionsAttention = $derived(currentSessionsAttention())
-  let attention = $derived(screenPrsStore.attentionCount())
+  let attention = $derived(reviewRoom.screenPrsAttention())
   let backlogCount = $derived(backlogStore.items.length)
 
   let zoneEl: HTMLElement | undefined = $state()

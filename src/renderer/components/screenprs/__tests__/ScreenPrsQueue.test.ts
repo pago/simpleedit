@@ -4,6 +4,7 @@ import ScreenPrsQueue from '../ScreenPrsQueue.svelte'
 import ScreenPrsView from '../ScreenPrsView.svelte'
 import { screenPrsStore } from '../../../stores/screenprs.svelte'
 import type { ScreenPrCard } from '../../../../shared/screenprs'
+import { _receiveReviewChange, _resetReviewRoomForTests } from '../../../stores/reviewRoom.svelte'
 
 function card(over: Partial<ScreenPrCard> & Pick<ScreenPrCard, 'number' | 'bucket'>): ScreenPrCard {
   return {
@@ -64,5 +65,28 @@ describe('ScreenPrsView', () => {
     render(ScreenPrsView)
     expect(screen.queryByTestId('screenprs-queue')).toBeNull()
     expect(screen.getByText('Pick a PR from the queue to review it.')).toBeTruthy()
+  })
+})
+
+describe('ScreenPrsQueue — Requested', () => {
+  it('lists reviews an agent asked for, without opening them, and opens one on click', async () => {
+    _resetReviewRoomForTests()
+    const url = 'https://github.com/acme/widgets/pull/77'
+    _receiveReviewChange({
+      reviewId: 'r_request01',
+      review: {
+        id: 'r_request01', repo: 'github.com/acme/widgets', status: 'open', requesterSessionId: 'agent-claude-x',
+        layers: [{ url, number: 77, headSha: 'h', title: 'Add the limit' }], companionAgent: { provider: 'claude', model: '' },
+        lastSeenHead: {}, readSteps: [], round: 3, submissions: [], createdAt: '2026-10-16T00:00:00Z', updatedAt: '2026-10-16T00:00:00Z',
+      },
+      rev: 1,
+    })
+    render(ScreenPrsQueue)
+    const group = screen.getByTestId('screenprs-requested')
+    expect(group.textContent).toContain('Add the limit')
+    expect(group.textContent).toContain('round 3')
+    expect(screenPrsStore.selectedKey()).toBeNull()
+    await fireEvent.click(screen.getByText('Add the limit'))
+    expect(screenPrsStore.selectedKey()).toBe(url)
   })
 })

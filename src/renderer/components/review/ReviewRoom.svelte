@@ -11,7 +11,7 @@
   import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import { screenPrsStore } from '../../stores/screenprs.svelte'
   import { scrollBehavior } from '../../lib/diffReveal'
-  import { readingOrderOf, readingProgress, type LayerFigures } from '../../lib/review-room'
+  import { readingProgress, reportMarkdown, tourSteps, type LayerFigures } from '../../lib/review-room'
   import StackMap from './StackMap.svelte'
   import LayerSection from './LayerSection.svelte'
   import ReviewOutline from './ReviewOutline.svelte'
@@ -47,7 +47,7 @@
     new Map(
       layers.map((l) => {
         const o = screenPrsStore.overviewFor(l.url)
-        const steps = o?.status === 'done' ? readingOrderOf(o.text) : []
+        const { steps } = tourSteps(o?.status === 'done' ? o.text : undefined, review?.authorBriefing?.layers[l.url])
         return [l.url, readingProgress(l.number, steps, review?.readSteps ?? [])]
       }),
     ),
@@ -71,6 +71,38 @@
     ),
   )
   let openCount = $derived(threads.filter((t) => t.status === 'open').length)
+
+  // ── The requesting session (request_review) ──
+  let requester = $derived(reviewRoom.requester(reviewId))
+  let requesterLive = $derived(!!requester?.live)
+  let requesterId = $derived(review?.requesterSessionId)
+  $effect(() => {
+    if (!requesterId) return
+    const id = reviewId
+    void reviewRoom.loadRequester(id)
+    // Liveness changes with no event this room hears; a slow poll keeps Ask author honest.
+    const timer = setInterval(() => void reviewRoom.loadRequester(id), 15_000)
+    return () => clearInterval(timer)
+  })
+  let handBack = $derived(review?.handBack)
+  let retryingHandBack = $state(false)
+  let copiedReport = $state(false)
+  /** The hand-back failed and the drafts were cleared when it was sent: the recorded report is the only copy. */
+  async function copyReport(): Promise<void> {
+    const report = [...(review?.submissions ?? [])].reverse().find((s) => s.report)?.report
+    if (!report) return
+    await navigator.clipboard.writeText(reportMarkdown(report))
+    copiedReport = true
+  }
+  async function retryHandBack(): Promise<void> {
+    if (!handBack) return
+    retryingHandBack = true
+    try {
+      await window.api.invoke('agent-threads:retry', handBack.sessionId, handBack.id)
+    } finally {
+      retryingHandBack = false
+    }
+  }
   let companionSessionId = $derived(review?.companion?.sessionId)
 
   let drawerOpen = $state(false)
@@ -132,6 +164,35 @@
             This review was {review.status}. Its threads and drafts stay readable here.
           </div>
         {/if}
+        {#if handBack}
+          {@const failed = handBack.delivery === 'failed' || handBack.delivery === 'unanswered'}
+          <div class="mb-3 flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-[12px] {failed ? 'border-red-500/30 bg-red-500/10 text-red-200' : 'border-zinc-700 bg-zinc-900 text-zinc-300'}" data-testid="hand-back">
+            {#if handBack.delivery === 'delivered' || handBack.delivery === 'answered' || handBack.delivery === 'answered-implicitly'}
+              Sent back to the requesting session.
+            {:else if failed}
+              Not received by the requesting session{handBack.failedReason ? `: ${handBack.failedReason}` : ''}.
+              <button type="button" class="rounded border border-red-400/40 px-2 py-0.5 text-[11.5px] hover:bg-red-500/20 disabled:opacity-50" disabled={!requesterLive || retryingHandBack} title={requesterLive ? '' : 'The requesting session has ended'} onclick={retryHandBack}>Retry</button>
+              <button type="button" class="rounded border border-red-400/40 px-2 py-0.5 text-[11.5px] hover:bg-red-500/20" onclick={() => void copyReport()}>{copiedReport ? 'Copied' : 'Copy review as markdown'}</button>
+            {:else}
+              Waiting to hand the review back to the requesting session{handBack.heldReason === 'busy' ? ' (it is busy)' : handBack.heldReason === 'draft' ? ' (its prompt has a draft)' : handBack.heldReason === 'dialog' ? ' (it has a dialog open)' : ''}…
+            {/if}
+          </div>
+        {/if}
+        {#if review.requesterSessionId && review.status === 'open'}
+          <div class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-[12px] text-violet-100" data-testid="requested-banner">
+            <b>Requested by an agent session</b>
+            <span class="text-violet-200/80">{requesterLive ? 'Submit sends your review back to it; threads can Ask author.' : 'That session has ended: the review can still be posted to GitHub.'}</span>
+          </div>
+        {/if}
+        {#if review.round >= 3}
+          <div class="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-100" data-testid="convergence-warning">
+            Round {review.round} on this stack: consider whether the approach needs rethinking.
+          </div>
+        {:else if review.round === 2}
+          <div class="mb-3 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-[12px] text-zinc-300" data-testid="round-banner">
+            Round 2 on this stack. Threads from round 1 carried over; “new commits since you last looked” starts at the heads you reviewed.
+          </div>
+        {/if}
         {#if layers.length > 1 || stackThreads.length}
           <section id="review-stack" class="scroll-mt-4 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3" data-testid="stack-section">
             <div class="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-500">Stack · {layers.length} PRs, review bottom → top</div>
@@ -139,7 +200,7 @@
             {#if stackThreads.length}
               <div class="mt-3 flex flex-col gap-2">
                 {#each stackThreads as t (t.id)}
-                  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={top?.url ?? ''} {layers} {companionSessionId} {readonly} />
+                  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={top?.url ?? ''} {layers} {companionSessionId} {readonly} requesterSessionId={requesterLive ? requesterId : undefined} />
                 {/each}
               </div>
             {/if}
@@ -166,6 +227,7 @@
             {drafts}
             {companionSessionId}
             {readonly}
+            requesterSessionId={requesterLive ? requesterId : undefined}
           />
         {/each}
       </div>
@@ -198,6 +260,6 @@
   </div>
 
   {#if submitting}
-    <SubmitReviewsModal {reviewId} {layers} onclose={() => (submitting = false)} />
+    <SubmitReviewsModal {reviewId} {layers} requesterLive={requesterLive} onclose={() => (submitting = false)} />
   {/if}
 {/if}

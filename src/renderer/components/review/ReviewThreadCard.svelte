@@ -41,9 +41,11 @@
     companionSessionId?: string
     /** The review was submitted or discarded: shown, never changed. */
     readonly?: boolean
+    /** The live session that requested the review: offers Ask author. */
+    requesterSessionId?: string
   }
 
-  let { reviewId, thread, draft, draftUrl, layers, companionSessionId, readonly = false }: Props = $props()
+  let { reviewId, thread, draft, draftUrl, layers, companionSessionId, readonly = false, requesterSessionId }: Props = $props()
 
   const CLOSE_REASONS: { key: ReviewCloseReason; label: string }[] = [
     { key: 'fixed', label: 'Fixed' },
@@ -155,6 +157,19 @@
     sending = false
   }
 
+  /** Ask author: the question goes to the session that requested the review, which may answer here once. */
+  async function askAuthor(body: string): Promise<void> {
+    const text = body.trim()
+    if (!text || sending) return
+    sending = true
+    if (await run(() => reviewRoom.askAuthor(reviewId, thread.id, text))) {
+      if (text === askText.trim()) reviewRoom.setAskDraft(thread.id, '')
+    }
+    sending = false
+  }
+
+  let withAuthor = $derived(parts.conversation.some((m) => m.author === 'author' || m.toAuthor))
+
   function onAskKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault()
@@ -178,16 +193,17 @@
     return out.filter((c) => !asked.has(c.body))
   })
 
-  async function retry(messageId: string): Promise<void> {
-    const sessionId = companionSessionId
+  /** A question to the author goes to the requester; everything else to the companion. */
+  const recipientOf = (m: { toAuthor?: boolean }): string | undefined => (m.toAuthor ? requesterSessionId : companionSessionId)
+
+  async function retry(messageId: string, sessionId: string | undefined): Promise<void> {
     if (!sessionId) return
     await run(async () => {
       if (!(await agentThreadsStore.retry(sessionId, messageId))) throw new Error("It couldn't be queued again.")
     })
   }
 
-  async function forceSend(): Promise<void> {
-    const sessionId = companionSessionId
+  async function forceSend(sessionId: string | undefined): Promise<void> {
     if (sessionId) await run(() => agentThreadsStore.forceSend(sessionId))
   }
 
@@ -431,11 +447,12 @@
       {/each}
       {#if parts.conversation.length}
         <div class="ml-1 flex flex-col gap-1.5 border-l-2 border-violet-500/30 pl-2.5" data-testid="conversation">
-          <div class="text-[9.5px] font-semibold uppercase tracking-wider text-violet-300/80">Private · you and the companion</div>
+          <div class="text-[9.5px] font-semibold uppercase tracking-wider text-violet-300/80">{withAuthor ? 'You, the companion and the PR author' : 'Private · you and the companion'}</div>
           {#each parts.conversation as m (m.id)}
             {@const info = deliveryInfo(m)}
-            <div class="rounded px-1.5 py-1 {m.author === 'companion' ? 'bg-zinc-800/60' : ''}" data-testid="message">
-              <div class="text-[10px] font-medium uppercase tracking-wide {m.author === 'companion' ? 'text-violet-300/80' : 'text-zinc-500'}">{messageAuthor(thread, m, false)}</div>
+            {@const to = recipientOf(m)}
+            <div class="rounded px-1.5 py-1 {m.author === 'companion' || m.author === 'author' ? 'bg-zinc-800/60' : ''}" data-testid="message">
+              <div class="text-[10px] font-medium uppercase tracking-wide {m.author === 'companion' ? 'text-violet-300/80' : m.author === 'author' ? 'text-sky-300/80' : 'text-zinc-500'}">{messageAuthor(thread, m, false)}</div>
               {#if m.author === 'user'}
                 <p class="whitespace-pre-wrap break-words text-[12px] text-zinc-200">{m.body}</p>
               {:else}
@@ -454,12 +471,12 @@
                     <button
                       type="button"
                       class="rounded border border-zinc-700 px-1.5 text-zinc-300 hover:bg-zinc-700 disabled:opacity-40"
-                      disabled={!companionSessionId}
-                      title={companionSessionId ? undefined : 'Start the companion first'}
-                      onclick={() => retry(m.id)}
+                      disabled={!to}
+                      title={to ? undefined : m.toAuthor ? 'The requesting session has ended' : 'Start the companion first'}
+                      onclick={() => retry(m.id, to)}
                     >Retry</button>
                   {:else if info.action === 'force-send'}
-                    <button type="button" class="rounded border border-zinc-700 px-1.5 text-zinc-300 hover:bg-zinc-700" onclick={forceSend}>My prompt is empty, send</button>
+                    <button type="button" class="rounded border border-zinc-700 px-1.5 text-zinc-300 hover:bg-zinc-700" onclick={() => forceSend(to)}>My prompt is empty, send</button>
                   {/if}
                 </div>
               {/if}
@@ -499,7 +516,18 @@
           disabled={!askText.trim() || sending}
           onclick={() => void ask(askText)}
         >Ask</button>
+        {#if requesterSessionId}
+          <button
+            type="button"
+            class="rounded bg-sky-500/15 px-2.5 py-1 text-[11.5px] font-semibold text-sky-300 hover:bg-sky-500/25 disabled:opacity-40"
+            disabled={!askText.trim() || sending}
+            title="Ask the agent that requested this review; it can answer in this thread"
+            data-testid="ask-author"
+            onclick={() => void askAuthor(askText)}
+          >Ask author</button>
+        {/if}
       </div>
+      {#if thread.askAuthorOpen}<p class="text-[10.5px] text-sky-300/80">Waiting for the PR author’s answer.</p>{/if}
     </div>
     {/if}
 

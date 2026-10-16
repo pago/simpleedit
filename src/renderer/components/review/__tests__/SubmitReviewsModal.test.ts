@@ -4,12 +4,14 @@ import SubmitReviewsModal from '../SubmitReviewsModal.svelte'
 import { screenPrsStore } from '../../../stores/screenprs.svelte'
 import { _receiveReviewChange, _resetReviewRoomForTests, reviewRoom } from '../../../stores/reviewRoom.svelte'
 import type { ReviewSubmitRequest, ReviewSubmitResult } from '../../../../shared/review-room-ipc'
-import { REVIEW_ID, layer, stubApi, thread } from './fixtures'
+import { REVIEW_ID, layer, review, stubApi, thread } from './fixtures'
 
 const U1 = 'https://github.com/acme/app/pull/301'
 const U2 = 'https://github.com/acme/app/pull/302'
 const U3 = 'https://github.com/acme/app/pull/303'
 const LAYERS = [layer(301, U1), layer(302, U2), layer(303, U3)]
+/** No requesting session: the review goes to GitHub only. */
+const GITHUB = { session: false, github: true }
 
 let api: ReturnType<typeof stubApi>
 let answer: (req: ReviewSubmitRequest) => ReviewSubmitResult
@@ -72,6 +74,7 @@ describe('SubmitReviewsModal', () => {
         { prUrl: U2, verdict: 'comment', readHead: 'sha302' },
         { prUrl: U3, verdict: 'approve', readHead: 'sha303' },
       ],
+      destination: GITHUB,
     })
     expect(await screen.findAllByText(/Posted/)).toHaveLength(3)
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
@@ -94,11 +97,11 @@ describe('SubmitReviewsModal', () => {
     expect(screen.getByText(/Couldn’t post: boom/)).toBeInTheDocument()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Use it' }))
-    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301', adoptPendingReviewId: 'PRR_9' }] })
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301', adoptPendingReviewId: 'PRR_9' }], destination: GITHUB })
 
     answer = (req) => ({ layers: req.layers.map((l) => ({ prUrl: l.prUrl, kind: 'posted', folded: 0 })), complete: true })
     await fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
-    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U2, verdict: 'comment', readHead: 'sha302' }] })
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U2, verdict: 'comment', readHead: 'sha302' }], destination: GITHUB })
   })
 
   it('never posts a layer whose diff didn’t load', async () => {
@@ -111,7 +114,7 @@ describe('SubmitReviewsModal', () => {
     expect(screen.getByLabelText('Post a review on #302')).toBeDisabled()
     expect(screen.getByTestId('submit-unread')).toHaveTextContent('this layer’s diff didn’t load')
     await fireEvent.click(screen.getByRole('button', { name: 'Submit 1 review' }))
-    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301' }] })
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301' }], destination: GITHUB })
   })
 
   it('never posts a layer whose diff on screen is older than its head (a reload in flight)', async () => {
@@ -119,7 +122,7 @@ describe('SubmitReviewsModal', () => {
     expect(screen.getByLabelText('Post a review on #302')).toBeDisabled()
     expect(screen.getByTestId('submit-unread')).toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'Submit 1 review' }))
-    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301' }] })
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301' }], destination: GITHUB })
   })
 
   it('lets a moved layer back in once the room reloaded it at the new head', async () => {
@@ -140,7 +143,7 @@ describe('SubmitReviewsModal', () => {
     expect(verdictOf(301)).toBe('request_changes')
     answer = (req) => ({ layers: req.layers.map((l) => ({ prUrl: l.prUrl, kind: 'posted', folded: 0 })), complete: true })
     await fireEvent.click(screen.getByRole('button', { name: 'Submit 1 review' }))
-    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'abcdef1234' }] })
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'abcdef1234' }], destination: GITHUB })
   })
 
   it('says a layer that moved since it was read was not posted, and offers no retry', async () => {
@@ -209,5 +212,34 @@ describe('SubmitReviewsModal — focus', () => {
     view.unmount()
     expect(document.activeElement).toBe(opener)
     opener.remove()
+  })
+})
+
+describe('SubmitReviewsModal — a requested review', () => {
+  // The mirror ignores a revision older than one it has seen, and the store outlives each test.
+  let reviewRev = 99_000
+  beforeEach(() => {
+    _receiveReviewChange({ reviewId: REVIEW_ID, review: { ...review(), requesterSessionId: 'agent-claude-author' }, rev: ++reviewRev })
+  })
+
+  it('sends back to the requesting session by default, GitHub off', async () => {
+    render(SubmitReviewsModal, { props: { reviewId: REVIEW_ID, layers: LAYERS, requesterLive: true, onclose: () => {} } })
+    expect((screen.getByTestId('send-to-session') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByTestId('post-to-github') as HTMLInputElement).checked).toBe(false)
+    answer = (req) => ({ layers: req.layers.map((l) => ({ prUrl: l.prUrl, kind: 'sent' })), complete: true })
+    await fireEvent.click(screen.getByRole('button', { name: 'Submit 3 reviews' }))
+    expect(api.invoke).toHaveBeenCalledWith('review:submit', expect.objectContaining({ destination: { session: true, github: false } }))
+    expect(await screen.findAllByText(/Sent to the requesting session/)).toHaveLength(3)
+  })
+
+  it('disables Send to session once the requester ended, posting to GitHub and offering markdown instead', async () => {
+    render(SubmitReviewsModal, { props: { reviewId: REVIEW_ID, layers: LAYERS, requesterLive: false, onclose: () => {} } })
+    const send = screen.getByTestId('send-to-session') as HTMLInputElement
+    expect(send.disabled).toBe(true)
+    expect(send.checked).toBe(false)
+    expect((screen.getByTestId('post-to-github') as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByRole('button', { name: 'Copy review as markdown' })).toBeTruthy()
+    await fireEvent.click(screen.getByTestId('post-to-github'))
+    expect((screen.getByRole('button', { name: 'Submit 3 reviews' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })

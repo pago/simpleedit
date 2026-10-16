@@ -23,6 +23,7 @@
     lineOn,
     placeThreads,
     sideOf,
+    tourSteps,
     type Section,
     type Side,
   } from '../../lib/review-room'
@@ -42,9 +43,11 @@
     companionSessionId?: string
     /** The review is closed: everything shows, nothing changes. */
     readonly?: boolean
+    /** The live session that requested the review: threads offer Ask author. */
+    requesterSessionId?: string
   }
 
-  let { reviewId, review, layer, layers, threads, drafts, companionSessionId, readonly = false }: Props = $props()
+  let { reviewId, review, layer, layers, threads, drafts, companionSessionId, readonly = false, requesterSessionId }: Props = $props()
 
   // ── The diff and "since you last looked" ──
   let diff = $derived(reviewRoom.layerDiff(reviewId, layer.url))
@@ -85,7 +88,13 @@
   let overview = $derived(screenPrsStore.overviewFor(layer.url))
   let deep = $derived(screenPrsStore.deepFor(layer.url))
   let parsed = $derived(overview?.status === 'done' && overview.text ? parseOverview(overview.text) : null)
-  let readingOrder = $derived(parsed?.sections.readingOrder ?? [])
+  // ── The author's briefing (request_review): untrusted, shown labelled, rendered as markdown only ──
+  let briefing = $derived(review.authorBriefing?.layers[layer.url])
+  let stackSummary = $derived(review.authorBriefing?.stack?.summary)
+  let briefingStale = $derived(!!briefing && briefing.forHead !== layer.headSha)
+  let showBriefing = $state(false)
+  let tourBy = $derived(tourSteps(overview?.status === 'done' ? overview.text : undefined, briefing))
+  let readingOrder = $derived(tourBy.steps)
   let activeLenses = $derived(DEEP_LENS_ORDER.filter((l) => deep?.lenses[l]))
 
   function prContext(d: ReviewLayerDiff): PrContext {
@@ -201,8 +210,23 @@
   const PROSE = 'prose prose-invert prose-sm max-w-none text-[12.5px] leading-relaxed text-zinc-300 prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-code:text-[11px]'
 </script>
 
+{#snippet authorBriefing(b: NonNullable<typeof briefing>)}
+  <div class="mt-2" data-testid="layer-briefing">
+    <div class="text-[10.5px] font-semibold uppercase tracking-wider text-violet-300">By the author</div>
+    {#if briefingStale}
+      <p class="text-[10.5px] text-amber-300/80">Written for an earlier head; it may not describe what is there now.</p>
+    {/if}
+    <dl class="mt-1 grid max-w-[78ch] grid-cols-[4.5rem_1fr] gap-x-3 gap-y-1.5">
+      {#if stackSummary}<dt class="pt-px text-[11px] font-semibold text-zinc-500">Stack</dt><dd class={PROSE}>{@html renderMarkdown(stackSummary)}</dd>{/if}
+      {#if b.what}<dt class="pt-px text-[11px] font-semibold text-zinc-500">What</dt><dd class={PROSE}>{@html renderMarkdown(b.what)}</dd>{/if}
+      {#if b.why}<dt class="pt-px text-[11px] font-semibold text-zinc-500">Why</dt><dd class={PROSE}>{@html renderMarkdown(b.why)}</dd>{/if}
+      {#if b.impact}<dt class="pt-px text-[11px] font-semibold text-zinc-500">Impact</dt><dd class={PROSE}>{@html renderMarkdown(b.impact)}</dd>{/if}
+    </dl>
+  </div>
+{/snippet}
+
 {#snippet card(t: ReviewThread)}
-  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={layer.url} {layers} {companionSessionId} {readonly} />
+  <ReviewThreadCard {reviewId} thread={t} draft={drafts.get(t.id)} draftUrl={layer.url} {layers} {companionSessionId} {readonly} {requesterSessionId} />
 {/snippet}
 
 {#snippet rowExtras(section: string, f: DiffFile, row: DiffRow)}
@@ -280,6 +304,33 @@
       </div>
     {/if}
 
+    {#if briefing}
+      {#if !parsed}
+        {@render authorBriefing(briefing)}
+      {:else}
+        <button type="button" class="mt-2 text-[11px] text-violet-300 hover:underline" aria-expanded={showBriefing} onclick={() => (showBriefing = !showBriefing)}>
+          {showBriefing ? '▾' : '▸'} Author's briefing
+        </button>
+        {#if showBriefing}{@render authorBriefing(briefing)}{/if}
+      {/if}
+      <div class="mt-2 rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2" data-testid="author-evidence">
+        <div class="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-500">Author ran <span class="font-normal normal-case tracking-normal text-zinc-600">· reported by the author, not verified by SimpleEdit</span></div>
+        {#if briefing.evidence.length}
+          <ul class="mt-1 flex flex-col gap-1.5">
+            {#each briefing.evidence as e, i (i)}
+              <li class="text-[11.5px]">
+                <code class="text-zinc-200">{e.command}</code>
+                {#if e.exitCode !== undefined}<span class="ml-1.5 rounded px-1 text-[10px] {e.exitCode === 0 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'}">exit {e.exitCode}</span>{/if}
+                {#if e.outputExcerpt}<pre class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-zinc-900 px-2 py-1 text-[10.5px] text-zinc-400">{e.outputExcerpt}</pre>{/if}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="mt-1 text-[11.5px] text-amber-300/80">No evidence attached: claims of passing tests or builds are unbacked.</p>
+        {/if}
+      </div>
+    {/if}
+
     <div class="mt-3 flex flex-col gap-2 rounded-md border border-dashed border-zinc-700 px-3 py-2">
       <div class="flex flex-wrap items-center gap-2">
         <button type="button" class={BTN} onclick={runOverview} disabled={overview?.status === 'running' || !diff} data-testid="run-overview">
@@ -353,6 +404,7 @@
         <UnifiedDiffView files={sinceOnly.files} emptyLabel="No changes." />
       {/if}
     {:else if tour}
+      {#if tourBy.by === 'author'}<p class="mb-2 text-[11.5px] text-violet-300/80" data-testid="author-tour">The author’s reading order. Run the overview for an independent one.</p>{/if}
       <ol class="ml-1.5 flex flex-col gap-5 border-l-2 border-zinc-800 pl-5" data-testid="tour">
         {#each tour.steps as step (step.id)}
           {@const read = readSet.has(step.id)}
@@ -378,7 +430,7 @@
         {/each}
       </ol>
       {#if tour.rest.length}
-        <h3 class="mb-2 mt-6 text-[11px] font-semibold uppercase tracking-wider text-zinc-500" data-testid="not-in-tour">Not in the tour</h3>
+        <h3 class="mb-2 mt-6 text-[11px] font-semibold uppercase tracking-wider text-zinc-500" data-testid="not-in-tour">{tourBy.by === 'author' ? 'Not in the author’s tour' : 'Not in the tour'}</h3>
         {@render diffOf('rest', tour.rest)}
       {/if}
     {:else}

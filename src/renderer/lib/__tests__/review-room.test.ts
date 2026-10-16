@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { parseUnifiedDiff } from '../../../shared/parseDiff'
 import type { ReviewThread } from '../../../shared/review-room'
 import type { PrReviewComment } from '../../../shared/screenprs'
-import { anchorText, buildTour, defaultVerdict, matchesFilter, placeThreads, sliceFile, stepId } from '../review-room'
+import { anchorText, buildTour, defaultVerdict, matchesFilter, placeThreads, reportMarkdown, sliceFile, stepId } from '../review-room'
 
 const DIFF = [
   'diff --git a/src/a.ts b/src/a.ts',
@@ -150,5 +150,18 @@ describe('line threads', () => {
     expect(matchesFilter(finding, 'done', false)).toBe(true)
     expect(matchesFilter(finding, 'post', true)).toBe(true)
     expect(matchesFilter(t({}), 'mine', false)).toBe(true)
+  })
+})
+
+describe('reportMarkdown', () => {
+  it('renders each layer’s verdict, summary and comments with where they sit', () => {
+    expect(reportMarkdown([
+      { prUrl: 'u', number: 12, verdict: 'request_changes', summary: 'Close.', comments: [
+        { path: 'src/a.ts', startLine: 3, line: 4, severity: 'blocking', body: 'Clamp it' },
+        { reply: true, body: 'Agreed' },
+        { body: 'Overall fine' },
+      ] },
+      { prUrl: 'v', number: 13, verdict: 'approve', summary: '', comments: [] },
+    ])).toBe('## #12 — Request changes\n\nClose.\n\n- `src/a.ts:3-4` **blocking:** Clamp it\n- `reply` Agreed\n- `PR comment` Overall fine\n\n## #13 — Approve')
   })
 })
