@@ -88,8 +88,10 @@ import {
   addMainReviewThread,
   applyReviewOp,
   createReview,
+  setReviewRequester,
   getReview,
   getReviewThread,
+  reviewsWithStatus,
   setReviewLayerHead,
   setReviewStatus,
   threadsForReview,
@@ -104,8 +106,12 @@ import {
   onDeepFindings,
   onOverviewText,
   onTriageCard,
+  briefingForOverview,
+  formatHandBack,
   openReview,
   placeOnNewHead,
+  requestReview,
+  reviewForRequester,
   resetReviewRoomForTests,
   shouldAutoClose,
   since,
@@ -171,6 +177,8 @@ const deps = {
   defaultCompanionAgent: vi.fn(() => ({ provider: 'claude', model: 'opus' })),
   endCompanion: vi.fn(),
   removeCheckouts: vi.fn(),
+  isLive: vi.fn((_sessionId: string) => true),
+  requestSend: vi.fn(),
 }
 
 beforeEach(() => {
@@ -667,5 +675,160 @@ describe('review:discard', () => {
     vi.mocked(discardLayer).mockRejectedValueOnce(new Error('HTTP 502'))
     await expect(discardReview('r_aaaaaa')).rejects.toThrow('pending review')
     expect(getReview('r_aaaaaa')!.status).toBe('open')
+  })
+})
+
+describe('request_review', () => {
+  const requester = { sessionId: 'agent-claude-author', windowId: 3 }
+  const call = (extra: Record<string, unknown> = {}) => ({
+    requester,
+    pr: U12,
+    resolveNumber: async (n: number) => `https://github.com/acme/app/pull/${n}`,
+    ...extra,
+  })
+
+  it('records the requester, keeps only refs in the review diff and turns open questions into author threads', async () => {
+    const answer = await requestReview(call({
+      focus: 'the clamp\u0007 logic',
+      briefing: {
+        what: 'Adds a constant',
+        evidence: [{ command: 'pnpm test', output_excerpt: '12 passed', exit_code: 0 }],
+        reading_order: [{ title: 'The constant', refs: [{ path: 'a.ts', start_line: 11 }, { path: 'src/missing.ts' }] }],
+        open_questions: [{ text: 'Is 10 right?', path: 'src/a.ts', line: 11 }, { text: 'Ship it?' }],
+        bogus: 'dropped',
+      },
+    }))
+    expect(answer).toMatchObject({ round: 1, created: true })
+    expect(answer.notes.join(' ')).toContain('1 file reference')
+    const review = getReview(answer.review_id)!
+    expect(review).toMatchObject({ requesterSessionId: 'agent-claude-author', requesterWindowId: 3, focus: 'the clamp  logic' })
+    const briefing = review.authorBriefing!.layers[U12]!
+    expect(briefing).toMatchObject({ what: 'Adds a constant', forHead: 'head12' })
+    expect(briefing).not.toHaveProperty('bogus')
+    expect(briefing.readingOrder[0]!.refs).toEqual([{ path: 'src/a.ts', startLine: 11, endLine: 11 }])
+    const authorThreads = threadsForReview(answer.review_id).filter((t) => t.origin.kind === 'finding' && t.origin.source === 'author')
+    expect(authorThreads.map((t) => [t.anchor.kind, t.messages[0]!.body.split('\n')[0]]).sort()).toEqual([['line', 'Is 10 right?'], ['pr', 'Ship it?']])
+    expect(authorThreads.every((t) => t.origin.kind === 'finding' && t.origin.severity === undefined)).toBe(true)
+  })
+
+  it('refuses another session for a stack with an open review, naming its requester and changing nothing', async () => {
+    const first = await requestReview(call({ briefing: { what: 'mine' } }))
+    await expect(requestReview(call({ requester: { sessionId: 'agent-codex-other', windowId: 3 }, briefing: { what: 'theirs' } })))
+      .rejects.toThrow('requested by session agent-claude-author')
+    const review = getReview(first.review_id)!
+    expect(review.requesterSessionId).toBe('agent-claude-author')
+    expect(review.authorBriefing!.layers[U12]!.what).toBe('mine')
+  })
+
+  it('takes over a review the user opened, and lets its requester update the briefing', async () => {
+    const opened = await openReview(U12)
+    const first = await requestReview(call({ briefing: { what: 'v1' } }))
+    expect(first).toMatchObject({ review_id: opened.reviewId, created: false })
+    await requestReview(call({ briefing: { what: 'v2' } }))
+    expect(getReview(opened.reviewId)!.authorBriefing!.layers[U12]!.what).toBe('v2')
+  })
+
+  it('resolves a bare PR number in the caller’s project', async () => {
+    const resolveNumber = vi.fn(async (n: number) => `https://github.com/acme/app/pull/${n}`)
+    const answer = await requestReview(call({ pr: 12, resolveNumber }))
+    expect(resolveNumber).toHaveBeenCalledWith(12)
+    expect(answer.layers).toEqual([{ pr: 12, url: U12, head_sha: 'head12' }])
+  })
+
+  it('refuses an oversized briefing before creating anything', async () => {
+    await expect(requestReview(call({ briefing: { what: 'x'.repeat(3000), why: 'y'.repeat(4000), impact: 'z'.repeat(4000), reading_order: Array.from({ length: 20 }, () => ({ title: 't', summary: 's'.repeat(2000) })) } })))
+      .rejects.toThrow('the limit is')
+    // Parsed first: nothing was created or taken over.
+    expect(reviewsWithStatus('open')).toEqual([])
+  })
+
+  it('refuses another session for a PR stacked on top of a requested review', async () => {
+    await requestReview(call())
+    fakes.board = [{ url: U13, number: 13, headSha: 'head13', headRefName: 'feat-13', baseRefName: 'feat-12' }]
+    await expect(requestReview(call({ pr: U13, requester: { sessionId: 'agent-codex-other', windowId: 3 } })))
+      .rejects.toThrow('requested by session agent-claude-author')
+    expect(reviewsWithStatus('open')).toHaveLength(1)
+  })
+
+  it('opens the next round after a submitted review, carrying its threads and last-seen heads', async () => {
+    singleReview('r_round1')
+    addMainReviewThread({ id: 'rt_round1a', reviewId: 'r_round1', anchor: { kind: 'pr', pr: 12 }, origin: { kind: 'user' }, author: 'user', body: 'q' })
+    setReviewStatus('r_round1', 'submitted')
+    pr(U12, 12, 'head12b', 'main')
+    const answer = await requestReview(call())
+    expect(answer.round).toBe(2)
+    const review = getReview(answer.review_id)!
+    expect(review.previousReviewId).toBe('r_round1')
+    expect(review.lastSeenHead[U12]).toBe('head12')
+    expect(threadsForReview(answer.review_id).map((t) => t.carriedFrom)).toEqual(['rt_round1a'])
+  })
+
+  it('feeds the overview the briefing, marked when it was written for an earlier head', async () => {
+    await requestReview(call({ briefing: { what: 'Adds a constant' } }))
+    expect(briefingForOverview(U12, 'head12')).toContain('## What changed\nAdds a constant')
+    expect(briefingForOverview(U12, 'later')).toMatch(/^\(Written for an earlier head/)
+    expect(briefingForOverview(U13, 'head13')).toBeUndefined()
+  })
+})
+
+describe('submit destinations and the hand-back', () => {
+  it('hands back without posting, clears what it sent and queues one system-composed prompt', async () => {
+    stackReview()
+    setReviewRequester('r_aaaaaa', 'agent-claude-author', 3)
+    fakes.drafts = {
+      [U12]: { comments: [{ ...comment('c12', 'rt_thread12'), file: 'src/a.ts', line: '11-12', severity: 'blocking', text: 'Clamp it' }], summary: 'S12', verdict: 'request_changes' },
+      [U13]: { comments: [], summary: '', verdict: 'approve' },
+    }
+    const result = await submitReview({
+      reviewId: 'r_aaaaaa',
+      layers: [{ prUrl: U12, verdict: 'request_changes', readHead: 'head12' }, { prUrl: U13, verdict: 'approve', readHead: 'head13' }],
+      destination: { session: true, github: false },
+    })
+    expect(result).toMatchObject({ complete: true, layers: [{ kind: 'sent' }, { kind: 'sent' }] })
+    expect(postReviewLayer).not.toHaveBeenCalled()
+    expect(deps.applyDraftOp).toHaveBeenCalledWith(U12, { kind: 'clear-posted', ids: ['c12'], summary: 'S12', verdict: 'request_changes' })
+    const review = getReview('r_aaaaaa')!
+    expect(review.status).toBe('submitted')
+    expect(review.handBack).toMatchObject({ sessionId: 'agent-claude-author', delivery: 'held' })
+    expect(review.handBack!.body).toBe(
+      '[Review r_aaaaaa submitted] #12 changes requested (1 comment) · #13 approve. It was not posted to GitHub. Call get_review("r_aaaaaa") for the comments.',
+    )
+    expect(deps.requestSend).toHaveBeenCalledWith('agent-claude-author')
+
+    expect(() => reviewForRequester('agent-codex-other', 'r_aaaaaa')).toThrow('Only the session that requested')
+    expect(reviewForRequester('agent-claude-author', 'r_aaaaaa')).toMatchObject({
+      status: 'submitted',
+      posted_to_github: false,
+      layers: [
+        { pr: 12, verdict: 'request_changes', state: 'sent', summary: 'S12', comments: [{ path: 'src/a.ts', start_line: 11, line: 12, side: 'RIGHT', severity: 'blocking', text: 'Clamp it' }] },
+        { pr: 13, verdict: 'approve', comments: [] },
+      ],
+    })
+  })
+
+  it('refuses to send to a requester that is gone, and to a review nobody requested', async () => {
+    stackReview()
+    await expect(submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'approve', readHead: 'head12' }], destination: { session: true, github: true } }))
+      .rejects.toThrow('No agent session requested this review')
+    setReviewRequester('r_aaaaaa', 'agent-claude-author', 3)
+    deps.isLive.mockReturnValueOnce(false)
+    await expect(submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'approve', readHead: 'head12' }], destination: { session: true, github: true } }))
+      .rejects.toThrow('has ended')
+    await expect(submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'approve', readHead: 'head12' }], destination: { session: false, github: false } }))
+      .rejects.toThrow('Choose where the review goes')
+    expect(postReviewLayer).not.toHaveBeenCalled()
+  })
+
+  it('says which round it was and that it was posted', () => {
+    const report = [{ prUrl: U12, number: 12, verdict: 'comment' as const, summary: '', comments: [{ body: 'a' }, { body: 'b' }] }]
+    expect(formatHandBack({ id: 'r_bbbbbb', round: 3 }, report, true)).toBe(
+      '[Review r_bbbbbb submitted] #12 comment (2 comments). Round 3 on this stack. It was also posted to GitHub. Call get_review("r_bbbbbb") for the comments.',
+    )
+  })
+
+  it('tells an open review’s requester it is not submitted yet', async () => {
+    stackReview()
+    setReviewRequester('r_aaaaaa', 'agent-claude-author', 3)
+    expect(reviewForRequester('agent-claude-author', 'r_aaaaaa')).toMatchObject({ status: 'open', note: expect.stringContaining('not submitted') })
   })
 })

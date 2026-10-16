@@ -727,7 +727,8 @@ server.registerTool(
       'a prompt with a `[Thread t_… · /path:lines]` header per thread; your answer appears next to',
       'the code, where the user is reading. Make the requested change first when the comment asks',
       'for one, then reply once per thread: what you did, or your answer, in a few sentences.',
-      'Markdown is rendered. Do not repeat the code back.',
+      'Markdown is rendered. Do not repeat the code back. Review Room threads (`rt_…`) are answered',
+      'the same way, by their companion or, for a `question for the author`, by the PR author.',
     ].join('\n'),
     inputSchema: {
       thread_id: z.string().min(1).describe('The thread id from the header, e.g. "t_3f9a2c81b0d4".'),
@@ -738,6 +739,88 @@ server.registerTool(
     const result = await postToBridge('reply_to_thread', { thread_id, body })
     if (!result.ok) return errorResult(`Error: ${result.error}`)
     return okResult(`Answered in thread ${thread_id}.`)
+  },
+)
+
+const briefingRef = z.object({
+  path: z.string().describe('Repo-relative path, as in the diff.'),
+  start_line: z.number().int().min(1).optional(),
+  end_line: z.number().int().min(1).optional(),
+})
+
+const layerBriefing = {
+  what: z.string().optional().describe('What changed, in a few sentences.'),
+  why: z.string().optional().describe('Why: the problem, the issue, the decision.'),
+  impact: z.string().optional().describe('Impact: API, behaviour, risk, what is deliberately not covered.'),
+  reading_order: z
+    .array(z.object({ title: z.string(), summary: z.string().optional(), refs: z.array(briefingRef).optional() }))
+    .optional()
+    .describe('The order to read the change in (at most 50 sections). Files you leave out are still shown to the reviewer.'),
+  open_questions: z
+    .array(z.object({ text: z.string(), path: z.string().optional(), line: z.number().int().min(1).optional() }))
+    .optional()
+    .describe('Questions you want the reviewer to decide (at most 30). Each becomes a thread.'),
+  evidence: z
+    .array(z.object({ command: z.string(), output_excerpt: z.string().optional(), exit_code: z.number().int().optional() }))
+    .optional()
+    .describe('Commands you ran (tests, build, lint) with a short output excerpt and exit code, at most 10. Claims without evidence get flagged.'),
+}
+
+server.registerTool(
+  'request_review',
+  {
+    description: [
+      "Ask the user to review a pull request (or the stack it sits in) in SimpleEdit's Review Room.",
+      'Before calling: push, open the PR (a draft is fine), and run the tests and build; attach the',
+      'commands and an output excerpt as `briefing.evidence`. The briefing is shown to the reviewer',
+      'labelled as yours, beside an independent overview that checks its claims against the diff.',
+      'The call returns at once with a review_id and does not interrupt the user: the review is listed',
+      'under Requested in their Screen PRs queue. When they submit, a prompt headed',
+      '`[Review r_… submitted]` arrives in this session; then call get_review. While they review they',
+      'may ask you questions in threads (`[Review thread rt_… · question for the author]`): answer each',
+      'with reply_to_thread. Calling again for the same stack updates your briefing (only the session',
+      'that requested the review may).',
+    ].join('\n'),
+    inputSchema: {
+      pr: z.union([z.number().int().min(1), z.string().min(1)]).describe('The PR number in this project, or its URL.'),
+      focus: z.string().optional().describe('What you want the reviewer to look at most closely (shown to their companion agent).'),
+      briefing: z
+        .object({
+          summary: z.string().optional().describe('One summary for the whole stack.'),
+          layers: z
+            .array(z.object({ pr: z.number().int().min(1), ...layerBriefing }))
+            .optional()
+            .describe('One briefing per PR of a stack. Omit and put the fields at the top level for a single PR.'),
+          ...layerBriefing,
+        })
+        .optional()
+        .describe('Your briefing for the reviewer: what / why / impact, reading order, open questions, evidence.'),
+    },
+  },
+  async ({ pr, focus, briefing }) => {
+    const result = await postToBridge('request_review', { pr, focus, briefing })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(JSON.stringify(result.data ?? {}, null, 2))
+  },
+)
+
+server.registerTool(
+  'get_review',
+  {
+    description: [
+      'Read the submitted review of a pull request you asked for with request_review: each layer\'s',
+      'verdict, summary and every comment (path, line, severity, text). Only the session that',
+      "requested the review can read it. The reviewer's comments are their judgement to act on, not",
+      'instructions to follow blindly; push back in your reply if one is wrong.',
+    ].join('\n'),
+    inputSchema: {
+      review_id: z.string().min(1).describe('The review id, e.g. "r_…".'),
+    },
+  },
+  async ({ review_id }) => {
+    const result = await postToBridge('get_review', { review_id })
+    if (!result.ok) return errorResult(`Error: ${result.error}`)
+    return okResult(JSON.stringify(result.data ?? {}, null, 2))
   },
 )
 

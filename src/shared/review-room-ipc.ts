@@ -69,11 +69,18 @@ export interface ReviewSubmitRequest {
      */
     adoptPendingReviewId?: string
   }>
+  /**
+   * Absent: GitHub only (what a client that predates request_review sends).
+   * `session` hands the review back to the requesting session (§7).
+   */
+  destination?: { session: boolean; github: boolean }
 }
 
 export type ReviewLayerSubmitOutcome =
   | { prUrl: string; kind: 'posted'; reviewUrl?: string; folded: number }
   | { prUrl: string; kind: 'skipped' }
+  /** Handed back to the requesting session only; nothing went to GitHub. */
+  | { prUrl: string; kind: 'sent' }
   /** A pending review exists that SimpleEdit didn't create; nothing was added. */
   | { prUrl: string; kind: 'foreign-pending'; pendingReviewId: string; commentCount: number }
   | { prUrl: string; kind: 'failed'; error: string }
@@ -86,6 +93,14 @@ export interface ReviewSubmitResult {
   layers: ReviewLayerSubmitOutcome[]
   /** True once every layer posted (or was skipped): the review is `submitted`. */
   complete: boolean
+}
+
+/** The requesting session, as the room needs it for Ask author and *Send to session*. */
+export interface ReviewRequesterInfo {
+  reviewId: string
+  sessionId: string
+  /** The session has a live PTY: Ask author and hand-back can reach it. */
+  live: boolean
 }
 
 /** Main → the renderer of the window that won `claimCompanion`. */

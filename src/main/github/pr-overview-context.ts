@@ -18,7 +18,7 @@ import { runGh } from './gh'
 import { parsePrCommits, repoOf, type BaseResolver } from './stack-base'
 import type { DeepFinding, PrContext, TriageFinding } from '../../shared/screenprs'
 import type { OverviewFacts } from '../../shared/pr-overview'
-import { REVIEW_RUBRIC_CAP, rubricAttrs, rubricBody, type ReviewRubric } from './review-rubric'
+import { REVIEW_RUBRIC_CAP, rubricAttrs, rubricBody, stripFence, type ReviewRubric } from './review-rubric'
 
 // ── diff files ──────────────────────────────────────────────────────────────
 
@@ -300,6 +300,8 @@ export interface OverviewContext {
   guides: { path: string; text: string }[]
   /** The repo's nearest `REVIEW.md` at the head, if it has one. */
   rubric?: ReviewRubric
+  /** The requesting agent's own briefing on this PR, as markdown (untrusted; fenced). */
+  authorBriefing?: string
   triage: TriageFinding[]
   deep: DeepFinding[]
   /** Sources that could not be fetched. */
@@ -440,12 +442,23 @@ function findingsSection(ctx: OverviewContext): string {
 }
 
 /** The prompt input, in priority order under one budget, with its "not seen" block. */
+/** One layer's briefing is capped at 20 KB; its markdown adds a little framing. */
+const AUTHOR_BRIEFING_CAP = 24_000
+
+/** The briefing can't close or reopen its own block. */
+export function authorBriefingBody(text: string): string {
+  return stripFence(text, 'author-briefing')
+}
+
 export function renderOverviewInput(ctx: OverviewContext, budget = OVERVIEW_INPUT_BUDGET): string {
   const commits = ctx.commits.map((s) => `- ${s}`).join('\n')
   const sections: InputSection[] = [
     { tag: 'pr', body: metaSection(ctx), cap: 8_000 },
     ...(ctx.rubric
       ? [{ tag: 'review-rubric', attrs: rubricAttrs(ctx.rubric), body: rubricBody(ctx.rubric), cap: REVIEW_RUBRIC_CAP + 200 }]
+      : []),
+    ...(ctx.authorBriefing
+      ? [{ tag: 'author-briefing', body: authorBriefingBody(ctx.authorBriefing), cap: AUTHOR_BRIEFING_CAP }]
       : []),
     { tag: 'diff', body: ctx.pr.diff || '(empty diff)', cap: 80_000 },
     {
@@ -513,7 +526,7 @@ async function settle<T>(p: Promise<T>, name: string, unavailable: string[], fal
  */
 export async function gatherOverviewContext(
   pr: PrContext,
-  opts: { handle: string; resolver: BaseResolver; rubric?: ReviewRubric; triage?: TriageFinding[]; deep?: DeepFinding[] }
+  opts: { handle: string; resolver: BaseResolver; rubric?: ReviewRubric; authorBriefing?: string; triage?: TriageFinding[]; deep?: DeepFinding[] }
 ): Promise<OverviewContext> {
   const repo = repoOf(pr.url)
   const api = (path: string): Promise<string> =>
@@ -595,6 +608,7 @@ export async function gatherOverviewContext(
     keyFiles,
     guides,
     ...(opts.rubric ? { rubric: opts.rubric } : {}),
+    ...(opts.authorBriefing ? { authorBriefing: opts.authorBriefing } : {}),
     triage: opts.triage ?? [],
     deep: opts.deep ?? [],
     unavailable,

@@ -47,7 +47,7 @@ import { parseScreeningFilters, screeningFilters } from '../shared/screenprs-fil
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
 import { parseDraftOpRequest } from '../shared/review-drafts'
 import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnapshot, onDeepResult } from './deep-review'
-import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot, onOverviewResult } from './pr-overview'
+import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot, onOverviewResult, setOverviewBriefingSource } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
 import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer, setBacklogTools, setReviewRoomTools, revokeBridgeSession } from './mcp-bridge'
@@ -107,11 +107,12 @@ import { applyBacklogOps, loadBacklog, parseBacklogOps, type Origin } from './ba
 import { parseStartRequest, startBacklogItem } from './backlog-start'
 import { closeDb } from './db'
 import { applyReviewOp, isReviewCompanionSession, loadReviews } from './review-room-store'
-import { isReviewMessageId, parseReviewOpRequest, type ReviewChange, type ReviewSnapshot } from '../shared/review-room'
+import { isReviewHandBackId, isReviewMessageId, parseReviewOpRequest, type ReviewChange, type ReviewSnapshot } from '../shared/review-room'
+import { prUrlInRepo } from './github/repo-remote'
 import { createReviewRoomTools } from './review-room-tools'
 import {
-  ackHead, configureReviewRoom, discardReview, layerDiff, markStep, moveDraft, onDeepFindings, onOverviewText, onTriageCard,
-  openReview, reviewLayers, since, sinceDiff, submitReview, sweepClosedReviews,
+  ackHead, assertRequesterLive, briefingForOverview, configureReviewRoom, discardReview, layerDiff, markStep, moveDraft, onDeepFindings, onOverviewText, onTriageCard,
+  openReview, requesterInfo, reviewLayers, since, sinceDiff, submitReview, sweepClosedReviews,
 } from './review-room-service'
 import { removeReviewCheckouts } from './review-checkout'
 import {
@@ -482,7 +483,9 @@ function broadcastReviewChanges(changes: ReviewChange[]): void {
 setReviewRoomTools(createReviewRoomTools({
   broadcast: broadcastReviewChanges,
   markReplied: markThreadReplied,
+  resolvePrNumber: (windowId, pr) => prUrlInRepo(getRepoForSenderOrThrow(windowId), pr),
 }))
+setOverviewBriefingSource(briefingForOverview)
 
 // ── Review Room ────────────────────────────────────────────
 configureReviewRoom({
@@ -492,6 +495,8 @@ configureReviewRoom({
   defaultCompanionAgent: () => defaultCompanionAgent(),
   endCompanion: endReviewCompanion,
   removeCheckouts: (reviewId) => removeReviewCheckouts(reviewId),
+  isLive: isTerminalLive,
+  requestSend,
 })
 // ── Review Room companion ──────────────────────────────────
 initReviewCompanion({
@@ -1223,6 +1228,8 @@ function registerAllHandlers(): void {
 
   handleInvoke('review:op', (event, raw: unknown) => {
     const { reviewId, op } = parseReviewOpRequest(raw)
+    // Ask author reaches only a live requester: a dead one would hold the question for ever.
+    if (op.kind === 'ask-author') assertRequesterLive(reviewId)
     const { change, queued } = applyReviewOp(reviewId, op)
     if (change && op.kind === 'remove-thread') {
       for (const { url, result } of removeDraftsForThread(op.threadId)) {
@@ -1232,7 +1239,7 @@ function registerAllHandlers(): void {
     if (change) broadcastReviewChanges([change])
     if (queued?.sessionId) requestSend(queued.sessionId)
     // The companion starts on the first question; a live one is returned as is.
-    if (queued) {
+    if (queued && !queued.toAuthor) {
       void ensureCompanion(reviewId, event.sender.id, `message:${queued.messageId}`)
         .catch((err: unknown) => console.warn('[ReviewRoom] Companion did not start:', err))
     }
@@ -1249,6 +1256,7 @@ function registerAllHandlers(): void {
   handleInvoke('review:move-draft', (_event, threadId: unknown, toUrl: unknown) => moveDraft(threadId, toUrl))
   handleInvoke('review:submit', (_event, request: unknown) => submitReview(request))
   handleInvoke('review:discard', (_event, reviewId: unknown) => discardReview(reviewId))
+  handleInvoke('review:requester-info', (_event, reviewId: unknown) => requesterInfo(reviewId))
 
   // The companion: claimed and started by main, created by the claiming window.
   handleInvoke('review:companion-start', async (event, reviewId: unknown) => {
@@ -1284,7 +1292,7 @@ function registerAllHandlers(): void {
 
   handleInvoke('agent-threads:retry', (_event, sessionId: unknown, messageId: unknown) =>
     typeof sessionId === 'string' &&
-      retryMessage(sessionId, isReviewMessageId(messageId) ? messageId : parseMessageIdRequest(messageId))
+      retryMessage(sessionId, isReviewMessageId(messageId) || isReviewHandBackId(messageId) ? messageId : parseMessageIdRequest(messageId))
   )
 
   handleInvoke('agent-threads:force-send', (_event, sessionId: unknown) => {

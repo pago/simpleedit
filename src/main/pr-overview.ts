@@ -88,14 +88,32 @@ export function overviewModel(): ModelRef {
   return getModelConfig().defaults.prOverview ?? DEFAULT_OVERVIEW_MODEL
 }
 
-export function overviewFingerprint(model: ModelRef | undefined, instructions: string, rubric?: ReviewRubric): string {
+export function overviewFingerprint(model: ModelRef | undefined, instructions: string, rubric?: ReviewRubric, authorBriefing?: string): string {
   return analysisFingerprint({
     target: targetFromModelRef(model),
     promptVersion: OVERVIEW_PROMPT_VERSION,
     instructions: instructionsHash(instructions),
     rubric: rubricFingerprint(rubric),
+    // A new or changed briefing is new input: the cached answer didn't check it.
+    ...(authorBriefing ? { authorBriefing: instructionsHash(authorBriefing) } : {}),
     schemaVersion: 1,
   })
+}
+
+/** The Review Room's author briefing for a PR, as markdown; set by main's wiring (the room imports this module's results). */
+let briefingSource: ((url: string, headSha: string) => string | undefined) | null = null
+
+export function setOverviewBriefingSource(fn: typeof briefingSource): void {
+  briefingSource = fn
+}
+
+function authorBriefingFor(url: string, headSha: string): string | undefined {
+  try {
+    return briefingSource?.(url, headSha)
+  } catch (err) {
+    console.warn('[Overview] Reading the author briefing failed:', err instanceof Error ? err.message : err)
+    return undefined
+  }
 }
 
 /** Settles when the overview it started ends; a join settles at once. */
@@ -129,7 +147,8 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
     donePreparing()
   }
   if (controller.signal.aborted) return { joined: false }
-  const fingerprint = overviewFingerprint(model, instructions, rubric)
+  const authorBriefing = authorBriefingFor(ctx.url, ctx.headSha)
+  const fingerprint = overviewFingerprint(model, instructions, rubric, authorBriefing)
   const running = activeOverviews.get(ctx.url)
   if (running) {
     if (running.headSha === ctx.headSha && running.fingerprint === fingerprint) return { joined: true }
@@ -167,6 +186,7 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
         handle,
         resolver: createBaseResolver(),
         rubric,
+        ...(authorBriefing ? { authorBriefing } : {}),
         ...getCachedFindings(ctx.url, ctx.headSha),
       })
     })

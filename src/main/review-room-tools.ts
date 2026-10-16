@@ -13,6 +13,7 @@ import {
 import type { ReviewRoomTools } from './mcp-bridge'
 import { draftLinksForThread } from './screenprs-drafts'
 import { checkoutReviewHead } from './review-checkout'
+import { requestReview, reviewForRequester } from './review-room-service'
 import { isReviewId, type Review, type ReviewChange, type ReviewPrRef, type ReviewSeverity } from '../shared/review-room'
 
 type ReviewRole = 'companion' | 'requester'
@@ -95,6 +96,8 @@ export function createReviewRoomTools(deps: {
   diffForLayer?: (layer: ReviewPrRef) => Promise<string>
   draftCommentId?: (threadId: string) => string | undefined
   checkoutHead?: typeof checkoutReviewHead
+  /** A bare PR number → its url in the calling window's project. */
+  resolvePrNumber?: (windowId: number, pr: number) => Promise<string>
 }): ReviewRoomTools {
   return {
     listThreads(terminalId, input) {
@@ -138,8 +141,30 @@ export function createReviewRoomTools(deps: {
       )
       if (!change) return { ok: false, error: 'The review thread changed before the reply was recorded.' }
       deps.broadcast([change])
-      if (role === 'companion') deps.markReplied(terminalId, thread.id)
+      // Either role's explicit answer settles what was delivered to it this turn.
+      deps.markReplied(terminalId, thread.id)
       return { ok: true }
+    },
+    async requestReview(terminalId, windowId, input) {
+      const resolve = deps.resolvePrNumber
+      const answer = await requestReview({
+        requester: { sessionId: terminalId, windowId },
+        pr: input['pr'],
+        focus: input['focus'],
+        briefing: input['briefing'],
+        resolveNumber: (pr) => (resolve ? resolve(windowId, pr) : Promise.reject(new Error('Pass the PR url'))),
+      })
+      return {
+        ok: true,
+        ...answer,
+        note:
+          'The review is listed for the user under Requested in Screen PRs; it does not interrupt them. ' +
+          'When they submit, a prompt headed "[Review r_… submitted]" arrives here: call get_review then. ' +
+          'They may ask you questions in threads meanwhile (headed "[Review thread rt_… · question for the author]"): answer each with reply_to_thread.',
+      }
+    },
+    getReview(terminalId, input) {
+      return reviewForRequester(terminalId, input['review_id'])
     },
     async getDiff(terminalId, reviewId, pr) {
       if (!isReviewId(reviewId) || !Number.isSafeInteger(pr) || pr < 1) throw new Error('Malformed review diff request')

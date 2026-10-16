@@ -8,8 +8,8 @@ vi.mock('../github/stack-base', async (importOriginal) => ({
   getReviewDiff: vi.fn(async () => ({ diff: 'diff --git a/x b/x' })),
 }))
 vi.mock('../screenprs-cache', () => ({ getCachedDiff: vi.fn(() => undefined) }))
-import { getDb, openDb, useDbForTests } from '../db'
-import { addMainReviewThread, claimCompanion, createReview, getReviewThread } from '../review-room-store'
+import { openDb, useDbForTests } from '../db'
+import { addMainReviewThread, applyReviewOp, claimCompanion, createReview, getReviewThread } from '../review-room-store'
 import { createReviewRoomTools, REVIEW_DIFF_LIMIT } from '../review-room-tools'
 
 const layer = { url: 'https://github.com/acme/repo/pull/42', number: 42, headSha: 'abc123' }
@@ -48,12 +48,15 @@ describe('Review Room MCP tools', () => {
 
   it('lets requesters answer only an open Ask-author request and closes it atomically', () => {
     const { threadId } = setupReview()
-    const tools = createReviewRoomTools({ broadcast: () => {}, markReplied: () => {}, draftCommentId: () => undefined })
+    const markReplied = vi.fn()
+    const tools = createReviewRoomTools({ broadcast: () => {}, markReplied, draftCommentId: () => undefined })
     expect(tools.reply('requester', threadId, 'answer')).toMatchObject({ ok: false })
 
-    getDb().prepare('UPDATE review_threads SET ask_author_open = 1 WHERE id = ?').run(threadId)
+    applyReviewOp('r_review01', { kind: 'ask-author', threadId, message: { id: 'rm_askauthor1', body: 'Why?' } })
     expect((tools.listThreads('requester', {})['threads'] as unknown[])).toHaveLength(1)
     expect(tools.reply('requester', threadId, 'answer')).toEqual({ ok: true })
+    // Settles what was delivered to the requester this turn, so its Stop doesn't answer twice.
+    expect(markReplied).toHaveBeenCalledWith('requester', threadId)
     const thread = getReviewThread(threadId)!
     expect(thread.askAuthorOpen).toBe(false)
     expect(thread.messages.at(-1)).toMatchObject({ author: 'author', body: 'answer' })

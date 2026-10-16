@@ -46,7 +46,15 @@ import {
   type ThreadAnchor,
   type ThreadChange,
 } from '../shared/agent-threads'
-import { fitReviewBody, isReviewMessageId, type ReviewChange, type ReviewThread } from '../shared/review-room'
+import {
+  fitReviewBody,
+  isReviewHandBackId,
+  isReviewMessageId,
+  type Review,
+  type ReviewChange,
+  type ReviewHandBack,
+  type ReviewThread,
+} from '../shared/review-room'
 import {
   addAgentThread,
   appendAgentMessage,
@@ -60,6 +68,13 @@ import {
 } from './agent-threads-store'
 import {
   appendReviewMessage,
+  closeAskAuthor,
+  getReview,
+  getReviewThread,
+  handBackSessionsIn,
+  handBacksInState,
+  hasHandBackInState,
+  setHandBackDelivery,
   reviewHasMessagesInState,
   reviewMessagesInState,
   reviewSessionsWithMessagesIn,
@@ -150,41 +165,68 @@ function emitReview(changes: ReviewChange[] | ReviewChange | null): void {
   if (list.length) deps.broadcastReview?.(list)
 }
 
-function appendReply(threadId: string, body: string): void {
+/**
+ * The requesting session answers Ask-author questions as the author; that
+ * answer closes the request. Anyone else answering a review thread is its companion.
+ */
+function reviewReplier(sessionId: string, threadId: string): 'companion' | 'author' {
+  const thread = getReviewThread(threadId)
+  const review = thread ? getReview(thread.reviewId) : null
+  return review && review.requesterSessionId === sessionId && review.companion?.sessionId !== sessionId ? 'author' : 'companion'
+}
+
+/** Whether the answer was recorded: an author's is refused once its Ask-author request closed. */
+function appendReply(sessionId: string, threadId: string, body: string): boolean {
   if (threadId.startsWith('rt_')) {
-    emitReview(appendReviewMessage(threadId, 'companion', fitReviewBody(body)))
-    return
+    const as = reviewReplier(sessionId, threadId)
+    const change = appendReviewMessage(threadId, as, fitReviewBody(body), as === 'author' ? { closeAskAuthor: true } : {})
+    emitReview(change)
+    return change !== null
   }
   const change = appendAgentMessage(threadId, newMessageId(), body)
   emit(change)
   if (change?.thread) deps?.onAgentReply?.(change.thread)
+  return true
 }
 
 function patch(ids: Iterable<string>, p: DeliveryPatch): void {
   const agent: string[] = []
   const review: string[] = []
-  for (const id of ids) (isReviewMessageId(id) ? review : agent).push(id)
+  const handBacks: string[] = []
+  for (const id of ids) (isReviewMessageId(id) ? review : isReviewHandBackId(id) ? handBacks : agent).push(id)
   if (agent.length) emit(setDelivery(agent, p))
   if (review.length) emitReview(setReviewDelivery(review, p))
+  if (handBacks.length) emitReview(setHandBackDelivery(handBacks, p))
 }
 
+/**
+ * A hand-back belongs to no thread: `thread.id` is its review's id, which is
+ * what its prompt header carries, and it is never armed (nothing answers it).
+ */
 type PendingMessage =
   | { kind: 'agent'; thread: AgentThread; message: AgentThread['messages'][number] }
   | { kind: 'review'; thread: ReviewThread; message: ReviewThread['messages'][number] }
+  | { kind: 'hand-back'; thread: Pick<Review, 'id'>; review: Review; message: ReviewHandBack }
 
 function pendingMessages(sessionId: string, states: readonly DeliveryState[]): PendingMessage[] {
   return [
     ...messagesInState(sessionId, states).map((entry): PendingMessage => ({ kind: 'agent', ...entry })),
     ...reviewMessagesInState(sessionId, states).map(({ thread, message }): PendingMessage => ({ kind: 'review', thread, message })),
+    ...handBacksInState(sessionId, states).map(({ review, handBack }): PendingMessage => ({
+      kind: 'hand-back',
+      thread: { id: review.id },
+      review,
+      message: handBack,
+    })),
   ].sort((a, b) => a.message.at.localeCompare(b.message.at))
 }
 
 function sessionsWithPending(states: readonly DeliveryState[]): string[] {
-  return [...new Set([...sessionsWithMessagesIn(states), ...reviewSessionsWithMessagesIn(states)])]
+  return [...new Set([...sessionsWithMessagesIn(states), ...reviewSessionsWithMessagesIn(states), ...handBackSessionsIn(states)])]
 }
 
 function hasPending(sessionId: string, states: readonly DeliveryState[]): boolean {
-  return hasMessagesInState(sessionId, states) || reviewHasMessagesInState(sessionId, states)
+  return hasMessagesInState(sessionId, states) || reviewHasMessagesInState(sessionId, states) || hasHandBackInState(sessionId, states)
 }
 
 function reviewWhere(thread: ReviewThread): string {
@@ -209,6 +251,28 @@ function formatReviewPrompt(parts: Array<{ thread: ReviewThread; newMessageIds: 
     'Read each thread with list_threads before answering; the prompt intentionally contains only the user question.',
     ...rendered,
     `Answer each thread once with reply_to_thread (${ids}).`,
+  ].join('\n\n')
+}
+
+/**
+ * Ask author: the reviewer's question to the session that requested the
+ * review. Only system text and the user's own words; the thread's item (a
+ * finding, another reviewer's comment) is tool data, read with list_threads.
+ */
+export function formatAskAuthorPrompt(parts: Array<{ thread: ReviewThread; newMessageIds: ReadonlySet<string> }>): string {
+  const intro = parts.length === 1
+    ? 'The reviewer of the pull request you asked SimpleEdit to review has a question for you, the author.'
+    : `The reviewer of the pull request you asked SimpleEdit to review has ${parts.length} questions for you, the author.`
+  const rendered = parts.map(({ thread, newMessageIds }) => {
+    const body = thread.messages.filter((message) => newMessageIds.has(message.id)).map((message) => message.body).join('\n\n')
+    return `[Review thread ${thread.id} · question for the author]\n${body}`
+  })
+  const ids = parts.map(({ thread }) => `"${thread.id}"`).join(', ')
+  return [
+    intro,
+    'list_threads shows the thread it was asked in.',
+    ...rendered,
+    `Answer each once with reply_to_thread (${ids}). Answer; don't change code for it unless the question asks you to.`,
   ].join('\n\n')
 }
 
@@ -248,7 +312,8 @@ export function initThreadDelivery(d: DeliveryDeps): void {
     const stale = pendingMessages(sessionId, ['sending', 'delivered'])
     restarted.push(
       [stale.filter((p) => p.message.delivery === 'sending').map((p) => p.message.id), { delivery: 'failed', failedReason: 'SimpleEdit restarted before the agent received it' }],
-      [stale.filter((p) => p.message.delivery === 'delivered').map((p) => p.message.id), { delivery: 'unanswered', failedReason: 'SimpleEdit restarted before the agent answered' }],
+      // A delivered hand-back is done; nothing was waiting for an answer to it.
+      [stale.filter((p) => p.message.delivery === 'delivered' && p.kind !== 'hand-back').map((p) => p.message.id), { delivery: 'unanswered', failedReason: 'SimpleEdit restarted before the agent answered' }],
     )
   }
   for (const [ids, p] of restarted) patch(ids, p)
@@ -377,12 +442,26 @@ export function endThreadStop(sessionId: string, opts: { continued: boolean; las
 }
 
 function sessionGone(sessionId: string): void {
-  const reviewPending = reviewMessagesInState(sessionId, ['held', 'sending', 'delivered']).map(({ message }) => message.id)
-  if (reviewPending.length) {
-    emitReview(setReviewDelivery(reviewPending, {
+  const reviewPending = reviewMessagesInState(sessionId, ['held', 'sending', 'delivered'])
+  const toCompanion = reviewPending.filter(({ message }) => !message.toAuthor).map(({ message }) => message.id)
+  const toAuthor = reviewPending.filter(({ message }) => message.toAuthor)
+  if (toCompanion.length) {
+    emitReview(setReviewDelivery(toCompanion, {
       delivery: 'unanswered',
       failedReason: 'The session ended before the companion answered',
     }))
+  }
+  if (toAuthor.length) {
+    emitReview(setReviewDelivery(toAuthor.map(({ message }) => message.id), {
+      delivery: 'unanswered',
+      failedReason: 'The requesting session ended before it answered',
+    }))
+    // Nobody is left to answer: the thread stops waiting for the author.
+    for (const threadId of new Set(toAuthor.map(({ thread }) => thread.id))) emitReview(closeAskAuthor(threadId))
+  }
+  const handBacks = handBacksInState(sessionId, ['held', 'sending', 'failed']).map(({ handBack }) => handBack.id)
+  if (handBacks.length) {
+    emitReview(setHandBackDelivery(handBacks, { delivery: 'failed', failedReason: 'The requesting session ended before it received the review' }))
   }
   const t = tracks.get(sessionId)
   if (!t) return
@@ -413,7 +492,7 @@ export function replyToThread(sessionId: string, threadId: string, body: string)
     }
   }
   if (!body.trim()) return { ok: false, error: 'reply_to_thread needs a non-empty `body`.' }
-  appendReply(threadId, body)
+  appendReply(sessionId, threadId, body)
   const t = tracks.get(sessionId)
   const armed = t?.armed.get(threadId)
   if (t && armed) {
@@ -463,8 +542,8 @@ function settleArms(sessionId: string, t: Track, lastAssistantMessage: string | 
     if (t.replied.has(threadId)) continue
     if (text && !reason) {
       try {
-        appendReply(threadId, text)
-        patch(messageIds, { delivery: 'answered-implicitly' })
+        if (appendReply(sessionId, threadId, text)) patch(messageIds, { delivery: 'answered-implicitly' })
+        else patch(messageIds, { delivery: 'unanswered', failedReason: 'The question was closed before the answer came' })
       } catch (err) {
         // One thread's failed write must not leave the rest of the turn armed.
         console.error(`[Threads] Attaching the answer to ${threadId} failed:`, err)
@@ -484,16 +563,20 @@ function promptSubmitted(sessionId: string, t: Track, prompt: string): boolean {
   // A new turn: whatever was armed for the last one and never answered stays unanswered.
   settleArms(sessionId, t, null, 'The turn was interrupted before the agent answered')
   const reviewIds = [...prompt.matchAll(/\[Review thread (rt_[A-Za-z0-9-]{6,64}) · /g)].map((match) => match[1]!)
-  const ids = new Set([...threadIdsInPrompt(prompt), ...reviewIds])
+  const handBackIds = [...prompt.matchAll(/\[Review (r_[A-Za-z0-9-]{6,64}) submitted\]/g)].map((match) => match[1]!)
+  const ids = new Set([...threadIdsInPrompt(prompt), ...reviewIds, ...handBackIds])
   if (ids.size === 0) return false
   const confirmed: string[] = []
-  for (const { thread, message } of pendingMessages(sessionId, ['sending', 'failed'])) {
+  for (const pending of pendingMessages(sessionId, ['sending', 'failed'])) {
+    const { thread, message } = pending
     if (!ids.has(thread.id)) continue
     // A slow hook can confirm after we gave up; the agent has it all the same.
     if (message.delivery === 'failed' && !t.timedOut.has(message.id)) continue
     confirmed.push(message.id)
     t.sending.delete(message.id)
     t.timedOut.delete(message.id)
+    // Nothing answers a hand-back: delivered is where it ends.
+    if (pending.kind === 'hand-back') continue
     const list = t.armed.get(thread.id) ?? []
     list.push(message.id)
     t.armed.set(thread.id, list)
@@ -550,12 +633,19 @@ async function fire(sessionId: string): Promise<void> {
   if (held.length === 0) return
   const byThread = new Map<string, { thread: AgentThread; newMessageIds: Set<string> }>()
   const reviewThreads = new Map<string, { thread: ReviewThread; newMessageIds: Set<string> }>()
+  const authorThreads = new Map<string, { thread: ReviewThread; newMessageIds: Set<string> }>()
+  const handBacks: ReviewHandBack[] = []
   for (const item of held) {
+    if (item.kind === 'hand-back') {
+      handBacks.push(item.message)
+      continue
+    }
     if (item.kind === 'review') {
       const { thread, message } = item
-      const entry = reviewThreads.get(thread.id) ?? { thread, newMessageIds: new Set<string>() }
+      const into = message.toAuthor ? authorThreads : reviewThreads
+      const entry = into.get(thread.id) ?? { thread, newMessageIds: new Set<string>() }
       entry.newMessageIds.add(message.id)
-      reviewThreads.set(thread.id, entry)
+      into.set(thread.id, entry)
       continue
     }
     const { thread, message } = item
@@ -566,10 +656,12 @@ async function fire(sessionId: string): Promise<void> {
   const parts: string[] = []
   if (byThread.size) parts.push(formatThreadsPrompt([...byThread.values()]))
   if (reviewThreads.size) parts.push(formatReviewPrompt([...reviewThreads.values()]))
+  if (authorThreads.size) parts.push(formatAskAuthorPrompt([...authorThreads.values()]))
+  for (const handBack of handBacks) parts.push(handBack.body)
   const prompt = parts.join('\n\n')
   const ids = held.map((p) => p.message.id)
   t.turnEnded = false
-  console.log(`[Threads] Sending to ${sessionId}: ${[...byThread.keys(), ...reviewThreads.keys()].join(', ')}`)
+  console.log(`[Threads] Sending to ${sessionId}: ${[...byThread.keys(), ...reviewThreads.keys(), ...authorThreads.keys(), ...handBacks.map((h) => h.id)].join(', ')}`)
 
   const pushed = deps.push(sessionId, prompt)
   if (pushed) {

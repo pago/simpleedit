@@ -17,6 +17,7 @@ import type { ReviewChange, ReviewSnapshot } from './review-room'
 import type {
   ReviewCompanionCreateRequest,
   ReviewCompanionInfo,
+  ReviewRequesterInfo,
   ReviewLayerDiff,
   ReviewLayerInfo,
   ReviewOpenResult,
@@ -643,6 +644,8 @@ export interface ScreenPrsInvokeMap {
   'review:submit': { args: [request: unknown]; result: ReviewSubmitResult }
   /** Discard the review: deletes SimpleEdit's pending reviews on GitHub, ends the companion, removes checkouts. */
   'review:discard': { args: [reviewId: unknown]; result: void }
+  /** The session that asked for this review (`request_review`), and whether it is still alive. */
+  'review:requester-info': { args: [reviewId: unknown]; result: ReviewRequesterInfo | null }
   /** The saved org + cutoff every client screens with. */
   'screenprs:filter-get': { args: []; result: ScreenPrsFilterSnapshot }
   /** Replace the saved filter. Main validates, persists, and broadcasts `screenprs:filter-changed`. */

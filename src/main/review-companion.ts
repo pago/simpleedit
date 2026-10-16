@@ -320,6 +320,7 @@ async function startCompanion(reviewId: string, windowId: number, requestId: str
       reviewId,
       layers: review.layers,
       ...(rubric ? { rubric } : {}),
+      ...(review.focus ? { focus: review.focus } : {}),
       readOnlyEnforced: companionReadOnly(target.provider) === 'enforced',
     })
     const outcome = await askWindow(windowId, {
