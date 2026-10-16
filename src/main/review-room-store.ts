@@ -41,7 +41,6 @@ interface ReviewRow {
   companion_agent: string
   last_seen_head: string
   read_steps: string
-  author_briefing: string | null
   round: number
   previous_review_id: string | null
   submissions: string
@@ -143,7 +142,6 @@ function toReview(row: ReviewRow): Review {
   if (row.requester_session_id) review.requesterSessionId = row.requester_session_id
   if (row.requester_window_id !== null) review.requesterWindowId = row.requester_window_id
   if (row.companion) review.companion = json<ReviewCompanion>(row.companion)
-  if (row.author_briefing) review.authorBriefing = parseJson(row.author_briefing)
   if (row.previous_review_id) review.previousReviewId = row.previous_review_id
   return review
 }
@@ -226,7 +224,6 @@ export interface CreateReviewInput {
   companionAgent: ReviewAgent
   requesterSessionId?: string
   requesterWindowId?: number
-  authorBriefing?: unknown
   round?: number
   previousReviewId?: string
 }
@@ -253,8 +250,8 @@ export function createReview(input: CreateReviewInput, now = new Date()): Review
     d.prepare(
       `INSERT INTO reviews
        (id, repo, layers, status, requester_session_id, requester_window_id, companion, companion_agent,
-        last_seen_head, read_steps, author_briefing, round, previous_review_id, submissions, created_at, updated_at)
-       VALUES (?, ?, ?, 'open', ?, ?, NULL, ?, '{}', '[]', ?, ?, ?, '[]', ?, ?)`
+        last_seen_head, read_steps, round, previous_review_id, submissions, created_at, updated_at)
+       VALUES (?, ?, ?, 'open', ?, ?, NULL, ?, '{}', '[]', ?, ?, '[]', ?, ?)`
     ).run(
       id,
       input.repo,
@@ -262,7 +259,6 @@ export function createReview(input: CreateReviewInput, now = new Date()): Review
       input.requesterSessionId ?? null,
       input.requesterWindowId ?? null,
       JSON.stringify(input.companionAgent),
-      input.authorBriefing === undefined ? null : JSON.stringify(input.authorBriefing),
       round,
       input.previousReviewId ?? null,
       at,

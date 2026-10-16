@@ -2,6 +2,7 @@ import { parseUnifiedDiff, type DiffFile } from '../shared/parseDiff'
 import { parseLineRange } from '../shared/screenprs'
 import type { ConventionalCommentLabel } from '../shared/ipc-types'
 import {
+  fitReviewBody,
   newReviewMessageId,
   type ReviewChange,
   type ReviewFindingSource,
@@ -194,7 +195,7 @@ function titleSimilarity(a: string, b: string): number {
 }
 
 function findingBody(finding: FindingToMaterialise): string {
-  return finding.detail?.trim() ? `${finding.title}\n\n${finding.detail}` : finding.title
+  return fitReviewBody(finding.detail?.trim() ? `${finding.title}\n\n${finding.detail}` : finding.title)
 }
 
 function itemTitle(thread: ReviewThread): string {
@@ -299,7 +300,7 @@ function reconcile(input: MaterialiseFindingsInput, now: Date): MaterialiseFindi
     const change = updateMainReviewThread(existing.id, { anchor, origin, outdated: false, itemBody: body }, now)
     if (change) changes.push(change)
     if (existing.status === 'done' && existing.closeReason) {
-      const reportedBody = `Reported again: ${body}`
+      const reportedBody = fitReviewBody(`Reported again: ${body}`)
       if (existing.messages.slice(1).at(-1)?.body !== reportedBody) {
         const reported = appendReviewMessage(existing.id, 'tool', reportedBody, { id: newReviewMessageId() }, now)
         if (reported) changes.push(reported)
