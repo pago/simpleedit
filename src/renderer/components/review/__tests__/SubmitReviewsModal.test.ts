@@ -13,16 +13,25 @@ const LAYERS = [layer(301, U1), layer(302, U2), layer(303, U3)]
 
 let api: ReturnType<typeof stubApi>
 let answer: (req: ReviewSubmitRequest) => ReviewSubmitResult
+/** The head each layer's diff loads at; absent: it fails to load. */
+let diffHeads: Record<string, string>
 
 beforeEach(async () => {
   answer = (req) => ({ layers: req.layers.map((l) => ({ prUrl: l.prUrl, kind: 'posted', folded: 0 })), complete: true })
   api = stubApi((channel, ...args) => {
     if (channel === 'review:submit') return answer(args[0] as ReviewSubmitRequest)
-    if (channel === 'review:layer-diff') return { url: args[1], headSha: 'read302', diff: '' }
+    if (channel === 'review:layer-diff') {
+      const head = diffHeads[String(args[1])]
+      if (!head) throw new Error('gh failed')
+      return { url: args[1], headSha: head, diff: '' }
+    }
     return undefined
   })
+  diffHeads = { [U1]: 'sha301', [U2]: 'sha302', [U3]: 'sha303' }
   await screenPrsStore.loadDrafts()
   _resetReviewRoomForTests()
+  // What the room did on screen: each layer's diff loaded at its head.
+  await Promise.all(LAYERS.map((l) => reviewRoom.loadLayerDiff(REVIEW_ID, l.url)))
   for (const id of ['rt_blocking1', 'rt_consider1']) _receiveReviewChange({ reviewId: REVIEW_ID, threadId: id, thread: thread({ id }), rev: 1 })
   screenPrsStore.addComment(U1, { source: 'you', file: '', text: 'Must fix', severity: 'blocking', threadId: 'rt_blocking1' })
   screenPrsStore.addComment(U2, { source: 'you', file: 'src/a.ts', line: '3', text: 'Consider', severity: 'consider', sha: 'sha302', threadId: 'rt_consider1' })
@@ -92,11 +101,46 @@ describe('SubmitReviewsModal', () => {
     expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U2, verdict: 'comment', readHead: 'sha302' }] })
   })
 
-  it('sends the head of the diff on screen, which may be older than the layer’s latest', async () => {
-    await reviewRoom.loadLayerDiff(REVIEW_ID, U2)
-    render(SubmitReviewsModal, { props: { reviewId: REVIEW_ID, layers: [layer(302, U2)], onclose: () => {} } })
+  it('never posts a layer whose diff didn’t load', async () => {
+    _resetReviewRoomForTests()
+    for (const id of ['rt_blocking1', 'rt_consider1']) _receiveReviewChange({ reviewId: REVIEW_ID, threadId: id, thread: thread({ id }), rev: 1 })
+    await reviewRoom.loadLayerDiff(REVIEW_ID, U1)
+    delete diffHeads[U2]
+    await reviewRoom.loadLayerDiff(REVIEW_ID, U2).catch(() => {})
+    render(SubmitReviewsModal, { props: { reviewId: REVIEW_ID, layers: [layer(301, U1), layer(302, U2)], onclose: () => {} } })
+    expect(screen.getByLabelText('Post a review on #302')).toBeDisabled()
+    expect(screen.getByTestId('submit-unread')).toHaveTextContent('this layer’s diff didn’t load')
     await fireEvent.click(screen.getByRole('button', { name: 'Submit 1 review' }))
-    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U2, verdict: 'comment', readHead: 'read302' }] })
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301' }] })
+  })
+
+  it('never posts a layer whose diff on screen is older than its head (a reload in flight)', async () => {
+    render(SubmitReviewsModal, { props: { reviewId: REVIEW_ID, layers: [layer(301, U1), layer(302, U2, { headSha: 'sha302-new' })], onclose: () => {} } })
+    expect(screen.getByLabelText('Post a review on #302')).toBeDisabled()
+    expect(screen.getByTestId('submit-unread')).toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: 'Submit 1 review' }))
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'sha301' }] })
+  })
+
+  it('lets a moved layer back in once the room reloaded it at the new head', async () => {
+    answer = (req) => ({ layers: req.layers.map((l) => ({ prUrl: l.prUrl, kind: 'head-moved', readHead: l.readHead, headSha: 'abcdef1234' })), complete: false })
+    const view = render(SubmitReviewsModal, { props: { reviewId: REVIEW_ID, layers: [layer(301, U1)], onclose: () => {} } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Submit 1 review' }))
+    await screen.findByTestId('submit-head-moved')
+
+    // The room learns the new head and reloads the layer at it.
+    await view.rerender({ reviewId: REVIEW_ID, layers: [layer(301, U1, { headSha: 'abcdef1234' })], onclose: () => {} })
+    diffHeads[U1] = 'abcdef1234'
+    await reviewRoom.loadLayerDiff(REVIEW_ID, U1)
+    expect(await screen.findByTestId('submit-reloaded')).toHaveTextContent('abcdef1')
+    const box = screen.getByLabelText('Post a review on #301')
+    expect(box).toBeEnabled()
+    expect(box).not.toBeChecked()
+    await fireEvent.click(box)
+    expect(verdictOf(301)).toBe('request_changes')
+    answer = (req) => ({ layers: req.layers.map((l) => ({ prUrl: l.prUrl, kind: 'posted', folded: 0 })), complete: true })
+    await fireEvent.click(screen.getByRole('button', { name: 'Submit 1 review' }))
+    expect(api.invoke).toHaveBeenLastCalledWith('review:submit', { reviewId: REVIEW_ID, layers: [{ prUrl: U1, verdict: 'request_changes', readHead: 'abcdef1234' }] })
   })
 
   it('says a layer that moved since it was read was not posted, and offers no retry', async () => {

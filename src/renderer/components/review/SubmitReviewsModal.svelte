@@ -6,7 +6,7 @@
    * posts with (`ConfirmReviewModal` does too), so it can't drift. Posting is
    * main's (`review:submit`); this only shows what each layer came back with.
    */
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import type { ReviewLayerInfo, ReviewLayerSubmitOutcome, ReviewSubmitRequest, ReviewVerdict } from '../../../shared/review-room-ipc'
   import type { PrReviewComment } from '../../../shared/screenprs'
   import { anchorCounts, anchorsForHead, buildReviewPayload, commentableLines } from '../../../shared/screenprs'
@@ -48,6 +48,8 @@
   let submitting = $state(false)
   let error = $state<string | null>(null)
   let complete = $state(false)
+  /** Layers refused as moved, then reloaded by the room at their new head: the head they can post at now. */
+  let reloaded = $state<Record<string, string>>({})
 
   interface LayerPreview {
     comments: PrReviewComment[]
@@ -62,7 +64,7 @@
     const draft = { ...screenPrsStore.draftFor(l.url), comments: postedComments(l.url) }
     const lineDraft = { ...draft, comments: draft.comments.filter((c) => !c.inReplyTo) }
     const diff = reviewRoom.layerDiff(reviewId, l.url)
-    const head = readHead(l)
+    const head = readHead(l) ?? l.headSha
     const base = diff?.base ?? l.base
     const isolatedBase = base?.kind === 'polluted' && base.isolated
     // Only GitHub's own diff says which lines GitHub takes; an isolated one doesn't.
@@ -80,10 +82,32 @@
   }
 
   let previews = $derived(new Map(layers.map((l) => [l.url, preview(l)])))
-  /** The head the user is reading: what main checks the layer against and pins the review to. */
-  function readHead(l: ReviewLayerInfo): string {
-    return reviewRoom.layerDiff(reviewId, l.url)?.headSha ?? l.headSha
+  /**
+   * The head the user is reading, which main checks the layer against and
+   * pins the review to. Null unless the diff on screen is at the layer's
+   * current head: a diff that never loaded, or one still being reloaded after
+   * a push, was not read at the head that would be posted.
+   */
+  function readHead(l: ReviewLayerInfo): string | null {
+    const diff = reviewRoom.layerDiff(reviewId, l.url)
+    return diff && diff.headSha === l.headSha ? diff.headSha : null
   }
+
+  // A layer refused as moved can go again once the room has its diff at the
+  // new head: the user opts back in, with the verdict its drafts now suggest.
+  $effect(() => {
+    for (const l of layers) {
+      const outcome = outcomes[l.url]
+      const head = readHead(l)
+      if (outcome?.kind !== 'head-moved' || !head || head === outcome.readHead) continue
+      untrack(() => {
+        delete outcomes[l.url]
+        reloaded[l.url] = head
+        included[l.url] = false
+        verdicts[l.url] = defaultVerdict(postedComments(l.url))
+      })
+    }
+  })
 
   /**
    * Still to send: a pending review found on GitHub waits for its own answer
@@ -92,7 +116,7 @@
   let pending = $derived(
     layers.filter((l) => {
       const kind = outcomes[l.url]?.kind
-      return included[l.url] && kind !== 'posted' && kind !== 'skipped' && kind !== 'foreign-pending' && kind !== 'head-moved'
+      return included[l.url] && readHead(l) !== null && kind !== 'posted' && kind !== 'skipped' && kind !== 'foreign-pending' && kind !== 'head-moved'
     }),
   )
 
@@ -104,9 +128,15 @@
     await Promise.all(urls.map((url) => screenPrsStore.flushSummary(url)))
     const request: ReviewSubmitRequest = {
       reviewId,
-      layers: layers
-        .filter((l) => urls.includes(l.url))
-        .map((l) => ({ prUrl: l.url, verdict: verdicts[l.url], readHead: readHead(l), ...(adopt[l.url] ? { adoptPendingReviewId: adopt[l.url] } : {}) })),
+      layers: layers.flatMap((l) => {
+        const head = readHead(l)
+        if (!urls.includes(l.url) || !head) return []
+        return [{ prUrl: l.url, verdict: verdicts[l.url], readHead: head, ...(adopt[l.url] ? { adoptPendingReviewId: adopt[l.url] } : {}) }]
+      }),
+    }
+    if (!request.layers.length) {
+      submitting = false
+      return
     }
     try {
       const result = await window.api.invoke('review:submit', request)
@@ -196,10 +226,11 @@
         {@const p = previews.get(l.url)}
         {@const outcome = outcomes[l.url]}
         {@const v = verdicts[l.url]}
+        {@const unread = readHead(l) === null}
         <div class="border-t border-zinc-800 py-3 first:border-t-0" data-testid="submit-layer">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <label class="flex min-w-0 items-center gap-2">
-              <input type="checkbox" checked={included[l.url]} disabled={submitting || outcome?.kind === 'posted'} onchange={(e) => (included[l.url] = e.currentTarget.checked)} aria-label="Post a review on #{l.number}" />
+              <input type="checkbox" checked={included[l.url] && !unread} disabled={submitting || unread || outcome?.kind === 'posted'} onchange={(e) => (included[l.url] = e.currentTarget.checked)} aria-label="Post a review on #{l.number}" />
               <b class="truncate text-[12.5px] text-zinc-100">#{l.number} {l.title}</b>
             </label>
             <div class="inline-flex overflow-hidden rounded border border-zinc-700" role="radiogroup" aria-label="Verdict for #{l.number}">
@@ -211,7 +242,7 @@
                     name="verdict-{l.number}"
                     value={opt.key}
                     checked={v === opt.key}
-                    disabled={!included[l.url] || submitting || outcome?.kind === 'posted'}
+                    disabled={!included[l.url] || unread || submitting || outcome?.kind === 'posted'}
                     onchange={() => (verdicts[l.url] = opt.key)}
                   />{opt.label}
                 </label>
@@ -219,7 +250,12 @@
             </div>
           </div>
 
-          {#if included[l.url] && p}
+          {#if unread}
+            <p class="mt-2 text-[11.5px] text-amber-300/90" data-testid="submit-unread">Not postable: this layer’s diff didn’t load at its current head — reload it in the room and read it before posting.</p>
+          {:else if reloaded[l.url] && !included[l.url]}
+            <p class="mt-2 text-[11.5px] text-blue-300" data-testid="submit-reloaded">Reloaded at {reloaded[l.url].slice(0, 7)}. Read what changed, then tick it to post at that head.</p>
+          {/if}
+          {#if included[l.url] && p && !unread}
             <label class="mt-2 block">
               <span class="text-[10px] uppercase tracking-wider text-zinc-500">Review body for #{l.number} · posted above the comments</span>
               <textarea

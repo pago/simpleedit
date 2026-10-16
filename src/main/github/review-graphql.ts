@@ -367,6 +367,11 @@ export interface PostReviewLayerInput {
   pr: PrReviewTarget
   /** This layer's draft from the draft store. */
   draft: PrReviewDraft
+  /**
+   * The draft as it stands now, read once the review is submitted: a comment
+   * edited while the post was under way is not cleared. Absent: `draft`.
+   */
+  currentDraft?: () => PrReviewDraft
   /** The head the user read: the review is pinned to it and every anchor checked against it. */
   readHead: string
   verdict: ReviewVerdict
@@ -467,7 +472,7 @@ async function post(
     // Not pending and not gone: the earlier attempt's submit landed. A review
     // is never submitted twice.
     if (previous) {
-      const ids = stillAsSent(input.draft, plan, state)
+      const ids = stillAsSent(input.currentDraft?.() ?? input.draft, plan, state)
       save({
         ...state,
         state: 'posted',
@@ -544,7 +549,8 @@ async function post(
   }
   save({ ...current(), sent })
   const { url } = await submit(reviewId, REVIEW_EVENT[input.verdict], body)
-  save({ ...current(), state: 'posted', reviewUrl: url, postedCommentIds: sent.comments.map((c) => c.draftId) })
+  const landedState = { ...current(), state: 'posted' as const, reviewUrl: url }
+  save({ ...landedState, postedCommentIds: stillAsSent(input.currentDraft?.() ?? input.draft, plan, landedState) })
   return { prUrl: pr.url, kind: 'posted', reviewUrl: url, folded: countFolds(plan, folded) }
 }
 
