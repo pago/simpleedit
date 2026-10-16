@@ -22,6 +22,8 @@ vi.mock('node-pty', () => ({
     spawned.set(nextSpawnKey, fake)
     return {
       ...fake,
+      cols: 132,
+      rows: 40,
       write: vi.fn(),
       onData: () => {},
       onExit: (cb: (e: { exitCode: number }) => void) => { onExit = cb },
@@ -42,6 +44,7 @@ import {
   releaseTerminalsOwnedBy,
   killTerminal,
   killAllTerminals,
+  getTerminalBacklog,
 } from '../pty'
 
 // Two transports of ONE hub: same `id` (the window they share), different
@@ -280,5 +283,15 @@ describe('PTY size ownership', () => {
   it('does not resize an unowned terminal id', () => {
     resizeTerminal('never-spawned', 90, 30, OWNER)
     expect(getTerminalOwner('never-spawned')).toBeUndefined()
+  })
+
+  // A view that can't measure itself replays at this size, so it must be the
+  // live PTY's, and gone once there is no PTY left to match.
+  it('reports the live PTY size with the backlog, and none after exit', () => {
+    const term = spawnFor('t18', OWNER)
+    expect(getTerminalBacklog('t18')).toMatchObject({ cols: 132, rows: 40 })
+    term.exit(0)
+    expect(getTerminalBacklog('t18')).not.toHaveProperty('cols')
+    expect(getTerminalBacklog('t18')).not.toHaveProperty('rows')
   })
 })

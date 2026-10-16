@@ -97,8 +97,12 @@ export interface PtyInvokeMap {
   'pty:active-ids': { args: []; result: string[] }
   /** Replay buffer for output emitted before the renderer's xterm attached
    * (or before a fast-crashing process died). Offsets are absolute bytes
-   * since spawn; `data` covers [start, end). */
-  'pty:backlog': { args: [id: string]; result: { data: string; start: number; end: number } }
+   * since spawn; `data` covers [start, end). `cols`/`rows` are the live PTY's
+   * size, absent once it has exited. */
+  'pty:backlog': {
+    args: [id: string]
+    result: { data: string; start: number; end: number; cols?: number; rows?: number }
+  }
 }
 
 export interface PtyEventMap {

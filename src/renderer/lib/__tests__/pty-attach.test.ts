@@ -13,7 +13,7 @@ import { attachPty } from '../pty-attach'
 type Listener = (data: unknown) => void
 
 let listeners: Map<string, Listener[]>
-let backlog: { data: string; start: number; end: number }
+let backlog: { data: string; start: number; end: number; cols?: number; rows?: number }
 let backlogCalls: number
 let resolveBacklog: (() => void) | null
 
@@ -72,6 +72,27 @@ describe('attachPty', () => {
     resolveBacklog?.()
     await settle()
     expect(written.join('')).toBe('abcdef')
+  })
+
+  // The replay was produced at the PTY's width; a view that can't measure
+  // itself has to be at that width before the first byte lands.
+  it('reports the PTY size before writing the replay', async () => {
+    backlog = { data: 'hello', start: 0, end: 5, cols: 120, rows: 30 }
+    const events: string[] = []
+    attachPty('tg', {
+      write: (d) => events.push(`write:${d}`),
+      onGeometry: (cols, rows) => events.push(`size:${cols}x${rows}`),
+    })
+    await settle()
+    expect(events).toEqual(['size:120x30', 'write:hello'])
+  })
+
+  it('reports no size for a PTY that has exited', async () => {
+    backlog = { data: 'bye', start: 0, end: 3 }
+    const onGeometry = vi.fn()
+    attachPty('tx', { write: () => {}, onGeometry })
+    await settle()
+    expect(onGeometry).not.toHaveBeenCalled()
   })
 
   it('writes only the part of an overlapping chunk it has not seen', async () => {

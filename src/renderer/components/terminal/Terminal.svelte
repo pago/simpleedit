@@ -34,6 +34,8 @@
 
   let term: Terminal | undefined
   let fitAddon: FitAddon | undefined
+  /** Until the first fit, xterm's size is its 80×24 default, not this view's. */
+  let fitted = false
   let attachment: PtyAttachment | undefined
   let resizeObserver: ResizeObserver | undefined
 
@@ -89,13 +91,23 @@
    * would render 40-column output in a 200-column view indefinitely.
    */
   function resyncGeometry(id: string): void {
-    if (!term || !fitAddon || !containerEl) return
-    if (containerEl.offsetWidth === 0 || containerEl.offsetHeight === 0) return
+    if (!term || !fitAddon || !containerEl || !hasSize(containerEl)) return
     fitPreservingScroll()
     // Attention takes the size outright; anything else just reports it, which
     // an unowned PTY accepts.
     if (hasUserAttention()) claimPty(id)
     else window.api.invoke('pty:resize', id, term.cols, term.rows)
+  }
+
+  /**
+   * Whether the container can be measured. A hidden workspace is display:none,
+   * and fitting there does not fail: FitAddon shrinks the terminal to a few
+   * columns, which the PTY never hears about. Everything Claude prints in the
+   * meantime wraps at that width and stays garbled after the terminal is shown
+   * again, because the PTY's size never changed and the agent never repaints.
+   */
+  function hasSize(el: HTMLElement): boolean {
+    return el.offsetWidth > 0 && el.offsetHeight > 0
   }
 
   function isScrolledToBottom(): boolean {
@@ -110,6 +122,7 @@
     const atBottom = isScrolledToBottom()
     const prevViewportY = term.buffer.active.viewportY
     fitAddon.fit()
+    fitted = true
     if (atBottom) {
       term.scrollToBottom()
     } else {
@@ -160,11 +173,6 @@
 
     term.open(el)
 
-    // Small delay to ensure the element is laid out before fitting
-    requestAnimationFrame(() => {
-      fitAddon?.fit()
-    })
-
     // Shift+Enter must mean "newline", not "submit". Agents that don't handle it
     // themselves need the CSI-u sequence (kitty keyboard protocol) written to
     // the PTY; the rest — and plain shells — are left alone.
@@ -212,6 +220,13 @@
     // disagree with the PTY about what the user is looking at.
     attachment = attachPty(id, {
       write: writeChunk,
+      // The replay was produced at the PTY's size, so until this view has
+      // fitted (it may be hidden, or simply not laid out yet) it renders at
+      // that size rather than xterm's default. A hidden view fits, and tells
+      // the PTY, once the ResizeObserver sees it shown.
+      onGeometry: (cols, rows) => {
+        if (term && !fitted) term.resize(cols, rows)
+      },
       onExit: (exitCode) => {
         // Main drops the owner entry on exit, so this client's belief about it
         // has to go too — a dead terminal must not keep claiming to be sized by
@@ -231,16 +246,14 @@
       },
     })
 
-    // Auto-resize on container size change.
-    // Guard against zero dimensions: ResizeObserver fires when a tab is hidden
-    // (display:none), which would cause fitAddon to calculate 0 columns and
-    // corrupt the PTY's line wrapping.
+    // Auto-resize on container size change. Its first callback is also this
+    // terminal's first fit.
     // Always told to main. Main applies it only for the owner, so an unwatched
     // window reflowing still cannot resize what someone else is reading — and
     // the client that IS the owner is never silenced by a stale local belief
     // that it is not.
     resizeObserver = new ResizeObserver(() => {
-      if (fitAddon && el.offsetWidth > 0 && el.offsetHeight > 0) {
+      if (fitAddon && hasSize(el)) {
         fitPreservingScroll()
         if (term) {
           window.api.invoke('pty:resize', id, term.cols, term.rows)
@@ -260,6 +273,7 @@
     term?.dispose()
     term = undefined
     fitAddon = undefined
+    fitted = false
   }
 
   $effect(() => {
@@ -354,13 +368,16 @@
         if (!term || !fitAddon) return
         // Fit BEFORE claiming: the claim carries the geometry, and this is the
         // moment the container's real size becomes knowable again.
-        fitAddon.fit()
-        // Selecting a session is attention, so take the size — but only if
-        // this window is the focused one. A background window re-showing a
-        // tab (a restored layout, a reconnect) must not claim; it still
-        // reports its size, and main drops it if someone else owns the PTY.
-        if (hasUserAttention()) claimPty(terminalId)
-        else window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
+        if (containerEl && hasSize(containerEl)) {
+          fitAddon.fit()
+          fitted = true
+          // Selecting a session is attention, so take the size — but only if
+          // this window is the focused one. A background window re-showing a
+          // tab (a restored layout, a reconnect) must not claim; it still
+          // reports its size, and main drops it if someone else owns the PTY.
+          if (hasUserAttention()) claimPty(terminalId)
+          else window.api.invoke('pty:resize', terminalId, term.cols, term.rows)
+        }
         // Restore scroll after fit. If the user was at the bottom when the
         // tab was hidden, follow new content; otherwise stay at the saved line.
         if (wasAtBottom) {
