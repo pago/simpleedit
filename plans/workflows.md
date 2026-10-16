@@ -120,7 +120,8 @@ There is no "task done" signal today, only turn ends (`handleTurnEnd`,
   `transaction(getDb(), …)` (`:217-232`), `baseVersion` conflicts (`:132`, `:177`), one entry
   point shared by IPC and MCP (`setBacklogTools`, `main/index.ts:357`). Validation in a
   `parseWorkflowOps` beside the store (`parseBacklogOps` lives at `backlog-store.ts:347`).
-- Migration 3: append to `MIGRATIONS` (`main/db.ts:18`; threads are 1, backlog is 2).
+- A new migration appended to `MIGRATIONS` (`main/db.ts:18`; threads are 1, backlog is 2,
+  Review Room takes 3).
   Tables `workflows`, `workflow_tasks`, `workflow_patches`.
 - IPC namespace `workflow:`; broadcast `broadcastToAllClients('workflow:changed')`, which
   reaches windows and phones. Snapshot per workflow, not global: workflows are larger than
@@ -211,6 +212,28 @@ The phone reuses renderer stores directly (`web/main.ts:8,27-40`). A read-only W
 screen (sections per stage, Needs you on top, tap → worker terminal) follows the backlog's
 shape (`web/BacklogScreen.svelte`, `web/PocketApp.svelte:78,704`). Push when a task enters
 `waiting` or the lead is woken (`push.ts`).
+
+## Overlap with Review Room (#222, `feat/review-room`)
+
+Checked 2026-10-16 against `feat/review-room` (PR 1, draft) and `feat/review-room-ui` (PR 2).
+
+- **Hidden sessions already exist there.** PR 1 adds `SessionOwner` (`shared/session-owner.ts`),
+  `sessionsStore.visibleSessions()` (used by `SessionList` and the attention aggregate),
+  persistence of `owner`, and re-binding on restore (`review:companion-rebind`). Workflows
+  **extend that union** with `{kind: 'workflow', workflowId, taskId}` instead of adding a
+  parallel `workflow` field. The difference to handle: a review companion is hidden
+  outright, while a workflow worker's attention rolls up onto its lead.
+- **Migrations:** Review Room PR 1 takes migration 3 (`reviews`, `review_threads`, …) and its
+  PR 3 adds another. Workflows take the next free number when they land, never a
+  hard-coded 3.
+- **Shared files, textual conflicts only:** `mcp-server/index.mjs`, `mcp-bridge.ts`,
+  `shared/ipc-types.ts`, `main/index.ts`, `agent-bus.ts`, `SessionWorkspace.svelte`.
+- **Second terminal view:** the companion's docked terminal faces the same `pty:claim`
+  question as the worker popup. Reuse whatever it settles on.
+
+So: build the parts that don't touch sessions (store, engine, MCP tools, `report_result`,
+graph) on `main` now; take up hidden workers once #222 merges, or rebase onto it if it lands
+first.
 
 ## Delivery (few, larger PRs)
 
