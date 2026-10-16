@@ -36,6 +36,13 @@ export interface PtyAttachOptions {
    */
   onOwnerChange?: (owner: PtyClientId | null) => void
   /**
+   * The live PTY's size, reported just before the replay is written. The
+   * replay was produced at that width, so a view that cannot measure itself
+   * (mounted hidden) has to render at it, or every line wraps at the wrong
+   * column and the agent, whose size never changed, has no reason to repaint.
+   */
+  onGeometry?: (cols: number, rows: number) => void
+  /**
    * Bytes were produced that this view will never see — the disconnect outlasted
    * main's backlog window.
    *
@@ -91,6 +98,7 @@ export function attachPty(id: string, options: PtyAttachOptions): PtyAttachment 
       .invoke('pty:backlog', id)
       .then((backlog) => {
         if (disposed) return
+        if (backlog.cols && backlog.rows) options.onGeometry?.(backlog.cols, backlog.rows)
         if (backlog.end > written) writeDeduped({ data: backlog.data, offset: backlog.start })
       })
       .catch(() => {

@@ -1,7 +1,7 @@
 import * as pty from 'node-pty'
 import type { RemoteClient } from './client-hub'
 import { existsSync } from 'fs'
-import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtyClientId, PtySpawnOptions } from '../shared/ipc-types'
+import type { AgentSpawnOptions as AgentSpawnOptionsShared, PtyClientId, PtyInvokeMap, PtySpawnOptions } from '../shared/ipc-types'
 import { emitPtyData } from './claude-stream'
 import { getProvider, type AgentProvider, type LaunchContext, type LaunchPlan } from './agents/provider'
 import { buildAgentsLaunch } from './agents/claude'
@@ -130,9 +130,13 @@ function recordBacklog(id: string, data: string): number {
   return offset
 }
 
-export function getTerminalBacklog(id: string): PtyBacklog {
+export function getTerminalBacklog(id: string): PtyInvokeMap['pty:backlog']['result'] {
   const b = backlogs.get(id)
-  return b ? { ...b } : { data: '', start: 0, end: 0 }
+  const term = terminals.get(id)
+  return {
+    ...(b ?? { data: '', start: 0, end: 0 }),
+    ...(term ? { cols: term.cols, rows: term.rows } : {}),
+  }
 }
 
 /**
