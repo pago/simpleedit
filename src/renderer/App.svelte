@@ -19,6 +19,7 @@
   import { initSessionAttention } from './stores/sessionAttention.svelte'
   import { initAgentThreadsListeners } from './stores/agentThreads.svelte'
   import { backlogStore, initBacklogListeners } from './stores/backlog.svelte'
+  import { workflowsStore, initWorkflowListeners } from './stores/workflows.svelte'
   import BacklogView from './components/backlog/BacklogView.svelte'
   import BacklogArrivalNotice from './components/backlog/BacklogArrivalNotice.svelte'
   import { initAgentCapabilities } from './stores/agent-capabilities.svelte'
@@ -54,6 +55,7 @@
     const unsubReviewRoom = initReviewRoomListeners()
     const unsubThreads = initAgentThreadsListeners()
     const unsubBacklog = initBacklogListeners()
+    const unsubWorkflows = initWorkflowListeners()
     // Cache every provider's capabilities up front: the session store reads
     // them synchronously when naming and labelling a new session.
     void initAgentCapabilities()
@@ -68,6 +70,7 @@
       unsubReviewRoom()
       unsubThreads()
       unsubBacklog()
+      unsubWorkflows()
       window.removeEventListener('beforeunload', flushSessionSave)
     }
   })
@@ -86,6 +89,7 @@
     repoPath = path
     setProjectRoot(path)
     void backlogStore.load()
+    void workflowsStore.load()
     sessionsStore.reset()
     await refreshWorktrees()
     const saved = await window.api.invoke('session:load', path)

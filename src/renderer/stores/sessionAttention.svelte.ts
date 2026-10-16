@@ -1,6 +1,7 @@
 import type { AgentStatus } from '../../shared/ipc-types'
 import { getAgentStatusForTerminal, onAgentStatusTransition } from './agent-status.svelte'
 import { sessionsStore, type Session } from './sessions.svelte'
+import { workflowsStore } from './workflows.svelte'
 import { uiView } from './uiView.svelte'
 import {
   sessionAttentionLevel,
@@ -99,13 +100,27 @@ function summaryFor(session: Session): SessionAttentionSummary {
   }
 }
 
+/**
+ * A workflow worker is never on screen in the sidebar, so "finished, unseen"
+ * means nothing for it; a task left waiting (a turn ended without a result)
+ * is waiting even though the agent's own status reads idle.
+ */
+function workerSummary(worker: Session): SessionAttentionSummary {
+  const own = summaryFor(worker)
+  return { exited: own.exited, status: workflowsStore.waitsOnUser(worker) ? 'waiting' : own.status, unseen: false }
+}
+
+/** A lead's level includes its workflow workers': they have no row of their own. */
 export function sessionAttentionLevelFor(session: Session): AttentionLevel {
-  return sessionAttentionLevel(summaryFor(session))
+  const workers = workflowsStore.workersOf(session)
+  if (workers.length === 0) return sessionAttentionLevel(summaryFor(session))
+  return sessionsAttention([summaryFor(session), ...workers.map(workerSummary)]).level
 }
 
 /** The aggregate over every current session, for the Sessions header dot. */
 export function currentSessionsAttention(): SessionsAttention {
-  return sessionsAttention(sessionsStore.visibleSessions().map(summaryFor))
+  const visible = sessionsStore.visibleSessions()
+  return sessionsAttention([...visible.map(summaryFor), ...visible.flatMap((s) => workflowsStore.workersOf(s)).map(workerSummary)])
 }
 
 export function _resetSessionAttentionForTests(): void {

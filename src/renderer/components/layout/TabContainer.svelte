@@ -5,6 +5,7 @@
   import DiffReview from '../editor/DiffReview.svelte'
   import TourPanel from '../editor/TourPanel.svelte'
   import ComposedPanel from '../composed/ComposedPanel.svelte'
+  import WorkflowView from '../workflow/WorkflowView.svelte'
   import type { Tab } from '../../stores/tabsStore.svelte'
   import type { AgentContext } from '../../lib/agent-message'
   import type { AgentTabInfo } from '../../stores/agentTerminals.svelte'
@@ -17,6 +18,8 @@
      * tab kinds that don't carry their own (files, composed panels). */
     worktreePath: string
     terminals: AgentTabInfo[]
+    /** The session's workspace is on screen. */
+    active: boolean
     onclose: () => void
     onFileModified: (path: string, modified: boolean) => void
     ondiscusswithagent?: (ctx: AgentContext, pos: { x: number; y: number }) => void
@@ -32,6 +35,7 @@
     workspaceKey,
     worktreePath,
     terminals,
+    active,
     onclose,
     onFileModified,
     ondiscusswithagent,
@@ -108,6 +112,8 @@
     {onclose}
     {ondiscusswithagent}
   />
+{:else if tab.kind === 'workflow'}
+  <WorkflowView workflowId={tab.workflowId} {active} {onclose} />
 {:else}
   {assertNoTabKindLeft(tab)}
 {/if}

@@ -35,4 +35,12 @@
 {:else if kind === 'composed'}
   <!-- Reserved: Claude sparkle glyph matching the ✦ terminal tab button -->
   <span data-testid="tab-kind-icon" data-kind="composed" class="{className} inline-flex items-center justify-center font-semibold leading-none" aria-hidden="true">✦</span>
+{:else if kind === 'workflow'}
+  <!-- Task graph glyph: three nodes, two edges -->
+  <svg data-testid="tab-kind-icon" data-kind="workflow" class={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <rect x="1.5" y="6" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.2" />
+    <rect x="10.5" y="2" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.2" />
+    <rect x="10.5" y="10" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.2" />
+    <path d="M5.5 8h2.5V4h2.5M8 8v4h2.5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+  </svg>
 {/if}

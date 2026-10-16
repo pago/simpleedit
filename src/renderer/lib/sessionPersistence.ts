@@ -46,6 +46,8 @@ function serializeTab(tab: Tab, memoryDir: string | undefined): SerializedTab | 
       // Agent-composed panels are tied to a live Claude tool call; restoring
       // them would dangle. Drop on save.
       return null
+    case 'workflow':
+      return { kind: 'workflow', id: tab.id, workflowId: tab.workflowId, title: tab.title }
   }
 }
 
@@ -147,6 +149,8 @@ function deserializeTab(t: SerializedTab): Tab | null {
         commitHash: t.commitHash,
         commitMessage: t.commitMessage,
       }
+    case 'workflow':
+      return { kind: 'workflow', id: t.id, workflowId: t.workflowId, title: t.title }
     default:
       // Forward-compat: sessions saved by older builds may carry kinds we no
       // longer support (e.g. the removed 'plan' tab). Skip them on restore.
@@ -219,7 +223,7 @@ export function hydrateSession(session: SerializedSession): {
 
     for (const t of s.tabs) {
       // Tabs pinned to a deleted worktree would error on load — drop them.
-      if (t.kind !== 'file' && !knownPaths.has(t.worktreePath)) continue
+      if ((t.kind === 'diff' || t.kind === 'tour') && !knownPaths.has(t.worktreePath)) continue
       if (t.kind === 'file' && !t.path.startsWith(worktreePath) && ![...knownPaths].some((p) => t.path.startsWith(p))) continue
       const tab = deserializeTab(t)
       // Forward-compat: a removed kind (e.g. old 'plan' tab) deserializes to null.
