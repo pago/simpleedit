@@ -231,12 +231,7 @@ Checked 2026-10-16 against `feat/review-room` (PR 1, draft) and `feat/review-roo
 - **Second terminal view:** the companion's docked terminal faces the same `pty:claim`
   question as the worker popup. Reuse whatever it settles on.
 
-**`feature/runs` is based on `feat/review-room` (PR 1)**, so `SessionOwner` is used from day
-one. It is a branch on top of PR 1, not a layer of the Review Room's `gh stack` (different
-topic, different worktree). Keep it current with `git rebase --onto origin/feat/review-room
-<old base>` when PR 1 changes. Once #222 merges (rebase merge, so new SHAs), rebase with
-`--onto origin/main`. The workflows PR targets `feat/review-room` until then, and can't
-merge before #222.
+The Review Room has merged; `feature/runs` is based on `main` and uses its `SessionOwner`.
 
 ## Delivery (few, larger PRs)
 
@@ -254,7 +249,8 @@ The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.
 Built on `feature/runs` (2026-10-17) while the user was away; every call below was made
 without them and is open to change.
 
-- **Migration 4.** Review Room PR 1 took 3.
+- **Migrations 5 and 6.** The Review Room took 3 and 4. Migration 6 adds the attempt
+  history column and stays separate from 5.
 - **`SessionOwner` carries `attempt`**: `{kind: 'workflow', workflowId, taskId, attempt}`. A
   retry starts a fresh worker while the failed one stays until Dismiss, and the engine must
   tell them apart. `isOwned` now means "has any owner".
@@ -320,8 +316,22 @@ without them and is open to change.
   - A worker never inherits a local (Ollama) lead model: main counts a worker as local only
     when its task names a local model.
   - Only current workers of unfinished tasks roll up onto the lead's dot.
-- **Known gap**: a closed window's bridge stops, so its workers keep running but can't call
-  `report_result` until the window is reopened. They are then restored like after a restart.
+- **Review fixes (PR review)**:
+  - Closing the lead window kills its workers (not detached ones), since its bridge stops
+    with it. On reopen they resume and get one nudge, or fail after the 90 s grace.
+  - A retry closes the previous attempt's worker. Its result and note move to the task's
+    `history` (at most 5, `earlierAttempts` in `get_workflow`).
+  - Cancelling every task leaves the workflow `cancelled`, not `done`. Dismiss leaves
+    detached workers alone.
+  - A judgment is `delivered` only once the lead read the mail; mail lost to a restart or
+    the lead's exit is sent again. Judgments are packed into messages under the bus cap,
+    each question cut at 1500 chars.
+  - Hand off (`spawn_session` replace) moves the lead's workflows to the successor, and a
+    lead keyed by terminal id moves to its session id once one registers. A worker can't
+    replace itself.
+  - Task models are checked against main's catalog (`unknownModelReason`).
+  - Workers are listed in `list_sessions` with their owner, on purpose, and send no phone
+    push: their needs surface through the lead.
 
 ## Open questions
 

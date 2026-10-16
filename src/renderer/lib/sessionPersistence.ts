@@ -15,7 +15,7 @@ import type {
 import { worktreeList, projectRoot, refreshWorktreesFor } from '../stores/worktrees.svelte'
 import { sessionsStore, isInMemoryDir } from '../stores/sessions.svelte'
 import { tabsStore, type Tab } from '../stores/tabsStore.svelte'
-import { isOwned, parseSessionOwner } from '../../shared/session-owner'
+import { isOwned, parseSessionOwner, plainSessionOwner } from '../../shared/session-owner'
 
 const SAVE_VERSION = 4
 
@@ -102,7 +102,10 @@ export function serializeSession(repoPath: string): SerializedSession {
       ...(session.groupId ? { groupId: session.groupId } : {}),
       ...(session.seedPrompt ? { seedPrompt: session.seedPrompt } : {}),
       ...(session.owner
-        ? { owner: { kind: session.owner.kind, reviewId: session.owner.reviewId }, companionClaimId: session.companionClaimId ?? session.id }
+        ? {
+            owner: plainSessionOwner(session.owner),
+            ...(session.owner.kind === 'review' ? { companionClaimId: session.companionClaimId ?? session.id } : {}),
+          }
         : {}),
       tabs,
       activeTabId: tabsStore.activeId(session.id),
@@ -247,7 +250,7 @@ export function hydrateSession(session: SerializedSession): {
 
   // Companion placeholders whose review closed, or whose claim ended, while
   // the app was away are dropped; the rest wait in the room for Resume.
-  if (sessionsStore.sessions().some((s) => isOwned(s))) {
+  if (sessionsStore.sessions().some((s) => s.owner?.kind === 'review')) {
     void window.api
       .invoke('review:load')
       .then((snapshot) => sessionsStore.dropUnclaimedCompanions(snapshot.reviews))

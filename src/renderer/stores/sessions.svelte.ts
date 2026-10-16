@@ -22,7 +22,7 @@ import {
   mainWorktree,
 } from './worktrees.svelte'
 import { resolveSpawnModelRef } from '../lib/agentModels'
-import { isOwned, type SessionOwner } from '../../shared/session-owner'
+import { isOwned, plainSessionOwner, workflowOwner, type SessionOwner } from '../../shared/session-owner'
 import type { Review } from '../../shared/review-room'
 import type { ReviewCompanionCreateRequest } from '../../shared/review-room-ipc'
 
@@ -628,7 +628,13 @@ export const sessionsStore = {
     // target. Without it a resumed session starts on the default model, and a
     // local one loses the endpoint it ran against.
     const model = target.provider === 'claude' ? target.model : undefined
-    this.update(id, { pendingResume: undefined, resumeError: undefined })
+    // The resumed conversation keeps its id. Carried over now, the session is
+    // still the same workflow lead before its agent reports in.
+    this.update(id, {
+      pendingResume: undefined,
+      resumeError: undefined,
+      providerSessionId: session.providerSessionId ?? pendingResume.sessionId,
+    })
     if (!isOwned(session)) select(id)
     const owner = session.owner
     const claimId = session.companionClaimId ?? id
@@ -640,7 +646,7 @@ export const sessionsStore = {
         // A companion's claim moves to this id FIRST: main derives its
         // read-only launch from the claim. Refused, this placeholder is no
         // longer the review's companion, and the room offers a new one.
-        if (owner) {
+        if (owner?.kind === 'review') {
           const rebound = await window.api.invoke('review:companion-rebind', owner.reviewId, claimId, id)
           if (!rebound) {
             sessionsStore.close(id)
@@ -654,7 +660,7 @@ export const sessionsStore = {
           target,
           resumeSessionId: pendingResume.sessionId,
           ...(model ? { model } : {}),
-          ...(owner ? { owner: { kind: owner.kind, reviewId: owner.reviewId } } : {}),
+          ...(owner ? { owner: plainSessionOwner(owner) } : {}),
         })
       } catch (error) {
         console.error(`Resume of ${id} failed:`, error)
@@ -676,7 +682,7 @@ export const sessionsStore = {
   dropUnclaimedCompanions(reviews: readonly Review[], only?: ReadonlySet<string>): void {
     const byId = new Map(reviews.map((review) => [review.id, review]))
     for (const session of [..._sessions]) {
-      const reviewId = session.owner?.reviewId
+      const reviewId = session.owner?.kind === 'review' ? session.owner.reviewId : undefined
       if (!reviewId || (only && !only.has(reviewId))) continue
       const review = byId.get(reviewId)
       const claimed = review?.status === 'open' && review.companion
@@ -1323,6 +1329,12 @@ async function spawnSessionFromAgent(
   data: import('../../shared/ipc-types').AgentPanelEventMap['agent-session:spawn'],
 ): Promise<void> {
   const caller = findSession(data.sourceTerminalId)
+  // A worker replacing itself would leave a visible successor and fail its task.
+  if (data.target === 'replace' && workflowOwner(caller)) {
+    console.warn(`[spawn_session] ${data.sourceTerminalId} is a workflow worker; it cannot replace itself`)
+    return
+  }
+
   const worktreePath = data.worktreePath ?? caller?.worktreePath ?? mainWorktree()?.path
   if (!worktreePath) return
   const launchDir = projectRoot() ?? worktreePath
@@ -1402,8 +1414,7 @@ function peerSnapshot(): AgentPeer[] {
       provider: s.provider ?? 'claude',
       worktreePath: s.worktreePath,
       status: getAgentStatusForTerminal(s.id),
-      // A plain copy: the store's `owner` is a $state proxy, which IPC's structured clone refuses.
-      ...(s.owner ? { owner: { kind: s.owner.kind, reviewId: s.owner.reviewId } } : {}),
+      ...(s.owner ? { owner: plainSessionOwner(s.owner) } : {}),
     }))
 }
 
