@@ -4,6 +4,8 @@
   import HandoffComposer from './HandoffComposer.svelte'
   import StatusDot from './StatusDot.svelte'
   import { sessionsStore, type Session, type SessionGroup } from '../../stores/sessions.svelte'
+  import { workflowsStore } from '../../stores/workflows.svelte'
+  import { leadProgress } from '../../lib/workflow-view'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
   import { queuedMailCount } from '../../stores/agent-mail.svelte'
   import { isUnseen, sessionAttentionLevelFor } from '../../stores/sessionAttention.svelte'
@@ -262,6 +264,11 @@
     sidebarRail.chose('workspace')
   }
 
+  function openWorkflow(session: Session): void {
+    activate(session)
+    workflowsStore.showFor(session, getAgentStatusForTerminal)
+  }
+
   function handleKeydown(e: KeyboardEvent, session: Session): void {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
@@ -445,6 +452,10 @@
   {@const isActive = session.id === activeId}
   {@const isDragged = draggedId === session.id}
   {@const mail = queuedMailCount(session.id)}
+  {@const progress = leadProgress(workflowsStore.forLead(session), getAgentStatusForTerminal)}
+  {@const progressText = progress
+    ? `${progress.text}${progress.needsYou > 0 ? ` · ${progress.needsYou} need${progress.needsYou === 1 ? 's' : ''} you` : ''}`
+    : ''}
   {@const isGroupTarget =
     dropTargetId === session.id && (dropMode === 'group' || dropMode === 'intoGroup')}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -459,7 +470,7 @@
     role="option"
     tabindex={isActive ? 0 : -1}
     aria-selected={isActive}
-    aria-label={session.label}
+    aria-label={progress ? `${session.label}, workflow ${progressText}` : session.label}
     draggable="true"
     onclick={() => activate(session)}
     oncontextmenu={(e) => openMenuAtPointer(e, session)}
@@ -481,6 +492,26 @@
         {session.label}{session.pendingResume ? ' (resume)' : ''}{session.exited ? ' (exited)' : ''}
       </span>
       <span class="block truncate text-[10px] text-zinc-500">{worktreeBranch(session)}</span>
+      {#if progress}
+        <button
+          type="button"
+          class="block max-w-full truncate rounded text-left text-[10px] text-zinc-400 hover:text-zinc-200 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-sky-400"
+          title="Open the workflow"
+          aria-label="Open the workflow: {progressText}"
+          data-testid="session-workflow-progress"
+          tabindex={isActive ? 0 : -1}
+          onclick={(e: MouseEvent) => {
+            e.stopPropagation()
+            openWorkflow(session)
+          }}
+          onkeydown={(e: KeyboardEvent) => {
+            // Its own Enter/Space click must not also activate the row; every other key is the list's.
+            if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
+          }}
+        >
+          ⇶ {progress.text}{#if progress.needsYou > 0}<span class="text-amber-300"> · {progress.needsYou} need{progress.needsYou === 1 ? 's' : ''} you</span>{/if}
+        </button>
+      {/if}
     </span>
     {#if mail > 0}
       <span

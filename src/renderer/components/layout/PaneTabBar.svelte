@@ -46,6 +46,8 @@
         return `Tour: ${tab.commitMessage.split('\n')[0] || tab.commitHash.slice(0, 7)}`
       case 'composed':
         return tab.title
+      case 'workflow':
+        return `Workflow: ${tab.title}`
     }
   }
 

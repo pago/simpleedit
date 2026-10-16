@@ -612,6 +612,7 @@
               {worktreePath}
               memoryDir={memoryView?.memoryDir}
               terminals={agentTargets}
+              active={onScreen}
               onclose={() => closeTab(activeTab!.id)}
               onFileModified={markModified}
               ondiscusswithagent={openAgentPopover}

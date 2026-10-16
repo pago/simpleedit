@@ -4,8 +4,9 @@
   import DeepReviewPane from './DeepReviewPane.svelte'
   import PromptsPane from './PromptsPane.svelte'
   import RemoteAccessPane from './RemoteAccessPane.svelte'
+  import WorkflowsPane from './WorkflowsPane.svelte'
 
-  type PaneId = 'models' | 'defaults' | 'deepreview' | 'prompts' | 'remote'
+  type PaneId = 'models' | 'defaults' | 'deepreview' | 'prompts' | 'workflows' | 'remote'
   let active = $state<PaneId>('models')
 
   const NAV: { id: PaneId; label: string }[] = [
@@ -13,6 +14,7 @@
     { id: 'defaults', label: 'Default Model' },
     { id: 'deepreview', label: 'Deep Review' },
     { id: 'prompts', label: 'Prompts' },
+    { id: 'workflows', label: 'Workflows' },
     { id: 'remote', label: 'Remote Access' },
   ]
 </script>
@@ -54,6 +56,11 @@
             <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
               <path d="M5 4h10l4 4v12H5z" stroke-linejoin="round" /><path d="M8.5 11h7M8.5 14.5h7M8.5 18h4" stroke-linecap="round" />
             </svg>
+          {:else if item.id === 'workflows'}
+            <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <rect x="2.5" y="9.5" width="5" height="5" rx="1" /><rect x="16.5" y="4" width="5" height="5" rx="1" /><rect x="16.5" y="15" width="5" height="5" rx="1" />
+              <path d="M7.5 12h4.5V6.5h4.5M12 12v5.5h4.5" stroke-linejoin="round" />
+            </svg>
           {:else}
             <svg class="h-4 w-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
               <rect x="7" y="2.5" width="10" height="19" rx="2.2" /><path d="M10.8 18.6h2.4" stroke-linecap="round" />
@@ -78,6 +85,8 @@
         <DeepReviewPane />
       {:else if active === 'prompts'}
         <PromptsPane />
+      {:else if active === 'workflows'}
+        <WorkflowsPane />
       {:else}
         <RemoteAccessPane />
       {/if}

@@ -16,6 +16,7 @@ export type Tab =
   | DiffTab
   | TourTab
   | ComposedTab
+  | WorkflowTab
 
 export interface FileTab {
   kind: 'file'
@@ -75,6 +76,14 @@ export interface ComposedTab {
   terminalId?: string
 }
 
+/** A workflow the session leads: its graph, Needs you and Start/Dismiss. */
+export interface WorkflowTab {
+  kind: 'workflow'
+  id: string
+  title: string
+  workflowId: string
+}
+
 export type TabKind = Tab['kind']
 
 /** Kinds that participate in peek mode. Tours are always sticky. */
@@ -115,7 +124,8 @@ export function tabIdFor(
     | { kind: 'file'; path: string }
     | { kind: 'diff'; worktreePath: string; commitHash: string | null; memoryScope?: MemoryScope }
     | { kind: 'tour'; worktreePath: string; commitHash: string | null }
-    | { kind: 'composed'; id: string },
+    | { kind: 'composed'; id: string }
+    | { kind: 'workflow'; workflowId: string },
 ): string {
   switch (spec.kind) {
     case 'file':
@@ -128,6 +138,8 @@ export function tabIdFor(
       return `tour:${spec.worktreePath}:${spec.commitHash ?? 'staging'}`
     case 'composed':
       return `composed:${spec.id}`
+    case 'workflow':
+      return `workflow:${spec.workflowId}`
   }
 }
 

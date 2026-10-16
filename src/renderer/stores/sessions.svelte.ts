@@ -1105,6 +1105,11 @@ export const sessionsStore = {
   },
 
   /** The repo's saved sessions are restored (or there were none). */
+  /** Restored sessions are in: an empty list now means there are none. */
+  hydrated(): boolean {
+    return _hydrated
+  },
+
   markHydrated(): void {
     _hydrated = true
   },
@@ -1340,6 +1345,9 @@ async function spawnSessionFromAgent(
     }
   } else {
     let model: ModelRef | undefined = caller?.model
+    // Main counts a workflow worker as local only when its task names a local
+    // model; inheriting the lead's would put several on the one local slot.
+    if (data.owner && model?.provider === 'ollama') model = undefined
     if (data.model) {
       model = await resolveSpawnModelRef(data.model)
     }
@@ -1350,6 +1358,8 @@ async function spawnSessionFromAgent(
     initialPrompt: data.brief,
     ...(data.label ? { label: data.label } : {}),
     ...(target.provider === 'claude' && target.model ? { model: target.model } : {}),
+    // A workflow worker stays out of the sidebar and never takes the view.
+    ...(data.owner ? { owner: data.owner, select: false } : {}),
   }
 
   // 'replace' = the caller asked to reset itself: spawn the successor in the
@@ -1370,6 +1380,7 @@ async function spawnSessionFromAgent(
       provider: created?.provider ?? provider,
       worktreePath: created?.worktreePath ?? worktreePath,
       status: 'unknown',
+      ...(data.owner ? { owner: data.owner } : {}),
     })
   }
 }
