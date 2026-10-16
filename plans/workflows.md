@@ -57,6 +57,9 @@ Delegation already works: a lead can `spawn_session` and collect with
 - **The user starts a workflow.** By default `start_workflow` is refused and the lead is
   told to ask the user to press **Start** in the Workflow tab after reviewing the graph. An
   opt-in setting ("lead may start workflows") lets the lead start it directly.
+- **Cancelling a running task detaches its worker.** The task becomes `cancelled`, and its
+  session drops the `workflow` field and appears in the sidebar as a normal session the user
+  can keep or close. Nothing is disposed, so no work in progress is lost.
 - **Waking the lead at judgment points is fine** (rare by design). The workflow record is
   the durable memory, so the user may compact the lead once the workflow is prepared.
 - **Visualization: layered graph.** Columns = dependency depth, cards carry status, a
@@ -128,7 +131,7 @@ There is no "task done" signal today, only turn ends (`handleTurnEnd`,
 - `create_workflow({title, goal, tasks})` → a `draft` workflow owned by the calling
   session. Returns validation errors in a form the agent can fix.
 - `patch_workflow({workflowId, baseVersion, ops})`: add/update/cancel. Only `queued` tasks
-  can be updated. `cancel` on a running task stops its worker.
+  can be updated. `cancel` on a running task detaches its worker (see Decisions).
 - `start_workflow({workflowId})`: refused unless the "lead may start workflows" setting is
   on (see Decisions); the Workflow tab's **Start** is the default path.
 - `get_workflow({workflowId})`: compact status for a woken lead (no worker transcripts).
@@ -219,8 +222,6 @@ The final commit of the branch deletes this plan. Durable parts go into `CLAUDE.
 
 ## Open questions
 
-- **Cancelling a running task:** dispose the session, or detach it into a normal sidebar
-  session the user can keep? Proposal: detach.
 - **Workflow end:** when a workflow finishes, do its worker sessions get disposed, or
   archived and reachable from the Workflow tab? Proposal: kept until the workflow is
   dismissed.
