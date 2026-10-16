@@ -37,6 +37,27 @@ const activeOverviews = new Map<string, ActiveOverview>()
 const states = new Map<string, OverviewState>()
 /** Pre-start reads (diff, rubric) not yet owned by a run, so quit can still kill their `gh`. */
 const preparing = new Set<AbortController>()
+/** Each PR's starts still reading, by head: a start for another head supersedes them, and Stop reaches them. */
+const preparingFor = new Map<string, Set<{ controller: AbortController; headSha: string }>>()
+
+/** Registers a start that is still reading, aborting older ones for another head: the newest intent wins. */
+function beginPreparing(url: string, headSha: string, controller: AbortController): () => void {
+  const starts = preparingFor.get(url) ?? new Set()
+  for (const older of starts) if (older.headSha !== headSha) older.controller.abort()
+  const mine = { controller, headSha }
+  starts.add(mine)
+  preparingFor.set(url, starts)
+  preparing.add(controller)
+  return () => {
+    preparing.delete(controller)
+    starts.delete(mine)
+    if (!starts.size && preparingFor.get(url) === starts) preparingFor.delete(url)
+  }
+}
+
+function stopPreparing(url: string): void {
+  for (const start of preparingFor.get(url) ?? []) start.controller.abort()
+}
 
 export interface OverviewResult {
   url: string
@@ -81,7 +102,7 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
   // the diff (the phone before it opened Files) gets the review diff the board
   // was screened from.
   const controller = new AbortController()
-  preparing.add(controller)
+  const donePreparing = beginPreparing(ctx.url, ctx.headSha, controller)
   let pr: PrContext
   let rubric: ReviewRubric | undefined
   try {
@@ -99,8 +120,9 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
     out.send('screenprs:overview-status', { url: ctx.url, status: 'error', error })
     return { joined: false }
   } finally {
-    preparing.delete(controller)
+    donePreparing()
   }
+  if (controller.signal.aborted) return { joined: false }
   const fingerprint = overviewFingerprint(model, instructions, rubric)
   const running = activeOverviews.get(ctx.url)
   if (running) {
@@ -177,6 +199,7 @@ export async function startOverview(ctx: PrContext, out: RemoteClient): Promise<
 
 /** Stop a PR's overview, whoever started it, and tell every client. */
 export function cancelOverview(url: string): void {
+  stopPreparing(url)
   const active = activeOverviews.get(url)
   if (!active) return
   active.controller.abort()
@@ -191,6 +214,7 @@ export function cancelAllOverviews(): void {
   for (const controller of preparing) controller.abort()
   activeOverviews.clear()
   preparing.clear()
+  preparingFor.clear()
 }
 
 /** Every PR's overview this launch, for a client that missed the events. */

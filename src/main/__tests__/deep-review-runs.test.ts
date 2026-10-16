@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { PrContext } from '../../shared/screenprs'
 
 /**
@@ -34,7 +34,8 @@ vi.mock('../tasks/deep-review-lenses', () => ({
   makeSynthesisTask: () => ({}),
   DEEP_REVIEW_PROMPT_VERSION: 1,
 }))
-vi.mock('../github/review-rubric', () => ({ fetchReviewRubric: async () => undefined, rubricFingerprint: () => 'none' }))
+const rubric = vi.hoisted(() => ({ fetchReviewRubric: vi.fn(async (_url: string, _head: string): Promise<undefined> => undefined) }))
+vi.mock('../github/review-rubric', () => ({ fetchReviewRubric: rubric.fetchReviewRubric, rubricFingerprint: () => 'none' }))
 vi.mock('../prompts/overrides', () => ({ resolveInstructions: () => ({ text: 'i' }), instructionsHash: (t: string) => t }))
 vi.mock('../screenprs-cache', () => ({
   analysisFingerprint: () => 'fp',
@@ -42,7 +43,7 @@ vi.mock('../screenprs-cache', () => ({
   putDeep: vi.fn(),
 }))
 
-import { startDeepReview, cancelDeepReview, deepReviewSnapshot, onDeepResult } from '../deep-review'
+import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnapshot, onDeepResult } from '../deep-review'
 
 const PR = { url: 'https://github.com/acme/ui/pull/7', headSha: 'sha1', diff: 'd' } as PrContext
 
@@ -109,5 +110,80 @@ describe('the Review Room hook', () => {
     await run
     onDeepResult(null)
     expect(heard).toHaveBeenCalledWith({ url, headSha: 'sha1', diff: 'the diff', findings: [] })
+  })
+})
+
+describe('deep review starts still reading REVIEW.md', () => {
+  afterEach(() => rubric.fetchReviewRubric.mockImplementation(async () => undefined))
+
+  /** Holds each rubric read until the test releases every read of that head. */
+  function holdRubric(): Map<string, () => void> {
+    const waiting = new Map<string, Array<() => void>>()
+    const held = new Map<string, () => void>()
+    rubric.fetchReviewRubric.mockImplementation(
+      (_url: string, head: string) =>
+        new Promise<undefined>((resolve) => {
+          waiting.set(head, [...(waiting.get(head) ?? []), () => resolve(undefined)])
+          held.set(head, () => { for (const release of waiting.get(head) ?? []) release() })
+        }),
+    )
+    return held
+  }
+
+  it('run once for two identical starts', async () => {
+    const held = holdRubric()
+    const url = 'https://github.com/acme/ui/pull/20'
+    const runs = lens.runs
+    const first = startDeepReview({ ...PR, url }, client().wc)
+    const second = startDeepReview({ ...PR, url }, client().wc)
+    await vi.waitFor(() => expect(held.size).toBe(1))
+    held.get('sha1')!()
+    await expect(second).resolves.toEqual({ joined: true })
+    expect(lens.runs - runs).toBe(1)
+    lens.release()
+    await expect(first).resolves.toEqual({ joined: false })
+  })
+
+  it('give way to a newer start for another head, even when they finish reading last', async () => {
+    const held = holdRubric()
+    const url = 'https://github.com/acme/ui/pull/21'
+    const { sent, wc } = client()
+    const old = startDeepReview({ ...PR, url, headSha: 'old' }, wc)
+    const fresh = startDeepReview({ ...PR, url, headSha: 'new' }, wc)
+    await vi.waitFor(() => expect(held.size).toBe(2))
+    held.get('new')!()
+    await vi.waitFor(() => expect(lens.waiting.length).toBeGreaterThan(0))
+    held.get('old')!()
+    await expect(old).resolves.toEqual({ joined: false })
+    lens.release()
+    await fresh
+    expect(sent.some(([, d]) => (d as { headSha?: string }).headSha === 'old')).toBe(false)
+    expect(deepReviewSnapshot()[url]).toMatchObject({ status: 'done', headSha: 'new' })
+  })
+
+  it('are reached by Stop', async () => {
+    const held = holdRubric()
+    const { sent, wc } = client()
+    const runs = lens.runs
+    const stopped = startDeepReview({ ...PR, url: 'https://github.com/acme/ui/pull/22' }, wc)
+    await vi.waitFor(() => expect(held.size).toBe(1))
+    cancelDeepReview('https://github.com/acme/ui/pull/22')
+    held.get('sha1')!()
+    await expect(stopped).resolves.toEqual({ joined: false })
+    expect(sent).toEqual([])
+    expect(lens.runs).toBe(runs)
+  })
+
+  it('are reached by quit', async () => {
+    const held = holdRubric()
+    const { sent, wc } = client()
+    const runs = lens.runs
+    const quit = startDeepReview({ ...PR, url: 'https://github.com/acme/ui/pull/23' }, wc)
+    await vi.waitFor(() => expect(held.size).toBe(1))
+    cancelAllDeepReviews()
+    held.get('sha1')!()
+    await expect(quit).resolves.toEqual({ joined: false })
+    expect(sent).toEqual([])
+    expect(lens.runs).toBe(runs)
   })
 })

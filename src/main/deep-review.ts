@@ -43,6 +43,27 @@ const activeDeep = new Map<string, ActiveDeep>()
 const states = new Map<string, DeepReviewState>()
 /** Rubric reads not yet owned by a run, so quit can still kill their `gh`. */
 const preparing = new Set<AbortController>()
+/** Each PR's starts still reading, by head: a start for another head supersedes them, and Stop reaches them. */
+const preparingFor = new Map<string, Set<{ controller: AbortController; headSha: string }>>()
+
+/** Registers a start that is still reading, aborting older ones for another head: the newest intent wins. */
+function beginPreparing(url: string, headSha: string, controller: AbortController): () => void {
+  const starts = preparingFor.get(url) ?? new Set()
+  for (const older of starts) if (older.headSha !== headSha) older.controller.abort()
+  const mine = { controller, headSha }
+  starts.add(mine)
+  preparingFor.set(url, starts)
+  preparing.add(controller)
+  return () => {
+    preparing.delete(controller)
+    starts.delete(mine)
+    if (!starts.size && preparingFor.get(url) === starts) preparingFor.delete(url)
+  }
+}
+
+function stopPreparing(url: string): void {
+  for (const start of preparingFor.get(url) ?? []) start.controller.abort()
+}
 
 export interface DeepResult {
   url: string
@@ -113,10 +134,10 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
   const synthInstructions = resolveInstructions('deep-review/synthesis').text
   // Read before the cache check: the rubric is part of the fingerprint.
   const controller = new AbortController()
-  preparing.add(controller)
+  const donePreparing = beginPreparing(ctx.url, ctx.headSha, controller)
   const rubric = await withGhSignal(controller.signal, () =>
     fetchReviewRubric(ctx.url, ctx.headSha, diffFiles(ctx.diff).map((f) => f.path))
-  ).finally(() => preparing.delete(controller))
+  ).finally(donePreparing)
   if (controller.signal.aborted) return { joined: false }
   const deepFingerprint = deepReviewFingerprint(lenses, synthModel, synthInstructions, rubric)
   const running = activeDeep.get(ctx.url)
@@ -214,6 +235,7 @@ export async function startDeepReview(ctx: PrContext, out: RemoteClient): Promis
 
 /** Stop a PR's deep review, whoever started it, and tell every client. */
 export function cancelDeepReview(url: string): void {
+  stopPreparing(url)
   const active = activeDeep.get(url)
   if (!active) return
   active.controller.abort()
@@ -228,6 +250,7 @@ export function cancelAllDeepReviews(): void {
   for (const controller of preparing) controller.abort()
   activeDeep.clear()
   preparing.clear()
+  preparingFor.clear()
 }
 
 /** Every PR's deep review this launch, for a client that missed the events. */

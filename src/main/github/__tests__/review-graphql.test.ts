@@ -7,7 +7,7 @@ vi.mock('../gh', async (importOriginal) => ({
 }))
 
 import { runGh, getPrDiff, GhTimeoutError } from '../gh'
-import { deletePendingReview, postReviewLayer, type PostReviewLayerInput } from '../review-graphql'
+import { deletePendingReview, discardLayer, postReviewLayer, type PostReviewLayerInput } from '../review-graphql'
 import type { PrReviewComment } from '../../../shared/screenprs'
 import type { ReviewLayerSubmission } from '../../../shared/review-room'
 
@@ -34,6 +34,10 @@ interface FakeComment {
   body: string
   commit: { oid: string }
   threadId?: string
+  path?: string
+  originalLine?: number
+  originalStartLine?: number | null
+  diffSide?: string
 }
 
 interface FakeReview {
@@ -42,6 +46,7 @@ interface FakeReview {
   viewerDidAuthor: boolean
   state: string
   url: string
+  commitOid?: string
   comments: FakeComment[]
 }
 
@@ -71,9 +76,12 @@ class FakeGithub {
     return this.reviews.find((r) => r.state === 'PENDING')
   }
 
-  private comment(body: string, oid = this.head): FakeComment {
+  private comment(body: string, oid = this.head, at?: Input): FakeComment {
     const n = ++this.seq
-    return { id: `PRRC_${n}`, fullDatabaseId: String(9_000_000_000 + n), body, commit: { oid } }
+    const where = at
+      ? { path: String(at.path), originalLine: Number(at.line), originalStartLine: at.startLine === undefined ? null : Number(at.startLine), diffSide: String(at.side) }
+      : {}
+    return { id: `PRRC_${n}`, fullDatabaseId: String(9_000_000_000 + n), body, commit: { oid }, ...where }
   }
 
   answer(op: string, vars: Vars): unknown {
@@ -90,7 +98,7 @@ class FakeGithub {
                 reviews: {
                   nodes: this.reviews
                     .filter((r) => r.state === 'PENDING')
-                    .map((r) => ({ id: r.id, body: r.body, viewerDidAuthor: r.viewerDidAuthor, comments: { totalCount: r.comments.length } })),
+                    .map((r) => ({ id: r.id, body: r.body, viewerDidAuthor: r.viewerDidAuthor, commit: r.commitOid ? { oid: r.commitOid } : null, comments: { totalCount: r.comments.length } })),
                 },
               },
             },
@@ -118,7 +126,8 @@ class FakeGithub {
           viewerDidAuthor: true,
           state: 'PENDING',
           url: `${PR.url}#pullrequestreview-${this.seq}`,
-          comments: threads.map((t) => this.comment(String(t.body), String(input.commitOID))),
+          commitOid: String(input.commitOID),
+          comments: threads.map((t) => this.comment(String(t.body), String(input.commitOID), t)),
         })
         return { data: { addPullRequestReview: { pullRequestReview: { id } } } }
       }
@@ -127,7 +136,7 @@ class FakeGithub {
         if (!r) return notFound()
         const at = `${input.path}:${input.line}`
         if (this.badLines.has(at)) return { data: { addPullRequestReviewThread: { thread: null } } }
-        const c = this.comment(String(input.body), this.driftLines.has(at) ? 'head9' : this.head)
+        const c = this.comment(String(input.body), this.driftLines.has(at) ? 'head9' : this.head, input)
         r.comments.push(c)
         return { data: { addPullRequestReviewThread: { thread: { comments: { nodes: [c] } } } } }
       }
@@ -310,13 +319,20 @@ describe('postReviewLayer: the pending review', () => {
   })
 
   it('posts into a foreign pending review the user adopted, keeping its body', async () => {
-    gh.reviews.push({ id: 'PRR_web', body: 'started on the web', viewerDidAuthor: true, state: 'PENDING', url: 'u', comments: [] })
-    gh.head = HEAD
+    gh.reviews.push({ id: 'PRR_web', body: 'started on the web', viewerDidAuthor: true, state: 'PENDING', url: 'u', commitOid: HEAD, comments: [] })
     const { outcome } = await postReviewLayer(layer([you({ id: 'a', line: '11' })], { adoptPendingReviewId: 'PRR_web' }))
     expect(outcome).toMatchObject({ kind: 'posted' })
     expect(gh.ops('AddReview')).toEqual([])
     expect(gh.ops('AddThread')[0].input).toMatchObject({ pullRequestReviewId: 'PRR_web', path: 'a.ts', line: 11 })
     expect(submitted().body).toBe('started on the web\n\nLooks good')
+    expect(lastRecord().adopted).toBe(true)
+  })
+
+  it('refuses to adopt a pending review started on another commit', async () => {
+    gh.reviews.push({ id: 'PRR_web', body: 'started on the web', viewerDidAuthor: true, state: 'PENDING', url: 'u', commitOid: 'head0', comments: [] })
+    const { outcome } = await postReviewLayer(layer([you({ id: 'a', line: '11' })], { adoptPendingReviewId: 'PRR_web' }))
+    expect(outcome).toMatchObject({ kind: 'failed', error: expect.stringMatching(/on commit head0, not head1/) })
+    expect(gh.calls.map((c) => c.op)).toEqual(['PendingReviews'])
   })
 
   it('leaves a submitted review alone on a failed submit, keeping the state for a retry', async () => {
@@ -468,6 +484,101 @@ describe('postReviewLayer: gh failures', () => {
     })
     const { outcome } = await postReviewLayer(layer([you({ line: '11' })]))
     expect(outcome).toMatchObject({ kind: 'failed', error: expect.stringContaining('gh auth status') })
+  })
+})
+
+describe('postReviewLayer: findings of the adversarial review', () => {
+  it('after a submit that landed, clears only drafts still as they were sent', async () => {
+    gh.next.set('SubmitReview', 'landed-timeout')
+    await postReviewLayer(layer([you({ id: 'a', line: '11' }), you({ id: 'b', line: '12' })]))
+    expect(lastRecord().sent).toMatchObject({ summary: 'Looks good', comments: [{ draftId: 'a' }, { draftId: 'b' }] })
+    // Edited and added to while the answer was lost.
+    const now = [you({ id: 'a', line: '11' }), you({ id: 'b', line: '12', text: 'edited' }), you({ id: 'z', line: '11', text: 'new' })]
+    const { outcome, state } = await postReviewLayer(layer(now, { draft: { comments: now, summary: 'Changed', verdict: 'comment' }, prior: lastRecord() }))
+    expect(outcome).toMatchObject({ kind: 'posted' })
+    expect(state.postedCommentIds).toEqual(['a'])
+    expect(state.sent?.summary).toBe('Looks good')
+    expect(gh.ops('SubmitReview')).toHaveLength(1)
+  })
+
+  it('deletes the review of a timed-out create, found by its claim, when the read head changed', async () => {
+    gh.next.set('AddReview', 'landed-timeout')
+    await postReviewLayer(layer([you({ id: 'a', line: '11' })]))
+    const stale = gh.reviews[0].id
+    gh.head = 'head2'
+    const { outcome } = await postReviewLayer(layer([you({ id: 'a', line: '11', sha: 'head2' })], { readHead: 'head2', prior: lastRecord() }))
+    expect(outcome).toMatchObject({ kind: 'posted' })
+    expect(gh.ops('DeleteReview')).toEqual([{ input: { pullRequestReviewId: stale } }])
+    expect(gh.reviews.map((r) => r.commitOid)).toEqual(['head2'])
+  })
+
+  it('re-places a comment whose line changed after a timed-out create, read off GitHub', async () => {
+    gh.next.set('AddReview', 'landed-timeout')
+    await postReviewLayer(layer([you({ id: 'a', line: '11' })]))
+    expect(lastRecord().items ?? []).toEqual([])
+    const { outcome } = await postReviewLayer(layer([you({ id: 'a', line: '12' })], { prior: lastRecord() }))
+    expect(outcome).toMatchObject({ kind: 'posted' })
+    expect(gh.ops('DeleteComment')).toHaveLength(1)
+    expect(gh.ops('AddThread')[0].input).toMatchObject({ path: 'a.ts', line: 12 })
+    expect(gh.reviews[0].comments.map((c) => c.originalLine)).toEqual([12])
+  })
+
+  it('fails the layer, sending nothing more, when GitHub answers in another shape', async () => {
+    vi.mocked(runGh).mockImplementation(async (args, opts) => {
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        const { query } = JSON.parse(opts?.input ?? '{}') as { query: string }
+        if (query.includes('PendingReviews')) return JSON.stringify({ data: { repository: { pullRequest: { id: 'PR_1', headRefOid: HEAD, reviews: 'oops' } } } })
+        return gh.run(opts?.input ?? '{}')
+      }
+      return JSON.stringify({ baseRefOid: 'base1', headRefOid: HEAD })
+    })
+    const { outcome } = await postReviewLayer(layer([you({ line: '11' })]))
+    expect(outcome).toMatchObject({ kind: 'failed', error: expect.stringContaining('unexpected shape') })
+    expect(gh.ops('AddReview')).toEqual([])
+  })
+})
+
+describe('discardLayer', () => {
+  const state = (over: Partial<ReviewLayerSubmission>): ReviewLayerSubmission => ({ prUrl: PR.url, verdict: 'comment', postedCommentIds: [], state: 'failed', ...over })
+
+  it('removes only SimpleEdit’s comments from an adopted review, never the review', async () => {
+    gh.reviews.push({
+      id: 'PRR_web',
+      body: 'mine',
+      viewerDidAuthor: true,
+      state: 'PENDING',
+      url: '',
+      comments: [
+        { id: 'PRRC_web', fullDatabaseId: '1', body: 'typed on the web', commit: { oid: HEAD } },
+        { id: 'PRRC_se', fullDatabaseId: '2', body: 'n\n\n<!-- se:a -->', commit: { oid: HEAD } },
+      ],
+    })
+    await discardLayer(PR, state({ reviewNodeId: 'PRR_web', adopted: true }))
+    expect(gh.reviews.map((r) => r.id)).toEqual(['PRR_web'])
+    expect(gh.reviews[0].comments.map((c) => c.id)).toEqual(['PRRC_web'])
+  })
+
+  it('finds and deletes the review of a create that timed out', async () => {
+    gh.next.set('AddReview', 'landed-timeout')
+    await postReviewLayer(layer([you({ id: 'a', line: '11' })]))
+    await discardLayer(PR, lastRecord())
+    expect(gh.reviews).toEqual([])
+  })
+
+  it('never deletes a review whose submit landed', async () => {
+    gh.next.set('SubmitReview', 'landed-timeout')
+    await postReviewLayer(layer([you({ id: 'a', line: '11' })]))
+    expect(lastRecord().state).toBe('unknown')
+    await discardLayer(PR, lastRecord())
+    expect(gh.ops('DeleteReview')).toEqual([])
+    expect(gh.reviews[0].state).toBe('COMMENTED')
+  })
+
+  it('deletes a pending review SimpleEdit created', async () => {
+    gh.next.set('SubmitReview', 'error')
+    await postReviewLayer(layer([you({ id: 'a', line: '11' })]))
+    await discardLayer(PR, lastRecord())
+    expect(gh.reviews).toEqual([])
   })
 })
 

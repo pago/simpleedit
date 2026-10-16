@@ -22,6 +22,7 @@ import type { ReviewLayerSubmitOutcome, ReviewVerdict } from '../../shared/revie
 import {
   anchorPartOf,
   claimMarker,
+  commentRev,
   itemMarkerOf,
   layerBody,
   planLayer,
@@ -50,12 +51,47 @@ function isObject(value: unknown): value is Fields {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+// ── answer shapes ─────────────────────────────────────────────────────────────
+// Every field dereferenced below is checked first: an answer in another shape
+// fails the layer with a message instead of posting on a misread.
+
+function shapeError(what: string): Error {
+  return new Error(`GitHub answered ${what} in an unexpected shape; nothing more was sent for this layer`)
+}
+
+function obj(value: unknown, what: string): Fields {
+  if (!isObject(value)) throw shapeError(what)
+  return value
+}
+
+function objOrNull(value: unknown, what: string): Fields | null {
+  return value === null || value === undefined ? null : obj(value, what)
+}
+
+function str(value: unknown, what: string): string {
+  if (typeof value !== 'string') throw shapeError(what)
+  return value
+}
+
+function optStr(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function optInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined
+}
+
+function list(value: unknown, what: string): unknown[] {
+  if (!Array.isArray(value)) throw shapeError(what)
+  return value
+}
+
 /**
  * `gh api graphql` exits non-zero when the answer has `errors` but still
  * prints the answer on stdout, so stdout is read whatever the exit code; an
  * empty one means gh failed before GitHub answered (auth, network).
  */
-async function graphql<T>(query: string, variables: Fields): Promise<T> {
+async function graphql(query: string, variables: Fields): Promise<Fields> {
   const out = await runGh(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query, variables }), allowFail: true })
   let answer: unknown
   try {
@@ -70,73 +106,104 @@ async function graphql<T>(query: string, variables: Fields): Promise<T> {
     throw new GraphqlError(message, errors.flatMap((e) => (typeof e.type === 'string' ? [e.type] : [])))
   }
   if (!isObject(answer.data)) throw new Error(typeof answer.message === 'string' ? `GitHub: ${answer.message}` : 'GitHub answered without data')
-  return answer.data as T
+  return answer.data
 }
 
 const isGraphqlType = (err: unknown, type: string): err is GraphqlError => err instanceof GraphqlError && err.types.includes(type)
 
 interface RemoteComment {
   id: string
-  fullDatabaseId?: string | number | null
+  databaseId?: string
   body: string
-  commit?: { oid: string } | null
+  commitOid?: string
+  /** Where GitHub placed it, on the review's commit. */
+  path?: string
+  line?: number
+  startLine?: number
+  side?: string
+}
+
+const COMMENT_FIELDS = 'id fullDatabaseId body commit { oid } path line originalLine startLine originalStartLine diffSide'
+
+function parseComment(value: unknown): RemoteComment {
+  const c = obj(value, 'a review comment')
+  const dbId = c.fullDatabaseId
+  return {
+    id: str(c.id, 'a review comment id'),
+    body: str(c.body, 'a review comment body'),
+    ...(typeof dbId === 'string' || typeof dbId === 'number' ? { databaseId: String(dbId) } : {}),
+    commitOid: optStr(objOrNull(c.commit, 'a review comment commit')?.oid),
+    path: optStr(c.path),
+    line: optInt(c.originalLine) ?? optInt(c.line),
+    startLine: optInt(c.originalStartLine) ?? optInt(c.startLine),
+    side: optStr(c.diffSide),
+  }
 }
 
 interface PendingReview {
   id: string
   body: string
-  viewerDidAuthor: boolean
-  comments: { totalCount: number }
+  commitOid?: string
+  commentCount: number
 }
 
-const COMMENT_FIELDS = 'id fullDatabaseId body commit { oid }'
-
 async function readPr(pr: PrReviewTarget): Promise<{ id: string; headRefOid: string; pending: PendingReview[] }> {
-  const data = await graphql<{ repository: { pullRequest: { id: string; headRefOid: string; reviews: { nodes: PendingReview[] } } | null } | null }>(
+  const data = await graphql(
     `query PendingReviews($owner: String!, $repo: String!, $number: Int!) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $number) {
           id headRefOid
-          reviews(states: [PENDING], first: 20) { nodes { id body viewerDidAuthor comments(first: 1) { totalCount } } }
+          reviews(states: [PENDING], first: 20) { nodes { id body viewerDidAuthor commit { oid } comments(first: 1) { totalCount } } }
         }
       }
     }`,
     { owner: pr.owner, repo: pr.repo, number: pr.number }
   )
-  const found = data.repository?.pullRequest
+  const found = objOrNull(objOrNull(data.repository, 'the repository')?.pullRequest, 'the pull request')
   if (!found) throw new Error(`GitHub has no pull request ${pr.owner}/${pr.repo}#${pr.number}`)
-  return { id: found.id, headRefOid: found.headRefOid, pending: found.reviews.nodes.filter((r) => r.viewerDidAuthor) }
-}
-
-async function readHeadRefOid(pr: PrReviewTarget): Promise<string> {
-  return (await readPr(pr)).headRefOid
+  const pending = list(obj(found.reviews, 'the pending reviews').nodes, 'the pending reviews').flatMap((node): PendingReview[] => {
+    const r = obj(node, 'a pending review')
+    if (r.viewerDidAuthor !== true) return []
+    const count = obj(r.comments, 'a pending review’s comments').totalCount
+    return [
+      {
+        id: str(r.id, 'a pending review id'),
+        body: optStr(r.body) ?? '',
+        commitOid: optStr(objOrNull(r.commit, 'a pending review commit')?.oid),
+        commentCount: typeof count === 'number' ? count : 0,
+      },
+    ]
+  })
+  return { id: str(found.id, 'the pull request id'), headRefOid: str(found.headRefOid, 'the pull request head'), pending }
 }
 
 async function readReviewComments(reviewId: string): Promise<RemoteComment[]> {
   const out: RemoteComment[] = []
   let after: string | null = null
   for (;;) {
-    const data: { node: { comments: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: RemoteComment[] } } | null } = await graphql(
+    const data = await graphql(
       `query ReviewComments($id: ID!, $after: String) {
         node(id: $id) { ... on PullRequestReview { comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${COMMENT_FIELDS} } } } }
       }`,
       { id: reviewId, after }
     )
-    if (!data.node) throw new GraphqlError(`Review ${reviewId} is gone`, ['NOT_FOUND'])
-    out.push(...data.node.comments.nodes)
-    if (!data.node.comments.pageInfo.hasNextPage) return out
-    after = data.node.comments.pageInfo.endCursor
+    const node = objOrNull(data.node, 'the review')
+    if (!node) throw new GraphqlError(`Review ${reviewId} is gone`, ['NOT_FOUND'])
+    const comments = obj(node.comments, 'the review’s comments')
+    out.push(...list(comments.nodes, 'the review’s comments').map(parseComment))
+    const page = obj(comments.pageInfo, 'the review’s comment page')
+    if (page.hasNextPage !== true) return out
+    after = str(page.endCursor, 'the review’s comment cursor')
   }
 }
 
 /** A review's state and url, or null once it is deleted. */
 async function readReview(reviewId: string): Promise<{ state: string; url?: string } | null> {
   try {
-    const data = await graphql<{ node: { state?: string; url?: string } | null }>(
-      `query ReviewState($id: ID!) { node(id: $id) { ... on PullRequestReview { state url } } }`,
-      { id: reviewId }
-    )
-    return data.node?.state ? { state: data.node.state, url: data.node.url } : null
+    const data = await graphql(`query ReviewState($id: ID!) { node(id: $id) { ... on PullRequestReview { state url } } }`, { id: reviewId })
+    const node = objOrNull(data.node, 'the review')
+    const state = optStr(node?.state)
+    return state ? { state, url: optStr(node?.url) } : null
   } catch (err) {
     if (isGraphqlType(err, 'NOT_FOUND')) return null
     throw err
@@ -145,15 +212,16 @@ async function readReview(reviewId: string): Promise<{ state: string; url?: stri
 
 async function readReplyContext(threadNodeId: string): Promise<ReplyContext | null> {
   try {
-    const data = await graphql<{ node: { path?: string; line?: number | null; comments?: { nodes: Array<{ body: string; author?: { login: string } | null }> } } | null }>(
+    const data = await graphql(
       `query ReplyContext($id: ID!) {
         node(id: $id) { ... on PullRequestReviewThread { path line comments(first: 1) { nodes { body author { login } } } } }
       }`,
       { id: threadNodeId }
     )
-    const root = data.node?.comments?.nodes[0]
-    if (!data.node) return null
-    return { path: data.node.path, line: data.node.line ?? undefined, body: root?.body, author: root?.author?.login }
+    const node = objOrNull(data.node, 'the thread')
+    if (!node) return null
+    const root = objOrNull(isObject(node.comments) && Array.isArray(node.comments.nodes) ? node.comments.nodes[0] : null, 'the thread’s first comment')
+    return { path: optStr(node.path), line: optInt(node.line), body: optStr(root?.body), author: optStr(objOrNull(root?.author, 'its author')?.login) }
   } catch (err) {
     if (err instanceof GhTimeoutError) throw err
     return null
@@ -179,36 +247,47 @@ function threadInput(t: PlannedThread): DraftThreadInput {
   }
 }
 
+/** Whether GitHub holds `c` where the plan puts `t`, read off the comment itself. */
+function sitsWhere(c: RemoteComment, t: PlannedThread): boolean {
+  if (c.path === undefined || c.line === undefined) return true
+  const start = (line: number | undefined, end: number): number | undefined => (line === undefined || line === end ? undefined : line)
+  return c.path === t.path && c.line === t.line && start(c.startLine, c.line) === start(t.startLine, t.line) && (c.side === undefined || c.side === t.side)
+}
+
 async function addReview(pullRequestId: string, commitOID: string, body: string, threads: DraftThreadInput[]): Promise<string> {
-  const data = await graphql<{ addPullRequestReview: { pullRequestReview: { id: string } | null } | null }>(
+  const data = await graphql(
     `mutation AddReview($input: AddPullRequestReviewInput!) { addPullRequestReview(input: $input) { pullRequestReview { id } } }`,
     { input: { pullRequestId, commitOID, body, threads } }
   )
-  const id = data.addPullRequestReview?.pullRequestReview?.id
-  if (!id) throw new Error('GitHub created no review')
-  return id
+  const review = objOrNull(objOrNull(data.addPullRequestReview, 'the new review')?.pullRequestReview, 'the new review')
+  if (!review) throw new Error('GitHub created no review')
+  return str(review.id, 'the new review id')
 }
 
 /** Null when GitHub placed no thread: a bad line answers `thread: null` without an error. */
 async function addThread(pullRequestReviewId: string, input: DraftThreadInput): Promise<RemoteComment | null> {
-  const data = await graphql<{ addPullRequestReviewThread: { thread: { comments: { nodes: RemoteComment[] } } | null } | null }>(
+  const data = await graphql(
     `mutation AddThread($input: AddPullRequestReviewThreadInput!) {
       addPullRequestReviewThread(input: $input) { thread { comments(first: 1) { nodes { ${COMMENT_FIELDS} } } } }
     }`,
     { input: { pullRequestReviewId, ...input } }
   )
-  return data.addPullRequestReviewThread?.thread?.comments.nodes[0] ?? null
+  const thread = objOrNull(objOrNull(data.addPullRequestReviewThread, 'the new thread')?.thread, 'the new thread')
+  if (!thread) return null
+  const first = list(obj(thread.comments, 'the new thread’s comments').nodes, 'the new thread’s comments')[0]
+  return first === undefined ? null : parseComment(first)
 }
 
 /** Always with `pullRequestReviewId`: without it, a reply posts at once. */
 async function addReply(pullRequestReviewId: string, pullRequestReviewThreadId: string, body: string): Promise<RemoteComment | null> {
-  const data = await graphql<{ addPullRequestReviewThreadReply: { comment: RemoteComment | null } | null }>(
+  const data = await graphql(
     `mutation AddReply($input: AddPullRequestReviewThreadReplyInput!) {
       addPullRequestReviewThreadReply(input: $input) { comment { ${COMMENT_FIELDS} } }
     }`,
     { input: { pullRequestReviewId, pullRequestReviewThreadId, body } }
   )
-  return data.addPullRequestReviewThreadReply?.comment ?? null
+  const comment = objOrNull(objOrNull(data.addPullRequestReviewThreadReply, 'the reply')?.comment, 'the reply')
+  return comment ? parseComment(comment) : null
 }
 
 async function updateComment(id: string, body: string): Promise<void> {
@@ -226,16 +305,17 @@ async function deleteComment(id: string): Promise<void> {
 }
 
 async function submit(pullRequestReviewId: string, event: string, body: string): Promise<{ url?: string }> {
-  const data = await graphql<{ submitPullRequestReview: { pullRequestReview: { url?: string } | null } | null }>(
+  const data = await graphql(
     `mutation SubmitReview($input: SubmitPullRequestReviewInput!) { submitPullRequestReview(input: $input) { pullRequestReview { id url state } } }`,
     { input: { pullRequestReviewId, event, body } }
   )
-  return { url: data.submitPullRequestReview?.pullRequestReview?.url }
+  const review = objOrNull(objOrNull(data.submitPullRequestReview, 'the submitted review')?.pullRequestReview, 'the submitted review')
+  return { url: optStr(review?.url) }
 }
 
 /**
- * Drop a pending review and everything in it (cancel, discard, or a pending
- * review the user chose to throw away). One already gone counts as done.
+ * Drop a pending review and everything in it. One already gone counts as
+ * done. Only for a review SimpleEdit created; `discardLayer` is what decides.
  */
 export async function deletePendingReview(nodeId: string): Promise<void> {
   try {
@@ -243,6 +323,39 @@ export async function deletePendingReview(nodeId: string): Promise<void> {
       `mutation DeleteReview($input: DeletePullRequestReviewInput!) { deletePullRequestReview(input: $input) { pullRequestReview { id } } }`,
       { input: { pullRequestReviewId: nodeId } }
     )
+  } catch (err) {
+    if (!isGraphqlType(err, 'NOT_FOUND')) throw err
+  }
+}
+
+/** Take SimpleEdit's comments (those with a marker) out of a pending review, leaving the rest. */
+async function deleteOwnComments(reviewId: string): Promise<void> {
+  for (const c of await readReviewComments(reviewId)) {
+    if (itemMarkerOf(c.body)) await deleteComment(c.id)
+  }
+}
+
+/**
+ * Undo what an unfinished attempt left on GitHub, for cancel or discard: a
+ * pending review SimpleEdit created is deleted, one it adopted only loses
+ * SimpleEdit's comments. A review that turns out to be submitted is left
+ * alone, and a create that timed out is found by its claim marker.
+ */
+export async function discardLayer(pr: PrReviewTarget, state: ReviewLayerSubmission): Promise<void> {
+  if (state.state === 'posted') return
+  let reviewId = state.reviewNodeId
+  if (reviewId) {
+    const review = await readReview(reviewId)
+    if (!review || review.state !== 'PENDING') return
+  } else {
+    const claim = state.claimToken
+    if (!claim) return
+    reviewId = (await readPr(pr)).pending.find((r) => r.body.includes(claimMarker(claim)))?.id
+    if (!reviewId) return
+  }
+  try {
+    if (state.adopted) await deleteOwnComments(reviewId)
+    else await deletePendingReview(reviewId)
   } catch (err) {
     if (!isGraphqlType(err, 'NOT_FOUND')) throw err
   }
@@ -266,14 +379,17 @@ export interface PostReviewLayerInput {
   /**
    * Persist progress. Called before anything is created or added, again
    * with the review's id the moment it exists, after every comment that
-   * lands, and with the final state. Must not throw.
+   * lands, before the submit, and with the final state. Must not throw.
    */
   record: (state: ReviewLayerSubmission) => void
 }
 
 export interface PostReviewLayerResult {
   outcome: ReviewLayerSubmitOutcome
-  /** As last recorded. Once posted, `postedCommentIds` is what `clear-posted` clears. */
+  /**
+   * As last recorded. Once posted, `clear-posted` clears `postedCommentIds`
+   * with `sent.summary` and `sent.verdict`.
+   */
   state: ReviewLayerSubmission
 }
 
@@ -301,6 +417,24 @@ export async function postReviewLayer(input: PostReviewLayerInput): Promise<Post
     save({ ...state, state: timedOut ? 'unknown' : 'failed' })
     return { outcome: timedOut ? { prUrl: pr.url, kind: 'unknown', error } : { prUrl: pr.url, kind: 'failed', error }, state }
   }
+}
+
+/**
+ * The draft comments a review that was submitted already carried, as far as
+ * they are still the version that went: one edited since stays in the draft.
+ */
+function stillAsSent(draft: PrReviewDraft, plan: LayerPlan, state: ReviewLayerSubmission): string[] {
+  const now = new Map(draft.comments.map((c) => [c.id, c]))
+  if (state.sent) {
+    return state.sent.comments.filter((s) => {
+      const c = now.get(s.draftId)
+      return c !== undefined && commentRev(c) === s.rev
+    }).map((s) => s.draftId)
+  }
+  // Submitted without our submit (the user finished it on GitHub): only the
+  // comments that had landed in it went.
+  const planned = new Map(plan.items.map((i) => [i.comment.id, i.rev]))
+  return (state.items ?? []).filter((i) => planned.get(i.draftId) === i.draftRev).map((i) => i.draftId)
 }
 
 async function post(
@@ -333,39 +467,62 @@ async function post(
     // Not pending and not gone: the earlier attempt's submit landed. A review
     // is never submitted twice.
     if (previous) {
-      save({ ...state, state: 'posted', reviewUrl: previous.url, postedCommentIds: input.draft.comments.map((c) => c.id) })
+      const ids = stillAsSent(input.draft, plan, state)
+      save({
+        ...state,
+        state: 'posted',
+        reviewUrl: previous.url,
+        postedCommentIds: ids,
+        sent: state.sent ?? { comments: [], summary: '', verdict: input.draft.verdict },
+      })
       return { prUrl: pr.url, kind: 'posted', reviewUrl: previous.url, folded: countFolds(plan, foldedSet(plan, current())) }
     }
-    save({ ...state, reviewNodeId: undefined, items: [], folded: [] })
+    save({ ...state, reviewNodeId: undefined, adopted: undefined, items: [], folded: [], sent: undefined })
     state = current()
   }
+
+  const claimed = (r: PendingReview, s: ReviewLayerSubmission): boolean =>
+    r.id === s.reviewNodeId || (s.claimToken !== undefined && r.body.includes(claimMarker(s.claimToken)))
 
   // A review pinned to another head than the one now being posted would put
-  // these comments on code the user didn't read last. It is ours and nothing
-  // in it is visible, so it is started over.
+  // these comments on code the user didn't read last. Nothing in it is
+  // visible, so it is started over; an adopted one only loses our comments.
   if (state.readHead && state.readHead !== readHead) {
-    const stale = pending.find((r) => r.id === state.reviewNodeId)
-    if (stale) await deletePendingReview(stale.id)
-    pending = pending.filter((r) => r !== stale)
-    save({ ...state, reviewNodeId: undefined, claimToken: undefined, items: [], folded: [], readHead })
+    const stale = pending.find((r) => claimed(r, state))
+    if (stale) {
+      if (state.adopted) await deleteOwnComments(stale.id)
+      else await deletePendingReview(stale.id)
+      if (!state.adopted) pending = pending.filter((r) => r !== stale)
+    }
+    save({ ...state, reviewNodeId: undefined, claimToken: undefined, adopted: undefined, items: [], folded: [], sent: undefined, readHead })
     state = current()
   }
 
-  const claim = state.claimToken
-  const ours = pending.find(
-    (r) => r.id === state.reviewNodeId || r.id === input.adoptPendingReviewId || (claim !== undefined && r.body.includes(claimMarker(claim)))
-  )
+  const ours = pending.find((r) => claimed(r, state) || r.id === input.adoptPendingReviewId)
   if (!ours && pending.length) {
-    return { prUrl: pr.url, kind: 'foreign-pending', pendingReviewId: pending[0].id, commentCount: pending[0].comments.totalCount }
+    return { prUrl: pr.url, kind: 'foreign-pending', pendingReviewId: pending[0].id, commentCount: pending[0].commentCount }
   }
 
   let reviewId: string
   let existingBody = ''
   let headNow = remote.headRefOid
   if (ours) {
+    const adopted = state.adopted === true || !claimed(ours, state)
+    // GitHub pins a review to one commit; an adopted one started on another
+    // would carry this approval to code the user didn't read here.
+    if (adopted && ours.commitOid !== readHead) {
+      save({ ...state, state: 'failed' })
+      return {
+        prUrl: pr.url,
+        kind: 'failed',
+        error:
+          `Your pending review on GitHub is on commit ${(ours.commitOid ?? 'unknown').slice(0, 7)}, not ${readHead.slice(0, 7)} that you read here. ` +
+          'Finish or delete it on GitHub, then post again.',
+      }
+    }
     reviewId = ours.id
     existingBody = withoutClaim(ours.body)
-    save({ ...state, state: 'pending', readHead, reviewNodeId: reviewId })
+    save({ ...state, state: 'pending', readHead, reviewNodeId: reviewId, ...(adopted ? { adopted: true } : {}) })
   } else {
     const created = await create(input, plan, remote.id, current, save)
     reviewId = created.reviewId
@@ -380,8 +537,14 @@ async function post(
     if (c.inReplyTo && folded.has(c.id)) replyContext.set(c.id, await readReplyContext(c.inReplyTo.threadNodeId))
   }
   const body = [existingBody, layerBody(plan, folded, pr.url, replyContext)].filter(Boolean).join('\n\n')
+  const sent = {
+    comments: input.draft.comments.map((c) => ({ draftId: c.id, rev: commentRev(c) })),
+    summary: input.draft.summary,
+    verdict: input.draft.verdict,
+  }
+  save({ ...current(), sent })
   const { url } = await submit(reviewId, REVIEW_EVENT[input.verdict], body)
-  save({ ...current(), state: 'posted', reviewUrl: url, postedCommentIds: input.draft.comments.map((c) => c.id) })
+  save({ ...current(), state: 'posted', reviewUrl: url, postedCommentIds: sent.comments.map((c) => c.draftId) })
   return { prUrl: pr.url, kind: 'posted', reviewUrl: url, folded: countFolds(plan, folded) }
 }
 
@@ -399,7 +562,7 @@ async function create(
 ): Promise<{ reviewId: string; headNow?: string }> {
   const { readHead } = input
   const claimToken = current().claimToken ?? randomUUID().replace(/-/g, '')
-  save({ ...current(), state: 'pending', readHead, claimToken, reviewNodeId: undefined, items: [], folded: [] })
+  save({ ...current(), state: 'pending', readHead, claimToken, reviewNodeId: undefined, adopted: undefined, items: [], folded: [], sent: undefined })
   const claimBody = claimMarker(claimToken)
   const threads = plan.items.filter((i): i is PlannedThread => i.kind === 'thread').map(threadInput)
   let reviewId: string
@@ -408,7 +571,7 @@ async function create(
     reviewId = await addReview(pullRequestId, readHead, claimBody, threads)
   } catch (err) {
     if (!threads.length || !isGraphqlType(err, 'UNPROCESSABLE')) throw refusedCommit(err, readHead)
-    headNow = await readHeadRefOid(input.pr)
+    headNow = (await readPr(input.pr)).headRefOid
     try {
       reviewId = await addReview(pullRequestId, readHead, claimBody, [])
     } catch (retryErr) {
@@ -453,7 +616,7 @@ async function reconcile(
       draftId: item.comment.id,
       draftRev: item.rev,
       nodeId: c.id,
-      ...(c.fullDatabaseId != null ? { databaseId: String(c.fullDatabaseId) } : {}),
+      ...(c.databaseId !== undefined ? { databaseId: c.databaseId } : {}),
     }
     const state = current()
     save({
@@ -473,10 +636,14 @@ async function reconcile(
 
   for (const item of plan.items) {
     let existing = byDraft.get(item.comment.id)
-    const before = recorded.get(item.comment.id)
-    if (existing && item.kind === 'thread' && before && anchorPartOf(before.draftRev) !== anchorPartOf(item.rev)) {
-      await deleteComment(existing.id)
-      existing = undefined
+    if (existing && item.kind === 'thread') {
+      const before = recorded.get(item.comment.id)
+      // Nothing recorded (a create that timed out): GitHub's own placement says.
+      const moved = before ? anchorPartOf(before.draftRev) !== anchorPartOf(item.rev) : !sitsWhere(existing, item)
+      if (moved) {
+        await deleteComment(existing.id)
+        existing = undefined
+      }
     }
     if (existing) {
       if (existing.body !== item.body) await updateComment(existing.id, item.body)
@@ -497,7 +664,7 @@ async function reconcile(
       continue
     }
     const comment = await tryGraphql(() => addThread(reviewId, threadInput(item)))
-    if (comment && comment.commit?.oid === readHead) {
+    if (comment && comment.commitOid === readHead) {
       landed(item, comment)
       continue
     }

@@ -61,6 +61,8 @@ export interface ReviewSubmitRequest {
   layers: Array<{
     prUrl: string
     verdict: ReviewVerdict
+    /** The head the user read the layer at. Main posts only if it is still the review's recorded head. */
+    readHead: string
     /**
      * The user answered "use it" to a pending review on GitHub that SimpleEdit
      * didn't create: its node id. Absent means stop and ask.
@@ -75,6 +77,8 @@ export type ReviewLayerSubmitOutcome =
   /** A pending review exists that SimpleEdit didn't create; nothing was added. */
   | { prUrl: string; kind: 'foreign-pending'; pendingReviewId: string; commentCount: number }
   | { prUrl: string; kind: 'failed'; error: string }
+  /** The layer's head changed since the user read it; nothing was posted. Reload the layer first. */
+  | { prUrl: string; kind: 'head-moved'; readHead: string; headSha: string }
   /** Timed out: GitHub may or may not have it. A retry resumes by marker. */
   | { prUrl: string; kind: 'unknown'; error: string }
 

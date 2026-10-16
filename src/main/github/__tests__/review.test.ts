@@ -6,6 +6,9 @@ vi.mock('../gh', async (importOriginal) => ({
   getPrDiff: vi.fn(),
 }))
 
+const stored = vi.hoisted(() => ({ drafts: {} as Record<string, PrReviewDraft> }))
+vi.mock('../../screenprs-drafts', () => ({ loadDrafts: () => ({ drafts: stored.drafts, rev: 1 }) }))
+
 import { runGh, getPrDiff, GhTimeoutError } from '../gh'
 import { handleSubmitReview, postReview, submitReview } from '../review'
 import type { GithubReviewPayload, PrReviewComment, PrReviewDraft } from '../../../shared/screenprs'
@@ -55,6 +58,7 @@ const post = vi.fn<() => Promise<string>>()
 let headOnGithub = HEAD
 
 beforeEach(() => {
+  stored.drafts = {}
   headOnGithub = HEAD
   post.mockReset().mockResolvedValue(JSON.stringify({ html_url: 'https://github.com/acme/app/pull/7#r1' }))
   vi.mocked(runGh).mockReset().mockImplementation(async (args) => {
@@ -187,6 +191,13 @@ describe('handleSubmitReview', () => {
     }
     expect(posted()).toEqual([])
     expect(clear).not.toHaveBeenCalled()
+  })
+
+  it('refuses a draft whose stored copy is a Review Room thread, whatever the client sent', async () => {
+    stored.drafts = { [PR.url]: { comments: [you({ id: 'r', line: '11', inReplyTo: { threadNodeId: 'PRRT_1', rootCommentId: '1' } })], summary: '', verdict: 'comment' } }
+    const res = await handleSubmitReview(request([you({ id: 'r', line: '11' })]), vi.fn())
+    expect(res).toEqual({ ok: false, error: 'This draft belongs to a Review Room thread; post it from the Review Room.' })
+    expect(posted()).toEqual([])
   })
 
   it('says a killed post may have landed', async () => {
