@@ -592,6 +592,29 @@ Where these differ from §1–§9, these win.
 - **UI:** the outline is a right column when the room is ≥ 900px wide (container query, per the
   Layout rule; ≈ 1200px of window with the sidebar), else a drawer. The submit dialog has a
   per-layer "post" checkbox, unchecked for merged/closed layers. Chips send at once.
+- **After the adversarial review (fix commits 0985f67, a34ba1e, cf3e93d):**
+  - A companion may call only `list_threads`, `reply_to_thread`, `get_review_diff`,
+    `propose_draft`, `checkout_review_head` (bridge allowlist, every provider); `send_message` to
+    a companion is refused too, since its answer would carry its words to a writable sender.
+  - Every spawn path refuses a claimed id except main's companion launch; an owned spawn
+    (`AgentSpawnOptions.owner`, which can only add restrictions) without a matching open claim is
+    refused. After a rebind the new id counts as live for 30 s so an Ask can't replace the claim
+    before the spawn lands.
+  - Claude companions: `--strict-mcp-config`, deny list + WebFetch/WebSearch. **Codex can't shut
+    out the user's own MCP servers** (`-c mcp_servers` merges; plugins add more), so it reports
+    `by-instruction`; web search is disabled. OpenCode: `'*': deny`, read tools, `simpleedit_*`.
+  - Checkouts use `core.symlinks=false`; removal runs under the repo lock; the LRU skips repos with
+    a live or resuming companion's checkout. Held questions survive quit.
+  - `ReviewSubmitRequest.layers[].readHead`: a layer whose head moved since it was read returns
+    `head-moved` and posts nothing. A retry after a landed submit clears only the drafts it sent
+    (by rev). An adopted pending review must sit on the read head, and discard removes only
+    SimpleEdit's comments from it, never the review.
+  - Re-placement after a push needs the snippet to be unique in the whole file at the new head
+    (`fileAt`); LEFT-side (deleted-line) threads therefore always become outdated after a push.
+    A re-placed thread moves its linked draft with it.
+  - The tour lists every changed row no step shows under "Not in the tour" (a cited file can't
+    hide its other hunks). The submit dialog shows exactly what main posts, including each
+    layer's review body.
 - **Removed:** desktop `PrDetail`, `ReviewComposer`, `InlineCommentEditor`, `commentSource.ts`,
   `SplitButton` (only they used it). `ConfirmReviewModal` and `OverviewCard` stay.
 
