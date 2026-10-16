@@ -19,7 +19,8 @@
   import type { OverviewState } from '../../stores/screenprs.svelte'
   import { renderMarkdown } from '../../lib/markdown'
 
-  type SectionKey = keyof OverviewSections
+  /** The reading order is the Review Room's tour, not a section of this card. */
+  type SectionKey = Exclude<keyof OverviewSections, 'readingOrder'>
 
   interface Props {
     context: Pick<PrContext, 'author' | 'reviewers' | 'ci' | 'ciFailing' | 'ciAttention' | 'headSha'>

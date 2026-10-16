@@ -8,7 +8,10 @@ export interface DeliveryInfo {
   action?: 'force-send' | 'retry'
 }
 
-export function deliveryInfo(m: ThreadMessage): DeliveryInfo | null {
+/** Review-room messages carry the same delivery fields, with more authors. */
+type DeliveredMessage = Omit<ThreadMessage, 'author'> & { author: string }
+
+export function deliveryInfo(m: DeliveredMessage): DeliveryInfo | null {
   if (m.author !== 'user' || !m.delivery) return null
   switch (m.delivery) {
     case 'held':

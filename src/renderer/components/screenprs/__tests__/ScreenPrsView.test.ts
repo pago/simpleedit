@@ -4,6 +4,8 @@ import ScreenPrsView from '../ScreenPrsView.svelte'
 import ScreenPrsButton from '../ScreenPrsButton.svelte'
 import { screenPrsStore } from '../../../stores/screenprs.svelte'
 import { _resetSidebarRailForTests } from '../../../stores/sidebarRail.svelte'
+import { _receiveReviewChange, _resetReviewRoomForTests } from '../../../stores/reviewRoom.svelte'
+import { layer, review } from '../../review/__tests__/fixtures'
 
 /** The org and cutoff are main's, saved for every window and phone, not this view's. */
 let invoke: ReturnType<typeof vi.fn>
@@ -23,12 +25,42 @@ beforeEach(async () => {
     }
     if (channel === 'models:config-get') return { defaults: {} }
     if (channel === 'models:claude') return []
+    if (channel === 'review:open') {
+      if (args[0] === BROKEN) throw new Error('gh is not signed in')
+      return { reviewId: review().id, layers: [layer(183, String(args[0]))] }
+    }
+    if (channel === 'review:layer-diff') return { url: args[1], headSha: 'sha183', diff: '' }
+    if (channel === 'review:since') return { kind: 'first-visit' }
     return undefined
   })
   vi.stubGlobal('api', { invoke, on: () => () => {} })
   screenPrsStore._onQueued([])
   screenPrsStore._onStatus('done', 0)
   await screenPrsStore.loadFilter()
+  _resetReviewRoomForTests()
+  screenPrsStore.select(null)
+})
+
+const PICKED = 'https://github.com/acme/app/pull/183'
+const BROKEN = 'https://github.com/acme/app/pull/999'
+
+describe('ScreenPrsView — the Review Room', () => {
+  it('opens the picked PR’s stack in the room', async () => {
+    _receiveReviewChange({ reviewId: review().id, review: review(), rev: 1 })
+    screenPrsStore.select(PICKED)
+    render(ScreenPrsView)
+    expect(await screen.findByTestId('review-room')).toBeInTheDocument()
+    expect(invoke).toHaveBeenCalledWith('review:open', PICKED)
+    expect(screen.queryByRole('button', { name: /Discuss/ })).toBeNull()
+  })
+
+  it('says why a review couldn’t be opened, and tries again', async () => {
+    screenPrsStore.select(BROKEN)
+    render(ScreenPrsView)
+    expect(await screen.findByTestId('review-open-error')).toHaveTextContent('gh is not signed in')
+    await fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(invoke.mock.calls.filter((c) => c[0] === 'review:open')).toHaveLength(2)
+  })
 })
 
 describe('ScreenPrsView — the saved filter', () => {
