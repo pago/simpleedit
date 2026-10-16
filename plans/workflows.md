@@ -231,9 +231,12 @@ Checked 2026-10-16 against `feat/review-room` (PR 1, draft) and `feat/review-roo
 - **Second terminal view:** the companion's docked terminal faces the same `pty:claim`
   question as the worker popup. Reuse whatever it settles on.
 
-So: build the parts that don't touch sessions (store, engine, MCP tools, `report_result`,
-graph) on `main` now; take up hidden workers once #222 merges, or rebase onto it if it lands
-first.
+**`feature/runs` is based on `feat/review-room` (PR 1)**, so `SessionOwner` is used from day
+one. It is a branch on top of PR 1, not a layer of the Review Room's `gh stack` (different
+topic, different worktree). Keep it current with `git rebase --onto origin/feat/review-room
+<old base>` when PR 1 changes. Once #222 merges (rebase merge, so new SHAs), rebase with
+`--onto origin/main`. The workflows PR targets `feat/review-room` until then, and can't
+merge before #222.
 
 ## Delivery (few, larger PRs)
 
