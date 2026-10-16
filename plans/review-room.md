@@ -48,8 +48,8 @@ The value is the human reviewer's judgement, amplified. Not "run an AI review an
     back to the requesting session by default (GitHub optional); threads get **Ask author**.
 13. **No explicit checkout step.** The companion fetches a read-only checkout itself when it
     needs one (`checkout_review_head`).
-14. **Posting via GraphQL** (pending review → threads + replies → submit), unless the spike in
-    PR 2 hits a blocker (see §7).
+14. **Posting via GraphQL** (pending review created with its line threads → replies → submit;
+    the spike's result and the decision are in "PR 2 implementation notes").
 15. **Phone is in scope** (PR 4): queue → the same page, outline behind a button, no terminal.
 16. **`request_review` may carry the author's briefing** (what / why / impact, reading order, open
     questions). It is shown labelled "by the author", fills the tour at once, and never replaces the
@@ -525,6 +525,34 @@ Built by Codex, then reviewed and corrected (2026-10-16). Where these differ fro
   each other's `$TMPDIR/simpleedit-mcp-<id>.json`. Role checks are against persisted roles, but a
   determined sibling could act as a companion. Acceptable for a local, single-user app; if PR 2
   wants more, the config file has to move out of reach of agents, which no provider supports today.
+
+### PR 2 implementation notes
+
+Where these differ from §1–§9, these win.
+
+- **GraphQL spike (2026-10-16, scratch repo `pago/review-room-graphql-spike`, private, kept for
+  live checks).** Two-commit PR (C1 edits `a.txt`, head C2 adds `b.txt`) with an existing thread.
+  - Replies with `pullRequestReviewId` land in the pending review (`state: PENDING`, invisible
+    until submit) and post inside it with `in_reply_to_id` set. ✓ (Without the id, a reply also
+    joined the existing pending review; we always pass it anyway.)
+  - One pending review per user per PR is enforced (`User can only have one pending review per
+    pull request`); the viewer's pending review and its comments (with our `<!-- se:… -->`
+    markers) can be read back for a resume. ✓ `updatePullRequestReviewComment` edits a pending
+    comment ✓; re-submitting a submitted review fails ✓; `deletePullRequestReview` drops the
+    pending review and its replies ✓. `fullDatabaseId` exceeds Int32 (PR 1 note confirmed).
+  - **`commitOID` does not pin per-item threads.** The review records C1, but every
+    `addPullRequestReviewThread` comment anchored on the current head (C2) and even accepted a
+    file that doesn't exist at C1. A bad line returns `thread: null` with **no error**.
+  - **Threads passed in `addPullRequestReview(input: {commitOID, threads})` are pinned** like REST
+    `commit_id` (comments on C1; a C2-only path is refused: "Path could not be resolved") but the
+    call is atomic: one bad anchor fails it.
+  - **Decision (user, 2026-10-16): GraphQL, threads at creation.** Per layer: run the existing
+    anchor checks → `addPullRequestReview(commitOID = read head, threads = all line drafts)`
+    → replies one by one with `pullRequestReviewId` → `submitPullRequestReview`. If creation is
+    refused (UNPROCESSABLE) and the PR's head still equals the read head, create it empty and add
+    threads one by one (a `null` thread or a comment whose `commit.oid` ≠ read head is deleted and
+    folded into the body, per item); if the head moved, every line thread folds into the body
+    (today's REST rule). REST stays only for quick approve.
 
 ## Verification
 
