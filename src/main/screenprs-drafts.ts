@@ -198,8 +198,10 @@ export function moveThreadDraft(threadId: string, toUrl: string): Array<{ url: s
   const comment = loadDrafts().drafts[from.url]?.comments.find((candidate) => candidate.id === from.commentId)
   if (!comment) throw new Error('Review thread draft is missing')
   assertReviewDraftLink(toUrl, comment, from)
-  const added = applyOp(toUrl, { kind: 'add-comment', comment })
-  if (!added.draft?.comments.some((candidate) => candidate.id === comment.id)) {
+  // A fresh id: the old one is tombstoned wherever the draft has been, so moving back would be refused.
+  const moved = { ...comment, id: crypto.randomUUID() }
+  const added = applyOp(toUrl, { kind: 'add-comment', comment: moved })
+  if (!added.draft?.comments.some((candidate) => candidate.id === moved.id)) {
     throw new Error('Review thread draft could not be added to the new layer')
   }
   const removed = applyOp(from.url, { kind: 'remove-comment', id: comment.id })

@@ -113,7 +113,12 @@ describe('screenprs-drafts', () => {
     })
     drafts.applyOp(U1, { kind: 'add-comment', comment: linked })
     expect(drafts.moveThreadDraft('rt_thread01', U2).map(({ url }) => url)).toEqual([U2, U1])
-    expect(drafts.draftLinksForThread('rt_thread01')).toEqual([{ url: U2, commentId: linked.id }])
+    const [onTwo] = drafts.draftLinksForThread('rt_thread01')
+    expect(onTwo?.url).toBe(U2)
+    expect(drafts.moveThreadDraft('rt_thread01', U1).map(({ url }) => url)).toEqual([U1, U2])
+    const [back] = drafts.draftLinksForThread('rt_thread01')
+    expect(back?.url).toBe(U1)
+    expect(drafts.loadDrafts().drafts[U1]?.comments.find((c) => c.id === back?.commentId)?.text).toBe(linked.text)
   })
 
   it('reports a no-op as unchanged and does not write', () => {

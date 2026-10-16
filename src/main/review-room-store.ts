@@ -6,14 +6,15 @@ import {
   newReviewId,
   newReviewMessageId,
   newReviewThreadId,
+  REVIEW_MAX_BODY,
   type Review,
   type ReviewAgent,
-  type ReviewChange,
   type ReviewCloseReason,
   type ReviewCompanion,
   type ReviewMessage,
   type ReviewOp,
   type ReviewPrRef,
+  type ReviewRecordChange,
   type ReviewSeverity,
   type ReviewSnapshot,
   type ReviewStatus,
@@ -21,6 +22,7 @@ import {
   type ReviewThread,
   type ReviewThreadAnchor,
   type ReviewThreadOrigin,
+  type ReviewThreadChange,
   type ReviewThreadStatus,
 } from '../shared/review-room'
 import { isPrUrl } from '../shared/screenprs'
@@ -181,12 +183,12 @@ export function loadReviews(): ReviewSnapshot {
   }
 }
 
-function changedReview(reviewId: string): ReviewChange {
+function changedReview(reviewId: string): ReviewRecordChange {
   rev++
   return { reviewId, review: getReview(reviewId), rev }
 }
 
-function changedThread(reviewId: string, threadId: string): ReviewChange {
+function changedThread(reviewId: string, threadId: string): ReviewThreadChange {
   rev++
   return { reviewId, threadId, thread: getReviewThread(threadId), rev }
 }
@@ -230,7 +232,7 @@ export interface CreateReviewInput {
 }
 
 /** Main-only review creation. */
-export function createReview(input: CreateReviewInput, now = new Date()): ReviewChange {
+export function createReview(input: CreateReviewInput, now = new Date()): ReviewRecordChange {
   const id = input.id ?? newReviewId()
   if (!isReviewId(id) || !input.repo || input.repo.length > 1024) throw new Error('Malformed review')
   if (!input.layers.length || input.layers.length > 100 || !input.layers.every(validLayer)) throw new Error('Malformed review layers')
@@ -292,7 +294,7 @@ function insertMessage(d: Db, threadId: string, message: Omit<ReviewMessage, 'se
   )
 }
 
-function removeThread(d: Db, reviewId: string, threadId: string, at: string): ReviewChange | null {
+function removeThread(d: Db, reviewId: string, threadId: string, at: string): ReviewThreadChange | null {
   const messageIds = d.prepare('SELECT id FROM review_messages WHERE thread_id = ?').all(threadId) as Array<{ id: string }>
   const removed = d.prepare('DELETE FROM review_threads WHERE id = ? AND review_id = ?').run(threadId, reviewId)
   if (!removed.changes) return null
@@ -304,7 +306,7 @@ function removeThread(d: Db, reviewId: string, threadId: string, at: string): Re
 }
 
 export interface ReviewOpResult {
-  change: ReviewChange | null
+  change: ReviewThreadChange | null
   queued?: {
     reviewId: string
     threadId: string
@@ -410,7 +412,7 @@ export function applyReviewOp(reviewId: string, op: ReviewOp, now = new Date()):
 export interface ClaimCompanionResult {
   won: boolean
   companion?: ReviewCompanion
-  change: ReviewChange | null
+  change: ReviewRecordChange | null
 }
 
 /** Atomically assigns the single companion. Replaying the winning request is idempotent. */
@@ -451,19 +453,22 @@ export function claimCompanion(
       claimRequestId: requestId,
     }
     const result = d
-      .prepare(`UPDATE reviews SET companion = ?, updated_at = ? WHERE id = ? AND status = 'open' AND companion IS NULL`)
-      .run(JSON.stringify(companion), now.toISOString(), reviewId)
+      .prepare(
+        `UPDATE reviews SET companion = ?, companion_session_id = ?, updated_at = ?
+         WHERE id = ? AND status = 'open' AND companion IS NULL`
+      )
+      .run(JSON.stringify(companion), companion.sessionId, now.toISOString(), reviewId)
     return result.changes ? { won: true, companion, change: changedReview(reviewId) } : { won: false, change: null }
   })
 }
 
-export function clearCompanion(reviewId: string, sessionId: string, now = new Date()): ReviewChange | null {
+export function clearCompanion(reviewId: string, sessionId: string, now = new Date()): ReviewRecordChange | null {
   const d = getDb()
   return transaction(d, () => {
     const review = getReview(reviewId)
     if (!review?.companion || review.companion.sessionId !== sessionId) return null
     const result = d
-      .prepare('UPDATE reviews SET companion = NULL, updated_at = ? WHERE id = ? AND companion = ?')
+      .prepare('UPDATE reviews SET companion = NULL, companion_session_id = NULL, updated_at = ? WHERE id = ? AND companion = ?')
       .run(now.toISOString(), reviewId, JSON.stringify(review.companion))
     return result.changes ? changedReview(reviewId) : null
   })
@@ -475,9 +480,9 @@ export function appendReviewMessage(
   body: string,
   options: { id?: string; readFiles?: string[]; closeAskAuthor?: boolean } = {},
   now = new Date()
-): ReviewChange | null {
+): ReviewThreadChange | null {
   const id = options.id ?? newReviewMessageId()
-  if (!isReviewThreadId(threadId) || !isReviewMessageId(id) || !body.trim() || body.length > 64 * 1024)
+  if (!isReviewThreadId(threadId) || !isReviewMessageId(id) || !body.trim() || body.length > REVIEW_MAX_BODY)
     throw new Error('Malformed review message')
   const d = getDb()
   return transaction(d, () => {
@@ -502,7 +507,7 @@ export function appendReviewMessage(
   })
 }
 
-export function setReviewProposal(threadId: string, text: string | null, severity?: ReviewSeverity, now = new Date()): ReviewChange | null {
+export function setReviewProposal(threadId: string, text: string | null, severity?: ReviewSeverity, now = new Date()): ReviewThreadChange | null {
   if (
     !isReviewThreadId(threadId) ||
     (text !== null && (!text.trim() || text.length > 64 * 1024)) ||
@@ -528,7 +533,7 @@ export interface ReviewDeliveryPatch {
   failedReason?: string
 }
 
-export function setReviewDelivery(messageIds: Iterable<string>, patch: ReviewDeliveryPatch): ReviewChange[] {
+export function setReviewDelivery(messageIds: Iterable<string>, patch: ReviewDeliveryPatch): ReviewThreadChange[] {
   const d = getDb()
   return transaction(d, () => {
     const threads = new Map<string, string>()
@@ -556,43 +561,78 @@ export interface PendingReviewMessage {
   message: ReviewMessage
 }
 
+const IN_STATES = (count: number): string => Array.from({ length: count }, () => '?').join(', ')
+
+/**
+ * The user messages of `sessionId`'s companion reviews in `states`. Indexed:
+ * the delivery core asks this on every hook, status change and keystroke.
+ */
 export function reviewMessagesInState(sessionId: string, states: readonly DeliveryState[]): PendingReviewMessage[] {
+  if (!states.length) return []
+  const d = getDb()
+  const rows = d
+    .prepare(
+      `SELECT m.thread_id AS thread_id, m.id AS message_id FROM reviews r
+       JOIN review_threads t ON t.review_id = r.id
+       JOIN review_messages m ON m.thread_id = t.id
+       WHERE r.companion_session_id = ? AND m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)})`
+    )
+    .all(sessionId, ...states) as Array<{ thread_id: string; message_id: string }>
   const out: PendingReviewMessage[] = []
-  for (const review of loadReviews().reviews) {
-    if (review.companion?.sessionId !== sessionId) continue
-    for (const thread of threadsForReview(review.id)) {
-      for (const message of thread.messages) {
-        if (message.author === 'user' && message.delivery && states.includes(message.delivery)) out.push({ review, thread, message })
-      }
-    }
+  const threads = new Map<string, ReviewThread | null>()
+  const reviews = new Map<string, Review | null>()
+  for (const row of rows) {
+    if (!threads.has(row.thread_id)) threads.set(row.thread_id, getReviewThread(row.thread_id))
+    const thread = threads.get(row.thread_id)
+    if (!thread) continue
+    if (!reviews.has(thread.reviewId)) reviews.set(thread.reviewId, getReview(thread.reviewId))
+    const review = reviews.get(thread.reviewId)
+    const message = thread.messages.find((candidate) => candidate.id === row.message_id)
+    if (review && message) out.push({ review, thread, message })
   }
   return out.sort((a, b) => a.message.at.localeCompare(b.message.at))
 }
 
 export function reviewSessionsWithMessagesIn(states: readonly DeliveryState[]): string[] {
-  const sessions = new Set<string>()
-  for (const review of loadReviews().reviews) {
-    const sessionId = review.companion?.sessionId
-    if (sessionId && reviewMessagesInState(sessionId, states).length > 0) sessions.add(sessionId)
-  }
-  return [...sessions]
+  if (!states.length) return []
+  const rows = getDb()
+    .prepare(
+      `SELECT DISTINCT r.companion_session_id AS session_id FROM review_messages m
+       JOIN review_threads t ON t.id = m.thread_id
+       JOIN reviews r ON r.id = t.review_id
+       WHERE m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)}) AND r.companion_session_id IS NOT NULL`
+    )
+    .all(...states) as Array<{ session_id: string }>
+  return rows.map((row) => row.session_id)
 }
 
 export function reviewHasMessagesInState(sessionId: string, states: readonly DeliveryState[]): boolean {
-  return reviewMessagesInState(sessionId, states).length > 0
-}
-
-export function reviewsForSession(sessionId: string): Review[] {
-  return loadReviews().reviews.filter(
-    (review) => review.companion?.sessionId === sessionId || review.requesterSessionId === sessionId,
+  if (!states.length) return false
+  return (
+    getDb()
+      .prepare(
+        `SELECT 1 FROM reviews r
+         JOIN review_threads t ON t.review_id = r.id
+         JOIN review_messages m ON m.thread_id = t.id
+         WHERE r.companion_session_id = ? AND m.author = 'user' AND m.delivery IN (${IN_STATES(states.length)})
+         LIMIT 1`
+      )
+      .get(sessionId, ...states) !== undefined
   )
 }
 
-export function isReviewCompanionSession(sessionId: string): boolean {
-  return loadReviews().reviews.some((review) => review.companion?.sessionId === sessionId)
+export function reviewsForSession(sessionId: string): Review[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM reviews WHERE companion_session_id = ? OR requester_session_id = ? ORDER BY created_at, id')
+    .all(sessionId, sessionId) as unknown as ReviewRow[]
+  return rows.map(toReview)
 }
 
-export function closeAskAuthor(threadId: string, now = new Date()): ReviewChange | null {
+export function isReviewCompanionSession(sessionId: string): boolean {
+  return getDb().prepare('SELECT 1 FROM reviews WHERE companion_session_id = ? LIMIT 1').get(sessionId) !== undefined
+}
+
+export function closeAskAuthor(threadId: string, now = new Date()): ReviewThreadChange | null {
   const thread = getReviewThread(threadId)
   if (!thread?.askAuthorOpen) return null
   const result = getDb().prepare(
@@ -606,7 +646,7 @@ export function setReviewStatus(
   status: ReviewStatus,
   submissions?: ReviewSubmission[],
   now = new Date()
-): ReviewChange | null {
+): ReviewRecordChange | null {
   const d = getDb()
   return transaction(d, () => {
     const review = getReview(reviewId)
@@ -623,16 +663,52 @@ export function setReviewStatus(
   })
 }
 
+/**
+ * A carried message is history. One still in flight was asked of the previous
+ * round's companion, so it must not be typed into the next one or wait for a
+ * confirmation that can never come.
+ */
+function carriedDelivery(message: ReviewMessage, round: number): Pick<ReviewMessage, 'delivery' | 'heldReason' | 'failedReason'> {
+  if (!message.delivery) return {}
+  if (message.delivery === 'held' || message.delivery === 'sending' || message.delivery === 'delivered') {
+    return { delivery: 'unanswered', failedReason: `Asked in round ${round} and not answered there` }
+  }
+  return {
+    delivery: message.delivery,
+    ...(message.heldReason ? { heldReason: message.heldReason } : {}),
+    ...(message.failedReason ? { failedReason: message.failedReason } : {}),
+  }
+}
+
+/**
+ * A layer's head moved (a push). Only the recorded head changes: findings for
+ * the new head can then be materialised, and the threads still on the old one
+ * are re-resolved by the caller (§8), never silently relabelled.
+ */
+export function setReviewLayerHead(reviewId: string, pr: number, headSha: string, now = new Date()): ReviewRecordChange | null {
+  if (!headSha || headSha.length > 128) throw new Error('Malformed head')
+  const d = getDb()
+  return transaction(d, () => {
+    const review = getReview(reviewId)
+    if (!review || review.status !== 'open') return null
+    const layer = review.layers.find((candidate) => candidate.number === pr)
+    if (!layer || layer.headSha === headSha) return null
+    const layers = review.layers.map((candidate) => (candidate.number === pr ? { ...candidate, headSha } : candidate))
+    d.prepare('UPDATE reviews SET layers = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(layers), now.toISOString(), reviewId)
+    return changedReview(reviewId)
+  })
+}
+
 export type CarryAnchor = (anchor: ReviewThreadAnchor, from: Review, to: Review) => ReviewThreadAnchor | null
 
 /** Copy the threads that remain useful into a new review round. */
-export function carryReviewThreads(previousReviewId: string, reviewId: string, reanchor: CarryAnchor, now = new Date()): ReviewChange[] {
+export function carryReviewThreads(previousReviewId: string, reviewId: string, reanchor: CarryAnchor, now = new Date()): ReviewThreadChange[] {
   const from = getReview(previousReviewId)
   const to = getReview(reviewId)
   if (!from || !to || to.previousReviewId !== from.id || to.round !== from.round + 1) throw new Error('Reviews are not consecutive rounds')
   const d = getDb()
   return transaction(d, () => {
-    const changes: ReviewChange[] = []
+    const changes: ReviewThreadChange[] = []
     const at = now.toISOString()
     for (const old of threadsForReview(from.id)) {
       if (old.status === 'done' && !old.closeReason) continue
@@ -654,7 +730,7 @@ export function carryReviewThreads(previousReviewId: string, reviewId: string, r
         old.closeReason ?? null,
         old.id,
         old.readSeq,
-        old.askAuthorOpen ? 1 : 0,
+        0,
         old.proposal ? JSON.stringify(old.proposal) : null,
         at,
         at
@@ -666,9 +742,7 @@ export function carryReviewThreads(previousReviewId: string, reviewId: string, r
           body: message.body,
           at: message.at,
           ...(message.readFiles ? { readFiles: message.readFiles } : {}),
-          ...(message.delivery ? { delivery: message.delivery } : {}),
-          ...(message.heldReason ? { heldReason: message.heldReason } : {}),
-          ...(message.failedReason ? { failedReason: message.failedReason } : {}),
+          ...carriedDelivery(message, from.round),
         })
       }
       changes.push(changedThread(to.id, id))
@@ -692,7 +766,7 @@ export interface MainThreadInput {
 }
 
 /** Main-only insertion for findings and imported GitHub threads. */
-export function addMainReviewThread(input: MainThreadInput, now = new Date()): ReviewChange {
+export function addMainReviewThread(input: MainThreadInput, now = new Date()): ReviewThreadChange {
   const id = input.id ?? newReviewThreadId()
   const messageId = input.messageId ?? newReviewMessageId()
   const review = getReview(input.reviewId)
@@ -743,9 +817,13 @@ export function updateMainReviewThread(
     itemBody?: string
   },
   now = new Date()
-): ReviewChange | null {
+): ReviewThreadChange | null {
   const thread = getReviewThread(threadId)
   if (!thread) return null
+  if (patch.anchor) {
+    const review = getReview(thread.reviewId)
+    if (!review || !anchorBelongsToReview(review, patch.anchor)) throw new Error('Thread anchor is not in this review')
+  }
   const anchor = patch.anchor ?? thread.anchor
   const origin = patch.origin ?? thread.origin
   const outdated = patch.outdated ?? thread.outdated
@@ -774,7 +852,7 @@ export function updateMainReviewThread(
   })
 }
 
-export function removeMainReviewThread(threadId: string, now = new Date()): ReviewChange | null {
+export function removeMainReviewThread(threadId: string, now = new Date()): ReviewThreadChange | null {
   const thread = getReviewThread(threadId)
   if (!thread) return null
   return transaction(getDb(), () => removeThread(getDb(), thread.reviewId, thread.id, now.toISOString()))

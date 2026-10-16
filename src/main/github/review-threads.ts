@@ -1,7 +1,8 @@
 import { commentableLines } from '../../shared/screenprs'
 import { parseUnifiedDiff } from '../../shared/parseDiff'
-import type { ReviewChange, ReviewPrRef, ReviewThreadAnchor, ReviewThreadOrigin } from '../../shared/review-room'
-import { addMainReviewThread, appendReviewMessage, threadsForReview } from '../review-room-store'
+import { fitReviewBody, type ReviewChange, type ReviewPrRef, type ReviewThreadAnchor, type ReviewThreadOrigin } from '../../shared/review-room'
+import { addMainReviewThread, appendReviewMessage, threadsForReview, updateMainReviewThread } from '../review-room-store'
+import { getDb, transaction } from '../db'
 import { repoOf } from './stack-base'
 import { runGh } from './gh'
 
@@ -183,7 +184,8 @@ export function mapGithubReviewThreads(
 ): ImportedGithubThread[] {
   return threads.flatMap((thread): ImportedGithubThread[] => {
     const root = thread.comments[0]
-    if (!root) return []
+    // A reply posts against the root's REST id; a root without one can't be answered.
+    if (!root || root.databaseId === undefined) return []
     const anchor = lineAnchor(layer, thread, diff, isolatedBase) ?? { kind: 'pr' as const, pr: layer.number }
     const outside = anchor.kind === 'pr'
       ? `On code outside this layer's diff (${thread.path}:${thread.line ?? thread.originalLine ?? '?'} ${thread.diffSide}).\n\n`
@@ -193,7 +195,7 @@ export function mapGithubReviewThreads(
       origin: {
         kind: 'github',
         threadNodeId: thread.id,
-        rootCommentId: String(root.databaseId ?? root.id),
+        rootCommentId: String(root.databaseId),
         author: root.author,
         isResolved: thread.isResolved,
       },
@@ -201,51 +203,93 @@ export function mapGithubReviewThreads(
       outdated: thread.isOutdated,
       messages: thread.comments.map((comment, index) => ({
         author: 'reviewer',
-        body: `${index === 0 ? outside : ''}${comment.body}`,
+        body: fitReviewBody(`${index === 0 ? outside : ''}${comment.body.trim() ? comment.body : '(empty comment)'}`),
       })),
     }]
   })
 }
 
-const cache = new Map<string, Promise<GithubReviewThread[]>>()
+/** Long enough to share one fetch between the layers of a room opening, short enough that new replies arrive. */
+const CACHE_MS = 60_000
 
-export async function importGithubReviewThreads(
+const cache = new Map<string, { at: number; threads: Promise<GithubReviewThread[]> }>()
+const importing = new Map<string, Promise<unknown>>()
+
+function fetchCached(layer: ReviewPrRef): Promise<GithubReviewThread[]> {
+  const key = `${layer.url}\0${layer.headSha}`
+  const hit = cache.get(key)
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.threads
+  const threads = fetchGithubReviewThreads(layer)
+  cache.set(key, { at: Date.now(), threads })
+  // A failure (rate limit, network) must not stick until restart.
+  threads.catch(() => {
+    if (cache.get(key)?.threads === threads) cache.delete(key)
+  })
+  return threads
+}
+
+/**
+ * Import a layer's GitHub threads into a review: new threads are added, known
+ * ones get the replies posted since and their resolved flag. Imports of one
+ * review run one at a time, so two can't both add a thread.
+ */
+export function importGithubReviewThreads(
   reviewId: string,
   layer: ReviewPrRef,
   diff: string,
   isolatedBase = false,
 ): Promise<ReviewChange[]> {
-  const key = `${layer.url}\0${layer.headSha}`
-  let fetched = cache.get(key)
-  if (!fetched) {
-    fetched = fetchGithubReviewThreads(layer)
-    cache.set(key, fetched)
-  }
-  const existing = new Set(
-    threadsForReview(reviewId).flatMap((thread) => thread.origin.kind === 'github' ? [thread.origin.threadNodeId] : []),
-  )
-  const changes: ReviewChange[] = []
-  for (const imported of mapGithubReviewThreads(layer, diff, await fetched, isolatedBase)) {
-    if (existing.has(imported.origin.threadNodeId)) continue
-    const first = imported.messages[0]!
-    const change = addMainReviewThread({
-      reviewId,
-      anchor: imported.anchor,
-      origin: imported.origin,
-      author: first.author,
-      body: first.body,
-      status: imported.status,
-      outdated: imported.outdated,
-    })
-    changes.push(change)
-    for (const message of imported.messages.slice(1)) {
-      const appended = appendReviewMessage(change.threadId!, message.author, message.body)
-      if (appended) changes.push(appended)
+  const previous = importing.get(reviewId) ?? Promise.resolve()
+  const run = previous.catch(() => {}).then(async () => applyImport(reviewId, mapGithubReviewThreads(layer, diff, await fetchCached(layer), isolatedBase)))
+  importing.set(reviewId, run)
+  void run.finally(() => {
+    if (importing.get(reviewId) === run) importing.delete(reviewId)
+  }).catch(() => {})
+  return run
+}
+
+function applyImport(reviewId: string, imported: readonly ImportedGithubThread[]): ReviewChange[] {
+  return transaction(getDb(), () => {
+    const known = new Map(
+      threadsForReview(reviewId).flatMap((thread) => thread.origin.kind === 'github' ? [[thread.origin.threadNodeId, thread] as const] : []),
+    )
+    const changes: ReviewChange[] = []
+    for (const entry of imported) {
+      const existing = known.get(entry.origin.threadNodeId)
+      if (existing) {
+        if (existing.origin.kind === 'github' && existing.origin.isResolved !== entry.origin.isResolved) {
+          const change = updateMainReviewThread(existing.id, { origin: { ...existing.origin, isResolved: entry.origin.isResolved } })
+          if (change) changes.push(change)
+        }
+        const stored = existing.messages.filter((message) => message.author === 'reviewer').length
+        for (const message of entry.messages.slice(stored)) {
+          const appended = appendReviewMessage(existing.id, message.author, message.body)
+          if (appended) changes.push(appended)
+        }
+        continue
+      }
+      const [first, ...replies] = entry.messages
+      if (!first) continue
+      const change = addMainReviewThread({
+        reviewId,
+        anchor: entry.anchor,
+        origin: entry.origin,
+        author: first.author,
+        body: first.body,
+        status: entry.status,
+        outdated: entry.outdated,
+      })
+      changes.push(change)
+      for (const message of replies) {
+        const appended = appendReviewMessage(change.threadId, message.author, message.body)
+        if (appended) changes.push(appended)
+      }
     }
-  }
-  return changes
+    return changes
+  })
 }
 
 export function resetGithubReviewThreadsCache(): void {
   cache.clear()
+  importing.clear()
 }

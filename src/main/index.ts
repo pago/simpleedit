@@ -40,7 +40,7 @@ import { getRecentRepos, addRecentRepo } from './recent-repos'
 import { startReview, cancelReview, cancelAllReviews } from './review'
 import { startScreening, cancelScreening, cancelAllScreening, reviewDiffFor, screeningSnapshot, isScreening, onScreeningStarted } from './screenprs'
 import { startScreeningSchedule, stopScreeningSchedule, rescheduleScreening, noteScreeningStarted, screeningSchedule } from './screenprs-schedule'
-import { assertReviewDraftOp, loadDrafts, applyOp as applyDraftOp, draftLinksForThread, removeDraftsForThread } from './screenprs-drafts'
+import { assertReviewDraftOp, loadDrafts, applyOp as applyDraftOp, removeDraftsForThread } from './screenprs-drafts'
 import { loadFilter, setFilter } from './screenprs-filter'
 import { parseScreeningFilters, screeningFilters } from '../shared/screenprs-filter'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
@@ -49,7 +49,7 @@ import { startDeepReview, cancelDeepReview, cancelAllDeepReviews, deepReviewSnap
 import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot } from './pr-overview'
 import { startTour, cancelTour, cancelAllTours, loadTour, saveOverview } from './tour'
 import { startServer, sendToServer, stopServer, stopAllServers } from './lsp-manager'
-import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer, setBacklogTools, setReviewRoomTools } from './mcp-bridge'
+import { startBridge, stopBridge, stopAllBridges, getBridgeInfo, setWorktreeResolver, setRepoDiscoverer, setBacklogTools, setReviewRoomTools, revokeBridgeSession } from './mcp-bridge'
 import { resolveBareRepo } from './cwd-tracker'
 import { ClientHub, everyClient, type RemoteClient } from './client-hub'
 import { handleInvoke, handleSend } from './ipc-registry'
@@ -474,17 +474,6 @@ setReviewRoomTools(createReviewRoomTools({
   markReplied: markThreadReplied,
 }))
 
-function reviewSnapshot(): ReviewSnapshot {
-  const snapshot = loadReviews()
-  return {
-    ...snapshot,
-    threads: snapshot.threads.map((thread) => {
-      const draftCommentId = draftLinksForThread(thread.id)[0]?.commentId
-      return draftCommentId ? { ...thread, draftCommentId } : thread
-    }),
-  }
-}
-
 // Deferred to app-ready: the store opens the database under userData.
 function startThreadDelivery(): void {
   initThreadDelivery({
@@ -495,7 +484,10 @@ function startThreadDelivery(): void {
     broadcastReview: broadcastReviewChanges,
     onAgentReply: handleThreadReply,
   })
-  onAgentStatus((event) => noteThreadStatus(event.terminalId, event.status))
+  onAgentStatus((event) => {
+    noteThreadStatus(event.terminalId, event.status)
+    if (event.status === 'exited') revokeBridgeSession(event.terminalId)
+  })
 }
 onMailDropped((terminalId, messageIds) => broadcastToWindows('agent-message:dropped', { terminalId, messageIds }))
 
@@ -1178,7 +1170,7 @@ function registerAllHandlers(): void {
     return applyAndBroadcastDraftOp(url, op)
   })
 
-  handleInvoke('review:load', () => reviewSnapshot())
+  handleInvoke('review:load', (): ReviewSnapshot => loadReviews())
 
   handleInvoke('review:op', (_event, raw: unknown) => {
     const { reviewId, op } = parseReviewOpRequest(raw)

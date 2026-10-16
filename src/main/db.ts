@@ -77,6 +77,7 @@ const MIGRATIONS: string[] = [
     requester_session_id TEXT,
     requester_window_id INTEGER,
     companion TEXT,
+    companion_session_id TEXT,
     companion_agent TEXT NOT NULL,
     last_seen_head TEXT NOT NULL,
     read_steps TEXT NOT NULL,
@@ -89,6 +90,8 @@ const MIGRATIONS: string[] = [
   ) STRICT;
   CREATE INDEX reviews_by_repo ON reviews(repo, created_at);
   CREATE INDEX reviews_by_status ON reviews(status);
+  CREATE INDEX reviews_by_companion ON reviews(companion_session_id);
+  CREATE INDEX reviews_by_requester ON reviews(requester_session_id);
   CREATE TABLE review_threads (
     id TEXT PRIMARY KEY,
     review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
@@ -119,7 +122,7 @@ const MIGRATIONS: string[] = [
     UNIQUE(thread_id, seq)
   ) STRICT;
   CREATE INDEX review_messages_by_thread ON review_messages(thread_id, seq);
-  CREATE INDEX review_messages_by_delivery ON review_messages(delivery);
+  CREATE INDEX review_messages_by_delivery ON review_messages(delivery, thread_id);
   CREATE TABLE review_tombstones (
     id TEXT PRIMARY KEY,
     at TEXT NOT NULL
@@ -152,7 +155,9 @@ function migrate(d: Db): void {
   }
 }
 
+/** Runs `fn` in a transaction; called inside one, it joins it, so a throw rolls back the outer one. */
 export function transaction<T>(d: Db, fn: () => T): T {
+  if (d.isTransaction) return fn()
   d.exec('BEGIN IMMEDIATE')
   try {
     const out = fn()

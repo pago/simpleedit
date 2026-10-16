@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ScreenPrCard } from '../../../shared/screenprs'
 import { fetchGithubReviewThreads, mapGithubReviewThreads, type GithubReviewThread } from '../review-threads'
-import { resolveStack } from '../stack-base'
+import { pickStackParent, resolveStack } from '../stack-base'
 
 function card(number: number, headRefName: string, baseRefName: string, bucket: ScreenPrCard['bucket']): ScreenPrCard {
   return {
@@ -13,10 +13,12 @@ function card(number: number, headRefName: string, baseRefName: string, bucket: 
 }
 
 describe('resolveStack', () => {
+  const noParent = vi.fn(async () => undefined)
+
   it('resolves parents and descendants across buckets', async () => {
     const root = card(1, 'layer-one', 'main', 'attention')
     const child = card(2, 'layer-two', 'layer-one', 'quick')
-    await expect(resolveStack(child, [root, child])).resolves.toEqual([
+    await expect(resolveStack(child, [root, child], 'main', noParent)).resolves.toEqual([
       { url: root.url, number: 1, headSha: 'sha1' },
       { url: child.url, number: 2, headSha: 'sha2' },
     ])
@@ -28,9 +30,33 @@ describe('resolveStack', () => {
       url: 'https://github.com/acme/repo/pull/2', number: 2, headSha: 'sha2',
       headRefName: 'merged-layer', baseRefName: 'main',
     }))
-    const layers = await resolveStack(child, [child], lookup)
+    const layers = await resolveStack(child, [child], 'main', lookup)
     expect(layers.map((layer) => layer.number)).toEqual([2, 3])
-    expect(lookup).toHaveBeenCalled()
+    expect(lookup).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops at the default branch, so a PR from a branch named like it is no parent', async () => {
+    const releaseFromMain = card(9, 'main', 'release', 'attention')
+    const single = card(4, 'feature', 'main', 'quick')
+    const sibling = card(5, 'other', 'main', 'quick')
+    const lookup = vi.fn(async () => undefined)
+    await expect(resolveStack(single, [releaseFromMain, single, sibling], 'main', lookup)).resolves.toEqual([
+      { url: single.url, number: 4, headSha: 'sha4' },
+    ])
+    expect(lookup).not.toHaveBeenCalled()
+  })
+})
+
+describe('pickStackParent', () => {
+  const pr = (number: number, state: string, isCrossRepository: boolean) => ({
+    number, url: `https://github.com/acme/repo/pull/${number}`, headRefOid: `sha${number}`,
+    headRefName: 'layer', baseRefName: 'main', state, isCrossRepository,
+  })
+
+  it("ignores a fork's same-named branch and prefers open over merged over closed", () => {
+    expect(pickStackParent(JSON.stringify([pr(7, 'OPEN', true), pr(6, 'CLOSED', false), pr(5, 'MERGED', false)]))?.number).toBe(5)
+    expect(pickStackParent(JSON.stringify([pr(5, 'MERGED', false), pr(8, 'OPEN', false)]))?.number).toBe(8)
+    expect(pickStackParent(JSON.stringify([pr(7, 'OPEN', true)]))).toBeUndefined()
   })
 })
 

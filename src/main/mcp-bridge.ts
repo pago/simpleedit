@@ -1160,6 +1160,13 @@ export function stopAllBridges(): void {
   }
 }
 
+/** An exited session's credential stops working; a relaunch under the same id gets a fresh one. */
+export function revokeBridgeSession(terminalId: string): void {
+  for (const bridge of bridges.values()) {
+    for (const [sessionToken, id] of bridge.sessionTokens) if (id === terminalId) bridge.sessionTokens.delete(sessionToken)
+  }
+}
+
 export function getBridgeInfo(webContentsId: number, terminalId?: string): { port: number; token: string } | null {
   const bridge = bridges.get(webContentsId)
   // `port: 0` is a bridge registered but not yet listening — it has no address
