@@ -61,11 +61,13 @@ function cleanupMcpConfig(terminalId: string): void {
 /**
  * What a review companion may not run. `Edit` covers every built-in
  * file-editing tool (MultiEdit included). `Bash` goes whole: pattern rules
- * can't stop `sed -i`, a redirect or a `gh api` POST. MCP tools stay allowed,
- * which is why this is a deny list and not `--permission-mode plan` (that can
- * block `reply_to_thread`, and its exit dialog reads as "needs you").
+ * can't stop `sed -i`, a redirect or a `gh api` POST. The web tools would let
+ * it send what it read anywhere. MCP tools stay allowed (only ours is loaded,
+ * `--strict-mcp-config`), which is why this is a deny list and not
+ * `--permission-mode plan` (that can block `reply_to_thread`, and its exit
+ * dialog reads as "needs you").
  */
-export const REVIEW_COMPANION_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash'] as const
+export const REVIEW_COMPANION_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash', 'WebFetch', 'WebSearch'] as const
 
 /**
  * Write a Claude settings file wiring location-tracking hooks to the bridge.
@@ -255,7 +257,8 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   const args = buildBridgeArgs(terminalId, sessionId, bridgePort, bridgeToken, !!reviewCompanion)
   // `--add-dir` is variadic: it would swallow the positional prompt, so it
   // goes before the session flags, never last.
-  if (reviewCompanion) args.push('--add-dir', reviewCompanion.extraReadDir)
+  // A user's own MCP servers could write or reach the network on its behalf.
+  if (reviewCompanion) args.push('--strict-mcp-config', '--add-dir', reviewCompanion.extraReadDir)
   args.push(...sessionArgs)
 
   if (model?.model) {

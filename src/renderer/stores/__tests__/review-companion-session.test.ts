@@ -84,6 +84,8 @@ describe('review:companion-create-request', () => {
       expect(sessionsStore.activeSessionId()).toBe(before)
       expect(calls('agent:spawn')[0]![0]).toMatchObject({ id: 'agent-claude-reserved', initialPrompt: 'You are my companion' })
       expect(calls('agent:spawn')[0]![0]).not.toHaveProperty('reviewCompanion')
+      // Marked owned, so main refuses it if the claim is gone by the time it lands.
+      expect(calls('agent:spawn')[0]![0]).toMatchObject({ owner: { kind: 'review', reviewId: 'r_review01' } })
       expect(calls('review:companion-created')).toEqual([['c1', { ok: true }]])
       // A companion's agent is not the user's last pick.
       expect(calls('models:config-set')).toEqual([])
@@ -113,7 +115,7 @@ describe('restored companion', () => {
     sessionsStore.resumePlaceholder(id)
     await flush()
     expect(calls('review:companion-rebind')).toEqual([['r_review01', 'agent-claude-old', id]])
-    expect(calls('agent:spawn')).toEqual([[expect.objectContaining({ id, resumeSessionId: 'abc-123' })]])
+    expect(calls('agent:spawn')).toEqual([[expect.objectContaining({ id, resumeSessionId: 'abc-123', owner: { kind: 'review', reviewId: 'r_review01' } })]])
     expect(sessionsStore.get(id)?.companionClaimId).toBeUndefined()
   })
 

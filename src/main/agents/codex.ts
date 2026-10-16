@@ -104,8 +104,8 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
   // Read-only sandbox, default approval policy: a write still surfaces as a
   // permission prompt the user can refuse, and reads reach the checkout dir
   // without granting it. The companion needs no network (diffs and threads
-  // come over MCP).
-  if (ctx.reviewCompanion) args.push('--sandbox', 'read-only')
+  // come over MCP), so web search goes too.
+  if (ctx.reviewCompanion) args.push('--sandbox', 'read-only', ...config('web_search', tomlString('disabled')))
 
   if (model) args.push('--model', validId(model, 'model id'))
   if (effort) args.push(...config('model_reasoning_effort', tomlString(effort)))
@@ -128,7 +128,9 @@ function buildLaunch(ctx: LaunchContext): LaunchPlan {
 export const codexProvider = {
   id: 'codex',
   buildLaunch,
-  reviewCompanionReadOnly: 'enforced',
+  // The sandbox stops Codex's own writes, but the user's MCP servers (config,
+  // plugins) stay loaded and SimpleEdit can't list them all to turn them off.
+  reviewCompanionReadOnly: 'by-instruction',
   capabilities: {
     status: 'precise',
     resume: true,

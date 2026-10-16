@@ -115,7 +115,7 @@ import {
 } from './review-room-service'
 import { removeReviewCheckouts } from './review-checkout'
 import {
-  companionInfo, companionLaunchFor, defaultCompanionAgent, endCompanionsOfWindow, endReviewCompanion, ensureCompanion, initReviewCompanion, markCompanionQuitting,
+  assertUnclaimed, companionInfo, companionSpawnFor, exitSettlesDelivery, defaultCompanionAgent, endCompanionsOfWindow, endReviewCompanion, ensureCompanion, initReviewCompanion, markCompanionQuitting,
   onCompanionExited, rebindCompanionSession, resolveCompanionCreated, setReviewCompanionAgent, sweepCompanionCheckouts,
 } from './review-companion'
 import { getProvider, registeredProviderIds } from './agents/provider'
@@ -528,7 +528,8 @@ function startThreadDelivery(): void {
     onAgentReply: handleThreadReply,
   })
   onAgentStatus((event) => {
-    noteThreadStatus(event.terminalId, event.status)
+    // Quitting kills every terminal; held questions must outlive that.
+    if (event.status !== 'exited' || exitSettlesDelivery()) noteThreadStatus(event.terminalId, event.status)
     if (event.status === 'exited') revokeBridgeSession(event.terminalId)
   })
 }
@@ -913,6 +914,7 @@ function registerAllHandlers(): void {
 
   // ── PTY ─────────────────────────────────────────────────
   handleInvoke('pty:spawn', (event, options: PtySpawnOptions) => {
+    assertUnclaimed(options?.id)
     spawnTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
   })
 
@@ -1080,7 +1082,7 @@ function registerAllHandlers(): void {
         client,
         clientKeyOf(event.sender),
         // Main's own lookup of the id, never the payload's say-so.
-        { reviewCompanion: companionLaunchFor(options.id) }
+        { reviewCompanion: companionSpawnFor(options.id, options.owner) }
       )
     } catch (error) {
       reportSpawnFailure(options.id, error, client)
@@ -1091,6 +1093,7 @@ function registerAllHandlers(): void {
   })
 
   handleInvoke('agent:spawn-agents', (event, options: PtySpawnOptions) => {
+    assertUnclaimed(options?.id)
     spawnAgentsTerminal(options, hubFor(event.sender), clientKeyOf(event.sender))
   })
 
@@ -1265,7 +1268,7 @@ function registerAllHandlers(): void {
   handleInvoke('review:companion-info', (event, reviewId: unknown) => companionInfo(reviewId, event.sender.id))
 
   handleInvoke('review:set-companion-agent', (_event, reviewId: unknown, target: unknown) =>
-    setReviewCompanionAgent(reviewId, target)
+    setReviewCompanionAgent(reviewId, target, MODEL_CATALOG)
   )
 
   handleInvoke('agent-threads:load', () => loadThreads())

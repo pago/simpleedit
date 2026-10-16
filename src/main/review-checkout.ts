@@ -126,21 +126,25 @@ export function reviewGitEnv(base: NodeJS.ProcessEnv = process.env): Record<stri
  * Credentials from the user's `gh` login, and only from there: the empty
  * helper resets any configured one first. `-c` reaches the lazy blob fetches a
  * partial clone's checkout runs, through `GIT_CONFIG_PARAMETERS`.
+ *
+ * `core.symlinks=false` checks a symlink out as a file holding its target: a
+ * PR can commit a link to anywhere, and the companion reads this tree with
+ * access granted to all of it.
  */
-const defaultRunGit: GitRunner = (dir, args) =>
+export const runReviewGit: GitRunner = (dir, args) =>
   simpleGit({
     baseDir: dir,
-    config: ['credential.helper=', 'credential.helper=!gh auth git-credential'],
+    config: ['credential.helper=', 'credential.helper=!gh auth git-credential', 'core.symlinks=false'],
     unsafe: { allowUnsafeCredentialHelper: true },
   })
     .env(reviewGitEnv())
     .raw(args)
 
-let runGit: GitRunner = defaultRunGit
+let runGit: GitRunner = runReviewGit
 
 /** Test seam: replace every git call. `null` restores the real one. */
 export function setGitRunnerForTests(runner: GitRunner | null): void {
-  runGit = runner ?? defaultRunGit
+  runGit = runner ?? runReviewGit
 }
 
 const locks = new Map<string, Promise<unknown>>()
@@ -257,12 +261,17 @@ async function repoOfWorktree(dir: string): Promise<string | null> {
   }
 }
 
+/** Under its repo's lock, so it never pulls a tree out from under a checkout in flight. */
 async function removeCheckout(dir: string): Promise<void> {
   const repo = await repoOfWorktree(dir)
-  await rm(dir, { recursive: true, force: true })
-  if (repo && existsSync(repo)) {
-    await withRepoLock(repo, () => runGit(repo, ['worktree', 'prune'])).catch(() => '')
+  if (!repo || !existsSync(repo)) {
+    await rm(dir, { recursive: true, force: true })
+    return
   }
+  await withRepoLock(repo, async () => {
+    await rm(dir, { recursive: true, force: true })
+    await runGit(repo, ['worktree', 'prune']).catch(() => '')
+  })
 }
 
 async function entries(dir: string): Promise<string[]> {
@@ -334,6 +343,18 @@ async function worktreesOf(repo: string): Promise<string[]> {
 }
 
 let sweeping: Promise<void> = Promise.resolve()
+let protectedReviews: () => ReadonlySet<string> = () => new Set()
+
+/** Reviews whose checkouts the LRU must keep (their companion is live). */
+export function setProtectedReviews(get: (() => ReadonlySet<string>) | null): void {
+  protectedReviews = get ?? (() => new Set())
+}
+
+function reviewOfCheckout(dir: string): string | null {
+  const rel = resolve(dir).slice(resolve(reviewCheckoutsRoot()).length + 1)
+  const id = rel.split(sep)[0]
+  return id && isReviewId(id) ? id : null
+}
 
 /**
  * Evict least-recently-used cache repos until the cache fits `capBytes`. A
@@ -350,9 +371,11 @@ export function sweepRepoCache(capBytes = REVIEW_CACHE_CAP_BYTES): Promise<void>
       })),
     )
     let total = repos.reduce((sum, r) => sum + r.size, 0)
+    const keep = protectedReviews()
     for (const { repo, size } of repos.sort((a, b) => a.used - b.used)) {
       if (total <= capBytes) break
       if (locks.has(repo)) continue
+      if ((await worktreesOf(repo)).some((dir) => keep.has(reviewOfCheckout(dir) ?? ''))) continue
       await withRepoLock(repo, async () => {
         for (const dir of await worktreesOf(repo)) await rm(dir, { recursive: true, force: true })
         await rm(repo, { recursive: true, force: true })

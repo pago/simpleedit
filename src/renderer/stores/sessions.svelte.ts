@@ -408,6 +408,7 @@ export const sessionsStore = {
       // $state model list) — Electron IPC structured-clone rejects proxies.
       ...(model ? { model: $state.snapshot(model) } : {}),
       ...(opts.initialPrompt ? { initialPrompt: opts.initialPrompt } : {}),
+      ...(opts.owner ? { owner: { ...opts.owner } } : {}),
     })
     // "Last model used" is stored as a uniform ModelRef. A bare native id is
     // lifted into one using the brand its provider declares, so this never has
@@ -653,6 +654,7 @@ export const sessionsStore = {
           target,
           resumeSessionId: pendingResume.sessionId,
           ...(model ? { model } : {}),
+          ...(owner ? { owner: { kind: owner.kind, reviewId: owner.reviewId } } : {}),
         })
       } catch (error) {
         console.error(`Resume of ${id} failed:`, error)

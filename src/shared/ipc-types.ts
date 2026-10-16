@@ -300,6 +300,12 @@ export interface AgentSpawnOptions extends PtySpawnOptions {
    * `--model` with normal cloud auth. Absent = cloud default.
    */
   model?: ModelRef
+  /**
+   * The renderer's own claim that this is an owned (review companion) session.
+   * It can only restrict: main refuses an owned spawn that no open companion
+   * claim names, and never derives the companion's launch from it.
+   */
+  owner?: SessionOwner
 }
 
 export interface AgentInvokeMap {

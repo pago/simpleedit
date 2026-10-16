@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +11,8 @@ import {
   removeReviewCheckouts,
   repoCacheDir,
   reviewGitEnv,
+  runReviewGit,
+  setProtectedReviews,
   reviewCheckoutDir,
   setGitRunnerForTests,
   setReviewCacheRootForTests,
@@ -86,6 +88,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setGitRunnerForTests(null)
+  setProtectedReviews(null)
   setReviewCacheRootForTests(null)
   rmSync(root, { recursive: true, force: true })
 })
@@ -166,7 +169,61 @@ describe('checkout_review_head', () => {
   })
 })
 
+describe('symlinks', () => {
+  it('checks a committed symlink out as a plain file, never a link out of the cache', async () => {
+    const src = join(root, 'src')
+    mkdirSync(src)
+    await runReviewGit(src, ['init', '-q'])
+    symlinkSync('/etc/hosts', join(src, 'escape'))
+    await runReviewGit(src, ['add', 'escape'])
+    await runReviewGit(src, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'link'])
+    const sha = (await runReviewGit(src, ['rev-parse', 'HEAD'])).trim()
+    const dest = join(root, 'co')
+    await runReviewGit(src, ['worktree', 'add', '--detach', dest, sha])
+    expect(lstatSync(join(dest, 'escape')).isSymbolicLink()).toBe(false)
+    expect(readFileSync(join(dest, 'escape'), 'utf8')).toBe('/etc/hosts')
+  })
+})
+
+describe('removal', () => {
+  it('waits for a checkout in flight on the same repo', async () => {
+    const git = fakeGit()
+    setGitRunnerForTests(git.runner)
+    // An existing checkout at an older head, which a new one is replacing.
+    git.commits.add('d'.repeat(40))
+    const old = (await checkoutReviewHead(review('r_review01', 'd'.repeat(40)))).path
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    setGitRunnerForTests(async (dir, args) => {
+      if (args[0] === 'fetch') await gate
+      return git.runner(dir, args)
+    })
+    const checkout = checkoutReviewHead(review())
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const removal = removeReviewCheckouts('r_review01')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(existsSync(old)).toBe(true)
+    release()
+    await checkout
+    await removal
+    expect(existsSync(reviewCheckoutDir('r_review01'))).toBe(false)
+  })
+})
+
 describe('sweeps', () => {
+  it("never evicts a repo a live companion's checkout depends on", async () => {
+    const repo = repoCacheDir({ host: 'github.com', owner: 'acme', repo: 'busy' })
+    mkdirSync(join(repo, 'worktrees', 'w7'), { recursive: true })
+    writeFileSync(join(repo, 'pack'), Buffer.alloc(2000))
+    writeFileSync(join(repo, 'worktrees', 'w7', 'gitdir'), join(reviewCheckoutDir('r_review01'), '7', '.git'))
+    setProtectedReviews(() => new Set(['r_review01']))
+    await sweepRepoCache(1000)
+    expect(existsSync(repo)).toBe(true)
+    setProtectedReviews(null)
+    await sweepRepoCache(1000)
+    expect(existsSync(repo)).toBe(false)
+  })
+
   function fakeRepo(name: string, bytes: number, usedAt: Date): string {
     const repo = repoCacheDir({ host: 'github.com', owner: 'acme', repo: name })
     mkdirSync(repo, { recursive: true })
