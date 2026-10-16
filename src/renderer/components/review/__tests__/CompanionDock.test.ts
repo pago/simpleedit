@@ -80,6 +80,14 @@ describe('CompanionDock', () => {
     expect(local.resume).toHaveBeenCalledWith('sess-new')
   })
 
+  it('after a restart with reassigned window ids, a local placeholder still offers Resume', async () => {
+    info = { reviewId: REVIEW_ID, sessionId: 'sess-c1', windowId: 7, hostedHere: false, live: false, readOnly: 'enforced' }
+    local.sessions = [{ id: 'sess-new', provider: 'claude', owner: { kind: 'review', reviewId: REVIEW_ID }, pendingResume: { sessionId: 'claude-uuid' } }]
+    render(CompanionDock, { props: { reviewId: REVIEW_ID, review: review({ companion: { ...COMPANION, windowId: 7 } }) } })
+    expect(await screen.findByRole('button', { name: 'Resume' })).toBeInTheDocument()
+    expect(screen.queryByText('Terminal lives in another window')).not.toBeInTheDocument()
+  })
+
   it('a stale claim with nothing to resume offers Start', async () => {
     info = { reviewId: REVIEW_ID, sessionId: 'sess-c1', windowId: 1, hostedHere: true, live: false, readOnly: 'enforced' }
     render(CompanionDock, { props: { reviewId: REVIEW_ID, review: review({ companion: COMPANION }) } })
