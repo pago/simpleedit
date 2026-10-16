@@ -104,6 +104,12 @@ export interface ReviewCompanionInfo {
   windowId: number
   /** True when the asking window is the one hosting the terminal. */
   hostedHere: boolean
+  /**
+   * The claimed session has a live PTY. False after a restart (the claim
+   * survives quit): the hosting window's placeholder offers Resume; with no
+   * placeholder, `review:companion-start` replaces the stale claim.
+   */
+  live: boolean
   /** How read-only is enforced for this provider (tooltip). */
   readOnly: 'enforced' | 'by-instruction'
 }
