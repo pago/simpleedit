@@ -113,8 +113,6 @@ export interface ReviewThread {
   readSeq: number
   askAuthorOpen: boolean
   messages: ReviewMessage[]
-  /** Derived from the review-draft store and never persisted in SQLite. */
-  draftCommentId?: string
   proposal?: { text: string; severity?: ReviewSeverity }
   createdAt: string
   updatedAt: string
@@ -142,11 +140,22 @@ export interface ReviewSnapshot {
   rev: number
 }
 
-export interface ReviewChange {
+/**
+ * A thread's draft link is not part of it: `draft.threadId` in the review-draft
+ * store is the only record, so clients read it from their draft mirror.
+ */
+export type ReviewChange = ReviewRecordChange | ReviewThreadChange
+
+export interface ReviewRecordChange {
   reviewId: string
-  review?: Review | null
-  threadId?: string
-  thread?: ReviewThread | null
+  review: Review | null
+  rev: number
+}
+
+export interface ReviewThreadChange {
+  reviewId: string
+  threadId: string
+  thread: ReviewThread | null
   rev: number
 }
 
@@ -154,7 +163,8 @@ const REVIEW_ID = /^r_[A-Za-z0-9-]{6,64}$/
 const THREAD_ID = /^rt_[A-Za-z0-9-]{6,64}$/
 const MESSAGE_ID = /^rm_[A-Za-z0-9-]{6,64}$/
 const MAX_ID = 67
-const MAX_BODY = 64 * 1024
+export const REVIEW_MAX_BODY = 64 * 1024
+const MAX_BODY = REVIEW_MAX_BODY
 const MAX_PATH = 4096
 const MAX_SNIPPET = 8 * 1024
 
@@ -285,4 +295,11 @@ export function parseReviewOpRequest(raw: unknown): {
 export function parseReviewId(raw: unknown): string {
   if (!isReviewId(raw) || raw.length > MAX_ID) throw new Error('Malformed review id')
   return raw
+}
+
+/** Fits an agent's or GitHub's text into a review message, saying so when it was cut. */
+export function fitReviewBody(body: string): string {
+  if (body.length <= REVIEW_MAX_BODY) return body
+  const note = '\n\n[SimpleEdit cut this message at its size limit.]'
+  return `${body.slice(0, REVIEW_MAX_BODY - note.length)}${note}`
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ChildProcess } from 'child_process'
 import { spawn } from 'child_process'
 import { join } from 'path'
-import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver, setRepoDiscoverer } from '../mcp-bridge'
+import { startBridge, stopBridge, getBridgeInfo, stopAllBridges, setWorktreeResolver, setRepoDiscoverer, revokeBridgeSession } from '../mcp-bridge'
 import { attachToTerminal, detachFromTerminal } from '../claude-stream'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import { pendingCount, resetBus, resolveSpawn, syncPeers } from '../agent-bus'
@@ -101,6 +101,14 @@ describe('MCP Bridge — HTTP endpoints', () => {
       args: {},
     })
     expect(res.status).toBe(403)
+  })
+
+  it("refuses an exited session's credential and mints a new one on relaunch", async () => {
+    const old = getBridgeInfo(bridgeWebContentsId, 'term-gone')!.token
+    revokeBridgeSession('term-gone')
+    const res = await post(`/${old}/tool-call`, { tool: 'list_sessions', terminalId: 'term-gone', args: {} })
+    expect(res.status).toBe(404)
+    expect(getBridgeInfo(bridgeWebContentsId, 'term-gone')!.token).not.toBe(old)
   })
 
   it('returns 400 for missing tool field', async () => {

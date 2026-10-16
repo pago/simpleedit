@@ -127,23 +127,50 @@ export function parseStackPrs(json: string): StackCard[] {
   })
 }
 
+interface ParentCandidate {
+  isCrossRepository?: unknown
+  state?: unknown
+}
+
+/**
+ * The PR whose head is `json`'s branch, from `gh pr list --head`: a fork's PR
+ * from a same-named branch is not a layer (`--head` ignores the owner), and an
+ * open PR outranks a merged one, which outranks a closed one, newest first.
+ */
+export function pickStackParent(json: string): StackCard | undefined {
+  const raw = JSON.parse(json || '[]') as unknown
+  if (!Array.isArray(raw)) return undefined
+  const rank = (state: unknown): number => (state === 'OPEN' ? 0 : state === 'MERGED' ? 1 : 2)
+  const sameRepo = raw.filter(
+    (value): value is ParentCandidate =>
+      typeof value === 'object' && value !== null && (value as ParentCandidate).isCrossRepository === false,
+  )
+  const ordered = [...sameRepo].sort((a, b) => rank(a.state) - rank(b.state))
+  return parseStackPrs(JSON.stringify(ordered))[0]
+}
+
 async function findStackParent(card: StackCard): Promise<StackCard | undefined> {
   const repo = repoOf(card.url)
   try {
-    return parseStackPrs(await runGh([
+    return pickStackParent(await runGh([
       'pr', 'list', '-R', `${repo.host}/${repo.owner}/${repo.name}`,
-      '--head', card.baseRefName, '--state', 'all', '--limit', '1',
-      '--json', 'number,url,headRefOid,headRefName,baseRefName',
-    ]))[0]
+      '--head', card.baseRefName, '--state', 'all', '--limit', '20',
+      '--json', 'number,url,headRefOid,headRefName,baseRefName,isCrossRepository,state',
+    ]))
   } catch {
     return undefined
   }
 }
 
-/** Resolve a stack across queue buckets, including merged/closed parents absent from the queue. */
+/**
+ * Resolve a stack across queue buckets, including merged/closed parents absent
+ * from the queue. The walk down ends at the default branch: a PR based on it is
+ * the bottom layer, whatever else has a head of that name.
+ */
 export async function resolveStack(
   card: ScreenPrCard,
   allCards: readonly ScreenPrCard[],
+  defaultBranch: string,
   lookupParent: (card: StackCard) => Promise<StackCard | undefined> = findStackParent,
 ): Promise<ReviewPrRef[]> {
   const repo = repoOf(card.url)
@@ -152,7 +179,7 @@ export async function resolveStack(
   const ancestors: StackCard[] = [card]
   const seen = new Set([card.url])
   let cursor: StackCard = card
-  while (cursor.baseRefName) {
+  while (cursor.baseRefName && cursor.baseRefName !== defaultBranch) {
     let parent: StackCard | undefined = queue.find((candidate) => candidate !== cursor && candidate.headRefName === cursor.baseRefName)
     parent ??= await lookupParent(cursor)
     if (!parent || !same(parent) || seen.has(parent.url)) break

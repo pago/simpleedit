@@ -1,5 +1,6 @@
 import { parseUnifiedDiff, type DiffFile } from '../shared/parseDiff'
 import { parseLineRange } from '../shared/screenprs'
+import type { ConventionalCommentLabel } from '../shared/ipc-types'
 import {
   newReviewMessageId,
   type ReviewChange,
@@ -8,9 +9,11 @@ import {
   type ReviewThread,
   type ReviewThreadAnchor,
 } from '../shared/review-room'
+import { getDb, transaction } from './db'
 import {
   addMainReviewThread,
   appendReviewMessage,
+  getReview,
   removeMainReviewThread,
   threadsForReview,
   updateMainReviewThread,
@@ -19,7 +22,10 @@ import {
 const CONTEXT_LINES = 3
 
 export interface FindingToMaterialise {
-  /** Stable within one tool result when available; matching does not rely on it. */
+  /**
+   * The tool's id for the finding. Only matches a finding that has no snippet to
+   * place it by (PR-level, or lines outside the diff); a re-run may mint new ones.
+   */
   key: string
   file: string
   line?: string
@@ -123,9 +129,12 @@ function findingAnchor(pr: number, headSha: string, finding: FindingToMaterialis
   }
 }
 
+/** Cited lines that are context rows of the layer's diff, or a file outside it. A finding citing no line is the PR's own. */
 function preExisting(finding: FindingToMaterialise, anchor: ReviewThreadAnchor, files: DiffFile[]): boolean {
   if (finding.preExisting) return true
-  if (anchor.kind !== 'line') return true
+  if (!finding.file.trim()) return false
+  if (!files.some((candidate) => candidate.path === finding.file || candidate.oldPath === finding.file)) return true
+  if (anchor.kind !== 'line') return false
   const file = files.find((candidate) => candidate.path === anchor.path)
   if (!file) return true
   const selected = lineRows(file, anchor.startLine, anchor.endLine)
@@ -192,6 +201,21 @@ function itemTitle(thread: ReviewThread): string {
   return thread.messages[0]?.body.split('\n', 1)[0] ?? ''
 }
 
+/** A reworded re-run still shares most of its title's words. */
+const SAME_TITLE = 0.5
+
+/** Without a snippet: the same key, else the one clearly most similar title. */
+function matchWithoutSnippet(threads: ReviewThread[], finding: FindingToMaterialise): ReviewThread | null {
+  const byKey = threads.find((thread) => thread.origin.kind === 'finding' && thread.origin.key === finding.key)
+  if (byKey) return byKey
+  const scored = threads
+    .map((thread) => ({ thread, score: titleSimilarity(itemTitle(thread), finding.title) }))
+    .filter((entry) => entry.score >= SAME_TITLE)
+    .sort((a, b) => b.score - a.score)
+  if (!scored.length || (scored.length > 1 && scored[1]!.score === scored[0]!.score)) return null
+  return scored[0]!.thread
+}
+
 function matchingThread(
   candidates: ReviewThread[],
   claimed: ReadonlySet<string>,
@@ -201,22 +225,20 @@ function matchingThread(
 ): ReviewThread | null {
   if (anchor.kind !== 'line') {
     if (anchor.kind !== 'pr') return null
-    return candidates.find((thread) =>
-      !claimed.has(thread.id) &&
-      thread.anchor.kind === 'pr' && thread.anchor.pr === anchor.pr &&
-      thread.origin.kind === 'finding' && thread.origin.key === finding.key
-    ) ?? null
+    return matchWithoutSnippet(
+      candidates.filter((thread) => !claimed.has(thread.id) && thread.anchor.kind === 'pr' && thread.anchor.pr === anchor.pr),
+      finding,
+    )
   }
   const file = files.find((candidate) => candidate.path === anchor.path)
   if (!file) return null
-  const matches = candidates.filter((thread) => {
-    if (claimed.has(thread.id) || thread.anchor.kind !== 'line') return false
-    if (thread.anchor.pr !== anchor.pr || thread.anchor.path !== anchor.path) return false
-    if (!thread.anchor.snippet || !anchor.snippet) {
-      return thread.origin.kind === 'finding' && thread.origin.key === finding.key
-    }
-    return uniquelyLocates(thread.anchor, anchor, file)
-  })
+  const samePath = candidates.filter(
+    (thread) => !claimed.has(thread.id) && thread.anchor.kind === 'line' && thread.anchor.pr === anchor.pr && thread.anchor.path === anchor.path,
+  )
+  if (!anchor.snippet) {
+    return matchWithoutSnippet(samePath.filter((thread) => thread.anchor.kind === 'line' && !thread.anchor.snippet), finding)
+  }
+  const matches = samePath.filter((thread) => thread.anchor.kind === 'line' && !!thread.anchor.snippet && uniquelyLocates(thread.anchor, anchor, file))
   if (matches.length === 0) return null
   if (matches.length === 1) return matches[0]!
   return [...matches].sort((a, b) => titleSimilarity(itemTitle(b), finding.title) - titleSimilarity(itemTitle(a), finding.title))[0]!
@@ -232,6 +254,16 @@ function hasConversation(thread: ReviewThread): boolean {
  * chooses among otherwise valid matches.
  */
 export function materialiseFindings(input: MaterialiseFindingsInput, now = new Date()): MaterialiseFindingsResult {
+  const review = getReview(input.reviewId)
+  if (!review || review.status !== 'open') throw new Error('Review is not open')
+  if (review.layers.find((layer) => layer.number === input.pr)?.headSha !== input.headSha) {
+    throw new Error(`Findings for #${input.pr} are for a head this review no longer has`)
+  }
+  // All or nothing: a half-reconciled source would leave duplicates and unbroadcast changes.
+  return transaction(getDb(), () => reconcile(input, now))
+}
+
+function reconcile(input: MaterialiseFindingsInput, now: Date): MaterialiseFindingsResult {
   const files = parseUnifiedDiff(input.diff)
   const candidates = threadsForReview(input.reviewId).filter(
     (thread) =>
@@ -259,7 +291,7 @@ export function materialiseFindings(input: MaterialiseFindingsInput, now = new D
     if (!existing) {
       const change = addMainReviewThread({ reviewId: input.reviewId, anchor, origin, author: 'tool', body }, now)
       changes.push(change)
-      threadIds.push(change.threadId!)
+      threadIds.push(change.threadId)
       continue
     }
     claimed.add(existing.id)
@@ -294,9 +326,10 @@ export function materialiseFindings(input: MaterialiseFindingsInput, now = new D
   return { changes, threadIds }
 }
 
-export function triageSeverity(label: string): ReviewSeverity | undefined {
+/** Triage emits issue, suggestion and question; a question proposes no severity. */
+export function triageSeverity(label: ConventionalCommentLabel): ReviewSeverity | undefined {
   if (label === 'issue') return 'consider'
-  if (label === 'nit' || label === 'suggestion') return 'nit'
+  if (label === 'nitpick' || label === 'suggestion') return 'nit'
   return undefined
 }
 

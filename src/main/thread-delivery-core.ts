@@ -46,7 +46,7 @@ import {
   type ThreadAnchor,
   type ThreadChange,
 } from '../shared/agent-threads'
-import { isReviewMessageId, type ReviewChange, type ReviewThread } from '../shared/review-room'
+import { fitReviewBody, isReviewMessageId, type ReviewChange, type ReviewThread } from '../shared/review-room'
 import {
   addAgentThread,
   appendAgentMessage,
@@ -152,7 +152,7 @@ function emitReview(changes: ReviewChange[] | ReviewChange | null): void {
 
 function appendReply(threadId: string, body: string): void {
   if (threadId.startsWith('rt_')) {
-    emitReview(appendReviewMessage(threadId, 'companion', body))
+    emitReview(appendReviewMessage(threadId, 'companion', fitReviewBody(body)))
     return
   }
   const change = appendAgentMessage(threadId, newMessageId(), body)
@@ -460,8 +460,14 @@ function settleArms(sessionId: string, t: Track, lastAssistantMessage: string | 
   for (const [threadId, messageIds] of t.armed) {
     if (t.replied.has(threadId)) continue
     if (text && !reason) {
-      appendReply(threadId, text)
-      patch(messageIds, { delivery: 'answered-implicitly' })
+      try {
+        appendReply(threadId, text)
+        patch(messageIds, { delivery: 'answered-implicitly' })
+      } catch (err) {
+        // One thread's failed write must not leave the rest of the turn armed.
+        console.error(`[Threads] Attaching the answer to ${threadId} failed:`, err)
+        patch(messageIds, { delivery: 'unanswered', failedReason: 'SimpleEdit could not record the answer' })
+      }
     } else {
       patch(messageIds, { delivery: 'unanswered', failedReason: reason ?? 'The turn ended without an answer' })
     }

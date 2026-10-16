@@ -113,11 +113,11 @@
     if (tabs.length > 0) setViewerOpen(true)
   })
 
-  // All live Claude sessions are valid "Discuss with Agent" targets; the
-  // owning session naturally sorts first.
+  // All live Claude sessions the user can see are valid "Discuss with Agent"
+  // targets (a review's companion is not); the owning session sorts first.
   let agentTargets = $derived.by((): AgentTabInfo[] => {
     const claude = sessionsStore
-      .sessions()
+      .visibleSessions()
       .filter((s) => s.kind === 'agent' && !s.pendingResume)
       .map((s) => ({ id: s.id, label: s.label }))
     return claude.sort((a, b) => (a.id === sessionId ? -1 : b.id === sessionId ? 1 : 0))
