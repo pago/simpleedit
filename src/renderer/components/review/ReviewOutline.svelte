@@ -3,7 +3,7 @@
   import type { ReviewThread } from '../../../shared/review-room'
   import type { ReviewLayerInfo } from '../../../shared/review-room-ipc'
   import type { PrReviewComment } from '../../../shared/screenprs'
-  import { OUTLINE_FILTERS, matchesFilter, originBadge, shortAnchorLabel, threadTitle, type OutlineFilter } from '../../lib/review-room'
+  import { OUTLINE_FILTERS, matchesFilter, originBadge, outlineGroups, outlineStatus, shortAnchorLabel, threadTitle, type OutlineFilter } from '../../lib/review-room'
 
   interface Props {
     layers: ReviewLayerInfo[]
@@ -22,23 +22,11 @@
     new Map(OUTLINE_FILTERS.map((f) => [f.key, threads.filter((t) => matchesFilter(t, f.key, drafts.has(t.id))).length])),
   )
   let shown = $derived(threads.filter((t) => matchesFilter(t, filter, drafts.has(t.id))))
-  let groups = $derived(
-    [
-      { key: 'stack', label: 'Whole stack', items: shown.filter((t) => t.anchor.kind === 'stack') },
-      ...layers.map((l) => ({
-        key: l.url,
-        label: `#${l.number}`,
-        items: shown.filter((t) => t.anchor.kind !== 'stack' && t.anchor.pr === l.number),
-      })),
-    ].filter((g) => g.items.length),
-  )
+  let groups = $derived(outlineGroups(shown, layers))
 
   const SEVERITY_CLASS = { blocking: 'bg-red-500/15 text-red-300', consider: 'bg-amber-500/15 text-amber-300', nit: 'bg-zinc-700 text-zinc-300' } as const
 
-  function statusOf(t: ReviewThread): string {
-    if (t.status === 'done') return drafts.has(t.id) ? 'done · will post' : 'done'
-    return drafts.has(t.id) ? 'drafted' : 'open'
-  }
+  const statusOf = (t: ReviewThread): string => outlineStatus(t, drafts.has(t.id))
 </script>
 
 <div class="flex flex-col gap-3 p-3" data-testid="review-outline">
