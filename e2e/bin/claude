@@ -45,6 +45,11 @@
 #    e2e/support/fake-claude-bridge.mjs. The launch turn ends with a `Stop`
 #    hook, and every typed `[Review thread rt_… · …]` prompt is confirmed with
 #    `UserPromptSubmit`, answered with `reply_to_thread`, and ended with `Stop`.
+#    Such a session can also act as an author (request_review): a typed line
+#    `fake-request-review <pr-url>` calls `request_review` with a briefing, and
+#    a typed `[Review r_… submitted]` hand-back is confirmed, read back with
+#    `get_review` (written to SIMPLEEDIT_FAKE_CLAUDE_GET_REVIEW_OUT when set)
+#    and ended with `Stop`.
 if [ -n "${SIMPLEEDIT_FAKE_CLAUDE_EXIT:-}" ]; then
   echo "fake claude: simulated spawn failure"
   exit "${SIMPLEEDIT_FAKE_CLAUDE_EXIT}"
@@ -92,6 +97,18 @@ while true; do
   if IFS= read -r -t 3600 line; then
     case "$line" in
       *"/exit"*) exit 0 ;;
+      *"fake-request-review "*)
+        if [ -n "$companion" ]; then
+          pr_url="$(printf '%s' "$line" | sed -n 's/.*fake-request-review \([^ ]*\).*/\1/p')"
+          companion_bridge request "$pr_url" "$line"
+        fi
+        ;;
+      *"[Review r_"*" submitted]"*)
+        if [ -n "$companion" ]; then
+          review_id="$(printf '%s' "$line" | sed -n 's/.*\[Review \(r_[A-Za-z0-9-]*\) submitted\].*/\1/p')"
+          if [ -n "$review_id" ]; then companion_bridge handback "$review_id" "$line"; fi
+        fi
+        ;;
       *"[Review thread rt_"*)
         if [ -n "$companion" ]; then
           thread_id="$(printf '%s' "$line" | sed -n 's/.*\[Review thread \(rt_[A-Za-z0-9-]*\).*/\1/p')"
