@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { PrContext } from '../../shared/screenprs'
 import type { Runner } from '../agent-tasks/runner'
 
@@ -11,7 +11,7 @@ const cache = vi.hoisted(() => ({
 const gather = vi.hoisted(() => vi.fn())
 const reviewDiffFor = vi.hoisted(() => vi.fn(async () => 'fetched diff'))
 const rubric = vi.hoisted(() => ({
-  fetchReviewRubric: vi.fn(async (): Promise<{ path: string; text: string } | undefined> => undefined),
+  fetchReviewRubric: vi.fn(async (_url: string, _head: string, _paths?: string[]): Promise<{ path: string; text: string } | undefined> => undefined),
 }))
 const answers = vi.hoisted(() => ({ items: [] as string[], seen: [] as { output?: string; user: string }[] }))
 
@@ -47,7 +47,7 @@ vi.mock('../agent-tasks/registry', async (orig) => {
   }
 })
 
-import { startOverview, cancelOverview, overviewSnapshot, onOverviewResult } from '../pr-overview'
+import { startOverview, cancelOverview, cancelAllOverviews, overviewSnapshot, onOverviewResult } from '../pr-overview'
 import { rubricFingerprint } from '../github/review-rubric'
 
 const PR: PrContext = {
@@ -163,6 +163,7 @@ describe('startOverview', () => {
     answers.items = ['x']
     const { sent, wc } = client()
     const old = startOverview({ ...PR, headSha: 'old' }, wc)
+    await vi.waitFor(() => expect(releases).toHaveLength(1))
     const fresh = startOverview({ ...PR, headSha: 'new' }, wc)
     await vi.waitFor(() => expect(releases).toHaveLength(2))
     for (const release of releases) release()
@@ -192,5 +193,73 @@ describe('the Review Room hook', () => {
     await startOverview({ ...PR, diff: 'the diff' }, client().wc)
     onOverviewResult(null)
     expect(heard).toHaveBeenCalledWith({ url: PR.url, headSha: 'sha1', diff: 'the diff', text: 'cached' })
+  })
+})
+
+describe('starts still reading REVIEW.md', () => {
+  afterEach(() => rubric.fetchReviewRubric.mockImplementation(async () => undefined))
+
+  /** Holds each rubric read until the test releases every read of that head. */
+  function holdRubric(): Map<string, () => void> {
+    const held = new Map<string, () => void>()
+    const waiting = new Map<string, Array<() => void>>()
+    rubric.fetchReviewRubric.mockImplementation(
+      (_url: string, head: string) =>
+        new Promise<undefined>((resolve) => {
+          waiting.set(head, [...(waiting.get(head) ?? []), () => resolve(undefined)])
+          held.set(head, () => { for (const release of waiting.get(head) ?? []) release() })
+        }),
+    )
+    return held
+  }
+
+  it('run once for two identical starts, and both callers see it', async () => {
+    const held = holdRubric()
+    answers.items = ['x']
+    const first = startOverview(PR, client().wc)
+    const second = startOverview(PR, client().wc)
+    await vi.waitFor(() => expect(held.size).toBe(1))
+    held.get('sha1')!()
+    await expect(Promise.all([first, second])).resolves.toEqual(expect.arrayContaining([{ joined: true }, { joined: false }]))
+    expect(gather).toHaveBeenCalledTimes(1)
+  })
+
+  it('give way to a newer start for another head, even when they finish reading last', async () => {
+    const held = holdRubric()
+    answers.items = ['x']
+    const { sent, wc } = client()
+    const old = startOverview({ ...PR, headSha: 'old' }, wc)
+    const fresh = startOverview({ ...PR, headSha: 'new' }, wc)
+    await vi.waitFor(() => expect(held.size).toBe(2))
+    held.get('new')!()
+    await fresh
+    held.get('old')!()
+    await expect(old).resolves.toEqual({ joined: false })
+    expect(sent.some(([, d]) => (d as { headSha?: string }).headSha === 'old')).toBe(false)
+    expect(overviewSnapshot()[PR.url]).toMatchObject({ status: 'done', headSha: 'new' })
+  })
+
+  it('are reached by Stop', async () => {
+    const held = holdRubric()
+    const { sent, wc } = client()
+    const stopped = startOverview({ ...PR, url: 'https://github.com/acme/ui/pull/71' }, wc)
+    await vi.waitFor(() => expect(held.size).toBe(1))
+    cancelOverview('https://github.com/acme/ui/pull/71')
+    held.get('sha1')!()
+    await expect(stopped).resolves.toEqual({ joined: false })
+    expect(sent).toEqual([])
+    expect(gather).not.toHaveBeenCalled()
+  })
+
+  it('are reached by quit', async () => {
+    const held = holdRubric()
+    const { sent, wc } = client()
+    const quit = startOverview({ ...PR, url: 'https://github.com/acme/ui/pull/72' }, wc)
+    await vi.waitFor(() => expect(held.size).toBe(1))
+    cancelAllOverviews()
+    held.get('sha1')!()
+    await expect(quit).resolves.toEqual({ joined: false })
+    expect(sent).toEqual([])
+    expect(gather).not.toHaveBeenCalled()
   })
 })

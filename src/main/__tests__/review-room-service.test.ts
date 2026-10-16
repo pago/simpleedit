@@ -10,6 +10,8 @@ const gh = vi.hoisted(() => ({
   prs: new Map<string, Record<string, unknown>>(),
   compares: new Map<string, unknown>(),
   diffs: new Map<string, string>(),
+  /** File contents at a ref, by contents-API path. */
+  files: new Map<string, string>(),
   calls: [] as string[][],
 }))
 const fakes = vi.hoisted(() => ({
@@ -37,6 +39,11 @@ vi.mock('../github/gh', async (importOriginal) => {
     }
     if (args[0] === 'api') {
       const path = args.at(-1)!
+      if (args.includes('Accept: application/vnd.github.raw')) {
+        const file = gh.files.get(path)
+        if (file === undefined) throw new Error('gh api exited 1: Not Found (HTTP 404)')
+        return file
+      }
       const accept = args.includes('Accept: application/vnd.github.diff')
       const answer = accept ? gh.diffs.get(path) : gh.compares.get(path)
       if (answer instanceof Error) throw answer
@@ -47,7 +54,7 @@ vi.mock('../github/gh', async (importOriginal) => {
   })
   return { ...actual, runGh, getPrDiff: vi.fn(async (ref: { url: string }) => gh.diffs.get(ref.url) ?? '') }
 })
-vi.mock('../github/review-graphql', () => ({ postReviewLayer: vi.fn(), deletePendingReview: vi.fn(async () => {}) }))
+vi.mock('../github/review-graphql', () => ({ postReviewLayer: vi.fn(), discardLayer: vi.fn(async () => {}) }))
 vi.mock('../github/review-threads', () => ({ importGithubReviewThreads: vi.fn(async () => []) }))
 vi.mock('../screenprs', () => ({
   screeningSnapshot: () => ({ status: 'done', triaging: [], entries: fakes.board.map((pr) => ({ ref: pr, context: pr })) }),
@@ -56,6 +63,9 @@ vi.mock('../screenprs-cache', () => ({ getCacheEntryAt: (url: string, head: stri
 vi.mock('../screenprs-drafts', () => ({
   loadDrafts: () => ({ drafts: fakes.drafts, rev: 1 }),
   draftThreadIds: () => fakes.linked,
+  draftLinksForThread: (threadId: string) =>
+    Object.entries(fakes.drafts).flatMap(([url, draft]) =>
+      draft.comments.filter((c) => c.threadId === threadId).map((c) => ({ url, commentId: c.id }))),
   removeDraftsForThread: vi.fn((threadId: string) =>
     threadId === 'rt_discard1' ? [{ url: 'https://github.com/acme/app/pull/13', result: { draft: null, rev: 4 } }] : []
   ),
@@ -70,7 +80,7 @@ vi.mock('../review-findings', async (importOriginal) => {
 })
 
 import { openDb, useDbForTests } from '../db'
-import { postReviewLayer, deletePendingReview } from '../github/review-graphql'
+import { postReviewLayer, discardLayer } from '../github/review-graphql'
 import { importGithubReviewThreads } from '../github/review-threads'
 import { moveThreadDraft } from '../screenprs-drafts'
 import { materialiseFindings } from '../review-findings'
@@ -127,6 +137,13 @@ const PUSHED = `diff --git a/src/a.ts b/src/a.ts
  final context
 `
 
+/** PUSHED's file at its head: the hunk's rows at 15–18, other lines around them. */
+const NEW_FILE = [
+  ...Array.from({ length: 14 }, (_, i) => `line ${i + 1}`),
+  'context before', 'const added = true', 'context after', 'final context',
+  ...Array.from({ length: 5 }, (_, i) => `tail ${i + 1}`),
+].join('\n')
+
 function pr(url: string, number: number, head: string, base: string, extra: Record<string, unknown> = {}) {
   gh.prs.set(url, {
     url,
@@ -161,6 +178,7 @@ beforeEach(() => {
   gh.prs.clear()
   gh.compares.clear()
   gh.diffs.clear()
+  gh.files.clear()
   gh.calls = []
   fakes.cache.clear()
   fakes.board = []
@@ -168,8 +186,8 @@ beforeEach(() => {
   fakes.linked = new Set()
   for (const fn of Object.values(deps)) fn.mockClear()
   vi.mocked(postReviewLayer).mockReset()
-  vi.mocked(deletePendingReview).mockReset()
-  vi.mocked(deletePendingReview).mockResolvedValue(undefined)
+  vi.mocked(discardLayer).mockReset()
+  vi.mocked(discardLayer).mockResolvedValue(undefined)
   vi.mocked(materialiseFindings).mockClear()
   vi.mocked(importGithubReviewThreads).mockClear()
   configureReviewRoom(deps)
@@ -215,14 +233,41 @@ describe('review:open', () => {
     })
     applyReviewOp('r_aaaaaa', { kind: 'add-thread', thread: { id: 'rt_kept01', anchor: line('const added = true', 11) } })
     applyReviewOp('r_aaaaaa', { kind: 'add-thread', thread: { id: 'rt_gone01', anchor: line('const second = 2', 12) } })
+    applyReviewOp('r_aaaaaa', { kind: 'add-thread', thread: { id: 'rt_gone02', anchor: line('const second = 2', 12) } })
+    fakes.drafts = {
+      [U12]: {
+        comments: [
+          { id: 'd_kept', source: 'you', file: 'src/a.ts', line: '11', text: 'why?', sha: 'head12', threadId: 'rt_kept01' },
+          { id: 'd_gone', source: 'you', file: 'src/a.ts', line: '12', text: 'hm', sha: 'head12', threadId: 'rt_gone02' },
+        ],
+        summary: '',
+        verdict: 'comment',
+      },
+    }
     pr(U12, 12, 'head12b', 'main')
     gh.diffs.set(U12, PUSHED)
+    gh.files.set('repos/acme/app/contents/src/a.ts?ref=head12b', NEW_FILE)
 
     await openReview(U12)
     expect(getReview('r_aaaaaa')!.layers[0]!.headSha).toBe('head12b')
     await vi.waitFor(() => expect(getReviewThread('rt_gone01')?.outdated).toBe(true))
     expect(getReviewThread('rt_kept01')).toMatchObject({ outdated: false, anchor: { headSha: 'head12b', startLine: 16, endLine: 16 } })
     expect(getReviewThread('rt_gone01')?.anchor).toMatchObject({ headSha: 'head12', startLine: 12 })
+    // Only the re-placed thread's draft moves with it.
+    expect(deps.applyDraftOp.mock.calls).toEqual([[U12, { kind: 'update-comment', id: 'd_kept', patch: { line: '16', sha: 'head12b' } }]])
+  })
+
+  it('outdates every moved thread when the file at the new head can’t be read', async () => {
+    singleReview()
+    applyReviewOp('r_aaaaaa', {
+      kind: 'add-thread',
+      thread: { id: 'rt_kept01', anchor: { kind: 'line', pr: 12, headSha: 'head12', path: 'src/a.ts', side: 'RIGHT', startLine: 11, endLine: 11, snippet: 'const added = true', before: 'context before', after: '' } },
+    })
+    pr(U12, 12, 'head12b', 'main')
+    gh.diffs.set(U12, PUSHED)
+    await openReview(U12)
+    await vi.waitFor(() => expect(getReviewThread('rt_kept01')?.outdated).toBe(true))
+    expect(deps.applyDraftOp).not.toHaveBeenCalled()
   })
 
   it('imports GitHub threads and materialises cached results for the layer in the background', async () => {
@@ -265,8 +310,26 @@ describe('placeOnNewHead', () => {
       kind: 'line' as const, pr: 12, headSha: 'h', path: 'src/a.ts', side: 'RIGHT' as const,
       startLine: 11, endLine: 11, snippet: '}', before: '', after: '',
     }
-    expect(placeOnNewHead(anchor, PUSHED, 'h2')).toBeNull()
-    expect(placeOnNewHead({ ...anchor, path: 'other.ts' }, PUSHED, 'h2')).toBeNull()
+    expect(placeOnNewHead(anchor, PUSHED, 'h2', NEW_FILE)).toBeNull()
+    expect(placeOnNewHead({ ...anchor, path: 'other.ts' }, PUSHED, 'h2', NEW_FILE)).toBeNull()
+  })
+
+  const flag = {
+    kind: 'line' as const, pr: 12, headSha: 'h', path: 'src/a.ts', side: 'RIGHT' as const,
+    startLine: 11, endLine: 11, snippet: 'const added = true', before: 'context before', after: '',
+  }
+
+  it('is not fooled by a copy in the diff when the original moved outside it', () => {
+    const file = NEW_FILE.replace('line 2\nline 3\n', 'context before\nconst added = true\n')
+    expect(placeOnNewHead(flag, PUSHED, 'h2', file)).toBeNull()
+    expect(placeOnNewHead(flag, PUSHED, 'h2', NEW_FILE)).toMatchObject({ headSha: 'h2', startLine: 16, endLine: 16 })
+  })
+
+  it('refuses a place outside the new diff, an unreadable file and the old side', () => {
+    const outside = Array.from({ length: 30 }, (_, i) => (i === 24 ? 'const added = true' : `other ${i}`)).join('\n')
+    expect(placeOnNewHead(flag, PUSHED, 'h2', outside)).toBeNull()
+    expect(placeOnNewHead(flag, PUSHED, 'h2', undefined)).toBeNull()
+    expect(placeOnNewHead({ ...flag, side: 'LEFT' }, PUSHED, 'h2', NEW_FILE)).toBeNull()
   })
 })
 
@@ -430,12 +493,12 @@ describe('review:submit', () => {
         input.record(failed)
         return { outcome: { prUrl: input.pr.url, kind: 'failed', error: 'nope' }, state: failed }
       }
-      const posted = { ...pending, state: 'posted' as const, postedCommentIds: ['c12'] }
+      const posted = { ...pending, state: 'posted' as const, postedCommentIds: ['c12'], sent: { comments: [], summary: 'S12', verdict: 'comment' as const } }
       input.record(posted)
       return { outcome: { prUrl: input.pr.url, kind: 'posted', folded: 0 }, state: posted }
     })
 
-    const result = await submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U13, verdict: 'approve' }, { prUrl: U12, verdict: 'comment' }] })
+    const result = await submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U13, verdict: 'approve', readHead: 'head13' }, { prUrl: U12, verdict: 'comment', readHead: 'head12' }] })
     expect(result.complete).toBe(false)
     expect(result.layers.map((layer) => layer.kind)).toEqual(['posted', 'failed'])
 
@@ -469,7 +532,7 @@ describe('review:submit', () => {
       const state = { ...input.prior!, state: 'posted' as const }
       return { outcome: { prUrl: input.pr.url, kind: 'posted', folded: 0 }, state }
     })
-    const result = await submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'comment' }, { prUrl: U13, verdict: 'approve' }] })
+    const result = await submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'comment', readHead: 'head12' }, { prUrl: U13, verdict: 'approve', readHead: 'head13' }] })
     expect(result.complete).toBe(true)
     expect(vi.mocked(postReviewLayer).mock.calls.map(([input]) => input.prior?.reviewNodeId)).toEqual(['node-12', 'node-13'])
     // The first layer was cleared by the attempt that posted it.
@@ -479,6 +542,21 @@ describe('review:submit', () => {
     expect(review.submissions).toHaveLength(2)
     expect(deps.endCompanion).toHaveBeenCalledWith('r_aaaaaa')
     expect(deps.removeCheckouts).toHaveBeenCalledWith('r_aaaaaa')
+  })
+
+  it('refuses a layer whose head moved since the user read it, posting nothing on it', async () => {
+    stackReview()
+    vi.mocked(postReviewLayer).mockImplementation(async (input) => {
+      const state = { prUrl: input.pr.url, verdict: input.verdict, postedCommentIds: [], state: 'posted' as const }
+      return { outcome: { prUrl: input.pr.url, kind: 'posted', folded: 0 }, state }
+    })
+    const result = await submitReview({
+      reviewId: 'r_aaaaaa',
+      layers: [{ prUrl: U12, verdict: 'approve', readHead: 'head11' }, { prUrl: U13, verdict: 'approve', readHead: 'head13' }],
+    })
+    expect(result.layers[0]).toEqual({ prUrl: U12, kind: 'head-moved', readHead: 'head11', headSha: 'head12' })
+    expect(result.complete).toBe(false)
+    expect(vi.mocked(postReviewLayer).mock.calls.map(([input]) => input.pr.number)).toEqual([13])
   })
 
   it("removes the drafts of the review's threads", async () => {
@@ -494,13 +572,15 @@ describe('review:submit', () => {
       const state = { prUrl: input.pr.url, verdict: input.verdict, postedCommentIds: [], state: 'posted' as const }
       return { outcome: { prUrl: input.pr.url, kind: 'posted', folded: 0 }, state }
     })
-    const result = await submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U13, verdict: 'approve' }] })
+    const result = await submitReview({ reviewId: 'r_aaaaaa', layers: [{ prUrl: U13, verdict: 'approve', readHead: 'head13' }] })
     expect(result).toEqual({ complete: true, layers: [{ prUrl: U12, kind: 'skipped' }, { prUrl: U13, kind: 'posted', folded: 0 }] })
   })
 
   it.each([
     { reviewId: 'r_aaaaaa', layers: [] },
-    { reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'lgtm' }] },
+    { reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'lgtm', readHead: 'head12' }] },
+    { reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'approve' }] },
+    { reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'approve', readHead: '--output x' }] },
     { reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'approve' }, { prUrl: U12, verdict: 'approve' }] },
     { reviewId: 'r_aaaaaa', layers: [{ prUrl: U12, verdict: 'approve', adoptPendingReviewId: '--flag x' }] },
     { reviewId: 'r_aaaaaa', layers: [{ prUrl: 'https://github.com/acme/app/pull/99', verdict: 'approve' }] },
@@ -523,7 +603,9 @@ describe('review:discard', () => {
       ],
     }])
     await discardReview('r_aaaaaa')
-    expect(vi.mocked(deletePendingReview).mock.calls).toEqual([['node-13']])
+    expect(vi.mocked(discardLayer).mock.calls).toEqual([
+      [{ owner: 'acme', repo: 'app', number: 13, url: U13 }, expect.objectContaining({ state: 'failed', reviewNodeId: 'node-13' })],
+    ])
     expect(getReview('r_aaaaaa')!.status).toBe('discarded')
     expect(deps.endCompanion).toHaveBeenCalledWith('r_aaaaaa')
     expect(deps.removeCheckouts).toHaveBeenCalledWith('r_aaaaaa')
@@ -536,7 +618,7 @@ describe('review:discard', () => {
       destination: { session: false, github: true },
       layers: [{ prUrl: U13, verdict: 'approve', postedCommentIds: [], state: 'unknown', reviewNodeId: 'node-13' }],
     }])
-    vi.mocked(deletePendingReview).mockRejectedValueOnce(new Error('HTTP 502'))
+    vi.mocked(discardLayer).mockRejectedValueOnce(new Error('HTTP 502'))
     await expect(discardReview('r_aaaaaa')).rejects.toThrow('pending review')
     expect(getReview('r_aaaaaa')!.status).toBe('open')
   })

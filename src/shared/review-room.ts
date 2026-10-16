@@ -57,6 +57,14 @@ export interface ReviewLayerSubmission {
   /** Draft ids GitHub refused on a line (or as a reply), now bound for the review body. */
   folded?: string[]
   reviewUrl?: string
+  /** The pending review was one the user started on GitHub: discarding removes only SimpleEdit's comments from it. */
+  adopted?: boolean
+  /**
+   * What the submit carried (each draft comment's `commentRev`), recorded just
+   * before it is sent. A retry that finds the review already submitted clears
+   * only these, so a comment edited since stays in the draft.
+   */
+  sent?: { comments: Array<{ draftId: string; rev: string }>; summary: string; verdict: 'approve' | 'comment' | 'request_changes' }
 }
 
 export interface ReviewSubmission {

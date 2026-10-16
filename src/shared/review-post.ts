@@ -58,6 +58,11 @@ function hash(text: string): string {
   return (h >>> 0).toString(36)
 }
 
+/** A draft comment's version as a whole, wherever it ends up (line, reply or body). */
+export function commentRev(c: PrReviewComment): string {
+  return hash(JSON.stringify([c.file, c.line ?? null, c.side ?? 'RIGHT', c.text, c.severity ?? null, c.snippet ?? null, c.inReplyTo?.threadNodeId ?? null, c.sha ?? null]))
+}
+
 export interface PlannedThread {
   kind: 'thread'
   comment: PrReviewComment

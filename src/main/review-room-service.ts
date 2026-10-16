@@ -10,7 +10,7 @@
  */
 import { createHash } from 'crypto'
 import type { DraftOpResult, PrReviewDraftOp } from '../shared/review-drafts'
-import { isPrUrl, type BaseAnalysis, type DeepFinding, type PrReviewDraft, type TriageFinding } from '../shared/screenprs'
+import { isPrUrl, parseLineRange, type BaseAnalysis, type DeepFinding, type PrReviewDraft, type TriageFinding } from '../shared/screenprs'
 import { parseOverview, resolveRefPath } from '../shared/pr-overview'
 import { parseUnifiedDiff, type DiffFile } from '../shared/parseDiff'
 import {
@@ -48,7 +48,7 @@ import {
   type StackCard,
 } from './github/stack-base'
 import { importGithubReviewThreads } from './github/review-threads'
-import { deletePendingReview, postReviewLayer } from './github/review-graphql'
+import { discardLayer, postReviewLayer } from './github/review-graphql'
 import { reanchor } from './thread-reanchor'
 import { deepSeverity, materialiseFindings, triageSeverity, type FindingToMaterialise } from './review-findings'
 import {
@@ -62,7 +62,8 @@ import {
   threadsForReview,
   updateMainReviewThread,
 } from './review-room-store'
-import { draftThreadIds, loadDrafts, moveThreadDraft, removeDraftsForThread } from './screenprs-drafts'
+import { draftLinksForThread, draftThreadIds, loadDrafts, moveThreadDraft, removeDraftsForThread } from './screenprs-drafts'
+import { fileAt as fileAtRef } from './github/pr-overview-context'
 import { getCacheEntryAt } from './screenprs-cache'
 import { screeningSnapshot } from './screenprs'
 
@@ -113,6 +114,7 @@ function layerOf(rawReviewId: unknown, rawUrl: unknown): { review: Review; layer
 }
 
 const NODE_ID = /^[A-Za-z0-9_=-]{1,200}$/
+const HEAD_SHA = /^[0-9A-Za-z]{4,64}$/
 const VERDICTS: readonly string[] = ['approve', 'comment', 'request_changes']
 
 export function parseSubmitRequest(raw: unknown): ReviewSubmitRequest {
@@ -122,17 +124,19 @@ export function parseSubmitRequest(raw: unknown): ReviewSubmitRequest {
   const seen = new Set<string>()
   const parsed = layers.map((entry: unknown) => {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) throw new Error('Malformed submit layer')
-    const { prUrl, verdict, adoptPendingReviewId } = entry as Record<string, unknown>
+    const { prUrl, verdict, readHead, adoptPendingReviewId } = entry as Record<string, unknown>
     const url = parsePrUrlArg(prUrl)
     if (seen.has(url)) throw new Error('A layer is listed twice')
     seen.add(url)
     if (typeof verdict !== 'string' || !VERDICTS.includes(verdict)) throw new Error('Malformed verdict')
+    if (typeof readHead !== 'string' || !HEAD_SHA.test(readHead)) throw new Error('Malformed read head')
     if (adoptPendingReviewId !== undefined && (typeof adoptPendingReviewId !== 'string' || !NODE_ID.test(adoptPendingReviewId))) {
       throw new Error('Malformed pending review id')
     }
     return {
       prUrl: url,
       verdict: verdict as ReviewVerdict,
+      readHead,
       ...(adoptPendingReviewId !== undefined ? { adoptPendingReviewId } : {}),
     }
   })
@@ -276,37 +280,26 @@ export async function layerDiff(rawReviewId: unknown, rawUrl: unknown): Promise<
 
 // ── §8: re-placing line threads on a new head ───────────────────────────────
 
-/** Never equal to a diff row, so a match can't span the gap between two hunks. */
-const GAP = '\u0000'
-
-/** One side of a file's diff as sparse file content: row text at its line number, gaps elsewhere. */
-function sideContent(file: DiffFile, side: 'LEFT' | 'RIGHT'): string[] {
-  const lines: string[] = []
-  for (const row of file.rows) {
-    if (row.kind === 'hunk') continue
-    const at = side === 'RIGHT' ? (row.kind === 'del' ? undefined : row.newNo) : row.kind === 'add' ? undefined : row.oldNo
-    if (at === undefined) continue
-    while (lines.length < at - 1) lines.push(GAP)
-    lines[at - 1] = row.text
-  }
-  return lines
-}
-
-function withoutGaps(context: string, side: 'before' | 'after'): string {
-  if (!context.includes(GAP)) return context
-  const lines = context.split('\n')
-  const kept = side === 'before' ? lines.slice(lines.lastIndexOf(GAP) + 1) : lines.slice(0, lines.indexOf(GAP))
-  return kept.join('\n')
+/** The new side of a file's diff: row text by line number, for the rows the diff shows. */
+function rightRows(file: DiffFile): Map<number, string> {
+  const rows = new Map<number, string>()
+  for (const row of file.rows) if (row.kind !== 'hunk' && row.kind !== 'del' && row.newNo !== undefined) rows.set(row.newNo, row.text)
+  return rows
 }
 
 type LineAnchor = Extract<ReviewThreadAnchor, { kind: 'line' }>
 
 /**
- * Where a line thread's code is in a new head's review diff, by snippet and
- * context with `thread-reanchor.ts`'s uniqueness rule, or null when it can't
- * be placed with certainty (it then stays on its old lines, outdated).
+ * Where a line thread's code is at a new head, or null when that can't be
+ * established (it then stays on its old lines, outdated). Uniqueness is judged
+ * against the whole file at the new head with `thread-reanchor.ts`'s rule, never
+ * against the rows the diff happens to show: a copy inside the diff would look
+ * unique while the original moved outside it. The placed lines must also be
+ * rows of the new diff, or there is nothing to show or post them on. A LEFT
+ * anchor sits on the review diff's base, which can't be read here.
  */
-export function placeOnNewHead(anchor: LineAnchor, diff: string, headSha: string): LineAnchor | null {
+export function placeOnNewHead(anchor: LineAnchor, diff: string, headSha: string, fileAtHead: string | undefined): LineAnchor | null {
+  if (anchor.side !== 'RIGHT' || fileAtHead === undefined) return null
   const file = parseUnifiedDiff(diff).find((candidate) => candidate.path === anchor.path)
   if (!file) return null
   const probe: ThreadAnchor = {
@@ -318,27 +311,55 @@ export function placeOnNewHead(anchor: LineAnchor, diff: string, headSha: string
     after: anchor.after,
     context: { commit: headSha },
   }
-  const placed = reanchor(probe, sideContent(file, anchor.side).join('\n'), true)
+  const placed = reanchor(probe, fileAtHead, true)
   if (placed?.orphaned) return null
   const at = placed ?? probe
-  return {
-    ...anchor,
-    headSha,
-    startLine: at.startLine,
-    endLine: at.endLine,
-    before: withoutGaps(at.before, 'before'),
-    after: withoutGaps(at.after, 'after'),
+  const rows = rightRows(file)
+  const lines = fileAtHead.split(/\r?\n/)
+  for (let line = at.startLine; line <= at.endLine; line++) {
+    if (!rows.has(line) || rows.get(line) !== lines[line - 1]) return null
+  }
+  return { ...anchor, headSha, startLine: at.startLine, endLine: at.endLine, before: at.before, after: at.after }
+}
+
+/**
+ * The thread's draft comment follows it: a comment left on the old head's
+ * lines would otherwise fold into the review body as written against an
+ * earlier commit.
+ */
+function moveLinkedDraft(threadId: string, url: string, from: LineAnchor, to: LineAnchor): void {
+  for (const link of draftLinksForThread(threadId)) {
+    if (link.url !== url) continue
+    const comment = loadDrafts().drafts[url]?.comments.find((candidate) => candidate.id === link.commentId)
+    const range = parseLineRange(comment?.line)
+    if (!comment || !range || comment.file !== from.path || (comment.side ?? 'RIGHT') !== from.side || comment.sha !== from.headSha) continue
+    const shift = to.startLine - from.startLine
+    const line = range.end > range.start ? `${range.start + shift}-${range.end + shift}` : `${range.start + shift}`
+    need().applyDraftOp(url, { kind: 'update-comment', id: comment.id, patch: { line, sha: to.headSha } })
   }
 }
 
-function reresolveLayer(reviewId: string, layer: ReviewPrRef, diff: string | null): void {
-  const changes: Array<ReviewChange | null> = []
-  for (const thread of threadsForReview(reviewId)) {
+async function reresolveLayer(reviewId: string, layer: ReviewPrRef, diff: string | null): Promise<void> {
+  const moved = threadsForReview(reviewId).flatMap((thread) => {
     const anchor = thread.anchor
-    if (anchor.kind !== 'line' || anchor.pr !== layer.number || anchor.headSha === layer.headSha) continue
-    const placed = diff === null ? null : placeOnNewHead(anchor, diff, layer.headSha)
+    return anchor.kind === 'line' && anchor.pr === layer.number && anchor.headSha !== layer.headSha ? [{ thread, anchor }] : []
+  })
+  if (!moved.length) return
+  const files = new Map<string, Promise<string | undefined>>()
+  const fileAt = (path: string): Promise<string | undefined> => {
+    let hit = files.get(path)
+    if (!hit) {
+      hit = fileAtRef(layer.url, path, layer.headSha)
+      files.set(path, hit)
+    }
+    return hit
+  }
+  const changes: Array<ReviewChange | null> = []
+  for (const { thread, anchor } of moved) {
+    const placed = diff === null || anchor.side !== 'RIGHT' ? null : placeOnNewHead(anchor, diff, layer.headSha, await fileAt(anchor.path))
     try {
       changes.push(updateMainReviewThread(thread.id, placed ? { anchor: placed, outdated: false } : { outdated: true }))
+      if (placed) moveLinkedDraft(thread.id, layer.url, anchor, placed)
     } catch (err) {
       warn(`re-anchoring ${thread.id}`, err)
     }
@@ -517,10 +538,10 @@ async function refreshLayer(reviewId: string, layer: ReviewPrRef): Promise<void>
     fetched = await layerReviewDiff(layer)
   } catch (err) {
     warn(`loading the review diff of ${layer.url}`, err)
-    reresolveLayer(reviewId, layer, null)
+    await reresolveLayer(reviewId, layer, null)
     return
   }
-  reresolveLayer(reviewId, layer, fetched.diff)
+  await reresolveLayer(reviewId, layer, fetched.diff)
   try {
     broadcast(await importGithubReviewThreads(reviewId, layer, fetched.diff, isIsolated(fetched.base)))
   } catch (err) {
@@ -746,6 +767,13 @@ async function submit(request: ReviewSubmitRequest): Promise<ReviewSubmitResult>
       outcomes.push({ prUrl: layer.url, kind: 'skipped' })
       continue
     }
+    // The recorded head follows every fetch of the layer, so it can be ahead
+    // of what the user read; posting then would put their verdict on code
+    // they never saw.
+    if (ask.readHead !== layer.headSha) {
+      outcomes.push({ prUrl: layer.url, kind: 'head-moved', readHead: ask.readHead, headSha: layer.headSha })
+      continue
+    }
     const prior = latestLayerState(review, layer.url)
     const draft = layerDraftFor(review, layer.url)
     const isolatedBase = await layerReviewDiff(layer).then(
@@ -759,7 +787,7 @@ async function submit(request: ReviewSubmitRequest): Promise<ReviewSubmitResult>
     const result = await postReviewLayer({
       pr: { owner, repo, number: layer.number, url: layer.url },
       draft,
-      readHead: layer.headSha,
+      readHead: ask.readHead,
       verdict: ask.verdict,
       isolatedBase,
       ...(prior ? { prior } : {}),
@@ -777,13 +805,13 @@ async function submit(request: ReviewSubmitRequest): Promise<ReviewSubmitResult>
         need().applyDraftOp(layer.url, {
           kind: 'clear-posted',
           ids: result.state.postedCommentIds,
-          summary: draft.summary,
-          verdict: draft.verdict,
+          summary: result.state.sent?.summary ?? '',
+          verdict: result.state.sent?.verdict ?? draft.verdict,
         })
       } catch (err) {
         warn(`clearing the posted draft of ${layer.url}`, err)
       }
-      broadcast([setReviewLastSeenHead(review.id, layer.url, layer.headSha)])
+      broadcast([setReviewLastSeenHead(review.id, layer.url, ask.readHead)])
     }
   }
 
@@ -808,18 +836,16 @@ async function discard(reviewId: string): Promise<void> {
   const review = getReview(reviewId)
   if (!review) throw new Error('Unknown review')
   if (review.status !== 'open') return
-  const pending = new Set<string>()
+  const failed: string[] = []
   for (const layer of review.layers) {
     const state = latestLayerState(review, layer.url)
-    if (state?.reviewNodeId && state.state !== 'posted') pending.add(state.reviewNodeId)
-  }
-  const failed: string[] = []
-  for (const nodeId of pending) {
+    if (!state || state.state === 'posted') continue
+    const { owner, repo } = ownerRepo(layer.url)
     try {
-      await deletePendingReview(nodeId)
+      await discardLayer({ owner, repo, number: layer.number, url: layer.url }, state)
     } catch (err) {
-      warn(`deleting pending review ${nodeId}`, err)
-      failed.push(nodeId)
+      warn(`discarding the pending review on ${layer.url}`, err)
+      failed.push(layer.url)
     }
   }
   if (failed.length) throw new Error(`Couldn't delete ${failed.length} pending review(s) on GitHub; try again`)

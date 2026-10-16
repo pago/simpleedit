@@ -486,7 +486,7 @@ interface RawOverviewView {
 const pathUrl = (p: string): string => p.split('/').map(encodeURIComponent).join('/')
 
 /** A file's raw text at `ref`, or undefined when it doesn't exist there. */
-async function fileAt(url: string, path: string, ref: string): Promise<string | undefined> {
+export async function fileAt(url: string, path: string, ref: string): Promise<string | undefined> {
   const r = repoOf(url)
   try {
     return await runGh([
