@@ -6,7 +6,7 @@
   import { reviewRoom } from '../../stores/reviewRoom.svelte'
   import type { ScreenPrCard, ScreenPrBucket, PrReviewDraft, PrReviewVerdict } from '../../../shared/screenprs'
   import { CI_TONE, ciLabel } from '../../../shared/screenprs'
-  import { BUCKET_ORDER, groupStacks, emptyReviewDraft } from '../../../shared/screenprs'
+  import { BUCKET_ORDER, stacksByBucket, emptyReviewDraft } from '../../../shared/screenprs'
   import MagnifierIcon from './MagnifierIcon.svelte'
   import ConfirmReviewModal from './ConfirmReviewModal.svelte'
 
@@ -18,6 +18,7 @@
 
   let status = $derived(screenPrsStore.status())
   let byBucket = $derived(screenPrsStore.byBucket())
+  let grouped = $derived(stacksByBucket(byBucket))
   let pending = $derived(screenPrsStore.pending())
   let selectedKey = $derived(screenPrsStore.selectedKey())
   // Reviews an agent asked for: listed here, never opened for the user (they may not be in the screened queue).
@@ -222,17 +223,18 @@
     {/if}
 
     {#each BUCKET_ORDER as b (b)}
-      {@const cards = byBucket[b]}
-      {#if cards.length > 0}
+      {@const groups = grouped[b]}
+      {@const count = groups.reduce((n, g) => n + g.cards.length, 0)}
+      {#if count > 0}
         <div class="mb-5">
           <div class="mb-2 flex items-center gap-2">
             <span class="h-3.5 w-[3px] flex-none rounded-sm {BUCKETS[b].stripe}"></span>
             <span class="min-w-0 truncate whitespace-nowrap text-[11px] font-semibold uppercase tracking-wider {BUCKETS[b].head}">{BUCKETS[b].label}</span>
-            <span class="flex-none rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{cards.length}</span>
+            <span class="flex-none rounded-full border border-zinc-800 bg-zinc-900 px-1.5 text-[10px] tabular-nums text-zinc-500">{count}</span>
             <span class="hidden min-w-0 truncate text-[10px] italic text-zinc-600 @2xs:inline">{BUCKETS[b].sub}</span>
           </div>
           <div class="flex flex-col gap-2">
-            {#each groupStacks(cards) as g (g.cards[0].url)}
+            {#each groups as g (g.cards[0].url)}
               {#if g.stackId}
                 <div class="rounded-r-md border-l-2 border-violet-500/70 pl-2">
                   <div class="mb-1 truncate whitespace-nowrap text-[10px] uppercase tracking-wider text-violet-300">⛓ stack · review top → bottom</div>
