@@ -1,12 +1,13 @@
 # Plan: Review Room
 
-Status: draft for adversarial review · Branch: `feat/review-room` (worktree `wt-review-room`) ·
-Prototype: https://claude.ai/artifact/Bk1wpDP1qvUp3J7vqceZNF (replayed stack #183 → #185)
+Status: draft, revised after adversarial review (rev 2) · Branch: `feat/review-room` (worktree
+`wt-review-room`) · Prototype: https://claude.ai/artifact/Bk1wpDP1qvUp3J7vqceZNF (replayed stack
+#183 → #185)
 
-> Replace Screen PRs' `PrDetail` on desktop with a stack-first **Review Room**: one surface where
+> Replace Screen PRs' `PrDetail` with a stack-first **Review Room**: one surface where
 > screening/overview/deep-review findings, other reviewers' GitHub comments, the user's own notes
-> and a **review companion** agent all meet as **threads**. Agents can open the same room for
-> their own PR with `request_review`, and the submitted review flows back to them.
+> and a **review companion** agent all meet as **threads**. Agents can ask for a review of their
+> own PR with `request_review`, and the submitted review flows back to them.
 
 ## Positioning (the line we do not cross)
 
@@ -18,79 +19,92 @@ The value is the human reviewer's judgement, amplified. Not "run an AI review an
 - Nothing runs on open except what already ran (screening). Overview and deep review are buttons.
   The companion starts on the first question.
 
-## Locked decisions (from the design session, 2026-10-15/16)
+## Locked decisions (design session 2026-10-15/16)
 
 1. **Unit = stack.** A single PR is a stack of one. Posting and verdicts stay per PR.
-2. **GitHub only.** Local work is reviewed by having the agent open a (draft) PR; no separate
-   local-branch anchoring.
+2. **GitHub only.** Local work is reviewed by having the agent open a (draft) PR.
 3. **Thread = item + private conversation + optional draft.** Only the draft is ever posted.
-   Thread status is `open | done`; "to post" just means the thread has a draft. Per-thread
-   controls: ask input (with suggestion chips: fact-check, "is this real?", "right severity?",
-   sample questions), *Draft comment / Draft reply*, *Done*. The companion never edits a draft;
-   it offers *Redraft from conversation* (accept / keep mine).
+   Status `open | done`; "to post" = has a draft. Per-thread controls: ask input (chips:
+   fact-check, "is this real?", "right severity?", sample questions), *Draft comment / Draft
+   reply*, *Done*. The companion never edits a draft; it offers *Redraft from conversation*
+   (accept / keep mine).
 4. **Severity lives on the draft only.** The tool's severity shows as its proposal.
 5. **Whole-stack threads** post on a layer picked in the draft, default the top PR.
-6. **Submit = one review per layer** with its own verdict. Default: Request changes if a blocking
-   draft exists, Comment if any drafts, Approve otherwise (= quick approve).
+6. **Submit = one review per layer**, own verdict. Default: Request changes if a blocking draft
+   exists, Comment if any drafts, Approve otherwise (= quick approve).
 7. **One companion per review**: a real agent session (Claude / Codex / OpenCode + model; default
-   in settings, per-review picker). Brief ends with "wait for my instructions". Switching agent
-   = new companion that reads the threads back.
+   in settings, per-review picker). Brief ends with "wait for my instructions". Switching agent =
+   new companion that reads the threads back.
 8. **Companion terminal docked, collapsed, at the bottom.** Order: post bar, companion bar
-   (terminal toggle on the left, agent picker, status), terminal last. Replaces *Discuss with
-   Agent* on desktop. Permission prompts show as "needs you" on the bar; it never auto-expands.
-9. **Cost is the user's job** via the agent's own clear/compact in the terminal. No context meter.
-   The review's memory is the thread store, so a cleared companion re-reads it via `list_threads`.
-10. **Desktop layout:** queue stays in the sidebar's Screen PRs section; room in the main area;
-    outline on the right (drawer below 1200px). Phone keeps today's flow for now.
-11. **Return visits:** threads, drafts, read ticks persist; "N new commits since you last looked"
-    per layer; threads on changed lines are marked outdated.
-12. **`request_review` from an agent session**: fresh companion (never the author), submit goes
-    back to the requesting session by default (GitHub optional), and threads get an
-    **Ask author** route for intent questions.
+   (terminal toggle left, agent picker, status), terminal last. Replaces desktop *Discuss with
+   Agent*. Permission prompts show as "needs you"; the dock never auto-expands.
+9. **Cost is the user's job** (the agent's own clear/compact). No context meter. The thread store
+   is the review's memory; a cleared companion re-reads it via `list_threads`.
+10. **Desktop layout:** queue in the sidebar's Screen PRs section, room in the main area, outline
+    on the right (drawer below 1200px).
+11. **Return visits:** threads, drafts, read ticks persist; "new commits since you last looked"
+    per layer; threads on changed code are marked outdated.
+12. **`request_review`** from an agent session: fresh companion (never the author); submit goes
+    back to the requesting session by default (GitHub optional); threads get **Ask author**.
+13. **No explicit checkout step.** The companion fetches a read-only checkout itself when it
+    needs one (`checkout_review_head`).
+14. **Posting via GraphQL** (pending review → threads + replies → submit), unless the spike in
+    PR 2 hits a blocker (see §7).
+15. **Phone is in scope** (PR 4): queue → the same page, outline behind a button, no terminal.
 
-## What exists and is reused (verified by code survey)
+## What exists and is reused (verified by code survey + adversarial review)
 
 | Need | Existing piece |
 |---|---|
 | Diff rendering with inline slots | `components/diff/UnifiedDiffView.svelte` (`onLineClick`, `belowRow`, `reveal`) |
-| Draft comments, persistence, posting | `shared/review-drafts.ts` ops, `main/screenprs-drafts.ts` (JSON, revisions, tombstones), `main/github/review.ts` `postReview` (anchor check via `resolveAnchor`, fold on 422, pinned `commit_id`), `ConfirmReviewModal.svelte` |
-| Per-layer diff of a stacked PR | `main/github/stack-base.ts` `getReviewDiff` (own commits via `compareDiff`, falls back with warning) |
-| Screening / overview / deep runs + cache | `main/screenprs.ts`, `main/pr-overview.ts`, `main/deep-review.ts`, `main/screenprs-cache.ts` (head + fingerprint keys) |
-| Thread UI building blocks | `InlineThread.svelte`, `ThreadBody.svelte`, `InlineComposer.svelte` (plain Svelte, not Monaco-bound); `web/lib/diff-threads.ts` row mapping |
-| Typed delivery of a user message to a session, idle-gated, confirmed by `UserPromptSubmit` | `main/thread-delivery.ts` (`requestSend` :439, OpenCode over HTTP) |
+| Draft comments, persistence | `shared/review-drafts.ts` ops (`parseReviewComment`/`commentFields` :191), `main/screenprs-drafts.ts` (JSON, revisions, tombstones) |
+| Anchor checks before posting | `shared/screenprs.ts` `resolveAnchor` :463, `commentableLines`, `anchorsForHead`; fold rules in `main/github/review.ts` |
+| Per-layer (isolated) diff | `main/github/stack-base.ts` `getReviewDiff` (compare parent..head, :268) |
+| Screening / overview / deep runs + cache | `main/screenprs.ts`, `main/pr-overview.ts`, `main/deep-review.ts`, `main/screenprs-cache.ts` |
+| Thread UI building blocks | `InlineThread.svelte`, `ThreadBody.svelte`, `InlineComposer.svelte`; phone `web/lib/diff-threads.ts`, `MobileDiff` |
+| Snippet matching under a uniqueness rule | `main/thread-reanchor.ts` |
+| Typed, idle-gated, confirmed delivery | `main/thread-delivery.ts` (`requestSend` :439; OpenCode over HTTP; arm-on-confirmation) |
 | Agent replies | `reply_to_thread` (`mcp-bridge.ts:637`, `thread-delivery.ts:326`) |
-| Session spawn with provider/model/initial prompt | `sessionsStore.createAgent` (renderer mints id) → `agent:spawn`; allowlist `lib/agentModels.ts` |
-| Embeddable terminal | `components/terminal/Terminal.svelte` + `lib/pty-attach.ts` (backlog replay, `pty:claim`) |
-| Waiting / permission status per provider | Notification + PermissionRequest hooks → `agent-status.svelte.ts` |
+| Exactly-once session creation | `session-create.ts` `createSessionOnce` (requestId) |
+| Embeddable terminal | `components/terminal/Terminal.svelte` + `lib/pty-attach.ts` (`pty:claim`) |
+| Waiting status per provider | Notification / PermissionRequest hooks, OpenCode `session.status` → `agent-status.svelte.ts` |
+| Control-character stripping | `sanitizeLabel` (agent-wake) |
 | MCP tool pattern | `mcp-server/index.mjs` `registerTool` → `postToBridge` → `mcp-bridge.ts handleToolCall`, caller = `terminalId` |
 
-## What does not exist (and why the threads need their own model)
+## Why review threads get their own model
 
-Today's agent threads are **owned by a session and rooted in a worktree**: `assertKnownWorktree`
+Agent threads are **owned by a session and rooted in a worktree**: `assertKnownWorktree`
 (`agent-threads-store.ts:139`), absolute paths in `formatThreadForAgent`
 (`shared/agent-threads.ts:222`), deletion when the session ends (`index.ts:1180`), a 5-unanswered
-cap per session, and `parseAnchor` accepts only `file` / one commit. A review thread must outlive
-any agent, anchor to a PR head, and exist with no session at all (screening findings, GitHub
-comments). Bending `AgentThread` to that touches every invariant above.
+cap (`thread-delivery.ts:63`), `parseAnchor` accepting only `file` / one commit. A review thread
+must outlive any agent, anchor to a PR head, and exist with no session (findings, GitHub comments).
 
-**Decision: a separate `ReviewThread` model owned by a `Review`, sharing UI components and the
-delivery core with agent threads, not the store.**
+**Decision: `ReviewThread` owned by a `Review`; shares UI components and the delivery core with
+agent threads, not the store.** Review threads are exempt from the 5-unanswered cap (that cap
+limits agent-*opened* threads; review threads are opened by the user or by tools).
 
 ## Architecture
 
-### 1. Data model (main-owned, SQLite, new migration in `main/db.ts`)
+### 1. Data model (main-owned, SQLite via `db.ts`, append-only migration)
 
 ```
-Review        { id, repo, layers: PrRef[] (bottom→top), requesterSessionId?, companionSessionId?,
-                companionAgent: {provider, model}, readSteps: string[], lastSeenHead: {pr→sha},
-                createdAt, updatedAt }
+Review        { id, repo, layers: PrRef[] (bottom→top), status: 'open'|'submitted'|'discarded',
+                requesterSessionId?, requesterWindowId?,
+                companion?: { sessionId, windowId, agent: {provider, model}, claimRequestId },
+                companionAgent: {provider, model},            // picker value, survives companion end
+                lastSeenHead: {prUrl → sha}, readSteps: string[],
+                submissions: Submission[], createdAt, updatedAt }
 PrRef         { url, number, headSha }
+Submission    { at, destination: {session: boolean, github: boolean},
+                layers: { prUrl, verdict, reviewNodeId?, postedCommentIds: string[],
+                          state: 'pending'|'posted'|'failed'|'unknown' }[] }
 
 ReviewThread  { id ('rt_…'), reviewId, anchor, origin, status: 'open'|'done', outdated: boolean,
-                messages: ReviewMessage[], draftCommentId?: string }
-anchor  =  { kind: 'stack' }
-         | { kind: 'pr', pr }
-         | { kind: 'line', pr, headSha, path, side: 'LEFT'|'RIGHT', startLine, endLine, snippet }
+                readSeq: number, askAuthorOpen: boolean,
+                messages: ReviewMessage[], draftCommentId?, proposal?: {text, severity?} }
+anchor  =  { kind: 'stack' } | { kind: 'pr', pr }
+         | { kind: 'line', pr, headSha, path, side: 'LEFT'|'RIGHT', startLine, endLine,
+             snippet, before, after }
 origin  =  { kind: 'finding', source: 'triage'|'overview'|'deep', key, severity?, lens? }
          | { kind: 'github', threadNodeId, rootCommentId, author, isResolved }
          | { kind: 'user' }
@@ -98,168 +112,266 @@ ReviewMessage { seq, author: 'user'|'companion'|'author'|'reviewer'|'tool', body
                 readFiles?: string[], delivery?: DeliveryState }
 ```
 
-- **The draft stays in the existing draft store.** A thread's draft is a `PrReviewComment` with a
-  new `threadId` field (and `inReplyTo?: rootCommentId` for replies). The posting pipeline,
-  anchor resolution and folding are untouched; the thread just points at its comment. Stack
-  threads set the draft's PR from the layer picker.
-- **Severity** moves onto `PrReviewComment` (`severity?: 'blocking'|'consider'|'nit'`), rendered as
-  a conventional-comment prefix when posted (e.g. `**blocking:**`), because GitHub has no field.
-- **Stable finding keys.** Findings have no ids today (UI keys on `file+title`). Key =
-  `hash(source, prUrl, file, normalizedLine, title)`; threads are materialised from run results
-  for the current head and matched by key on re-run, so conversations and drafts survive a re-run.
-  Triage labels map to severity (`issue`→consider, `nit`→nit, …); deep `blocking|concern|note`
-  → `blocking|consider|nit`.
-- IPC channels are shared with the phone (`shared/ipc-types.ts:559-670`), so every new
-  `review:*` payload is validated as untrusted (same parse-function pattern as
-  `parseDraftOpRequest`), even though the phone UI is out of scope here.
+- **Ops, validated, broadcast** — the review-drafts / agent-threads pattern: client ops
+  (`shared/review-room.ts`, `parseReviewOp`), rev + tombstones, `review:changed` broadcast to
+  every window and phone. What only main may do (companion claim, agent messages, delivery
+  states, submissions, materialisation) is a main function, never an op. Every `review:*` payload
+  is parsed as untrusted (the phone is a remote client).
+- **The draft stays in the draft store.** A thread's draft is a `PrReviewComment` with new fields
+  `threadId`, `severity?: 'blocking'|'consider'|'nit'`, `inReplyTo?: {threadNodeId, rootCommentId}`.
+  `commentFields` / `parseReviewComment` (`review-drafts.ts:191`) are extended so the fields
+  survive validation. Posting changes are listed in §7; nothing about posting is "untouched".
+- **Findings → threads (materialisation).** On each run result for a layer's current head, main
+  matches findings to existing finding threads of the same source by **file + snippet** around the
+  cited line, with `thread-reanchor.ts`'s uniqueness rule (title similarity only breaks ties). A
+  match updates the item text; an unmatched new finding creates a thread; a thread whose finding
+  disappeared is **never deleted if it has a conversation, a draft or a proposal**: it is marked
+  outdated ("no longer reported"). Untouched ones are removed. Triage labels map to severity
+  (`issue`→consider, `nit`→nit, `suggestion`→nit, …); deep `blocking|concern|note` →
+  `blocking|consider|nit`.
 
 ### 2. Stacks
 
-`groupStacks` (`shared/screenprs.ts:635`) works per bucket, so a stack can be split across
-buckets. Add `resolveStack(card, allCards)` that walks `baseRefName`/`headRefName` across all
-cards, and falls back to `gh pr list --head <base>` for a parent that is not in the queue (e.g.
-already approved). Each layer's diff comes from `getReviewDiff`; its isolation warning is shown
-on the layer.
+`groupStacks` (`shared/screenprs.ts:635`) is per bucket, so it splits stacks. New
+`resolveStack(card, allCards)` walks `baseRefName`/`headRefName` across all cards and falls back to
+`gh pr list --head <base> --state all` for parents outside the queue (merged/closed included).
+Each layer's diff is `getReviewDiff`; its isolation warning shows on the layer.
 
 ### 3. GitHub comments (read-only import + reply drafts)
 
-New `main/github/review-threads.ts`: GraphQL `pullRequest.reviewThreads` (isResolved,
-isOutdated, path, line, originalLine, diffSide, comments{id, databaseId, author, body}) per layer,
-cached by head SHA, refreshed with the PR. Imported as `origin: github` threads (author messages =
-`reviewer`). *Draft reply* creates a draft comment with `inReplyTo`. Posting replies: the REST
-create-review payload has no `in_reply_to`, so replies are sent after the review with
-`POST /pulls/{n}/comments/{id}/replies`. Resolving GitHub threads is out of scope.
+New `main/github/review-threads.ts`: GraphQL `pullRequest.reviewThreads` (isResolved, isOutdated,
+path, line, originalLine, diffSide, comments{id, databaseId, author, body}), **paginated** (threads
+and comments, `first: 100` + cursors), per layer, cached by head SHA. GitHub's coordinates refer to
+GitHub's whole-stack diff, so each thread is **mapped through `commentableLines` of the review
+diff**; a thread that doesn't map (lower-layer file, LEFT side on an isolated diff, outdated)
+becomes a PR-level thread with "on code outside this layer's diff" and its original
+path:line. *Draft reply* creates a draft with `inReplyTo`. Resolving GitHub threads is out of
+scope.
 
 ### 4. Overview becomes the tour
 
-The overview output contract (the fixed part since #183) gains a structured **reading order**:
-ordered sections `{title, summary, refs: [{path, startLine, endLine}]}` per layer, plus a stack
-section when asked for the whole stack. The room renders sections as the tour with the referenced
-hunks inline; without an overview, layers show files in path order. Look-into items with refs
-become `origin: finding, source: overview` threads. The overview fingerprint changes, which
-invalidates cached overviews once (acceptable).
+The overview's fixed output contract (since #183) gains a structured **reading order**: ordered
+sections `{title, summary, refs: [{path, startLine, endLine}]}` per layer, plus a stack section
+when run for the whole stack. Sections render as the tour with the referenced hunks inline;
+without an overview, a layer shows files in path order. Look-into items with refs become
+`origin: finding, source: overview` threads. The fingerprint change invalidates cached overviews
+once (acceptable).
 
 ### 5. Companion
 
-- **Session kind:** add `owner?: {kind: 'review', reviewId}` to `Session` and `SerializedSession`.
-  Owned sessions are excluded from the sidebar list, the "finished unseen" dot and `visitedIds`,
-  and `createAgent` gets `{select: false}`. They **stay in `_sessions`** so agent-bus peer sync
-  and status tracking keep working (hiding them from `_sessions` would drop their mail).
-- **Launch:** lazily on the first Ask (or the first message typed in the dock). Provider/model
-  from the review's `companionAgent` (default: new setting `review.companionModel`, chosen from
-  the existing allowlist). Initial prompt = a stack-aware review brief (extend
-  `shared/pr-brief.ts`): layers, how to read diffs (`gh pr diff`), the thread protocol
-  (`list_threads`, `reply_to_thread`, one answer per thread), "do not modify files, do not post",
-  ends with "wait for my instructions".
-- **Working copy:** a detached worktree at the top layer's head (`git fetch origin
-  pull/<n>/head` + `git worktree add --detach`), new helper in `main/worktree.ts` (the #189 idea),
-  removed when the review is submitted or discarded. Read-only is enforced per provider where
-  possible (Codex `--sandbox read-only`; Claude via `--permission-mode plan` or a settings deny
-  list for Edit/Write; OpenCode via the existing ruleset pattern from `agent-tasks/runner.ts:415`)
-  and otherwise stated in the brief. See open question Q1 on the prototype's explicit
-  "escalate to checkout" step.
-- **Dock:** `Terminal.svelte` mounted in the room's bottom dock. The Screen PRs view unmounts the
-  workspace terminals (`App.svelte:269`), and owned sessions never appear in the sidebar, so this
-  is the only mount; the dock claims the PTY on expand. Status from `agent-status.svelte.ts`;
-  `waiting` → "needs you".
-- **Questions → companion:** generalise the delivery core of `thread-delivery.ts` (idle gate,
-  typed submit, `UserPromptSubmit` confirmation by header) so it delivers either an agent thread
-  or a review thread. Review-thread prompts carry `[Review thread rt_…]` plus the anchor
-  (`#184 src/main/github/stack-base.ts:131 (RIGHT)`), the item text and the question.
-- **Answers:** `reply_to_thread` dispatches on the id prefix (`t_` agent thread, `rt_` review
-  thread) and checks the caller is that review's companion or requester. The existing Stop-hook
-  fallback (`last_assistant_message`) applies to review threads too.
-- **Redraft:** a typed request "draft my comment for rt_… from our conversation"; the companion
-  answers with a new MCP tool `propose_draft(thread_id, text, severity?)`, which stores a
-  *proposal* on the thread. The user accepts or keeps their text. The companion has no tool that
-  writes a draft.
-- **Switching agent:** stop the old companion, clear `companionSessionId`, next Ask starts the new
-  one. Threads are untouched.
+- **Launch at the project root**, like every agent (CLAUDE.md "Claude Code integration"), so the
+  transcript and memory keep the project's key. Lazily, on the first Ask or first input typed in
+  the dock.
+- **Ownership across windows.** Reviews are app-wide, sessions and PTY mounts are per window.
+  Main claims the companion atomically: `claimCompanion(reviewId, windowId, requestId)`
+  (compare-and-set, `createSessionOnce` semantics); only the winning window creates the session.
+  Delivery and replies are main-side, so **Ask works from any window**; only the terminal mount is
+  window-bound. Another window's dock shows the status plus "Terminal lives in window X —
+  Focus it". When the owning window closes, the companion ends (`companion` cleared, see
+  "Session end"); the next Ask, from any window, claims a new one.
+- **Hidden but alive.** `Session.owner?: {kind: 'review', reviewId}` (also on
+  `SerializedSession`). One predicate, `isOwned(session)`, is applied at **every** user-facing
+  listing: the sidebar list, the finished-unseen dot, `visitedIds`, the close-fallback
+  `select(next)` (`sessions.svelte.ts` ~590), `WorkspaceManager`'s empty state
+  (`WorkspaceManager.svelte:33`), the command palette and ⌘-switching. It stays in `_sessions` so
+  agent-bus peer sync and status keep working; `list_sessions` marks it `owner: review`.
+  `createAgent` gets `{select: false}`.
+- **Restore.** A restored owned session is a `pendingResume` placeholder; the room's dock offers
+  *Resume* (that's the only place it is reachable). No auto-resume.
+- **Session end** (exit, kill, window close, agent switch): main clears `review.companion`; every
+  review-thread message `held` / `delivered`-and-armed on that session becomes `unanswered` with
+  Retry (Retry goes to the next companion).
+- **Brief** (extend `shared/pr-brief.ts`, stack-aware): layers with URLs and head SHAs; "read
+  each layer's diff with `get_review_diff`, **not** `gh pr diff` (an upper layer's GitHub diff
+  contains the whole stack)"; the thread protocol (`list_threads`, `reply_to_thread`,
+  `propose_draft`, one answer per thread); "use `checkout_review_head` when you need code outside
+  the diff"; "do not modify files, do not post to GitHub"; ends with "wait for my instructions".
+  The requester's `focus` (agent text) is included only as a quoted, sanitised (control chars
+  stripped) block capped at 2000 chars.
+- **Read-only, best effort, per provider.** New `LaunchPlan` option `reviewCompanion: true` (PR
+  2), mapped per provider and **verified live** per provider, including that MCP tool calls still
+  work:
+  - Claude: a `permissions.deny` list in the session's `--settings` file for
+    Edit/Write/NotebookEdit and Bash patterns that write remotely (`git push`, `gh pr review`,
+    `gh pr comment`, `gh api` with `-X POST|PATCH|PUT|DELETE`). Not `--permission-mode plan` (it
+    can block MCP writes such as `reply_to_thread` and its ExitPlanMode dialog reads as
+    "needs you").
+  - Codex: `--sandbox read-only` is now viable because the companion needs no network (diffs and
+    threads come over MCP); verify MCP calls pass the sandbox.
+  - OpenCode: the env-based `openCodeReadOnlyEnv` used by the bounded runner
+    (`agent-tasks/runner.ts` ~:423).
+  - Where a provider can't enforce it, the brief states it and the UI says "read-only by
+    instruction" in the companion bar's tooltip. The plan does not claim enforcement it can't
+    deliver.
+- **Checkout on demand** (`checkout_review_head(review_id, pr?)`): main fetches the PR's own repo
+  into a **main-owned cache** (`userData/review-repos/<owner>/<repo>.git`, partial clone
+  `--filter=blob:none`, reused across reviews) and adds a detached worktree at the layer's head
+  under `userData/review-checkouts/<reviewId>/<pr>`. It never touches the user's bare repos, so no
+  worktree watcher or picker sees it, and it works for PRs from repos no window has open. Returns
+  the absolute path; the brief tells the agent to read files there by absolute path. Access is
+  granted at launch, not later: the review's checkout dir is created (empty) before the companion
+  starts and passed as an extra directory (Claude `--add-dir`; Codex's read-only sandbox reads
+  everywhere; OpenCode verified live), so a later checkout needs no relaunch and raises no
+  permission prompt. Removed on submit or discard, and swept at app start for reviews no longer
+  open.
+- **Dock.** `Terminal.svelte` in the room's bottom dock of the owning window; the Screen PRs view
+  unmounts workspace terminals (`App.svelte:269`) and owned sessions never appear in Sessions, so
+  it is the only mount; it claims the PTY on expand. `waiting` → "needs you", per provider.
+- **Questions → companion.** The delivery core of `thread-delivery.ts` (idle gate, draft rule,
+  typed submit, `UserPromptSubmit` header confirmation, arm-on-confirmation, Stop fallback) is
+  extracted so it serves agent threads and review threads alike. A review-thread prompt carries
+  only **system-composed text plus the user's own question**:
+  `[Review thread rt_… · #184 src/main/github/stack-base.ts:131 RIGHT] <user's question>`. Item
+  bodies (findings, other reviewers' comments) are **not** typed into the PTY; the companion reads
+  them with `list_threads` as tool data.
+- **Answers.** `reply_to_thread` dispatches by id prefix (`t_` agent thread, `rt_` review thread).
+  For review threads: the companion may reply to any thread of its review; the requester only to
+  threads with `askAuthorOpen`, and its reply closes that request. The Stop fallback attaches
+  `last_assistant_message` only to threads armed by a confirmed delivery in that turn, so a
+  requester's unrelated turn never lands in a thread.
+- **Redraft.** A typed request asks the companion to call `propose_draft(thread_id, text,
+  severity?)`, which stores `thread.proposal`. The user accepts (draft updated by a user op) or
+  keeps theirs. No agent tool writes a draft.
+- **Switching agent** = session end (above) + `companionAgent` updated; next Ask claims a new one.
 
-### 6. MCP tools (all in `mcp-server/index.mjs` + `mcp-bridge.ts`)
+### 6. MCP tools (`mcp-server/index.mjs` + `mcp-bridge.ts`)
 
 | Tool | Caller | Behaviour |
 |---|---|---|
-| `list_threads(status?, review_id?)` | any session | Agent threads of the caller **plus** review threads of reviews where the caller is companion or requester. Read-only; reading does not change delivery state. |
-| `reply_to_thread(thread_id, body)` | existing, extended | Dispatch by prefix; review threads append `companion` or `author` messages depending on the caller's role. |
-| `propose_draft(thread_id, text, severity?)` | companion only | Stores a draft proposal; never writes the draft. |
-| `request_review(pr, focus?)` | any session | Resolves the stack for `pr` (number in the caller's repo, or URL), creates or reuses the open Review for that stack, records the caller as requester, and lists it under a **Requested** group at the top of the Screen PRs queue with the section's attention badge. It does **not** switch the view (an agent never steals the user's view, CLAUDE.md "Layout"). Returns `{review_id}` immediately. |
-| `get_review(review_id)` | requester | Returns the submitted review: per-layer verdict and every posted/handed-back comment with PR, path, line, severity, text. |
+| `list_threads(status?, review_id?)` **(new)** | any session | Caller's agent threads plus review threads of reviews where the caller is companion or requester (requester: only threads with an open Ask-author request). Read-only. |
+| `reply_to_thread(thread_id, body)` (extended) | as §5 | Dispatch by prefix; role checks as §5. |
+| `get_review_diff(review_id, pr)` **(new)** | companion | The layer's review diff (isolated), size-capped with a truncation note. |
+| `checkout_review_head(review_id, pr?)` **(new)** | companion | §5; returns the path. |
+| `propose_draft(thread_id, text, severity?)` **(new)** | companion | Stores a proposal; never writes the draft. |
+| `request_review(pr, focus?)` **(new)** | any session | Resolves the stack (number in the caller's repo, or URL), creates or reuses the **open** Review for that stack, records requester session + window, lists it under **Requested** at the top of the Screen PRs queue with the section's attention badge. Does **not** switch the view (CLAUDE.md "Layout"). Returns `{review_id}` at once. |
+| `get_review(review_id)` **(new)** | requester | The latest submission: per-layer verdict, state, and every comment (PR, path, line, severity, text). |
 
-Requested reviews live in main (they are `Review` rows with a requester), so the queue renders
-them from the review store on every client; no per-workspace listener is involved (the existing
-`show_panel`/`show_diff`/`open_worktree` consumers live in `SessionWorkspace.svelte` and do nothing
-while Screen PRs is showing). A requested PR may not be in the screened queue (filter, cutoff, or
-the user isn't a requested reviewer of their own agent's PR), so main fetches its card on demand
-(new `screenprs:open-pr`, same card shape and review diff as screening).
+Requested reviews are `Review` rows with a requester, so every client renders them from the
+review store; no per-workspace listener is involved. A requested PR may not be in the screened
+queue (filter, cutoff, not a requested reviewer), so main fetches its card on demand
+(`screenprs:open-pr`, same card shape and review diff as screening).
 
-### 7. Hand-back and Ask author
+### 7. Submit and posting
 
-- **Submit dialog** (replaces `ReviewComposer`/`ConfirmReviewModal` on desktop; reuses its
-  anchor-check and fold-reason display): one block per layer with verdict, drafts and fold
-  warnings. With a requester: destination toggle *Send to <session label>* (default on) and
-  *Also post to GitHub* (default off). Without a requester: GitHub only.
-- **Hand-back delivery:** a typed prompt through the generalised delivery core (user-submitted
-  semantics, not the agent bus, which caps at 8000 chars, needs a `from` session and rate-limits),
-  e.g. `[Review r_… submitted] #183 approve · #184 changes requested (2 comments) · #185 comment
-  (1). Call get_review("r_…") for the comments.` Short, so no size limit applies; the payload sits
-  behind `get_review`.
-- **Ask author:** a thread action next to Ask, only when the requester session is alive. Delivers
-  `[Review thread rt_…] Question from the reviewer: …` to the requester; its `reply_to_thread`
-  lands as an `author` message in the private conversation.
-- **Requester gone** (closed before submit): *Send to session* disabled with a reason; GitHub and
-  "copy review as markdown" remain.
+- **Dialog** (replaces `ReviewComposer` on desktop; `ConfirmReviewModal` stays for the queue's
+  quick approve, `ScreenPrsQueue.svelte:9`): one block per layer with verdict, drafts, fold
+  warnings. With a requester: *Send to <session>* (default on) and *Also post to GitHub* (default
+  off); without: GitHub.
+- **GraphQL posting** (new `main/github/review-graphql.ts`), per layer:
+  1. Find or create the viewer's **pending** review on the PR (`addPullRequestReview` with
+     `commitOID` = the head the user read). GitHub allows one pending review per user per PR: if
+     one exists that SimpleEdit didn't create (`reviewNodeId` unknown), stop and ask (use it /
+     cancel), never silently merge into it.
+  2. Add line drafts as threads (`addPullRequestReviewThread`: path, line, side, start*), replies
+     with `addPullRequestReviewThreadReply` (thread node id). Severity is rendered as a
+     conventional-comment prefix (`**blocking:**`) by the payload builder.
+  3. `submitPullRequestReview(event)`.
+  - **Idempotent retries:** the pending review is invisible until submit, its id is recorded in
+    the submission before anything is added, and each added item's id goes into
+    `postedCommentIds` as it lands. A retry resumes the same pending review and adds only what's
+    missing; a submitted review is never re-submitted. A timeout leaves `state: unknown` and the
+    retry first re-reads the pending review. Drafts are cleared per item (`clear-posted` with the
+    ids that landed).
+  - **Anchor rules carry over:** the existing `resolveAnchor` / `anchorsForHead` / LEFT-on-isolated
+    fold rules run before step 2; a thread GitHub rejects folds into the review body with its
+    file:line and snippet, like today's 422 path. Unit tests port the REST cases.
+  - **Spike first (start of PR 2):** confirm against a scratch PR that replies attach to the
+    pending review, fold-on-error works per item, and `commitOID` pins as REST `commit_id` does.
+    If any of these fails, fall back to REST (create review, then replies via
+    `POST /pulls/{n}/comments/{id}/replies`) with the same per-item posted state.
+- **The phone posts through the same main path** (`screenprs:submit-review` grows a `reviewId`),
+  so it inherits all of the above; no posting logic lives in a client.
+- **Hand-back** (to the requester): a typed prompt through the delivery core, system-composed
+  only: `[Review r_… submitted] #183 approve · #184 changes requested (2 comments) · #185 comment
+  (1). Call get_review("r_…") for the comments.` Delivery is confirmed like any thread prompt; a
+  failure shows on the submission with Retry.
+- **Ask author**: a thread action, shown only while the requester session is alive; sets
+  `askAuthorOpen`, delivers `[Review thread rt_… · question for the author] <user's question>`.
+- **Requester gone:** *Send to session* disabled with the reason; GitHub and "copy review as
+  markdown" remain.
+- After a successful submission the review is `submitted`; the companion is ended and the
+  checkout removed. A later `request_review` for the same stack opens a new review that links the
+  previous one.
 
-### 8. Room UI (desktop)
+### 8. Return visits
 
-New `components/review/`: `ReviewRoom.svelte` (shell: stack map, document, outline, bottom bars),
-`StackMap`, `LayerSection` (overview/deep tools, tour or path-order diff via `UnifiedDiffView`),
-`ReviewThreadCard` (item, conversation, ask row with chips, draft box, Draft/Done),
-`ReviewOutline` (filters Open / To post / Done / Started by me / All, reading progress),
-`CompanionDock`, `SubmitReviewsModal`. `ScreenPrsView` renders `ReviewRoom` instead of
-`PrDetail` on desktop; the phone's `web/PrDetail.svelte` is untouched. *Discuss with Agent* is
-removed from desktop. Return-visit banner uses `compareDiff(lastSeenHead, head)` per layer;
-anchor `headSha` ≠ current head → re-resolve via `resolveAnchor`, else `outdated`.
+- `lastSeenHead[pr]` is set when the user opens a layer, and **advances** when they submit or
+  dismiss the "new commits" banner (*Got it*), never by scrolling.
+- The banner uses the compare API's `status` / `ahead_by` between `lastSeenHead` and the head:
+  `ahead` → "N new commits since you last looked" + *Show only the new changes* (the compare diff);
+  `diverged` or 404 (force-push dropped the old head) → "History was rewritten since you last
+  looked", no interdiff.
+- Line threads whose `headSha` ≠ current head are re-resolved (`resolveAnchor` on the new review
+  diff, snippet + context); unresolved → `outdated`, shown with their original lines.
 
-## Delivery: 3 stacked PRs in this worktree (`gh stack`)
+### 9. Room UI (desktop)
 
-1. **Review model & threads** — migration, `Review`/`ReviewThread` store + ops + IPC (validated),
-   finding keys + materialisation, stack resolution, GitHub review-thread import, `PrReviewComment`
-   `threadId`/`severity`/`inReplyTo`, delivery-core extraction, `list_threads`, `reply_to_thread`
-   dispatch, `propose_draft`. Unit tests; no UI change.
-2. **Review Room UI + companion** — components above, overview reading-order contract, companion
-   session ownership + launch + detached worktree + dock, submit-per-layer incl. reply posting,
-   return visits, removal of desktop Discuss/old composer. Browser tests for components.
-3. **`request_review`, hand-back, Ask author** — Requested group in the queue, open-by-URL, requester
-   recording, submit destinations, `get_review`, Ask author.
+New `components/review/`: `ReviewRoom.svelte` (stack map, document, outline, bottom bars),
+`StackMap`, `LayerSection` (overview / deep-review tools, tour or path-order diff via
+`UnifiedDiffView`), `ReviewThreadCard` (item, conversation, ask row + chips, draft box,
+Draft/Done; reads `readSeq` while on screen like `InlineThread`), `ReviewOutline` (Open / To post /
+Done / Started by me / All, reading progress), `CompanionDock`, `SubmitReviewsModal`.
+`ScreenPrsView` renders `ReviewRoom` instead of `PrDetail` on desktop; desktop *Discuss with
+Agent* is removed.
 
-PR 1 and 2 are coupled but large; splitting them keeps the first reviewable without UI noise.
+### 10. Phone (PR 4)
+
+- Queue (`PrBoard`, now stack-aware via `resolveStack` and showing **Requested**) → the room as
+  one scrolling page: stack map, layers, tour/diff (`MobileDiff` with `diff-threads.ts` row
+  mapping), thread cards, outline behind a button, submit sheet with per-layer verdicts.
+- **No terminal.** Ask works (delivery is main-side; the companion lives in a desktop window).
+  If no desktop window can host a companion (none open for the project), Ask is disabled with the
+  reason. The bar shows status and "needs you" (with "answer on the Mac").
+- The phone's old `PrDetail` + `DiscussSheet` are replaced. Socket payloads stay small: threads
+  without diffs, the diff fetched per layer (`screenprs:pr-diff`), the "unknown outcome" latch
+  extended to submissions.
+
+## Delivery: 4 stacked PRs in this worktree (`gh stack`)
+
+1. **Model & threads** — migration; `Review`/`ReviewThread` store, ops, parsers, broadcast;
+   `Session.owner` + `isOwned` + `claimCompanion` (so PR 1's role checks are real, not
+   requester-only); finding materialisation; `resolveStack`; GitHub thread import + mapping;
+   draft fields + parser changes; delivery-core extraction; MCP `list_threads`,
+   `reply_to_thread` dispatch, `get_review_diff`, `propose_draft`. No UI change.
+2. **Room UI + companion + posting** — GraphQL spike first; components; overview reading-order
+   contract; companion launch, `reviewCompanion` launch option per provider,
+   `checkout_review_head` + cache, dock, restore/Resume, session-end handling; submit dialog +
+   GraphQL posting; return visits; removal of desktop Discuss / `ReviewComposer` (quick approve
+   keeps `ConfirmReviewModal`).
+3. **`request_review`, hand-back, Ask author** — Requested group, `screenprs:open-pr`, requester
+   recording, destinations, `get_review`, Ask author.
+4. **Phone** — §10.
 
 ## Verification
 
-- Unit (vitest): finding-key stability across re-runs, anchor re-resolution/outdated, stack
-  resolution across buckets, IPC parsers reject malformed payloads, `reply_to_thread` role checks,
-  `list_threads` scoping, hand-back prompt formatting, severity prefixing, reply posting order.
-- Browser tests (headless): thread card states, draft/proposal flow, outline filters, submit
-  defaults per layer, dock collapsed/needs-you.
-- E2E runs in CI only (never locally).
-- Live checks before ready-for-review (by the user): a real stack on GitHub; companion on each
-  provider; permission prompt in the dock; posting with a reply to an existing thread; hand-back
-  into an idle Claude and an idle Codex session; return visit after a force-push.
+- **Unit (vitest):** finding matching across a push that shifts lines and an LLM re-run that
+  rewords titles (no thread with a conversation/draft lost); anchor re-resolution → outdated;
+  `resolveStack` across buckets incl. merged parents; GitHub thread mapping onto an isolated diff
+  (LEFT, lower-layer file, outdated → PR-level); pagination; every `parseReviewOp` /
+  `review:*` parser rejects malformed and oversized payloads; `claimCompanion` races;
+  `reply_to_thread` role checks incl. requester on a non-Ask-author thread (refused) and an
+  unrelated requester turn (not attached); `list_threads` scoping; session end → `unanswered`;
+  GraphQL posting: retry after partial add, timeout → unknown → resume, pre-existing foreign
+  pending review → stop, fold-on-error per item, severity prefix; hand-back formatting;
+  focus sanitising/capping; compare `ahead`/`diverged`/404.
+- **Browser (headless):** thread card states, draft/proposal flow, outline filters, per-layer
+  verdict defaults, dock collapsed / needs-you / other-window state.
+- **E2E (CI only, never locally):** open room → Ask → reply lands in the right thread (stub
+  agent); submit per layer with a reply (mocked `gh`); restore with an owned companion → Resume in
+  the dock, not in Sessions; two windows on one review (single companion, Ask from the second);
+  `request_review` from a session lists the review without switching the view; hand-back reaches
+  the requester.
+- **Live (user, before ready):** a real stack; companion on Claude, Codex, OpenCode each with a
+  permission prompt in the dock and read-only checks (edit refused, MCP calls work,
+  `checkout_review_head` readable); GraphQL post with a reply to an existing thread; hand-back
+  into idle Claude and idle Codex sessions; return visit after a force-push; phone Ask + submit.
 
 ## Docs
 
-Fold the durable parts into `CLAUDE.md` (new "Review Room" section: model, ownership, MCP tools,
-delivery rules) and delete this plan in the branch's last commit.
+Fold the durable parts into `CLAUDE.md` (new "Review Room" section: model, ownership + windows,
+delivery and role rules, MCP tools, posting, checkout cache) and delete this plan in the branch's
+last commit.
 
 ## Open questions
 
-- **Q1 — explicit escalation.** The prototype starts the companion on "diff context" and offers
-  *Give companion a read-only checkout*. Agents launch with a working directory anyway, and cost
-  is now the user's job, so the plan always uses the detached PR-head worktree and drops the
-  escalation step. Keep it dropped?
-- **Q2 — reply posting.** Replies to existing GitHub threads post after the review as separate
-  comments (no batching in REST). Acceptable, or do we want GraphQL pending-review replies so
-  everything lands in one review?
-- **Q3 — phone.** Out of scope here; the model and IPC are built for it. Confirm the phone keeps
-  the old PrDetail (and its Discuss) until a follow-up.
+None blocking. The GraphQL spike (§7) can still send posting back to REST.
