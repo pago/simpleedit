@@ -125,7 +125,7 @@ Submission    { at, destination: {session: boolean, github: boolean},
 ReviewThread  { id ('rt_…'), reviewId, anchor, origin, status: 'open'|'done', outdated: boolean,
                 closeReason?: 'fixed'|'not-a-problem'|'intentional'|'wont-fix', carriedFrom?,
                 readSeq: number, askAuthorOpen: boolean,
-                messages: ReviewMessage[], draftCommentId?, proposal?: {text, severity?} }
+                messages: ReviewMessage[], proposal?: {text, severity?} }
 anchor  =  { kind: 'stack' } | { kind: 'pr', pr }
          | { kind: 'line', pr, headSha, path, side: 'LEFT'|'RIGHT', startLine, endLine,
              snippet, before, after }
@@ -143,8 +143,8 @@ ReviewMessage { seq, author: 'user'|'companion'|'author'|'reviewer'|'tool', body
   states, submissions, materialisation) is a main function, never an op. Every `review:*` payload
   is parsed as untrusted (the phone is a remote client).
 - **The draft stays in the draft store, and `draft.threadId` is the source of truth** for the
-  link (`ReviewThread.draftCommentId` is derived on read, never stored, so SQLite and the JSON
-  draft file can't disagree). Deleting the draft unlinks the thread; deleting a thread removes its
+  link (a thread carries no `draftCommentId`; clients derive it from `draft.threadId`, so SQLite
+  and the JSON draft file can't disagree). Deleting the draft unlinks the thread; deleting a thread removes its
   draft. A whole-stack thread's draft lives in the picked layer's draft; changing the layer is one
   main function that adds to the new layer's draft, then removes from the old (a crash between
   leaves two copies, never none; the next load drops the older one by `threadId`). A thread's draft is a `PrReviewComment` with new fields
@@ -167,7 +167,7 @@ ReviewMessage { seq, author: 'user'|'companion'|'author'|'reviewer'|'tool', body
 ### 2. Stacks
 
 `groupStacks` (`shared/screenprs.ts:635`) is per bucket, so it splits stacks. New
-`resolveStack(card, allCards)` walks `baseRefName`/`headRefName` across all cards and falls back to
+`resolveStack(card, allCards, defaultBranch)` walks `baseRefName`/`headRefName` across all cards and falls back to
 `gh pr list --head <base> --state all` for parents outside the queue (merged/closed included).
 Each layer's diff is `getReviewDiff`; its isolation warning shows on the layer.
 
@@ -175,7 +175,7 @@ Each layer's diff is `getReviewDiff`; its isolation warning shows on the layer.
 
 New `main/github/review-threads.ts`: GraphQL `pullRequest.reviewThreads` (isResolved, isOutdated,
 path, line, originalLine, diffSide, comments{id, databaseId, author, body}), **paginated** (threads
-and comments, `first: 100` + cursors), per layer, cached by head SHA. GitHub's coordinates refer to
+and comments, `first: 100` + cursors), per layer, one fetch shared for 60 s (failures not kept; see PR 1 notes). GitHub's coordinates refer to
 GitHub's whole-stack diff, so each thread is **mapped through `commentableLines` of the review
 diff**; a thread that doesn't map (lower-layer file, LEFT side on an isolated diff, outdated)
 becomes a PR-level thread with "on code outside this layer's diff" and its original
@@ -464,26 +464,67 @@ Agent* is removed. The outline is a right column at ≥1200px and a drawer below
 
 ### PR 1 implementation notes
 
+Built by Codex, then reviewed and corrected (2026-10-16). Where these differ from §1–§6, these win.
+
 - `ReviewMessage` has a stable `rm_…` id in addition to `seq`. The shared delivery core needs an
   idempotent cross-store delivery/retry reference; `seq` remains the display order within a thread.
 - `claimCompanion` reserves the future terminal id inside the same compare-and-set that records the
-  winning window. PR 2 consumes that id when it asks the renderer to create the owned session and
-  clears only the matching claim if creation fails.
+  winning window, and writes it to an indexed `reviews.companion_session_id` column too: the
+  delivery core asks "does this session have review mail" on every hook and keystroke, so that is
+  one indexed query, never a load of every review. PR 2 consumes the reserved id when it asks the
+  renderer to create the owned session and clears only the matching claim if creation fails.
 - Restoring a renderer session currently mints a new terminal id. PR 1 persists `Session.owner`, but
-  PR 2 must rebind the surviving review claim when its owned placeholder is resumed; owner metadata
-  alone does not repair the old `Review.companion.sessionId`.
+  PR 2 must rebind the surviving review claim (`companion` **and** `companion_session_id`) when its
+  owned placeholder is resumed; owner metadata alone does not repair it. Main decides "is a
+  companion" from the review store (push, delivery), the renderer from `Session.owner`; the rebind
+  is what keeps the two agreeing.
 - The current app has no per-session command-palette provider or session-cycle shortcut. PR 1 filters
   the concrete user-facing surfaces that exist (sidebar, attention, visited workspaces, close
-  fallback, empty state, phone snapshot and push) and leaves no invented navigation path behind.
+  fallback, empty state, editor/diff *Discuss with Agent* targets, phone snapshot and push).
+  Remote clients may not call `agent-bus:sync` / `agent-bus:spawned`, so a phone can't forge a
+  peer's `owner`.
+- **`ReviewThread` carries no `draftCommentId`.** `draft.threadId` in the draft store is the only
+  record, and clients read the link from the draft mirror they already hold (`screenprs:draft-changed`
+  updates it). Enriching the snapshot alone left `review:changed` events and draft edits disagreeing
+  with it. `list_threads` still adds `draftCommentId` to its tool output.
+- `ReviewChange` is `ReviewRecordChange | ReviewThreadChange`.
 - `get_review_diff` accepts a cached diff only when both the recorded head and current base key
   match. A live fetch verifies the head first and then refuses the result if the head or base moved
   while loading, rather than labelling mutable content with the review's stored SHA.
 - A finding closed with a reason is retained as outdated when it disappears, even without a
   conversation, draft or proposal. Otherwise a later re-report could not attach to that reasoned
   thread as required.
-- MCP bridge credentials are now per session (the window bridge keeps a master credential only for
-  internal/tests), so tool calls and hooks cannot name a sibling terminal id to bypass persisted
-  review roles.
+- **Matching without a snippet** (PR-level findings, lines outside the diff): the same `key`, else
+  the one title with clearly the highest word overlap (≥ 0.5, no tie). With a snippet, the §1 rule.
+- **Pre-existing** = the cited file is outside the layer's diff, or the cited lines exist and none
+  is an added row. A finding citing no file or no line is the PR's own (`preExisting: false`).
+- Triage maps `issue` → consider, `nitpick`/`suggestion` → nit; `question` proposes no severity.
+- `materialiseFindings` refuses findings for a head the review doesn't record and runs in one
+  transaction (`transaction` in `db.ts` joins an enclosing one). `setReviewLayerHead` records a
+  pushed head; re-resolving the threads left on the old head is §8 (PR 2).
+- **Carry-over** copies messages as history: one still `held`/`sending`/`delivered` becomes
+  `unanswered` ("asked in round n"), so it is never typed into the next companion. `askAuthorOpen`
+  is reset. A line anchor that can't be re-placed keeps its old lines and is `outdated` (§8).
+- **`resolveStack(card, allCards, defaultBranch)`** stops at the default branch (a PR based on it is
+  the bottom layer). The `gh pr list --head` fallback ignores fork PRs (`--head` matches the branch
+  name of any owner) and prefers open, then merged, then closed parents.
+- **GitHub import** is not cached per head for ever: a fetch is shared for 60 s and a failed one is
+  dropped. Imports of one review run one at a time; each run adds new threads (root + replies in
+  one transaction) and appends new replies and the resolved flag to known ones. Threads whose root
+  comment has no REST id are skipped (`rootCommentId` is always that id, from `fullDatabaseId`:
+  `databaseId` is an Int32 newer ids outgrow; replies need it). Bodies over the 64 KB message cap are cut with a note; empty ones read "(empty comment)".
+- An implicit `Stop` answer over the message cap is cut with a note, and a failed append marks that
+  thread `unanswered` instead of leaving the rest of the turn armed.
+- A stack draft moved between layers gets a new comment id each move (the old one is tombstoned
+  on the layer it left, so moving back would otherwise be refused).
+- **`authorBriefing` is not stored yet.** It has no parser or caps until PR 3 (§4a), so PR 1 has
+  neither the field nor the column; PR 3 adds both (a new migration) with the parser.
+- MCP bridge credentials are per session and revoked when the session exits (the window bridge
+  keeps a master credential only for internal callers and tests). This binds a request to one
+  terminal id; it is **not** a secret from sibling agents, which run as the same user and can read
+  each other's `$TMPDIR/simpleedit-mcp-<id>.json`. Role checks are against persisted roles, but a
+  determined sibling could act as a companion. Acceptable for a local, single-user app; if PR 2
+  wants more, the config file has to move out of reach of agents, which no provider supports today.
 
 ## Verification
 
