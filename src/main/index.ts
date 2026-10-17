@@ -65,11 +65,15 @@ import {
   addSubscription,
   configurePush,
   deviceIdFor,
+  forgetWorkflowAlerts,
   getPushStatus,
   handleAgentStatus,
   handleThreadReply,
+  handleWorkflowAlert,
+  rearmWorkflowAlert,
   removeAllSubscriptions,
   removeSubscription,
+  stopWorkflowAlerts,
 } from './remote/push'
 import { isPresentNow, startPresenceTracking, stopPresenceTracking } from './remote/presence'
 import { chooseAttachWindow, projectsOf, type AttachRequest, type WindowCandidate } from './remote/attach-target'
@@ -106,8 +110,7 @@ import { createSessionOnce, resolveSessionCreate, unknownModelReason, type Model
 import { applyBacklogOps, loadBacklog, parseBacklogOps, type Origin } from './backlog-store'
 import { parseStartRequest, startBacklogItem } from './backlog-start'
 import { closeDb } from './db'
-import { initWorkflows } from './workflow-host'
-import type { WorkflowEngine } from './workflow-engine'
+import { initWorkflows, type WorkflowHost } from './workflow-host'
 import { applyReviewOp, isReviewCompanionSession, loadReviews } from './review-room-store'
 import { isReviewHandBackId, isReviewMessageId, parseReviewOpRequest, type ReviewChange, type ReviewSnapshot } from '../shared/review-room'
 import { prUrlInRepo } from './github/repo-remote'
@@ -463,7 +466,8 @@ configurePush({
     getWindowSessions(windowId).find((session) => session.terminalId === terminalId)?.label ?? null,
   windowOf: (terminalId) =>
     liveWindowContents().find((wc) => getWindowSessions(wc.id).some((s) => s.terminalId === terminalId))?.id ?? null,
-  // An owned session (a review companion, a workflow worker) asks for the user through its owner's surface.
+  // An owned session (a review companion, a workflow worker) asks for the user through its owner's
+  // surface; a workflow's is its own push (`workflow-host.ts`).
   ignoreSession: (terminalId) => isReviewCompanionSession(terminalId) || getPeer(terminalId)?.owner !== undefined,
   onStatusChange: broadcastPushStatus,
 })
@@ -739,7 +743,7 @@ function createSettingsWindow(): BrowserWindow {
 
 // ── IPC registration (global, routes per sender) ──────────
 
-let workflows: WorkflowEngine | null = null
+let workflows: WorkflowHost | null = null
 
 function registerAllHandlers(): void {
   workflows = initWorkflows({
@@ -748,7 +752,8 @@ function registerAllHandlers(): void {
       const window = getWindowForContents(windowId)
       return window && !window.isDestroyed() ? window.webContents : null
     },
-    broadcast: broadcastToAllClients,
+    clients: allClients,
+    push: { alert: handleWorkflowAlert, rearm: rearmWorkflowAlert, forget: forgetWorkflowAlerts },
     localModels: MODEL_CATALOG.ollama,
     async unknownModel(provider, model) {
       if (provider === 'codex') return unknownModelReason({ provider: 'codex', model }, MODEL_CATALOG)
@@ -1718,6 +1723,8 @@ app.on('before-quit', () => {
   try { cancelAllReviews() } catch { /* ignore */ }
   try { cancelAllTours() } catch { /* ignore */ }
   try { stopScreeningSchedule() } catch { /* ignore */ }
+  try { workflows?.stop() } catch { /* ignore */ }
+  try { stopWorkflowAlerts() } catch { /* ignore */ }
   try { cancelAllScreening() } catch { /* ignore */ }
   try { cancelAllDeepReviews() } catch { /* ignore */ }
   try { cancelAllOverviews() } catch { /* ignore */ }

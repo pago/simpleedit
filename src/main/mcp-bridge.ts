@@ -1051,6 +1051,7 @@ async function applyRoutedSignal(
       terminalId,
       precise: true,
       ...(signal.message ? { message: signal.message } : {}),
+      ...(signal.notificationType ? { notificationType: signal.notificationType } : {}),
     })
     noteNotification(terminalId, signal.notificationType ?? null, signal.message)
   }

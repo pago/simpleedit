@@ -418,6 +418,8 @@ export interface AgentStatusEvent {
   terminalId: string
   precise: boolean
   message?: string
+  /** A `waiting` from Claude's `Notification` hook: its kind, e.g. `idle_prompt` or `permission_prompt`. */
+  notificationType?: string
 }
 
 export interface AgentEventMap {

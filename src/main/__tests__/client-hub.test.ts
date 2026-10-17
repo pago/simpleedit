@@ -40,6 +40,18 @@ describe('ClientHub', () => {
     expect(socket.send).toHaveBeenCalledWith('screenprs:card', { card: { diff: '' } })
   })
 
+  it('sends a remote-only payload to socket transports and never the window', () => {
+    const windowTransport = makeTransport()
+    const socket = { ...makeTransport(), clientKey: 'w1.3' }
+    const hub = new ClientHub(1, windowTransport)
+    hub.register(socket)
+
+    hub.sendRemote('workflow:changed', { slim: true })
+
+    expect(windowTransport.send).not.toHaveBeenCalled()
+    expect(socket.send).toHaveBeenCalledWith('workflow:changed', { slim: true })
+  })
+
   it('fans one send out to every registered transport', () => {
     const a = makeTransport()
     const b = makeTransport()

@@ -12,6 +12,8 @@ const state = vi.hoisted(() => ({
   configDir: '',
   handlers: new Map<string, Handler>(),
   tools: null as null | import('../mcp-bridge').WorkflowTools,
+  out: { split: [] as Array<{ local: unknown; remote: unknown }>, sent: [] as unknown[], remote: [] as unknown[] },
+  push: { alerts: [] as Array<{ alert: import('../remote/push').WorkflowAlert; quiet: boolean }>, rearmed: [] as string[], forgotten: [] as string[] },
 }))
 
 vi.mock('../config-dir', () => ({ configDir: () => state.configDir }))
@@ -29,9 +31,11 @@ vi.mock('../mcp-bridge', () => ({
 
 import { openDb, useDbForTests } from '../db'
 import { resetBus, syncPeers, type Peer } from '../agent-bus'
+import { clearAgentStatusWatchers, sendAgentStatus } from '../agent-status'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
 import { getWorkflow, saveWorkflow } from '../workflow-store'
-import { initWorkflows } from '../workflow-host'
+import { initWorkflows, type WorkflowHost, type WorkflowHostDeps } from '../workflow-host'
+import type { WorkflowList, WorkflowSnapshot } from '../../shared/workflow'
 import type { WorkflowToolName } from '../mcp-bridge'
 
 const P = '/repo/project.git'
@@ -45,14 +49,26 @@ function peer(terminalId: string, extra: Partial<Peer> = {}): Peer {
   return { terminalId, label: terminalId, provider: 'claude', worktreePath: '/wt/main', status: 'idle', ...extra }
 }
 
-function init(): void {
-  initWorkflows({
+function init(extra: Partial<WorkflowHostDeps> = {}): WorkflowHost {
+  return initWorkflows({
     projectOf: (windowId) => (windowId === WIN ? P : windowId === OTHER_WIN ? OTHER : null),
     windowContents: () => null,
-    broadcast: () => {},
+    clients: {
+      id: -1,
+      send: (_channel, data) => state.out.sent.push(data),
+      sendSplit: (_channel, local, remote) => state.out.split.push({ local, remote }),
+      sendRemote: (_channel, data) => state.out.remote.push(data),
+      isDestroyed: () => false,
+    },
+    push: {
+      alert: (alert, options) => state.push.alerts.push({ alert, quiet: options?.quiet === true }),
+      rearm: (key) => state.push.rearmed.push(key),
+      forget: (workflowId) => state.push.forgotten.push(workflowId),
+    },
     localModels: async () => [],
     unknownModel: async (provider, model) => (model.startsWith('bogus') ? `${provider} doesn't offer the model “${model}”.` : null),
     killTerminal: () => {},
+    ...extra,
   })
 }
 
@@ -76,6 +92,9 @@ beforeEach(() => {
   state.configDir = mkdtempSync(join(tmpdir(), 'workflow-host-'))
   state.handlers.clear()
   state.tools = null
+  state.out = { split: [], sent: [], remote: [] }
+  state.push = { alerts: [], rearmed: [], forgotten: [] }
+  clearAgentStatusWatchers()
   useDbForTests(openDb(':memory:'))
   resetBus()
   syncPeers([peer('lead'), peer('bystander')], WIN)
@@ -347,3 +366,261 @@ describe('review loops', () => {
   })
 })
 
+
+describe('the phone', () => {
+  const PHONE = { id: WIN, clientKey: 'phone-1' }
+
+  async function runningWorker(): Promise<string> {
+    const { workflowId } = await createDraft()
+    const wf = getWorkflow(workflowId)!
+    wf.status = 'running'
+    Object.assign(wf.tasks[0]!, { state: 'running', attempt: 1, worktreePath: '/wt/main' })
+    saveWorkflow(wf)
+    syncPeers([peer('lead'), peer('bystander'), peer('worker', { owner: { kind: 'workflow', workflowId, taskId: 'a', attempt: 1 } })], WIN)
+    return workflowId
+  }
+
+  const lastSplit = (): { local: WorkflowSnapshot; remote: WorkflowSnapshot } => state.out.split.at(-1) as { local: WorkflowSnapshot; remote: WorkflowSnapshot }
+
+  it('may not start, cancel or dismiss a workflow', async () => {
+    const { workflowId } = await createDraft()
+    for (const channel of ['workflow:start', 'workflow:cancel', 'workflow:dismiss']) {
+      expect(() => invoke(channel, PHONE, workflowId), channel).toThrow(/not available to remote clients/)
+    }
+    expect(getWorkflow(workflowId)!.status).toBe('draft')
+  })
+
+  it('workflow:list answers a phone slim, with statuses and the lead, and a window whole', async () => {
+    const { workflowId } = await createDraft()
+    const phone = invoke('workflow:list', PHONE) as WorkflowList
+    expect(phone.workflows[0]).toMatchObject({ slim: true, statuses: { lead: 'idle' }, leadTerminalId: 'lead', leadWindowId: WIN })
+    expect(phone.workflows[0]!.workflow.tasks[0]!.brief).toBe('')
+    const desk = invoke('workflow:list', { id: WIN }) as WorkflowList
+    expect(desk.workflows[0]!.workflow.id).toBe(workflowId)
+    expect(desk.workflows[0]!.slim).toBeUndefined()
+    expect(desk.workflows[0]!.workflow.tasks[0]!.brief).toBe('Do a')
+  })
+
+  it('broadcasts whole to windows and slim to phones in one split send', async () => {
+    await createDraft()
+    const { local, remote } = lastSplit()
+    expect(local.slim).toBeUndefined()
+    expect(local.statuses).toBeUndefined()
+    expect(local.workflow.tasks[0]!.brief).toBe('Do a')
+    expect(remote).toMatchObject({ slim: true, statuses: { lead: 'idle' }, leadTerminalId: 'lead', leadWindowId: WIN })
+    expect(remote.workflow.tasks[0]!.brief).toBe('')
+  })
+
+  it('sends a status-only change to phones alone, throttled to the latest', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      const workflowId = await runningWorker()
+      const owner = { kind: 'workflow' as const, workflowId, taskId: 'a', attempt: 1 }
+      vi.advanceTimersByTime(1_000)
+      const splits = state.out.split.length
+      const remotes = state.out.remote.length
+      syncPeers([peer('lead'), peer('worker', { owner, status: 'running' })], WIN)
+      syncPeers([peer('lead'), peer('worker', { owner, status: 'waiting' })], WIN)
+      expect(state.out.remote).toHaveLength(remotes + 1)
+      syncPeers([peer('lead'), peer('worker', { owner, status: 'idle' })], WIN)
+      expect(state.out.remote).toHaveLength(remotes + 1)
+      vi.advanceTimersByTime(1_000)
+      expect(state.out.split).toHaveLength(splits)
+      expect(state.out.remote).toHaveLength(remotes + 2)
+      expect((state.out.remote.at(-1) as WorkflowSnapshot).statuses).toEqual({ lead: 'idle', worker: 'idle' })
+      // Unchanged since: nothing more.
+      syncPeers([peer('lead'), peer('worker', { owner, status: 'idle' })], WIN)
+      vi.advanceTimersByTime(5_000)
+      expect(state.out.remote).toHaveLength(remotes + 2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  const CLIENT = { id: WIN, send: () => {}, isDestroyed: () => false }
+  const dialog = (terminalId: string): void =>
+    sendAgentStatus(CLIENT, { terminalId, worktreePath: '/wt/main', status: 'waiting', precise: true, message: 'Claude needs your permission to use Bash', notificationType: 'permission_prompt' })
+  const idlePrompt = (terminalId: string): void =>
+    sendAgentStatus(CLIENT, { terminalId, worktreePath: '/wt/main', status: 'waiting', precise: true, message: 'Claude is waiting for your input', notificationType: 'idle_prompt' })
+  const status = (terminalId: string, s: 'running' | 'idle'): void => sendAgentStatus(CLIENT, { terminalId, worktreePath: '/wt/main', status: s, precise: true })
+  const loud = () => state.push.alerts.filter((a) => !a.quiet)
+
+  it('alerts once a worker stops waiting on the user', async () => {
+    const workflowId = await runningWorker()
+    expect(state.push.alerts).toHaveLength(0)
+    state.tools!.turnEnded('worker')
+    expect(state.push.alerts).toEqual([
+      {
+        quiet: false,
+        alert: expect.objectContaining({
+          kind: 'waiting',
+          workflowId,
+          workflowTitle: 'Flow',
+          leadLabel: 'lead',
+          windowId: WIN,
+          items: [{ key: `${workflowId}/a#1`, taskId: 'a', taskTitle: 'Task a', note: expect.stringMatching(/Turn ended without report_result/) }],
+        }),
+      },
+    ])
+    state.tools!.turnStarted('worker')
+    expect(state.push.rearmed).toContain(`${workflowId}/a#1`)
+  })
+
+  it("leaves a worker's idle prompt after its Stop to the Stop's alert", async () => {
+    await runningWorker()
+    state.tools!.turnEnded('worker')
+    idlePrompt('worker')
+    expect(loud()).toHaveLength(1)
+  })
+
+  it('keys a dialog apart from the Stop, so a dialog then a Stop in one turn alerts twice', async () => {
+    const workflowId = await runningWorker()
+    dialog('worker')
+    expect(loud().map((a) => a.alert.items[0]!)).toEqual([{ key: `${workflowId}/a#1#p`, taskId: 'a', taskTitle: 'Task a', note: 'Claude needs your permission to use Bash' }])
+    status('worker', 'running')
+    expect(state.push.rearmed).toEqual([`${workflowId}/a#1#p`])
+    state.tools!.turnEnded('worker')
+    expect(loud().map((a) => a.alert.items[0]!.key)).toEqual([`${workflowId}/a#1#p`, `${workflowId}/a#1`])
+  })
+
+  it("asks whether a held-back item still waits: a dialog until it ends, a Stop until the next turn", async () => {
+    const workflowId = await runningWorker()
+    dialog('worker')
+    const dialogAlert = loud()[0]!.alert
+    expect(dialogAlert.pending!(`${workflowId}/a#1#p`)).toBe(true)
+    status('worker', 'running')
+    expect(dialogAlert.pending!(`${workflowId}/a#1#p`)).toBe(false)
+    state.tools!.turnEnded('worker')
+    const stopAlert = loud().at(-1)!.alert
+    expect(stopAlert.pending!(`${workflowId}/a#1`)).toBe(true)
+    state.tools!.turnStarted('worker')
+    expect(stopAlert.pending!(`${workflowId}/a#1`)).toBe(false)
+  })
+
+  it('does not alert for a dialog of a task waiting on the lead', async () => {
+    await runningWorker()
+    await call('report_result', { status: 'needs_lead', summary: 'Which API?' }, 'worker')
+    dialog('worker')
+    idlePrompt('worker')
+    expect(loud().filter((a) => a.alert.kind === 'waiting')).toEqual([])
+  })
+
+  it('does not alert for a task whose wait is on the lead, even once its judgment is gone', async () => {
+    const workflowId = await runningWorker()
+    const wf = getWorkflow(workflowId)!
+    Object.assign(wf.tasks[0]!, { state: 'waiting', note: 'Asks the lead: Which API?' })
+    wf.judgments = []
+    saveWorkflow(wf)
+    syncPeers([peer('lead'), peer('worker', { owner: { kind: 'workflow', workflowId, taskId: 'a', attempt: 1 } })], WIN)
+    dialog('worker')
+    expect(loud()).toEqual([])
+  })
+
+  it('counts a held lead-woken alert as pending while its judgment is open, read or not', async () => {
+    const workflowId = await runningWorker()
+    await call('report_result', { status: 'needs_lead', summary: 'Which API?' }, 'worker')
+    const woken = loud().find((a) => a.alert.kind === 'lead-woken')!.alert
+    const key = woken.items[0]!.key
+    const wf = getWorkflow(workflowId)!
+    wf.judgments = wf.judgments.map((j) => ({ ...j, delivered: true }))
+    saveWorkflow(wf)
+    expect(woken.pending!(key)).toBe(true)
+    wf.judgments = []
+    saveWorkflow(wf)
+    expect(woken.pending!(key)).toBe(false)
+  })
+
+  it('drops a pending phone update on stop', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      state.handlers.clear()
+      const host = init()
+      const workflowId = await runningWorker()
+      const owner = { kind: 'workflow' as const, workflowId, taskId: 'a', attempt: 1 }
+      const remotes = state.out.remote.length
+      syncPeers([peer('lead'), peer('worker', { owner, status: 'running' })], WIN)
+      host.stop()
+      vi.advanceTimersByTime(5_000)
+      expect(state.out.remote).toHaveLength(remotes)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  describe('in a loop', () => {
+    async function loopAt(rounds: unknown[], reviewers: number): Promise<string> {
+      const res = await call('create_workflow', { title: 'Flow', goal: 'g', tasks: [task('impl', { kind: 'loop', worktree: { branch: 'feat' }, reviewer: { brief: 'check' } })] })
+      const id = res.body['workflowId'] as string
+      const wf = getWorkflow(id)!
+      wf.status = 'running'
+      Object.assign(wf.tasks[0]!, { state: 'running', attempt: 1, worktreePath: '/wt/feat', reviewers, rounds })
+      saveWorkflow(wf)
+      const owner = { kind: 'workflow' as const, workflowId: id, taskId: 'impl', attempt: 1 }
+      syncPeers([peer('lead'), peer('worker', { owner }), peer('reviewer', { owner: { ...owner, review: 1 } })], WIN)
+      return id
+    }
+    const work = { summary: 'built', steered: false, at: 'a' }
+
+    it("ignores the worker's dialog while its change is in review, and alerts for the reviewer's", async () => {
+      const id = await loopAt([{ round: 1, review: 'running', reviewer: 1, work }], 1)
+      dialog('worker')
+      expect(loud()).toEqual([])
+      dialog('reviewer')
+      expect(loud().map((a) => a.alert.items[0]!.key)).toEqual([`${id}/impl#1/r1#p`])
+    })
+
+    it('ignores a finished reviewer, and alerts for the worker fixing its findings', async () => {
+      const id = await loopAt([{ round: 1, review: 'done', reviewer: 1, verdict: 'findings', findings: ['x'], work }, { round: 2, review: 'pending' }], 1)
+      dialog('reviewer')
+      expect(loud()).toEqual([])
+      dialog('worker')
+      expect(loud().map((a) => a.alert.items[0]!.key)).toEqual([`${id}/impl#1#p`])
+    })
+  })
+
+  it('ignores an imprecise waiting and any session that is not a current workflow worker', async () => {
+    await runningWorker()
+    const client = { id: WIN, send: () => {}, isDestroyed: () => false }
+    const before = state.push.alerts.length
+    sendAgentStatus(client, { terminalId: 'worker', worktreePath: '/wt/main', status: 'waiting', precise: false })
+    sendAgentStatus(client, { terminalId: 'bystander', worktreePath: '/wt/main', status: 'waiting', precise: true })
+    syncPeers([peer('lead'), peer('companion', { owner: { kind: 'review', reviewId: 'r_abcdefgh' } })], WIN)
+    sendAgentStatus(client, { terminalId: 'companion', worktreePath: '/wt/main', status: 'waiting', precise: true })
+    expect(state.push.alerts.slice(before).filter((a) => !a.quiet)).toEqual([])
+  })
+
+  it('spends quietly what already waited when this run first sees a workflow', async () => {
+    const { workflowId } = await createDraft()
+    const wf = getWorkflow(workflowId)!
+    wf.status = 'running'
+    Object.assign(wf.tasks[0]!, { state: 'waiting', attempt: 1, note: 'Turn ended without report_result: the worker may be asking you something.' })
+    saveWorkflow(wf)
+    state.push.alerts = []
+    init()
+    syncPeers([peer('lead'), peer('bystander')], WIN)
+    expect(state.push.alerts[0]).toMatchObject({ quiet: true, alert: { items: [{ key: `${workflowId}/a#1` }] } })
+    expect(state.push.alerts.slice(1).every((a) => a.alert.items.every((i) => i.key === `${workflowId}/a#1`))).toBe(true)
+  })
+
+  it('alerts when judgments reach the lead, never as waiting on the user', async () => {
+    const workflowId = await runningWorker()
+    await call('report_result', { status: 'needs_lead', summary: 'Which API?' }, 'worker')
+    const woken = state.push.alerts.filter((a) => a.alert.kind === 'lead-woken')
+    expect(woken).toHaveLength(1)
+    expect(woken[0]!.quiet).toBe(false)
+    const at = getWorkflow(workflowId)!.judgments[0]!.at
+    expect(woken[0]!.alert.items).toEqual([{ key: `${workflowId}/a@${at}`, taskId: 'a', taskTitle: 'Task a' }])
+    expect(state.push.alerts.filter((a) => a.alert.kind === 'waiting')).toEqual([])
+  })
+
+  it('forgets a dismissed workflow\'s alerts and tells phones with a slim copy', async () => {
+    const { workflowId } = await createDraft()
+    invoke('workflow:dismiss', { id: WIN }, workflowId)
+    expect(state.push.forgotten).toEqual([workflowId])
+    const { local, remote } = lastSplit()
+    expect(local).toMatchObject({ dismissed: true, workflow: { id: workflowId } })
+    expect(local.slim).toBeUndefined()
+    expect(remote).toMatchObject({ dismissed: true, slim: true, workflow: { id: workflowId } })
+    expect(remote.workflow.tasks[0]!.brief).toBe('')
+  })
+})

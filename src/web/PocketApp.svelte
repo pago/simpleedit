@@ -37,6 +37,13 @@
    * worktrees of a window the phone has left. The PRs tab is kept. Screen PRs
    * is the user's review queue on GitHub, not a project's, and review drafts
    * are main's, shared by every window.
+   *
+   * A workflow's Workflow screen sits on the Sessions stack, and a worker's
+   * terminal opens over it as an ordinary session entry. Workers are never in
+   * `session:list`, so their session objects come from the workflow mirror
+   * (`workerSessions`), and they close when the mirror loses them (the
+   * workflow was dismissed, or the terminal is gone) — never on a session
+   * list that doesn't name them.
    */
   import { tick, untrack } from 'svelte'
   import SessionsScreen from './SessionsScreen.svelte'
@@ -47,6 +54,10 @@
   import ProjectSheet from './ProjectSheet.svelte'
   import BacklogScreen from './BacklogScreen.svelte'
   import BacklogSheet from './BacklogSheet.svelte'
+  import WorkflowScreen from './WorkflowScreen.svelte'
+  import { phoneWorkflows } from './lib/workflows.svelte'
+  import { ledBy, pickForLead, windowBlocker, workerSessions } from './lib/workflow-phone'
+  import { leadProgress } from '../renderer/lib/workflow-view'
   import { reviewSubmits } from './lib/review-phone.svelte'
   import { AttachSequence, attachNotice, loadRememberedProject, rememberProject, type RememberedProject } from './lib/project'
   import PairScreen from './PairScreen.svelte'
@@ -57,8 +68,8 @@
   import { VersionCheck } from './lib/version-check.svelte'
   import { unsavedWork } from './lib/unsaved-work'
   import { storeKey } from './lib/remote-key'
-  import { onOpenSession } from './lib/push-client'
-  import { sessionFromUrl, threadFromUrl } from './lib/push-payload'
+  import { onOpenSession, onOpenWorkflow } from './lib/push-client'
+  import { sessionFromUrl, threadFromUrl, workflowFromUrl } from './lib/push-payload'
   import { visualViewport } from './lib/visual-viewport.svelte'
   import { nav } from './lib/nav.svelte'
   import { initialNav, isOverlay, type NavEntry, type TabId } from './lib/nav'
@@ -82,6 +93,9 @@
   /** A session a notification (or the Started note) asked for; `threadId` when it was about a thread reply. */
   type PendingSession = { terminalId: string; windowId: number | null; threadId: string | null }
   type PrEntry = Extract<NavEntry, { kind: 'pr' }>
+  type WorkflowEntry = Extract<NavEntry, { kind: 'workflow' }>
+  /** A workflow a push asked for, held until the workflow list arrives. */
+  type PendingWorkflow = { workflowId: string; taskId: string | null; windowId: number | null }
 
   // Read, not assumed: with no key the shim is already `unpaired` before mount.
   let connState = $state<ConnectionState>(untrack(() => connection.state()))
@@ -117,6 +131,8 @@
    * meantime, minutes later.
    */
   let pendingSession = $state<PendingSession | null>(initialPending())
+  /** The same, for a workflow's push: resolved once, when the workflow list is in. */
+  let pendingWorkflow = $state<PendingWorkflow | null>(initialPendingWorkflow())
   /**
    * Why a notification's session could not be opened. Shown instead of leaving
    * the user on a list wondering what the buzz was about.
@@ -159,6 +175,11 @@
     return terminalId ? { terminalId, windowId: null, threadId: threadFromUrl(window.location.href) } : null
   }
 
+  function initialPendingWorkflow(): PendingWorkflow | null {
+    const asked = workflowFromUrl(window.location.href)
+    return asked ? { ...asked, windowId: null } : null
+  }
+
   /**
    * Drop the `#session=` fragment once it has been acted on.
    *
@@ -167,7 +188,7 @@
    * deliberately left. The entry's state is kept — it carries the nav depth.
    */
   function clearFragment(): void {
-    if (!window.location.hash.includes('session=')) return
+    if (!window.location.hash.includes('session=') && !window.location.hash.includes('workflow=')) return
     history.replaceState(history.state, '', `${window.location.pathname}${window.location.search}`)
   }
 
@@ -205,8 +226,10 @@
   function leaveWindow(): void {
     nav.leaveWindow()
     everListed.clear()
+    openedWorkers.clear()
     known = {}
     pendingSession = null
+    pendingWorkflow = null
     startedNote = null
     deepLinkProblem = null
   }
@@ -253,7 +276,7 @@
     const out = switchDiscards()
     for (const entry of [...nav.stack('sessions'), ...nav.stack('prs')]) {
       if (entry.kind === 'session' && sessionScreens[entry.id]?.hasUnsentReply()) {
-        out.push(`your reply to ${known[entry.terminalId]?.label ?? 'a session'}`)
+        out.push(`your reply to ${sessionOf(entry.terminalId)?.label ?? 'a session'}`)
       }
     }
     if (threadDrafts.any()) out.push('your unsent comments on a diff')
@@ -304,7 +327,7 @@
     const out: string[] = []
     for (const entry of [...nav.stack('sessions'), ...nav.stack('prs')]) {
       if (entry.kind === 'session' && sessionScreens[entry.id]?.isRecording()) {
-        out.push(`the recording for ${known[entry.terminalId]?.label ?? 'a session'}`)
+        out.push(`the recording for ${sessionOf(entry.terminalId)?.label ?? 'a session'}`)
       }
       if (entry.kind === 'new-session' && newSheet?.atRisk() === 'draft') out.push('the new session’s brief')
     }
@@ -326,6 +349,7 @@
     projectNotice = null
     attaches.expectPick()
     leaveWindow()
+    phoneWorkflows.unload()
     // Picked by the user, after confirming what it discards.
     if (project.repoPath !== currentProject?.repoPath) closeBacklogSheet()
     // Let the screens that just came off unmount first, so whatever they
@@ -350,6 +374,8 @@
    */
   $effect(() =>
     onOpenSession(({ terminalId, windowId, threadId }) => {
+      // A workflow's push carries no terminal; an older worker still sends it here.
+      if (!terminalId) return
       deepLinkProblem = null
       pendingSession = { terminalId, windowId, threadId: threadId ?? null }
     }),
@@ -421,6 +447,81 @@
       : 'That session is no longer running.'
   }
 
+  /** Every live worker's and reviewer's terminal, as the session its screen shows. */
+  const workers = $derived(workerSessions(phoneWorkflows.all(), (id) => phoneWorkflows.statusOf(id)))
+  /** Terminals opened from a Workflow screen: the mirror, not the session list, decides when they close. */
+  const openedWorkers = new Set<string>()
+
+  function sessionOf(terminalId: string): WindowSession | undefined {
+    return known[terminalId] ?? workers[terminalId]
+  }
+
+  // A worker whose workflow was dismissed or whose terminal went away comes off
+  // the stack; so does a Workflow screen whose workflow is gone. A detached
+  // worker (its task was cancelled) is listed from then on and stays.
+  $effect(() => {
+    const live = workers
+    if (!phoneWorkflows.loaded()) return
+    untrack(() =>
+      nav.removeWhere(
+        (entry) =>
+          ((entry.kind === 'session' || entry.kind === 'changes-diff') &&
+            openedWorkers.has(entry.terminalId) &&
+            !(entry.terminalId in live) &&
+            !(entry.terminalId in known)) ||
+          (entry.kind === 'workflow' && !phoneWorkflows.get(entry.workflowId)),
+      ),
+    )
+  })
+
+  $effect(() =>
+    onOpenWorkflow(({ workflowId, taskId, windowId }) => {
+      deepLinkProblem = null
+      pendingWorkflow = { workflowId, taskId, windowId }
+    }),
+  )
+
+  $effect(() => {
+    if (pendingWorkflow && (phoneWorkflows.loaded() || phoneWorkflows.failed())) untrack(resolvePendingWorkflow)
+  })
+
+  /** Open what a workflow's push named, on its task, or say why not (`resolvePending`'s rules). */
+  function resolvePendingWorkflow(): void {
+    const pending = pendingWorkflow
+    if (!pending) return
+    pendingWorkflow = null
+    clearFragment()
+    if (phoneWorkflows.get(pending.workflowId)) {
+      deepLinkProblem = null
+      nav.openWorkflow(pending.workflowId, pending.taskId ?? undefined)
+      return
+    }
+    if (!phoneWorkflows.loaded()) {
+      deepLinkProblem = 'Could not reach the Mac to open that workflow.'
+      return
+    }
+    const elsewhere = pending.windowId !== null && pending.windowId !== connection.identity()?.windowId
+    const where = elsewhere ? projects.find((p) => p.windowId === pending.windowId) : undefined
+    deepLinkProblem = elsewhere
+      ? `That workflow is in ${where ? where.name : 'another SimpleEdit window'}, and this phone is showing ${currentProject?.name ?? 'a different one'}. Switch project to reach it.`
+      : 'That workflow is no longer around.'
+  }
+
+  function openWorker(terminalId: string): void {
+    openedWorkers.add(terminalId)
+    const entry: NavEntry = nav.push({ kind: 'session', terminalId, fromNotification: false }, () => holdSession(entry))
+  }
+
+  /** The lead's workflow that needs the user most, else its newest. */
+  function openLeadWorkflow(terminalId: string): void {
+    const pick = pickForLead(ledBy(phoneWorkflows.all(), terminalId), (id) => phoneWorkflows.statusOf(id))
+    if (pick) nav.openWorkflow(pick.workflow.id)
+  }
+
+  function leadBadge(terminalId: string): { text: string; needsYou: number } | null {
+    return leadProgress(ledBy(phoneWorkflows.all(), terminalId), (id) => phoneWorkflows.statusOf(id))
+  }
+
   function openSession(session: WindowSession): void {
     remember(session)
     const entry: NavEntry = nav.push(
@@ -459,6 +560,9 @@
     nav.stack('sessions').filter((e): e is SessionEntry => e.kind === 'session'),
   )
   const prEntries = $derived(nav.stack('prs').filter((e): e is PrEntry => e.kind === 'pr'))
+  const workflowEntries = $derived(nav.stack('sessions').filter((e): e is WorkflowEntry => e.kind === 'workflow'))
+  /** The session on screen leads workflows: its header offers them. */
+  const screenLeads = $derived(screen?.kind === 'session' && ledBy(phoneWorkflows.all(), screen.terminalId).length > 0)
   /** A window without a project can't host a review companion; one running elsewhere still answers. */
   const hostBlocked = $derived(
     attachedWindow !== null && projectsKnown && !currentProject
@@ -473,8 +577,9 @@
   const tabLabel = $derived(TABS.find((t) => t.id === tab)?.label ?? '')
 
   function titleOf(entry: NavEntry | null): string {
-    if (entry?.kind === 'session') return known[entry.terminalId]?.label ?? 'Session'
+    if (entry?.kind === 'session') return sessionOf(entry.terminalId)?.label ?? 'Session'
     if (entry?.kind === 'pr') return `${entry.pr.repo}#${entry.pr.number}`
+    if (entry?.kind === 'workflow') return phoneWorkflows.get(entry.workflowId)?.workflow.title ?? 'Workflow'
     return tabLabel
   }
 
@@ -484,7 +589,9 @@
     if (top?.kind === 'changes-diff') return 'Changes'
     const stack = nav.stack()
     const at = screen ? stack.indexOf(screen) : -1
-    const below = stack.slice(0, Math.max(0, at)).findLast((e) => e.kind === 'session' || e.kind === 'pr')
+    const below = stack
+      .slice(0, Math.max(0, at))
+      .findLast((e) => e.kind === 'session' || e.kind === 'pr' || e.kind === 'workflow')
     return titleOf(below ?? null)
   })
   // The keyboard leaves room for little; tabs are not what anyone typing needs.
@@ -496,7 +603,7 @@
 </script>
 
 {#snippet sessionView(entry: SessionEntry, on: TabId, shown: NavEntry | null)}
-  {@const session = known[entry.terminalId]}
+  {@const session = sessionOf(entry.terminalId)}
   {#if session}
     <div class={shown?.id === entry.id ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
       <SessionScreen
@@ -537,7 +644,15 @@
       {/if}
     </div>
     <!-- The one trailing action a top-level screen is allowed. -->
-    {#if !screen && tab === 'sessions'}
+    {#if screenLeads && screen?.kind === 'session'}
+      {@const lead = screen.terminalId}
+      <button
+        type="button"
+        onclick={() => openLeadWorkflow(lead)}
+        data-testid="open-workflow"
+        class="flex min-h-9 flex-none items-center gap-1 rounded-md px-2 text-xs text-zinc-300 active:bg-zinc-800"
+      ><span aria-hidden="true">⇶</span> Workflow</button>
+    {:else if !screen && tab === 'sessions'}
       <button
         type="button"
         onclick={openNewSession}
@@ -634,12 +749,33 @@
         {/if}
         <!-- Remounted per window, so the list just left is never on screen to tap. -->
         {#key attachedWindow}
-          <SessionsScreen connected={connState === 'open'} onopen={openSession} />
+          <SessionsScreen connected={connState === 'open'} onopen={openSession} {leadBadge} onworkflow={openLeadWorkflow} />
         {/key}
       </div>
 
       {#each sessionEntries as entry (entry.id)}
         {@render sessionView(entry, 'sessions', sessionScreen)}
+      {/each}
+
+      {#each workflowEntries as entry (entry.id)}
+        {@const snapshot = phoneWorkflows.get(entry.workflowId)}
+        {#if snapshot}
+          <div class={sessionScreen?.id === entry.id ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+            <WorkflowScreen
+              {snapshot}
+              statusOf={(id) => phoneWorkflows.statusOf(id)}
+              siblings={phoneWorkflows.all().filter((w) => w.workflow.leadKey === snapshot.workflow.leadKey)}
+              blocked={windowBlocker(snapshot, attachedWindow, {
+                lead: projects.find((p) => p.windowId === snapshot.leadWindowId)?.name,
+                here: currentProject?.name,
+              })}
+              focusTask={entry.focusTask}
+              visible={tab === 'sessions' && sessionScreen?.id === entry.id && !isOverlay(top)}
+              onopen={openWorker}
+              onswitch={(id) => nav.openWorkflow(id)}
+            />
+          </div>
+        {/if}
       {/each}
 
       {#if newSessionEntry}

@@ -1,6 +1,6 @@
 /**
  * The service worker: receive a push, show it, and on a tap land in the
- * session that blocked.
+ * session that blocked (or, for a workflow's push, on its Workflow screen).
  *
  * Deliberately a shell. Every decision it makes lives in `lib/push-payload.ts`
  * where it can be tested; a service worker's own scope cannot be entered by a
@@ -52,7 +52,14 @@ self.addEventListener('push', (event) => {
     body: plan.body,
     tag: plan.tag,
     renotify: plan.renotify,
-    data: { url: plan.url, terminalId: plan.terminalId, windowId: plan.windowId, threadId: plan.threadId },
+    data: {
+      url: plan.url,
+      terminalId: plan.terminalId,
+      windowId: plan.windowId,
+      threadId: plan.threadId,
+      workflowId: plan.workflowId,
+      taskId: plan.taskId,
+    },
   }
   event.waitUntil(self.registration.showNotification(plan.title, options))
 })
@@ -64,16 +71,22 @@ self.addEventListener('notificationclick', (event) => {
     terminalId?: string
     windowId?: number | null
     threadId?: string | null
+    workflowId?: string | null
+    taskId?: string | null
   }
   const url = data.url ?? self.registration.scope
   const terminalId = data.terminalId ?? ''
   const windowId = typeof data.windowId === 'number' ? data.windowId : null
   const threadId = typeof data.threadId === 'string' ? data.threadId : null
+  const workflow =
+    typeof data.workflowId === 'string' && data.workflowId
+      ? { workflowId: data.workflowId, taskId: typeof data.taskId === 'string' ? data.taskId : null }
+      : null
 
   event.waitUntil(
     (async () => {
       const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-      const action = planClick(url, terminalId, [...clients], windowId, threadId)
+      const action = planClick(url, terminalId, [...clients], windowId, threadId, workflow)
       if (action.kind === 'open') {
         await self.clients.openWindow(action.url)
         return

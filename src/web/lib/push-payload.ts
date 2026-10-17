@@ -21,6 +21,12 @@ export interface PushPayload {
   windowId: number | null
   /** Set when an agent replied in a thread: a tap opens the session's Threads pane. */
   threadId: string | null
+  /**
+   * Set for a workflow's push (`terminalId` is then ''): a tap opens the
+   * Workflow screen on `taskId`, never a worker's terminal.
+   */
+  workflowId: string | null
+  taskId: string | null
 }
 
 export interface NotificationPlan {
@@ -31,11 +37,13 @@ export interface NotificationPlan {
   /** Carried alongside, so the app can say when a session is on another window. */
   windowId: number | null
   threadId: string | null
+  workflowId: string | null
+  taskId: string | null
   /**
    * One notification per session. A session that blocks, is answered and
    * blocks again should replace its own entry rather than stack a second one
    * on a lock screen. A thread reply has its own row: it must not replace an
-   * unread block.
+   * unread block. A workflow has one row for all its tasks.
    */
   tag: string
   /** Where a tap goes. Absolute, and always same-origin — see `sameOriginUrl`. */
@@ -67,7 +75,7 @@ export function parsePushPayload(raw: string | null | undefined): PushPayload | 
   try {
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null) return null
-    const { title, body, terminalId, url, windowId, threadId } = parsed as Record<string, unknown>
+    const { title, body, terminalId, url, windowId, threadId, workflowId, taskId } = parsed as Record<string, unknown>
     if (typeof terminalId !== 'string' || typeof url !== 'string') return null
     return {
       title: typeof title === 'string' && title ? title : 'A session is blocked',
@@ -76,6 +84,8 @@ export function parsePushPayload(raw: string | null | undefined): PushPayload | 
       url,
       windowId: typeof windowId === 'number' ? windowId : null,
       threadId: typeof threadId === 'string' && threadId ? threadId : null,
+      workflowId: typeof workflowId === 'string' && workflowId ? workflowId : null,
+      taskId: typeof workflowId === 'string' && workflowId && typeof taskId === 'string' && taskId ? taskId : null,
     }
   } catch {
     return null
@@ -113,6 +123,8 @@ export function planNotification(raw: string | null | undefined, scope: string):
       terminalId: '',
       windowId: null,
       threadId: null,
+      workflowId: null,
+      taskId: null,
       url: sameOriginUrl(scope, scope),
       renotify: true,
     }
@@ -120,13 +132,20 @@ export function planNotification(raw: string | null | undefined, scope: string):
   return {
     title: payload.title,
     body: payload.body,
-    tag: payload.threadId ? `simpleedit-thread-${payload.terminalId}` : `simpleedit-${payload.terminalId}`,
+    tag: tagOf(payload),
     terminalId: payload.terminalId,
     windowId: payload.windowId,
     threadId: payload.threadId,
+    workflowId: payload.workflowId,
+    taskId: payload.taskId,
     url: sameOriginUrl(payload.url, scope),
     renotify: true,
   }
+}
+
+function tagOf(payload: PushPayload): string {
+  if (payload.workflowId) return `simpleedit-workflow-${payload.workflowId}`
+  return payload.threadId ? `simpleedit-thread-${payload.terminalId}` : `simpleedit-${payload.terminalId}`
 }
 
 /**
@@ -141,7 +160,7 @@ export function planNotification(raw: string | null | undefined, scope: string):
  * messaged instead and moves itself.
  */
 export type ClickAction =
-  | { kind: 'focus'; clientIndex: number; message: OpenSessionMessage }
+  | { kind: 'focus'; clientIndex: number; message: OpenSessionMessage | OpenWorkflowMessage }
   | { kind: 'open'; url: string }
 
 export function planClick(
@@ -150,6 +169,7 @@ export function planClick(
   clients: { url: string; focused?: boolean }[],
   windowId: number | null = null,
   threadId: string | null = null,
+  workflow: { workflowId: string; taskId: string | null } | null = null,
 ): ClickAction {
   if (clients.length === 0) return { kind: 'open', url }
   // Prefer the tab the user was last looking at; otherwise the first one.
@@ -157,7 +177,9 @@ export function planClick(
   return {
     kind: 'focus',
     clientIndex: focused >= 0 ? focused : 0,
-    message: { type: 'open-session', terminalId, url, windowId, threadId },
+    message: workflow
+      ? { type: 'open-workflow', workflowId: workflow.workflowId, taskId: workflow.taskId, url, windowId }
+      : { type: 'open-session', terminalId, url, windowId, threadId },
   }
 }
 
@@ -178,6 +200,23 @@ export function isOpenSessionMessage(value: unknown): value is OpenSessionMessag
   return message.type === 'open-session' && typeof message.terminalId === 'string'
 }
 
+/** The message a focused tab receives for a workflow's push. */
+export interface OpenWorkflowMessage {
+  type: 'open-workflow'
+  workflowId: string
+  /** The task to focus on the Workflow screen. */
+  taskId: string | null
+  url: string
+  /** The lead's window. */
+  windowId: number | null
+}
+
+export function isOpenWorkflowMessage(value: unknown): value is OpenWorkflowMessage {
+  if (typeof value !== 'object' || value === null) return false
+  const message = value as Record<string, unknown>
+  return message.type === 'open-workflow' && typeof message.workflowId === 'string' && message.workflowId !== ''
+}
+
 /**
  * The session a URL fragment asks for, or null.
  *
@@ -193,7 +232,13 @@ export function threadFromUrl(url: string): string | null {
   return fragmentParam(url, 'thread')
 }
 
-function fragmentParam(url: string, name: 'session' | 'thread'): string | null {
+/** The workflow a URL fragment asks for (`#workflow=<id>&task=<taskId>`), or null. */
+export function workflowFromUrl(url: string): { workflowId: string; taskId: string | null } | null {
+  const workflowId = fragmentParam(url, 'workflow')
+  return workflowId ? { workflowId, taskId: fragmentParam(url, 'task') } : null
+}
+
+function fragmentParam(url: string, name: 'session' | 'thread' | 'workflow' | 'task'): string | null {
   let hash: string
   try {
     hash = new URL(url).hash

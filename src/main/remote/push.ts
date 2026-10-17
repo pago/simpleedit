@@ -398,6 +398,9 @@ export interface PushPayload {
   windowId: number | null
   /** Set for an agent's reply in a thread: a tap opens that session's Threads pane. */
   threadId?: string
+  /** Set for a workflow's push (`terminalId` is then ''): a tap opens its Workflow screen on `taskId`. */
+  workflowId?: string
+  taskId?: string
 }
 
 function shorten(text: string, max: number): string {
@@ -598,10 +601,155 @@ export function handleThreadReply(thread: AgentThread): void {
   })
 }
 
+// ── Workflows ─────────────────────────────────────────────
+//
+// A workflow's workers are owned sessions (`ignoreSession`): the user hears
+// about them through the workflow, titled by its lead, and a tap opens the
+// Workflow screen rather than a worker nobody listed.
+
+/** Waiting episodes (`slotKey`, a dialog's `slotKey#p`) and judgments (`workflow/task@at`) already accounted for. */
+const workflowAlerted = new Set<string>()
+/** When we last notified about a workflow. */
+const workflowNotifiedAt = new Map<string, number>()
+/** Alerts the debounce held back, per workflow, sent when it ends if they still wait. */
+const workflowDeferred = new Map<string, { alerts: Map<string, WorkflowAlert>; timer: ReturnType<typeof setTimeout> }>()
+
+export interface WorkflowAlertItem {
+  /** A waiting episode's `slotKey` (a dialog's `slotKey#p`), or a judgment's `workflow/task@at`. */
+  key: string
+  taskId: string
+  taskTitle: string
+  /** What the task waits for; waiting alerts only. */
+  note?: string
+}
+
+export interface WorkflowAlert {
+  kind: 'waiting' | 'lead-woken'
+  workflowId: string
+  workflowTitle: string
+  leadLabel: string
+  /** The lead's window, or null when no window hosts it. */
+  windowId: number | null
+  items: WorkflowAlertItem[]
+  /** Does this item still wait? Asked when the debounce held it back; absent means yes. */
+  pending?(key: string): boolean
+}
+
+export function buildWorkflowPayload(alert: WorkflowAlert, items: WorkflowAlertItem[], url: string): PushPayload {
+  const first = items[0]!
+  const titles = items.map((i) => i.taskTitle).join(', ')
+  const body =
+    alert.kind === 'lead-woken'
+      ? `Lead woken: ${titles}`
+      : items.length === 1
+        ? `${first.taskTitle} needs you: ${first.note ?? 'it is asking for permission or input.'}`
+        : `${items.length} tasks need you: ${titles}`
+  return {
+    title: shorten(`${shorten(alert.leadLabel, 30)} · ${alert.workflowTitle}`, 60),
+    body: shorten(body, 140),
+    terminalId: '',
+    windowId: alert.windowId,
+    workflowId: alert.workflowId,
+    taskId: first.taskId,
+    url: `${url}${url.includes('#') ? '' : '#'}workflow=${encodeURIComponent(alert.workflowId)}&task=${encodeURIComponent(first.taskId)}`,
+  }
+}
+
+/**
+ * A workflow task (or its reviewer) started waiting on the user, or its
+ * judgments reached the lead. Called by `workflow-host.ts`.
+ *
+ * Each item counts once: a waiting episode until `rearmWorkflowAlert` (that
+ * session's next turn, or the end of its dialog), a judgment for good, so a
+ * re-mail after a lost message doesn't buzz again. Within a workflow's
+ * debounce an item is held, not spent, and sent when the debounce ends if it
+ * still waits (`pending`): task B blocking two minutes after task A still
+ * reaches you. Past the debounce an item is spent even if a later gate stays
+ * quiet, as `lastStatus` is: a block you were present for doesn't buzz when
+ * you walk away. `quiet` spends items without sending — what was already
+ * waiting when this run first saw the workflow.
+ */
+export function handleWorkflowAlert(alert: WorkflowAlert, options: { quiet?: boolean } = {}): void {
+  const fresh = alert.items.filter((i) => !workflowAlerted.has(i.key))
+  if (fresh.length === 0) return
+  if (options.quiet) {
+    for (const item of fresh) workflowAlerted.add(item.key)
+    return
+  }
+  const now = deps.now()
+  const lastAt = workflowNotifiedAt.get(alert.workflowId)
+  if (lastAt !== undefined && now - lastAt < DEBOUNCE_MS) {
+    defer(alert, fresh, lastAt + DEBOUNCE_MS - now)
+    return
+  }
+  notifyWorkflow(alert, fresh, now)
+}
+
+/** Past the debounce: spend the items, then presence, URL and devices as for a session. */
+function notifyWorkflow(alert: WorkflowAlert, fresh: WorkflowAlertItem[], now: number): void {
+  for (const item of fresh) workflowAlerted.add(item.key)
+  if (deps.userIsPresent()) return
+  const url = deps.targetUrl()
+  if (!url) return
+  if (load().subscriptions.length === 0) return
+
+  workflowNotifiedAt.set(alert.workflowId, now)
+  void deliver(buildWorkflowPayload(alert, fresh, url)).catch((error: unknown) => {
+    lastError = error instanceof Error ? error.message : String(error)
+  })
+}
+
+function defer(alert: WorkflowAlert, items: WorkflowAlertItem[], wait: number): void {
+  let held = workflowDeferred.get(alert.workflowId)
+  if (!held) {
+    const timer = setTimeout(() => releaseDeferred(alert.workflowId), wait)
+    timer.unref?.()
+    held = { alerts: new Map(), timer }
+    workflowDeferred.set(alert.workflowId, held)
+  }
+  for (const item of items) held.alerts.set(item.key, { ...alert, items: [item] })
+}
+
+function releaseDeferred(workflowId: string): void {
+  const held = workflowDeferred.get(workflowId)
+  if (!held) return
+  workflowDeferred.delete(workflowId)
+  const waiting = [...held.alerts.values()].filter((a) => a.items.every((i) => !workflowAlerted.has(i.key) && (a.pending?.(i.key) ?? true)))
+  // One push per kind, newest metadata, both now: the first must not debounce the second again.
+  const now = deps.now()
+  for (const kind of ['waiting', 'lead-woken'] as const) {
+    const ofKind = waiting.filter((a) => a.kind === kind)
+    if (ofKind.length > 0) notifyWorkflow({ ...ofKind[ofKind.length - 1]! }, ofKind.flatMap((a) => a.items), now)
+  }
+}
+
+/** Quit: drop what the debounce holds. */
+export function stopWorkflowAlerts(): void {
+  for (const held of workflowDeferred.values()) clearTimeout(held.timer)
+  workflowDeferred.clear()
+}
+
+/** A workflow session's turn started, or its dialog ended: its next wait is a new episode. */
+export function rearmWorkflowAlert(key: string): void {
+  workflowAlerted.delete(key)
+  for (const held of workflowDeferred.values()) held.alerts.delete(key)
+}
+
+/** A workflow was dismissed: nothing keyed by it can fire again. */
+export function forgetWorkflowAlerts(workflowId: string): void {
+  for (const k of workflowAlerted) if (k.startsWith(`${workflowId}/`)) workflowAlerted.delete(k)
+  workflowNotifiedAt.delete(workflowId)
+  clearTimeout(workflowDeferred.get(workflowId)?.timer)
+  workflowDeferred.delete(workflowId)
+}
+
 /** Exported for tests: forget every in-memory gate and the cached file. */
 export function resetPushState(): void {
   cached = null
   lastError = null
+  workflowAlerted.clear()
+  workflowNotifiedAt.clear()
+  stopWorkflowAlerts()
   lastStatus.clear()
   lastNotifiedAt.clear()
   lastReplyNotifiedAt.clear()

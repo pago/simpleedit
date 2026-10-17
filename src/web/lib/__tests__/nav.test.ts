@@ -8,6 +8,7 @@ import {
   initialNav,
   isOverlay,
   openFromNotification,
+  openWorkflow,
   pop,
   push,
   removeWhere,
@@ -178,6 +179,52 @@ describe('a session opened from a PR', () => {
     expect(state.tab).toBe('prs')
     expect(topOf(state)).toMatchObject({ id, kind: 'session', terminalId: 'a', fromNotification: true })
     expect(stackOf(state, 'sessions')).toEqual([])
+  })
+})
+
+describe('a workflow', () => {
+  it('opens on the Sessions tab from anywhere, and is a screen with Back under it', () => {
+    const fromPrs = push(selectTab(initialNav(), 'prs'), { kind: 'pr', pr: PR }).state
+    const state = openWorkflow(fromPrs, 'wf_1', 'tests')
+    expect(state.tab).toBe('sessions')
+    expect(screenOf(state)).toMatchObject({ kind: 'workflow', workflowId: 'wf_1', focusTask: { taskId: 'tests' } })
+    expect(isOverlay(topOf(state))).toBe(false)
+    expect(stackOf(state, 'prs').map((e) => e.kind)).toEqual(['pr'])
+  })
+
+  it('is brought to the front as the same entry, with a fresh focus per ask', () => {
+    const first = openWorkflow(build(session('lead')), 'wf_1', 'a')
+    const id = topOf(first)!.id
+    const over = push(first, session('worker')).state
+    const again = openWorkflow(over, 'wf_1', 'a')
+    expect(stackOf(again).map((e) => e.kind)).toEqual(['session', 'session', 'workflow'])
+    expect(topOf(again)?.id).toBe(id)
+    const focusOf = (state: NavState) => {
+      const top = topOf(state)
+      return top?.kind === 'workflow' ? top.focusTask : undefined
+    }
+    expect(focusOf(again)).toEqual(focusOf(first))
+    expect(focusOf(again)).not.toBe(focusOf(first))
+    expect(focusOf(openWorkflow(again, 'wf_1'))).toBeUndefined()
+  })
+
+  it('opens a worker over it, and a worker asked for again is the same entry, never a second terminal', () => {
+    let state = openWorkflow(initialNav(), 'wf_1')
+    const opened = push(state, session('w1'))
+    state = push(opened.state, { kind: 'changes-diff', terminalId: 'w1' }).state
+    state = openWorkflow(state, 'wf_1')
+    const again = push(state, session('w1'))
+    expect(again.entry.id).toBe(opened.entry.id)
+    expect(stackOf(again.state).map((e) => e.kind)).toEqual(['workflow', 'session'])
+    expect(stackOf(again.state).filter((e) => e.kind === 'session' && e.terminalId === 'w1')).toHaveLength(1)
+  })
+
+  it('goes with its workers when the phone leaves the window', () => {
+    let state = push(openWorkflow(initialNav(), 'wf_1'), session('w1')).state
+    state = push(selectTab(state, 'prs'), { kind: 'pr', pr: PR }).state
+    const next = leaveWindow(state)
+    expect(stackOf(next, 'sessions')).toEqual([])
+    expect(stackOf(next, 'prs').map((e) => e.kind)).toEqual(['pr'])
   })
 })
 

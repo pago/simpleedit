@@ -300,6 +300,12 @@ function safely(what: string, fn: () => void): void {
  */
 const NOT_A_DIALOG = new Set(['idle_prompt', 'agent_completed', 'auth_success', 'elicitation_complete', 'push_notification', 'computer_use_exit'])
 
+/** Does this `Notification` (or a `waiting` without one) put a dialog in front of the user? */
+export function isDialogNotification(notificationType: string | null | undefined, message: string | null | undefined): boolean {
+  if (notificationType) return !NOT_A_DIALOG.has(notificationType)
+  return message !== 'Claude is waiting for your input'
+}
+
 /**
  * Wire up delivery. Messages left `sending` or `delivered` by a previous run
  * can never be confirmed or answered now, so they are settled first.
@@ -404,7 +410,7 @@ function signal(sessionId: string, e: DeliveryEvent): void {
         t.turnEnded = true
         // A turn interrupted with Esc fires no Stop; this is the first sign it's over.
         settleArms(sessionId, t, null, 'The turn was interrupted before the agent answered')
-      } else if (!e.notificationType || !NOT_A_DIALOG.has(e.notificationType)) {
+      } else if (isDialogNotification(e.notificationType, e.message)) {
         t.dialog ??= { toolUseId: null }
       }
       break

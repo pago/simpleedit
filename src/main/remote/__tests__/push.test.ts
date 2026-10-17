@@ -13,14 +13,19 @@ import {
   buildThreadPayload,
   configurePush,
   deliver,
+  forgetWorkflowAlerts,
   getPushStatus,
   handleAgentStatus,
   handleThreadReply,
+  handleWorkflowAlert,
   noteTurnStarted,
+  rearmWorkflowAlert,
+  stopWorkflowAlerts,
   removeAllSubscriptions,
   removeSubscription,
   resetPushState,
   shouldNotify,
+  type WorkflowAlert,
 } from '../push'
 import { encryptPayload, fromBase64Url, generateVapidKeys, toBase64Url } from '../webpush'
 import { createDecipheriv, createECDH, hkdfSync } from 'crypto'
@@ -626,5 +631,190 @@ describe('encryptPayload, at the size this feature actually sends', () => {
     const payload = JSON.stringify(buildPayload(waiting(), 'A long-ish session label', 'https://mac.ts.net/tok/', 7))
     const body = encryptPayload(Buffer.from(payload, 'utf8'), { keys: phone.keys })
     expect(phone.read(body)).toBe(payload)
+  })
+})
+
+describe('workflow alerts', () => {
+  beforeEach(() => {
+    addSubscription({ endpoint: phone.endpoint, keys: phone.keys, label: 'iPhone' })
+  })
+
+  function waitingAlert(key = 'wf_abcdefgh/a#1', overrides: Partial<WorkflowAlert> = {}): WorkflowAlert {
+    return {
+      kind: 'waiting',
+      workflowId: 'wf_abcdefgh',
+      workflowTitle: 'Ship search',
+      leadLabel: 'Plan the search rewrite',
+      windowId: 3,
+      items: [{ key, taskId: 'a', taskTitle: 'Index docs', note: 'Claude needs your permission to use Bash' }],
+      ...overrides,
+    }
+  }
+
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 20))
+
+  it("sends the workflow's push, titled by its lead, opening the Workflow screen", async () => {
+    handleWorkflowAlert(waitingAlert())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    const payload = JSON.parse(phone.read(sent[0].body)) as Record<string, unknown>
+    expect(payload).toEqual({
+      title: 'Plan the search rewrite · Ship search',
+      body: 'Index docs needs you: Claude needs your permission to use Bash',
+      terminalId: '',
+      windowId: 3,
+      workflowId: 'wf_abcdefgh',
+      taskId: 'a',
+      url: 'https://mac.tailnet.ts.net/tok/#workflow=wf_abcdefgh&task=a',
+    })
+  })
+
+  it('buzzes once per waiting episode: a Stop and a later idle prompt are one', async () => {
+    handleWorkflowAlert(waitingAlert())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    now += 10 * 60 * 1000
+    handleWorkflowAlert(waitingAlert())
+    await settle()
+    expect(sent).toHaveLength(1)
+
+    // The session's next turn re-arms it.
+    rearmWorkflowAlert('wf_abcdefgh/a#1')
+    handleWorkflowAlert(waitingAlert())
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+  })
+
+  it('debounces per workflow, not per task', async () => {
+    handleWorkflowAlert(waitingAlert())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    now += 60 * 1000
+    handleWorkflowAlert(waitingAlert('wf_abcdefgh/b#1'))
+    await settle()
+    expect(sent).toHaveLength(1)
+    handleWorkflowAlert(waitingAlert('wf_other123/a#1', { workflowId: 'wf_other123' }))
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+  })
+
+  describe('held back by the debounce', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    /** Lets the debounce's own timer run; real timers again afterwards, for the delivery. */
+    const pass = (ms: number): void => {
+      now += ms
+      vi.advanceTimersByTime(ms)
+      vi.useRealTimers()
+    }
+
+    it('sends a task that blocked within the debounce once it ends, if it still waits', async () => {
+      handleWorkflowAlert(waitingAlert())
+      await vi.waitFor(() => expect(sent).toHaveLength(1))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      now += 2 * 60 * 1000
+      handleWorkflowAlert({ ...waitingAlert('wf_abcdefgh/b#1'), items: [{ key: 'wf_abcdefgh/b#1', taskId: 'b', taskTitle: 'Write tests', note: 'Stuck' }], pending: () => true })
+      pass(3 * 60 * 1000)
+      await vi.waitFor(() => expect(sent).toHaveLength(2))
+      expect(JSON.parse(phone.read(sent[1].body)) as Record<string, unknown>).toMatchObject({ body: 'Write tests needs you: Stuck', taskId: 'b' })
+      // Spent now.
+      now += 10 * 60 * 1000
+      handleWorkflowAlert(waitingAlert('wf_abcdefgh/b#1'))
+      await settle()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('sends what it held of both kinds at once when the debounce ends', async () => {
+      handleWorkflowAlert(waitingAlert())
+      await vi.waitFor(() => expect(sent).toHaveLength(1))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      now += 60 * 1000
+      handleWorkflowAlert({ ...waitingAlert('wf_abcdefgh/b#1'), pending: () => true })
+      handleWorkflowAlert({ ...waitingAlert(''), kind: 'lead-woken', items: [{ key: 'wf_abcdefgh/c@1', taskId: 'c', taskTitle: 'Pick an API' }], pending: () => true })
+      pass(4 * 60 * 1000)
+      await vi.waitFor(() => expect(sent).toHaveLength(3))
+      const bodies = sent.slice(1).map((m) => (JSON.parse(phone.read(m.body)) as { body: string }).body)
+      expect(bodies).toEqual(expect.arrayContaining(['Lead woken: Pick an API', expect.stringMatching(/^Index docs needs you/)]))
+    })
+
+    it('drops what it held on quit', async () => {
+      handleWorkflowAlert(waitingAlert())
+      await vi.waitFor(() => expect(sent).toHaveLength(1))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      now += 60 * 1000
+      handleWorkflowAlert({ ...waitingAlert('wf_abcdefgh/b#1'), pending: () => true })
+      stopWorkflowAlerts()
+      pass(5 * 60 * 1000)
+      await settle()
+      expect(sent).toHaveLength(1)
+    })
+
+    it('drops one that stopped waiting meanwhile, or whose turn started', async () => {
+      handleWorkflowAlert(waitingAlert())
+      await vi.waitFor(() => expect(sent).toHaveLength(1))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      now += 60 * 1000
+      handleWorkflowAlert({ ...waitingAlert('wf_abcdefgh/b#1'), pending: () => false })
+      handleWorkflowAlert({ ...waitingAlert('wf_abcdefgh/c#1'), pending: () => true })
+      rearmWorkflowAlert('wf_abcdefgh/c#1')
+      pass(5 * 60 * 1000)
+      await settle()
+      expect(sent).toHaveLength(1)
+    })
+  })
+
+  it('wakes the lead once per judgment, even when it is mailed again', async () => {
+    const lead = (keys: string[]): WorkflowAlert =>
+      waitingAlert('', { kind: 'lead-woken', items: keys.map((key, i) => ({ key, taskId: `t${i}`, taskTitle: `Task ${i}` })) })
+    handleWorkflowAlert(lead(['wf_abcdefgh/t0@1', 'wf_abcdefgh/t1@1']))
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect((JSON.parse(phone.read(sent[0].body)) as { body: string }).body).toBe('Lead woken: Task 0, Task 1')
+    now += 10 * 60 * 1000
+    handleWorkflowAlert(lead(['wf_abcdefgh/t0@1']))
+    await settle()
+    expect(sent).toHaveLength(1)
+  })
+
+  it('stays quiet at the desk and spends the episode, without using up the debounce', async () => {
+    configurePush({ userIsPresent: () => true })
+    handleWorkflowAlert(waitingAlert())
+    await settle()
+    expect(sent).toHaveLength(0)
+
+    configurePush({ userIsPresent: () => false })
+    handleWorkflowAlert(waitingAlert())
+    await settle()
+    expect(sent).toHaveLength(0)
+    handleWorkflowAlert(waitingAlert('wf_abcdefgh/b#1'))
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+  })
+
+  it('sends nothing without a reachable URL or a device', async () => {
+    configurePush({ targetUrl: () => null })
+    handleWorkflowAlert(waitingAlert())
+    configurePush({ targetUrl: () => 'https://mac.tailnet.ts.net/tok/' })
+    removeAllSubscriptions()
+    handleWorkflowAlert(waitingAlert('wf_abcdefgh/b#1'))
+    await settle()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('a quiet alert spends what it names without sending', async () => {
+    handleWorkflowAlert(waitingAlert(), { quiet: true })
+    handleWorkflowAlert(waitingAlert())
+    await settle()
+    expect(sent).toHaveLength(0)
+  })
+
+  it('a dismissed workflow forgets its episodes and its debounce', async () => {
+    handleWorkflowAlert(waitingAlert())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    forgetWorkflowAlerts('wf_abcdefgh')
+    handleWorkflowAlert(waitingAlert())
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+  })
+
+  it('leaves session pushes alone', async () => {
+    handleWorkflowAlert(waitingAlert())
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    handleAgentStatus(waiting(), 7)
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
   })
 })

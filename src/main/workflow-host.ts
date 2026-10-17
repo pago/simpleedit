@@ -11,40 +11,62 @@ import { join } from 'path'
 import type { RemoteClient } from './client-hub'
 import { configDir } from './config-dir'
 import { awaitSpawn, getPeer, messageState, onPeersChanged, peersWithWindows, type Peer } from './agent-bus'
+import { onAgentStatus } from './agent-status'
+import { isDialogNotification } from './thread-delivery-core'
 import { onSessionRegistered, sessionForTerminal, terminalForSession } from './cwd-tracker'
 import { sendSystemMail, setWorkflowTools, type WorkflowToolName } from './mcp-bridge'
 import { createWorktree, listWorktrees } from './worktree'
 import { handleInvoke } from './ipc-registry'
-import { createWorkflowEngine, type EnginePeer, type ReportOutcome, type WorkflowEngine } from './workflow-engine'
+import { createWorkflowEngine, waitsOnUser, type EnginePeer, type ReportOutcome, type WorkflowEngine } from './workflow-engine'
 import { getWorkflow, listLeadWorkflowIds } from './workflow-store'
-import { parseSessionOwner } from '../shared/session-owner'
+import type { WorkflowAlert, WorkflowAlertItem } from './remote/push'
+import { parseSessionOwner, type WorkflowOwner } from '../shared/session-owner'
 import {
   WorkflowValidationError,
+  currentRound,
   describeWorkflow,
   isWorkflowId,
+  ownerIsCurrent,
   parseNewWorkflow,
   parseWorkflowOps,
+  slimWorkflowSnapshot,
+  slotKey,
+  waitingSlot,
+  type Workflow,
+  type WorkflowJudgment,
   type WorkflowList,
   type WorkflowOp,
   type WorkflowProvider,
   type WorkflowReviewerSpec,
   type WorkflowSettings,
   type WorkflowSnapshot,
+  type WorkflowTask,
 } from '../shared/workflow'
-import type { EventMap } from '../shared/ipc-types'
+import type { AgentStatus } from '../shared/ipc-types'
 
 /** How long a worker's terminal id may take to come back from the renderer. */
 const SPAWN_WAIT_MS = 10_000
 /** `workflow:hosts`: a window lists its agent sessions, never this many. */
 const MAX_HOST_KEYS = 1_000
 const MAX_HOST_KEY_LENGTH = 200
+/** A phone hears about a status-only change at most this often per workflow. */
+const STATUS_THROTTLE_MS = 1_000
+
+/** The push side of workflows (`remote/push.ts`). */
+export interface WorkflowPushHooks {
+  alert(alert: WorkflowAlert, options?: { quiet?: boolean }): void
+  rearm(key: string): void
+  forget(workflowId: string): void
+}
 
 export interface WorkflowHostDeps {
   /** The bare repo a window was opened on (its project). */
   projectOf(windowId: number): string | null
   /** A desktop window's own webContents, the only client that can create sessions. */
   windowContents(windowId: number): RemoteClient | null
-  broadcast<K extends keyof EventMap>(channel: K, data: EventMap[K]): void
+  /** Every window and every phone: windows get a snapshot whole, phones `slimWorkflowSnapshot`. */
+  clients: RemoteClient
+  push?: WorkflowPushHooks
   localModels(): Promise<string[]>
   /** Why a task's model can't be started (the pickers' catalog), or null when it can. */
   unknownModel(provider: WorkflowProvider, model: string): Promise<string | null>
@@ -85,6 +107,62 @@ function leadTerminal(leadKey: string): string | null {
   return terminalForSession(leadKey) ?? (getPeer(leadKey) ? leadKey : null)
 }
 
+function titleOf(workflow: Workflow, task: WorkflowTask): string {
+  const map = task.parent !== undefined ? workflow.tasks.find((t) => t.id === task.parent) : undefined
+  return map ? `${map.title} · ${task.title}` : task.title
+}
+
+/** Tasks waiting on the user (not on the lead), one item per waiting session. */
+function waitingItems(workflow: Workflow): WorkflowAlertItem[] {
+  const items: WorkflowAlertItem[] = []
+  for (const task of workflow.tasks) {
+    const slot = waitingSlot(task)
+    if (!slot || !waitsOnUser(task) || workflow.judgments.some((j) => j.taskId === task.id)) continue
+    const review = slot === 'reviewer' ? currentRound(task)?.reviewer : undefined
+    items.push({
+      key: slotKey(workflow.id, { taskId: task.id, attempt: task.attempt, ...(review !== undefined ? { review } : {}) }),
+      taskId: task.id,
+      taskTitle: titleOf(workflow, task),
+      note: task.note ?? (slot === 'reviewer' ? 'The reviewer stopped without a verdict.' : 'The worker stopped without a result.'),
+    })
+  }
+  return items
+}
+
+function judgmentItems(workflow: Workflow, judgments: WorkflowJudgment[]): WorkflowAlertItem[] {
+  return judgments.map((j) => {
+    const task = workflow.tasks.find((t) => t.id === j.taskId)
+    return { key: `${workflow.id}/${j.taskId}@${j.at}`, taskId: j.taskId, taskTitle: task ? titleOf(workflow, task) : j.taskId }
+  })
+}
+
+/** The episode of a session's dialog (permission, question): apart from its Stop's, which its turn start re-arms. */
+function dialogKey(workflowId: string, owner: WorkflowOwner): string {
+  return `${slotKey(workflowId, owner)}#p`
+}
+
+/** Is this session the one its task waits on? A loop's worker idles while its change is in review; a finished reviewer stays current until the next starts. */
+function speaks(task: WorkflowTask, owner: WorkflowOwner): boolean {
+  const round = currentRound(task)
+  if (owner.review === undefined) return task.kind !== 'loop' || !round || round.review === 'pending'
+  return round?.reviewer === owner.review && (round.review === 'running' || round.review === 'waiting')
+}
+
+function workflowOwnerOf(terminalId: string): WorkflowOwner | null {
+  const owner = parseSessionOwner(getPeer(terminalId)?.owner)
+  return owner?.kind === 'workflow' ? owner : null
+}
+
+/** The workflow session a terminal is, while it holds its task's current slot. */
+function currentOwner(terminalId: string): { workflow: Workflow; task: WorkflowTask; owner: WorkflowOwner } | null {
+  const owner = workflowOwnerOf(terminalId)
+  if (!owner) return null
+  const workflow = getWorkflow(owner.workflowId)
+  const task = workflow?.tasks.find((t) => t.id === owner.taskId)
+  if (!workflow || !task || !ownerIsCurrent(task, owner)) return null
+  return { workflow, task, owner }
+}
+
 /** What `report_result` tells the session that called it. */
 const NEXT: Record<ReportOutcome, string> = {
   done: 'Recorded. Your task is done; you can stop here.',
@@ -104,9 +182,103 @@ function problemsBody(error: unknown): { status: number; body: Record<string, un
   return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
 }
 
-export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
+export interface WorkflowHost extends WorkflowEngine {
+  /** Quit: drop pending phone updates. */
+  stop(): void
+}
+
+export function initWorkflows(deps: WorkflowHostDeps): WorkflowHost {
   let settings = loadWorkflowSettings()
   const lastSent = new Map<string, string>()
+  /** What phones last got, per workflow, and when. */
+  const lastRemote = new Map<string, { text: string; at: number }>()
+  const remoteTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Workflows this run has looked at for push: what already waited then is not news. */
+  const alertSeen = new Set<string>()
+
+  /** A phone's copy: slim, plus what a phone can't know for sessions it doesn't list. */
+  function forPhone(snapshot: WorkflowSnapshot): WorkflowSnapshot {
+    const leadTerminalId = leadTerminal(snapshot.workflow.leadKey)
+    const live = new Map(peersWithWindows().map((p) => [p.terminalId, p.status]))
+    const statuses: Record<string, AgentStatus> = {}
+    for (const id of [...Object.values(snapshot.workers), ...Object.values(snapshot.reviewers), ...(leadTerminalId ? [leadTerminalId] : [])]) {
+      const status = live.get(id)
+      if (status && status !== 'unknown') statuses[id] = status
+    }
+    return { ...slimWorkflowSnapshot(snapshot), statuses, leadTerminalId, leadWindowId: engine.leadWindowOf(snapshot.workflow) }
+  }
+
+  function sendRemote(id: string, snapshot: WorkflowSnapshot, text: string): void {
+    lastRemote.set(id, { text, at: Date.now() })
+    deps.clients.sendRemote?.('workflow:changed', snapshot)
+  }
+
+  /** Statuses changed but nothing a window shows: phones only, throttled, sent as of when the timer fires. */
+  function statusesChanged(id: string): void {
+    if (remoteTimers.has(id)) return
+    const wait = (lastRemote.get(id)?.at ?? 0) + STATUS_THROTTLE_MS - Date.now()
+    const flush = (): void => {
+      remoteTimers.delete(id)
+      const current = engine.snapshot(id)
+      if (!current) return
+      const remote = forPhone(current)
+      const text = JSON.stringify(remote)
+      if (lastRemote.get(id)?.text !== text) sendRemote(id, remote, text)
+    }
+    if (wait <= 0) flush()
+    else {
+      const timer = setTimeout(flush, wait)
+      timer.unref?.()
+      remoteTimers.set(id, timer)
+    }
+  }
+
+  /** The first look at a workflow this run spends what is already waiting, quietly. */
+  function firstSight(workflow: Workflow): void {
+    if (alertSeen.has(workflow.id)) return
+    alertSeen.add(workflow.id)
+    const items = [...waitingItems(workflow), ...judgmentItems(workflow, workflow.judgments)]
+    if (items.length > 0) deps.push?.alert(alertFor(workflow, 'waiting', items), { quiet: true })
+  }
+
+  /** Dialog episodes alerted and not yet over. */
+  const openDialogs = new Set<string>()
+
+  /** Whether what an alert named still waits, for one the debounce held back. */
+  function stillPending(workflowId: string, key: string): boolean {
+    if (key.endsWith('#p')) return openDialogs.has(key)
+    const workflow = getWorkflow(workflowId)
+    if (!workflow) return false
+    if (waitingItems(workflow).some((i) => i.key === key)) return true
+    return workflow.judgments.some((j) => `${workflow.id}/${j.taskId}@${j.at}` === key)
+  }
+
+  function alertFor(workflow: Workflow, kind: WorkflowAlert['kind'], items: WorkflowAlertItem[]): WorkflowAlert {
+    return {
+      kind,
+      workflowId: workflow.id,
+      workflowTitle: workflow.title,
+      leadLabel: workflow.leadLabel,
+      windowId: engine.leadWindowOf(workflow),
+      items,
+      pending: (key) => stillPending(workflow.id, key),
+    }
+  }
+
+  /** The session's dialog is over (it runs again, stopped or started a turn): its next one is news. */
+  function dialogOver(terminalId: string): void {
+    const owner = workflowOwnerOf(terminalId)
+    if (!owner) return
+    const key = dialogKey(owner.workflowId, owner)
+    openDialogs.delete(key)
+    deps.push?.rearm(key)
+  }
+
+  function alertWaiting(workflow: Workflow): void {
+    firstSight(workflow)
+    const items = waitingItems(workflow)
+    if (items.length > 0) deps.push?.alert(alertFor(workflow, 'waiting', items))
+  }
 
   const engine = createWorkflowEngine({
     peers: () => peersWithWindows().map(toEnginePeer),
@@ -162,17 +334,65 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
     },
     settings: () => settings,
     broadcast(snapshot: WorkflowSnapshot) {
-      // Peer syncs arrive on every status change; most leave every workflow as it was.
+      const id = snapshot.workflow.id
+      if (snapshot.dismissed) {
+        lastSent.delete(id)
+        lastRemote.delete(id)
+        clearTimeout(remoteTimers.get(id))
+        remoteTimers.delete(id)
+        alertSeen.delete(id)
+        deps.push?.forget(id)
+        for (const k of openDialogs) if (k.startsWith(`${id}/`)) openDialogs.delete(k)
+        if (deps.clients.sendSplit) deps.clients.sendSplit('workflow:changed', snapshot, slimWorkflowSnapshot(snapshot))
+        else deps.clients.send('workflow:changed', snapshot)
+        return
+      }
+      alertWaiting(snapshot.workflow)
+      // Peer syncs arrive on every status change; most leave every workflow as
+      // it was for a window, but phones read the statuses from the snapshot.
       const text = JSON.stringify(snapshot)
-      if (lastSent.get(snapshot.workflow.id) === text) return
-      if (snapshot.dismissed) lastSent.delete(snapshot.workflow.id)
-      else lastSent.set(snapshot.workflow.id, text)
-      deps.broadcast('workflow:changed', snapshot)
+      const remote = forPhone(snapshot)
+      const remoteText = JSON.stringify(remote)
+      if (lastSent.get(id) !== text) {
+        lastSent.set(id, text)
+        lastRemote.set(id, { text: remoteText, at: Date.now() })
+        clearTimeout(remoteTimers.get(id))
+        remoteTimers.delete(id)
+        if (deps.clients.sendSplit) deps.clients.sendSplit('workflow:changed', snapshot, remote)
+        else deps.clients.send('workflow:changed', snapshot)
+        return
+      }
+      if (lastRemote.get(id)?.text !== remoteText) statusesChanged(id)
+    },
+    leadWoken(workflow, judgments) {
+      firstSight(workflow)
+      deps.push?.alert(alertFor(workflow, 'lead-woken', judgmentItems(workflow, judgments)))
     },
     log: (message) => console.log(message),
   })
 
   onPeersChanged(() => engine.onPeersChanged())
+  // A worker's permission prompt or idle prompt: precise, and its own pushes are ignored as an owned session's.
+  // A worker's dialog. Its idle prompt is left out: a Stop without a result is
+  // already a waiting task (`waitingItems`), and one after a result waits on nobody.
+  onAgentStatus((event) => {
+    if (!event.precise) return
+    if (event.status === 'running') dialogOver(event.terminalId)
+    if (event.status !== 'waiting' || !isDialogNotification(event.notificationType, event.message)) return
+    const found = currentOwner(event.terminalId)
+    if (!found || (found.task.state !== 'running' && found.task.state !== 'waiting')) return
+    const { workflow, task, owner } = found
+    if (!speaks(task, owner) || (task.state === 'waiting' && !waitsOnUser(task)) || workflow.judgments.some((j) => j.taskId === task.id)) return
+    const who = owner.review !== undefined ? 'reviewer' : 'worker'
+    const key = dialogKey(workflow.id, owner)
+    openDialogs.add(key)
+    firstSight(workflow)
+    deps.push?.alert(
+      alertFor(workflow, 'waiting', [
+        { key, taskId: task.id, taskTitle: titleOf(workflow, task), note: event.message?.trim() || `The ${who} is asking for permission or input.` },
+      ]),
+    )
+  })
   // A lead without a provider session id yet is keyed by its terminal id until it gets one.
   onSessionRegistered((sessionId, terminalId) => engine.rekeyLead(terminalId, sessionId))
 
@@ -199,13 +419,26 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
     }
   }
 
+  /** The phone is read-only: what changes a workflow belongs to the desktop. */
+  function desktopOnly(channel: string, sender: RemoteClient): void {
+    if (sender.clientKey !== undefined) throw new Error(`${channel} is not available to remote clients`)
+  }
+
   handleInvoke('workflow:list', (event): WorkflowList => {
     const project = projectFor(event.sender.id)
-    return { project, workflows: engine.list(project) }
+    const workflows = engine.list(project)
+    return { project, workflows: event.sender.clientKey !== undefined ? workflows.map(forPhone) : workflows }
   })
-  handleInvoke('workflow:start', (event, id: unknown) => asError(() => engine.start(ownWorkflow(event.sender.id, id), 'user')))
-  handleInvoke('workflow:cancel', (event, id: unknown) => asError(() => engine.cancel(ownWorkflow(event.sender.id, id))))
+  handleInvoke('workflow:start', (event, id: unknown) => {
+    desktopOnly('workflow:start', event.sender)
+    return asError(() => engine.start(ownWorkflow(event.sender.id, id), 'user'))
+  })
+  handleInvoke('workflow:cancel', (event, id: unknown) => {
+    desktopOnly('workflow:cancel', event.sender)
+    return asError(() => engine.cancel(ownWorkflow(event.sender.id, id)))
+  })
   handleInvoke('workflow:dismiss', (event, id: unknown) => {
+    desktopOnly('workflow:dismiss', event.sender)
     asError(() => engine.dismiss(ownWorkflow(event.sender.id, id)))
   })
   handleInvoke('workflow:hosts', (event, keys: unknown) => {
@@ -234,8 +467,16 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
         return problemsBody(error)
       }
     },
-    turnStarted: (terminalId) => engine.onTurnStarted(terminalId),
-    turnEnded: (terminalId) => engine.onTurnEnded(terminalId),
+    turnStarted(terminalId) {
+      const owner = workflowOwnerOf(terminalId)
+      if (owner) deps.push?.rearm(slotKey(owner.workflowId, owner))
+      dialogOver(terminalId)
+      engine.onTurnStarted(terminalId)
+    },
+    turnEnded(terminalId) {
+      dialogOver(terminalId)
+      engine.onTurnEnded(terminalId)
+    },
     leadHandoff(terminalId) {
       // Read now: the replaced session's registration goes when it exits.
       const fromKey = sessionForTerminal(terminalId) ?? terminalId
@@ -354,5 +595,11 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
     }
   }
 
-  return engine
+  return {
+    ...engine,
+    stop() {
+      for (const timer of remoteTimers.values()) clearTimeout(timer)
+      remoteTimers.clear()
+    },
+  }
 }
