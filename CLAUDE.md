@@ -923,7 +923,8 @@ reviews the graph and presses **Start** in the lead's Workflow tab. MCP tools:
 `create_workflow`, `patch_workflow`, `start_workflow`, `get_workflow`, and
 `report_result` for workers.
 - **Main owns workflows** in the app database (migration 5: `workflows`,
-  `workflow_tasks`, `workflow_patches`; 6: the tasks' attempt `history`). `workflow-store.ts` reads and writes a
+  `workflow_tasks`, `workflow_patches`; 6: the tasks' attempt `history`; 7: a
+  loop's `rounds`, a map child's `parent`, `item_index`, `item`). `workflow-store.ts` reads and writes a
   workflow whole and synchronously. A lead's patch is applied against
   `baseVersion` by `applyOpsTo`: all ops or none, every problem listed for the
   agent. `workflow-engine.ts` owns runtime state. `workflow-host.ts` wires both
@@ -976,8 +977,49 @@ reviews the graph and presses **Start** in the lead's Workflow tab. MCP tools:
   a worker marks its task `steered`, and its result tells the lead.
 - `start_workflow` is refused unless Settings → Workflows allows it
   (`userData/config/workflows.json`).
-- Not built yet: `loop` and `map` kinds, the patch history view, the phone.
-  Every engine step is logged as `[Workflows] …`.
+- **Kinds: `agent`, `integrate`, `loop`, `map`, all one flat shape.** A
+  loop's own fields are the worker, plus `reviewer` ({brief, provider?, model?,
+  effort?}) and `maxRounds` (1–5, default 3); a map's own fields are the
+  template, plus `over` (`"<task>.result.items"`, an ancestor) and `maxItems`
+  (1–20). Nested `worker`/`template` keys are refused with the flat-form hint:
+  one shape keeps `update`, the model checks and the briefs on PR 1's code.
+- **A loop is one task with a persistent worker and a fresh reviewer per
+  round** (owner `review: n`, same `attempt`), spawned in the worker's
+  worktree, so a loop needs a `worktree`. The worker's `report_result` `done`
+  queues a review (the task stays `running`); starting reviewer n closes
+  reviewer n-1, whose findings stay on the round. `clean` makes the loop
+  `done`; `findings` are mailed to the worker from `workflow` and open the
+  next round; `findings` at `maxRounds` is a judgment. The lead answers with
+  the patch ops `extend` (more rounds, at most 10 in all) or `accept` (done
+  as is), not `update`, which stays queued-only. A failed reviewer gets one
+  fresh successor under `onFailure: "retry"`, then fails the loop; a lead
+  `retry` then re-queues only the reviewer while the worker lives (a restart
+  resumes that kept worker; a cancel detaches it). A lost worker fails the
+  round (`workerLost`) and closes its reviewer; its retry is a fresh attempt.
+  Reviewers are read-only by instruction only, like every launch.
+- **A map expands at runtime into real task rows `<map>.<n>`** (`parent`,
+  `index`, `item`), plain `agent` tasks that every PR 1 mechanism applies to
+  (gate, retry, sweep, cancel, steering); the map row is a container with no
+  session. Its `worktree.branch` must carry `{{index}}` or `{{item}}`
+  (`childBranch`), since children write in parallel. `{{item}}`/`{{index}}`
+  work only in a map's brief, acceptance and branch, and a child's brief is
+  never templated again (an item may contain `{{`). Empty `items` makes the
+  map `done`; missing items, more than `maxItems` or an over-long resolved
+  brief is a judgment, never a silent cut. A failed child raises its own
+  judgment; the map is `done` once every child is done or cancelled (one
+  done at least), with its done children's items as its result. A lead can't
+  write or depend on a child id, but can `retry`/`cancel`/`update` one.
+- **`report_result` refuses what it can't keep** (more than 200 items, an
+  item or finding over 500 chars, blanks, duplicates, more than 20 findings
+  from a reviewer, items from a reviewer) rather than cutting it; only `changedFiles` is cut. Each
+  task takes at most one lifecycle op (`extend`/`accept`/`cancel`/`retry`)
+  per patch.
+- **Cancelling a loop detaches its worker and only a still-reviewing
+  reviewer** (`detachedSlot`); a finished reviewer is closed.
+- **Show patches** in the Workflow tab lists every applied patch, newest
+  first (`workflow-patches.ts`, `PatchHistory.svelte`); picking one highlights
+  the cards it touched.
+- Not built yet: the phone. Every engine step is logged as `[Workflows] …`.
 
 ### Layout
 The sidebar is an **accordion of three sections**: Sessions (`SessionList`),
@@ -1181,7 +1223,7 @@ src/
       screenprs/              ← ScreenPrsView (header + Review Room), ScreenPrsQueue (sidebar), OverviewCard, ConfirmReviewModal, …
       review/                 ← Review Room: ReviewRoom, LayerSection, ReviewThreadCard, ReviewOutline, CompanionDock, SubmitReviewsModal
       backlog/                ← BacklogView (header + detail), BacklogList (sidebar), BacklogItemDetail (autosave), PromptField
-      workflow/               ← WorkflowView (tab), WorkflowGraph (xyflow + elk, lazy), TaskNode, WorkerPopup
+      workflow/               ← WorkflowView (tab), WorkflowGraph (xyflow + elk, lazy), TaskNode, WorkerPopup (slots), PatchHistory
       settings/               ← SettingsWindow, ModelsPane, DefaultModelPane, …
       command-palette/        ← CommandPalette + input/results
       memory/                 ← Memory health badge/list + empty state

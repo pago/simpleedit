@@ -1,6 +1,7 @@
 # Plan: Workflows (scripted multi-agent execution)
 
-Status: draft · Branch: `feature/runs` (worktree `wt-runs`) · Mockup:
+Status: PR 1 merged (#227) · PR 2 (loops, maps, patch history) on `feature/workflows-loops`
+· PR 3 (phone) unbuilt · Worktree `wt-runs` · Mockup:
 https://claude.ai/artifact/HsK89KKsAM7BzSZEvWEQoU
 
 > A lead session turns a plan into a **workflow**: a JSON task graph SimpleEdit executes
@@ -89,8 +90,8 @@ Delegation already works: a lead can `spawn_session` and collect with
 | kind | fields | semantics |
 |---|---|---|
 | `agent` | `brief`, `provider`, `model`, `effort?`, `worktree` (branch/path) | One worker session. Done when it reports a result. |
-| `loop` | `worker` (an agent spec), `reviewer` (agent spec), `maxRounds` | Worker runs; a **fresh** reviewer reviews the diff; findings go back to the worker; repeat until the reviewer reports `clean` or `maxRounds` is hit (→ judgment point). |
-| `map` | `over: "<taskId>.result.items"`, `template` (agent spec with `{{item}}`) | Fan-out sized at runtime from an earlier result. Renders as one stacked card. |
+| `loop` | the task's own agent fields are the worker, plus `reviewer` (`{brief, provider?, model?, effort?}`), `maxRounds` | Worker runs; a **fresh** reviewer reviews the diff; findings go back to the worker; repeat until the reviewer reports `clean` or `maxRounds` is hit (→ judgment point). |
+| `map` | the task's own agent fields are the template (`{{item}}`, `{{index}}`), plus `over: "<taskId>.result.items"`, `maxItems` | Fan-out sized at runtime from an earlier result. Renders as one stacked card. |
 | `integrate` | an agent spec, `shape: "single" \| "stack" \| "separate"` | Fan-in: combine the branches of its `after` tasks into the planned PR shape. Conflicts are where workflows go wrong, so this is the task the user most often steps into. |
 
 Briefs may reference earlier results (`{{task.<id>.result.summary}}`). Templates are lookups
@@ -332,6 +333,77 @@ without them and is open to change.
   - Task models are checked against main's catalog (`unknownModelReason`).
   - Workers are listed in `list_sessions` with their owner, on purpose, and send no phone
     push: their needs surface through the lead.
+
+## PR 2 implementation notes
+
+Built on `feature/workflows-loops` (2026-10-17) without the user; every call below is open to
+change.
+
+- **Migration 7**: `workflow_tasks` gains `rounds` (a loop's rounds + reviewer count, JSON),
+  `parent`, `item_index`, `item` (map children). Spec fields (`reviewer`, `maxRounds`, `over`,
+  `maxItems`) live in the existing `spec` JSON.
+- **Decisions taken without the user (D1–D11), as built:**
+  - **D1. Flat kind fields**, not the table's nested `worker`/`template`: a loop's own fields
+    are the worker, a map's own fields are the template. In PR 1 an agent spec already is the
+    task's top-level fields, so `update`, the model checks and the briefs stay on one shape.
+    `worker`/`template` keys are refused with a hint at the flat form (create and update).
+  - **D2. Map items over `maxItems` (cap 20) are a judgment**, never cut to the first 20.
+  - **D3. Starting reviewer n closes reviewer n-1.** Its findings stay on the round and show
+    in the popup; at most two sessions per loop.
+  - **D4. Cancelling a loop detaches its worker and a reviewer still reviewing**; a finished
+    reviewer is closed (`detachedSlot`).
+  - **D5. Empty `items` makes the map `done`**; missing `items` is a judgment.
+  - **D6. A reviewer from round 2 on is told the earlier findings**, to check they are fixed
+    and look beyond them, so a loop doesn't oscillate.
+  - **D7. Progress counts a map's children** once it expands (before that, the map counts 1).
+  - **D8. Reviewers are read-only by instruction only**, no read-only launch: permissions are
+    not a workflow concern, and the worker is idle during review.
+  - **D9. A loop needs a `worktree`**: the reviewer reviews that branch's diff.
+  - **D10. Map children are always `agent` tasks**: no maps of loops, no nested maps.
+  - **D11. New ops `extend` (more rounds, 1–5 per op, 10 in all) and `accept`** answer a loop
+    that didn't converge; `update` stays queued-only and both answers show in patch history.
+- **Map children are real task rows `<map>.<n>`** (n 1..99), so every PR 1 mechanism applies
+  to them unchanged; loop rounds are runtime state of the loop row. A lead can't write a child
+  id or depend on one, but can `retry`/`cancel`/`update` one (not its `after`). Expansion is
+  engine runtime: no patch row, no version bump. The task cap counts top-level tasks only.
+- **Reviewer owner**: `SessionOwner` gains `review: n`, with the worker's `attempt`, so a
+  retry's fresh worker makes the old reviewers stale by PR 1's rule. An invalid `review`
+  refuses the whole owner (dropping the field would pass a reviewer off as the worker).
+- **Deviations from the design:**
+  - A map **needs** a `worktree` whose branch carries `{{index}}` or `{{item}}` (the design
+    allowed none); children write in parallel. Children inherit the map's `worktree.base`.
+  - `ownerIsCurrent` is identity (attempt, latest reviewer), not liveness; `currentSlots` is
+    the state-dependent list.
+  - A loop round's `work` keeps `items`, so a loop can be a map's `over` source (the latest
+    round that reported any, `loopItems`).
+  - A loop worker's report is refused while its change is in review. A worker lost during
+    review fails the round (`workerLost`) and its retry is a fresh attempt.
+  - A reviewer-only `retry` whose kept worker is gone becomes a fresh worker attempt.
+  - `extend` on a not-converged loop always resumes it (mail + next round).
+  - A finished map's result: "N of M items done" plus a line per child, its done children's
+    items, the union of their changed files, no branch. An integrate after a map lists each
+    done child's branch.
+  - Patch history: a row per patch, newest first ("Patch n · v<version>"), click to highlight
+    the cards it touched; cards say "Changed by patch N." for screen readers.
+  - The popup keeps the task and card beside its slots (worker / reviewer, or one per child)
+    and shows one terminal at a time, so only one claims the PTY size.
+  - No browser tests for the Svelte components beyond `TaskNode` (rendered through the graph).
+- **Review fixes:**
+  - One lifecycle op (`extend`, `accept`, `cancel`, `retry`) per task per patch; a loop is
+    resumed once per id, and only if it still waits not-converged.
+  - `report_result` refuses what it can't keep: items > 200, an item or finding > 500 chars,
+    blanks, duplicate items, findings > 20 from a reviewer (> 200 otherwise). Only
+    `changedFiles` is still cut.
+  - A child brief or acceptance over the limit after substitution fails the map, unexpanded,
+    with a judgment naming the item.
+  - Map judgments tell the lead to add a task that reports or narrows the items and point the
+    map's `after`/`over` at it (the source is done and can't be retried). A stuck graph names
+    a map's failed children (`fix (its fix.1 failed)`).
+  - A worktree that can't be prepared counts an attempt and goes through `onFailure`.
+  - Judgment mail mentions `extend`/`accept`. Malformed stored rounds are dropped and logged.
+  - Renderer: Needs you and a card click open the reviewer when the reviewer is the one
+    speaking; the worker slot then reads "Waiting for the review" or "Its reviewer failed";
+    the popup header names the reviewer's own agent.
 
 ## Open questions
 
