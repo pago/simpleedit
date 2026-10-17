@@ -1,5 +1,33 @@
 # simpleedit
 
+## 0.25.0
+
+### Minor Changes
+
+- [`bfc56a7`](https://github.com/pago/simpleedit/commit/bfc56a778dd483808b719743b8e74a9f35ec1314) Thanks [@pago](https://github.com/pago)! - The phone's PRs tab opens the Review Room too. The board lists reviews an agent requested and keeps a stack together. A stack reads as one page: the whole-stack threads, then each layer's overview or author's briefing, its threads and its diff, with line threads under their lines. You can start threads from a tapped line, ask the companion (it runs on the Mac, and the phone tells you when it needs you there), draft and edit comments, mark threads done, open the outline, and submit one review per layer with its own verdict, or send it back to the requesting session. The phone's old PR detail and Discuss with Agent sheet are replaced by the room.
+
+- [#228](https://github.com/pago/simpleedit/pull/228) [`97ff06d`](https://github.com/pago/simpleedit/commit/97ff06df0d003c5f347e1095a9df902515d62358) Thanks [@pago](https://github.com/pago)! - Review Room: agents can ask for a review of their own PR with `request_review` (with a briefing of what, why, impact, reading order, open questions and the commands they ran). The review is listed under Requested in Screen PRs without interrupting you, the briefing shows labelled as the author's and is checked by the overview, threads can Ask author, and submitting hands the review back to the requesting session (posting to GitHub is optional). Reviews of the same stack are numbered rounds that carry their threads over.
+
+- [`62bae52`](https://github.com/pago/simpleedit/commit/62bae52633f8a6c570e9b39c23ab0c1fb77bb0db) Thanks [@pago](https://github.com/pago)! - Screen PRs opens a PR or stack in the new Review Room. Findings from screening, the overview and deep review, other reviewers' GitHub comments and your own notes all become threads under their lines. Each thread has a private conversation with a read-only review companion agent (Claude, Codex or OpenCode, docked as a terminal at the bottom) and an optional draft. The overview gains a reading order that becomes the room's tour, and a repo's `REVIEW.md` steers the overview, deep review and companion. You submit one GitHub review per layer, each with its own verdict, and your drafts are posted as a pending review that a failed or interrupted post resumes. Each layer shows the new commits since you last looked. The desktop's Discuss with Agent and review composer are replaced by the room.
+
+- [#227](https://github.com/pago/simpleedit/pull/227) [`d4597a6`](https://github.com/pago/simpleedit/commit/d4597a607d72d227f28936133ed523ae91ad3936) Thanks [@pago](https://github.com/pago)! - Workflows: a lead agent can turn a plan into a task graph (`create_workflow`) that SimpleEdit runs with hidden worker sessions. The lead's new Workflow tab shows the graph, what needs you, and each worker's terminal in a popup; press Start to run it. Workers report with `report_result`, failures retry or escalate to the lead, and running workflows pick up their workers again after a restart.
+
+- [#231](https://github.com/pago/simpleedit/pull/231) [`99d998f`](https://github.com/pago/simpleedit/commit/99d998f18989f3b6b848b862c8c8f72bd203394a) Thanks [@pago](https://github.com/pago)! - Workflows: two new task kinds. A review loop has a worker change a branch while a fresh reviewer checks each round, until the review comes back clean or the lead decides; a map fans a task out over a list an earlier task produced, one worker per item. The Workflow tab shows loops with their round count and maps as stacked cards, and Show patches lists every change the lead made to the plan.
+
+- [#233](https://github.com/pago/simpleedit/pull/233) [`bb0e6bb`](https://github.com/pago/simpleedit/commit/bb0e6bb76c3d8e8da1cb85f779dcdca5b80269b4) Thanks [@pago](https://github.com/pago)! - Workflows on the phone: a read-only Workflow screen reached from the lead's session (stages, Needs you, tap to open a worker's terminal), and a push when a workflow task waits on you or the lead is woken.
+
+### Patch Changes
+
+- [#224](https://github.com/pago/simpleedit/pull/224) [`958408b`](https://github.com/pago/simpleedit/commit/958408b369710e5738b6c85fee203b9369e4bd07) Thanks [@pago](https://github.com/pago)! - Screen PRs no longer reads "no checks" or a cancelled check as passing CI: a PR with nothing run shows "No CI checks", a cancelled or required-but-skipped check shows "CI needs attention", and the overview prompt says the same.
+
+- [#223](https://github.com/pago/simpleedit/pull/223) [`6176fe4`](https://github.com/pago/simpleedit/commit/6176fe43ae3da2326b2130803e23bcfb407b80f7) Thanks [@pago](https://github.com/pago)! - Opening Backlog or Screen PRs no longer tears down your session workspaces: terminals, editor tabs and scroll positions are exactly as you left them when you come back.
+
+- [#220](https://github.com/pago/simpleedit/pull/220) [`4afa9d4`](https://github.com/pago/simpleedit/commit/4afa9d4582a003cfd250e017c293b000831eb633) Thanks [@pago](https://github.com/pago)! - Discuss with Agent on a PR now loads the review context and waits for your instructions instead of starting the review on its own.
+
+- [`6b3c02e`](https://github.com/pago/simpleedit/commit/6b3c02eec5ada8300b7db024e2f4bbf9faf4d18b) Thanks [@pago](https://github.com/pago)! - Added the persisted Review Room model, review threads, companion ownership, and review-thread agent tools.
+
+- [#223](https://github.com/pago/simpleedit/pull/223) [`8c26dde`](https://github.com/pago/simpleedit/commit/8c26dde95edb3049f204f08ce504a46a8df77e0b) Thanks [@pago](https://github.com/pago)! - Fix garbled agent terminals after switching sessions or coming back from Backlog or Screen PRs: a hidden terminal no longer shrinks to a few columns, and a terminal replays its earlier output at the PTY's width.
+
 ## 0.24.0
 
 ### Minor Changes
