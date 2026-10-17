@@ -940,7 +940,8 @@ reviews the graph and presses **Start** in the lead's Workflow tab. MCP tools:
   Closing it kills its non-detached workers, since its bridge stops with it:
   like a restart, on reopen they resume and get one nudge, or fail after the
   90 s grace. Workers are listed in `list_sessions` with their owner (on
-  purpose) and never push to the phone; their needs surface through the lead.
+  purpose) and never push on their own: their needs surface as the
+  workflow's push (see Phone below).
 - **Terminal ids are never stored.** Workers are bound from the agent-bus peer
   list by their owner (`peersWithWindows`, `onPeersChanged`). Leads are keyed by
   provider session id, and windows report which leads they hold
@@ -1019,7 +1020,74 @@ reviews the graph and presses **Start** in the lead's Workflow tab. MCP tools:
 - **Show patches** in the Workflow tab lists every applied patch, newest
   first (`workflow-patches.ts`, `PatchHistory.svelte`); picking one highlights
   the cards it touched.
-- Not built yet: the phone. Every engine step is logged as `[Workflows] …`.
+- **Why it is shaped this way** (decisions of 2026-10-16):
+  - *Workflow*, because "run" is Screen PRs', "runner" is bounded tasks' and
+    "orchestrator" is deep review's.
+  - **JSON, not code**: data main validates can be drawn before it runs and is
+    safe to execute in main; patching gives what a running script couldn't.
+  - **The plan stays prose**: `PLAN.md` is never parsed. The workflow is the
+    lead's derived execution record, never an authoring surface (the lesson of
+    Plan Mode, #132).
+  - **Every worker is a terminal session, no headless mode**: the headless
+    runners are read-only, and a hidden terminal already gives what headless
+    promised at the same token cost, while staying interceptable.
+  - **Permissions are not a workflow concern**: no launch passes a permission
+    flag, so workers get the user's CLI defaults; a rare prompt is an ordinary
+    Needs you item.
+  - **The user starts a workflow**, and waking the lead at judgment points is
+    fine (rare by design): the record is the durable memory, so the lead may be
+    compacted once the workflow is prepared.
+- **Phone** (`web/WorkflowScreen.svelte`, `web/lib/workflows.svelte.ts`,
+  `web/lib/workflow-phone.ts`). The desktop's Workflow tab becomes a
+  **read-only screen on the Sessions stack** (no fourth tab): reached from the
+  lead's row badge ("⇶ done/total · N need you", a button beside the row), the
+  Workflow button on the lead's session screen, or a push. Status line, Needs
+  you on top, then a section per dependency depth ("Stage n"), rows from the
+  desktop's own `workflow-view.ts` helpers, so the two can't drift. Chips
+  switch between a lead's workflows, each as a new layer.
+  - **No Start, Cancel, Dismiss or patch on the phone**; main refuses
+    `workflow:start|cancel|dismiss` from sockets. Typing into a worker is
+    allowed (it marks the task `steered`).
+  - **A worker opens as an ordinary session entry** synthesized from the
+    workflow ("<task> · Worker|Reviewer"), so `bringToFront`, `leaveWindow`
+    and one-terminal-per-PTY apply unchanged; `nav.push` brings a session
+    already on the stack forward instead of stacking a second one. Workers
+    stay out of the Sessions list and snapshot. Opening is disabled, with the
+    reason, when the lead's window isn't the one the phone joined or the slot
+    has no live terminal. Worker entries close on dismiss or when the
+    workflow no longer names their terminal; `session:list-changed` never
+    closes them (they were never listed).
+  - **Small payloads**: `workflow:changed` goes out by `sendSplit`, full to
+    windows and `slimWorkflowSnapshot` to sockets (briefs, history and patch
+    ops dropped, patches kept as stubs for the count, findings kept as a
+    count, one-liners cut without changing `firstLine`, a loop keeps only the
+    rounds the views read; worst case ~53 KB), plus `statuses`,
+    `leadTerminalId` and `leadWindowId`, which only main knows. A
+    status-only change goes to phones alone (`sendRemote`), at most once a
+    second per workflow. `workflow:list` answers sockets slim. The phone
+    keeps live `agent:status` only for terminals a workflow names, and its
+    list counts as unloaded from a new identity until main answers, so a push
+    tap never resolves against the old project.
+  - **Push is the workflow's, never the worker's own** (`push.ts`
+    `handleWorkflowAlert`; `#workflow=<id>&task=<task>`, tag
+    `simpleedit-workflow-<id>`, `terminalId: ''` for older service workers).
+    The tap opens the Workflow screen scrolled to the task, not its terminal.
+    It fires when the task's **speaking slot** needs the user: the worker (of
+    a non-loop, or of a loop whose round is `pending`) or the current
+    reviewer while its round runs. A `Stop` without a result is one episode
+    (`slotKey`, re-armed by that slot's next turn); a dialog
+    (`isDialogNotification`, from `notificationType`) is its own (`#p`,
+    re-armed by `running`, `Stop` or a turn start), so a stop after an
+    approved prompt still pushes. `idle_prompt` never pushes (the `Stop`
+    did), nor does a task waiting on the lead (`waitsOnUser`: only a turn
+    that ended without a result waits on the user). Judgments push once
+    mailed to the lead ("lead woken"), once per `taskId@at`. A 5-minute
+    per-workflow debounce holds items and sends those still pending when it
+    ends (a judgment is pending while it is open, read by the lead or not).
+    Quit clears the timers (`WorkflowHost.stop`, `stopWorkflowAlerts`). On first sight of a workflow after a restart, what already waits
+    counts as alerted.
+- Per-workflow budgets (concurrent workers, total rounds) are an open
+  question: #232. Every engine step is logged as `[Workflows] …`.
 
 ### Layout
 The sidebar is an **accordion of three sections**: Sessions (`SessionList`),
