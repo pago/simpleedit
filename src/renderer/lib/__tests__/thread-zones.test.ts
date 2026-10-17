@@ -270,6 +270,17 @@ describe('new-thread composer', () => {
     await userEvent.keyboard('{Escape}')
     expect(document.querySelector('textarea[aria-label="Comment on these lines"]')).toBeNull()
   })
+  it('takes clicks: the zone is not covered by the text layer', async () => {
+    sync()
+    const box = await openComposerAt(2)
+    editor.focus()
+    await userEvent.click(box)
+    expect(document.activeElement).toBe(box)
+    await userEvent.keyboard('Typed after a click')
+    expect(box.value).toBe('Typed after a click')
+    await userEvent.click(document.querySelector<HTMLElement>('.thread-zone button:nth-of-type(2)')!)
+    expect(composerBox()).toBeNull()
+  })
 })
 
 function composerBox(): HTMLTextAreaElement | null {
