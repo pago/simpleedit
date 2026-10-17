@@ -37,6 +37,7 @@ function snapshot(extra: Partial<Workflow> = {}, rest: Partial<WorkflowSnapshot>
     },
     paused: null,
     workers: {},
+    reviewers: {},
     ...rest,
   }
 }

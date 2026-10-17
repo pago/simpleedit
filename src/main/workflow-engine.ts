@@ -185,7 +185,7 @@ export function createWorkflowEngine(host: EngineHost): WorkflowEngine {
       if (peer) workers[task.id] = peer.terminalId
     }
     const paused = workflow.status === 'running' && leadWindow(workflow) === null ? 'window-closed' : null
-    return { workflow, paused, workers }
+    return { workflow, paused, workers, reviewers: {} }
   }
 
   function publish(workflow: Workflow): WorkflowSnapshot {
@@ -704,7 +704,7 @@ export function createWorkflowEngine(host: EngineHost): WorkflowEngine {
       archiveWorkflow(id)
       prune(id)
       host.log(`[Workflows] ${id} dismissed`)
-      host.broadcast({ workflow, paused: null, workers: {}, dismissed: true })
+      host.broadcast({ workflow, paused: null, workers: {}, reviewers: {}, dismissed: true })
     },
 
     snapshot(id) {
