@@ -26,6 +26,7 @@ function snapshot(tasks: WorkflowTask[], extra: Partial<Workflow> = {}, workers:
     },
     paused,
     workers,
+    reviewers: {},
   }
 }
 

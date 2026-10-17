@@ -9,10 +9,13 @@ import { isWorkflowId, isWorkflowTaskId } from './workflow'
  * - `workflow`: a workflow task's worker. Its attention rolls up onto the
  *   workflow's lead, and its Workflow tab card opens it. `attempt` tells a
  *   retry's worker from the one it replaced, which stays until Dismiss.
+ *   With `review`, the session is a review loop's reviewer number `review`
+ *   within worker attempt `attempt`; a map child's worker needs nothing
+ *   extra, its `taskId` is the child's.
  */
 export type SessionOwner =
   | { kind: 'review'; reviewId: string }
-  | { kind: 'workflow'; workflowId: string; taskId: string; attempt: number }
+  | { kind: 'workflow'; workflowId: string; taskId: string; attempt: number; review?: number }
 
 export type WorkflowOwner = Extract<SessionOwner, { kind: 'workflow' }>
 
@@ -23,23 +26,33 @@ export function parseSessionOwner(value: unknown): SessionOwner | undefined {
     return isReviewId(owner.reviewId) ? { kind: 'review', reviewId: owner.reviewId } : undefined
   }
   if (owner.kind === 'workflow') {
-    const attempt = owner.attempt
+    const { attempt, review } = owner
+    // A bad `review` refuses the owner: dropping only the field would make a reviewer pass for the worker.
     return isWorkflowId(owner.workflowId) &&
       isWorkflowTaskId(owner.taskId) &&
-      typeof attempt === 'number' &&
-      Number.isInteger(attempt) &&
-      attempt >= 1
-      ? { kind: 'workflow', workflowId: owner.workflowId, taskId: owner.taskId, attempt }
+      isCount(attempt) &&
+      (review === undefined || isCount(review))
+      ? { kind: 'workflow', workflowId: owner.workflowId, taskId: owner.taskId, attempt, ...(review !== undefined ? { review } : {}) }
       : undefined
   }
   return undefined
+}
+
+function isCount(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1
 }
 
 /** A plain copy for IPC: a store's `owner` is a `$state` proxy, which structured clone refuses. */
 export function plainSessionOwner(owner: SessionOwner): SessionOwner {
   return owner.kind === 'review'
     ? { kind: 'review', reviewId: owner.reviewId }
-    : { kind: 'workflow', workflowId: owner.workflowId, taskId: owner.taskId, attempt: owner.attempt }
+    : {
+        kind: 'workflow',
+        workflowId: owner.workflowId,
+        taskId: owner.taskId,
+        attempt: owner.attempt,
+        ...(owner.review !== undefined ? { review: owner.review } : {}),
+      }
 }
 
 export function isOwned(value: { owner?: SessionOwner } | null | undefined): boolean {

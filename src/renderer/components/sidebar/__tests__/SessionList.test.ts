@@ -23,6 +23,7 @@ function snapshot(leadKey: string, id: string): WorkflowSnapshot {
     },
     paused: null,
     workers: {},
+    reviewers: {},
   }
 }
 

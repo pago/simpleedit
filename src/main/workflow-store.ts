@@ -323,7 +323,7 @@ export function applyOpsTo(workflow: Workflow, ops: readonly WorkflowOp[], now =
       task.state = 'cancelled'
       task.cancelledBy = version
       task.finishedAt = now.toISOString()
-    } else {
+    } else if (op.op === 'retry') {
       if (task.state !== 'failed') {
         problems.push(`${at}: task "${task.id}" is ${task.state}; only a failed task can be retried`)
         return
@@ -332,6 +332,8 @@ export function applyOpsTo(workflow: Workflow, ops: readonly WorkflowOp[], now =
       if (op.brief) task.brief = op.brief
       archiveAttempt(task)
       delete task.finishedAt
+    } else {
+      problems.push(`${at}: ${op.op} isn't supported yet`)
     }
   })
   if (tasks.length > WORKFLOW_MAX_TASKS) problems.push(`a workflow has at most ${WORKFLOW_MAX_TASKS} tasks`)
