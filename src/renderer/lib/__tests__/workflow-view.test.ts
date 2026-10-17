@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AgentStatus } from '../../../shared/ipc-types'
-import type { Workflow, WorkflowSnapshot, WorkflowTask } from '../../../shared/workflow'
-import { canCancel, canDismiss, canStart, leadProgress, needsYou, statusLine, taskCard, taskCards } from '../workflow-view'
+import type { Workflow, WorkflowLoopRound, WorkflowSnapshot, WorkflowTask } from '../../../shared/workflow'
+import { canCancel, canDismiss, canStart, cardIdOf, defaultSlot, leadProgress, needsYou, popupSlots, progressText, statusLine, taskCard, taskCards } from '../workflow-view'
 
 function task(id: string, extra: Partial<WorkflowTask> = {}): WorkflowTask {
   return { id, title: `Task ${id}`, kind: 'agent', after: [], brief: `Do ${id}`, onFailure: 'escalate', state: 'queued', attempt: 0, steered: false, ...extra }
@@ -113,9 +113,9 @@ describe('needsYou', () => {
       { a: 't-a', b: 't-b' },
     )
     expect(needsYou(snap, statuses({ 't-a': 'waiting' }))).toEqual([
-      { taskId: 'a', title: 'Task a', text: 'The worker is asking for permission or input.', canOpen: true, kind: 'worker' },
-      { taskId: 'b', title: 'Task b', text: 'Stopped', canOpen: true, kind: 'worker' },
-      { taskId: 'c', title: 'Task c', text: 'The worker stopped without a result.', canOpen: false, kind: 'worker' },
+      { taskId: 'a', title: 'Task a', text: 'The worker is asking for permission or input.', canOpen: true, kind: 'worker', slot: 'a' },
+      { taskId: 'b', title: 'Task b', text: 'Stopped', canOpen: true, kind: 'worker', slot: 'b' },
+      { taskId: 'c', title: 'Task c', text: 'The worker stopped without a result.', canOpen: false, kind: 'worker', slot: 'c' },
     ])
   })
 
@@ -136,7 +136,7 @@ describe('needsYou', () => {
       judgments: [{ taskId: 'a', question: 'which API?\nmore', at: '2026-10-16T00:00:00.000Z', delivered: true }],
     })
     expect(needsYou(snap, statuses({}))).toEqual([
-      { taskId: 'a', title: 'Task a', text: 'The lead was asked: which API?', canOpen: false, kind: 'lead' },
+      { taskId: 'a', title: 'Task a', text: 'The lead was asked: which API?', canOpen: false, kind: 'lead', slot: 'a' },
     ])
   })
 
@@ -193,6 +193,248 @@ describe('leadProgress', () => {
     )
     const finished = snapshot([task('e', { state: 'done' })], { id: 'wf_finished', status: 'done' })
     expect(leadProgress([one, two, finished], statuses({ 't-b': 'waiting' }))).toEqual({ text: '1/4', needsYou: 2 })
+  })
+})
+
+const AT = '2026-10-16T00:00:00.000Z'
+const work = (summary: string) => ({ summary, steered: false, at: AT })
+
+function loop(extra: Partial<WorkflowTask> = {}, rounds: WorkflowLoopRound[] = []): WorkflowTask {
+  return task('impl', {
+    kind: 'loop',
+    title: 'Implement',
+    state: 'running',
+    attempt: 1,
+    worktree: { branch: 'feat/impl' },
+    reviewer: { brief: 'Check it' },
+    maxRounds: 3,
+    rounds,
+    reviewers: rounds.filter((r) => r.reviewer !== undefined).length,
+    ...extra,
+  })
+}
+
+function child(map: string, index: number, extra: Partial<WorkflowTask> = {}): WorkflowTask {
+  return task(`${map}.${index}`, { parent: map, index, item: `item ${index}`, title: `item ${index}`, ...extra })
+}
+
+describe('loop cards', () => {
+  it('shows the round while the worker works, then while it is reviewed', () => {
+    const working = snapshot([loop({}, [{ round: 1, review: 'pending' }])], {}, { impl: 't-w' })
+    expect(taskCards(working, statuses({ 't-w': 'running' }))[0]).toMatchObject({
+      kind: 'loop',
+      tone: 'running',
+      status: '▶ Round 1 of 3 · working',
+      round: { current: 1, max: 3, phase: 'working' },
+    })
+    const reviewing = snapshot(
+      [loop({}, [{ round: 1, review: 'done', reviewer: 1, verdict: 'findings', findings: ['x'], work: work('w1') }, { round: 2, review: 'running', reviewer: 2, work: work('w2') }])],
+      {},
+      { impl: 't-w' },
+    )
+    reviewing.reviewers = { impl: 't-r' }
+    expect(taskCards(reviewing, statuses({ 't-w': 'idle', 't-r': 'running' }))[0]).toMatchObject({
+      tone: 'running',
+      status: '◇ Round 2 of 3 · in review',
+      round: { current: 2, max: 3, phase: 'reviewing' },
+    })
+    expect(taskCards(reviewing, statuses({ 't-r': 'waiting' }))[0]).toMatchObject({ tone: 'waiting', detail: 'The reviewer is asking something' })
+  })
+
+  it('reads a loop that did not converge as the lead\'s, and a clean one as done', () => {
+    const rounds: WorkflowLoopRound[] = [{ round: 3, review: 'done', reviewer: 3, verdict: 'findings', findings: ['x'] }]
+    const stuck = snapshot([loop({ state: 'waiting' }, rounds)], { judgments: [{ taskId: 'impl', question: 'q', at: AT, delivered: true }] })
+    expect(taskCards(stuck, statuses({}))[0]).toMatchObject({ tone: 'running', status: "◆ Didn't converge · needs the lead", round: { phase: 'not-converged' } })
+    const clean = loop({ state: 'done', result: { ...result('ok'), verdict: 'clean', rounds: 2 } }, [{ round: 2, review: 'done', reviewer: 2, verdict: 'clean' }])
+    expect(taskCards(snapshot([clean]), statuses({}))[0]).toMatchObject({ tone: 'done', status: '✓ Clean after 2 rounds' })
+    const failed = loop({ state: 'failed', note: 'The reviewer failed: x' }, [{ round: 1, review: 'failed', reviewer: 1 }])
+    expect(taskCards(snapshot([failed]), statuses({}))[0]).toMatchObject({ tone: 'failed', status: '✕ Reviewer failed' })
+  })
+
+  it('a queued loop is a plain queued card', () => {
+    const card = taskCards(snapshot([loop({ state: 'queued', attempt: 0 })]), statuses({}))[0]
+    expect(card).toMatchObject({ kind: 'loop', status: '○ Queued' })
+    expect(card.round).toBeUndefined()
+  })
+})
+
+describe('map cards', () => {
+  const map = (extra: Partial<WorkflowTask> = {}) =>
+    task('fix', { kind: 'map', title: 'Fix each', after: ['triage'], over: 'triage.result.items', ...extra })
+
+  it('says what an unexpanded map fans out over', () => {
+    const snap = snapshot([task('triage', { state: 'running', attempt: 1 }), map()])
+    const card = taskCards(snap, statuses({}))[1]
+    expect(card).toMatchObject({ kind: 'map', tone: 'queued', detail: 'fans out over triage items' })
+    expect(card.stack).toBeUndefined()
+  })
+
+  it('folds its children into one card, toned by the most urgent', () => {
+    const snap = snapshot(
+      [
+        task('triage', { state: 'done' }),
+        map({ state: 'running', attempt: 0 }),
+        child('fix', 1, { state: 'done' }),
+        child('fix', 2, { state: 'failed' }),
+        child('fix', 3, { state: 'running', attempt: 1 }),
+        child('fix', 4, { state: 'queued', attempt: 0 }),
+        task('after', { after: ['fix'] }),
+      ],
+      {},
+      { 'fix.3': 't-3' },
+    )
+    const cards = taskCards(snap, statuses({ 't-3': 'running' }))
+    expect(cards.map((c) => [c.id, c.depth])).toEqual([
+      ['triage', 0],
+      ['fix', 1],
+      ['after', 2],
+    ])
+    expect(cards[1]).toMatchObject({
+      tone: 'failed',
+      status: '▤ 1 of 4 done · 1 failed',
+      detail: '1 running · 1 queued',
+      stack: { total: 4, done: 1, running: 1, waiting: 0, failed: 1, cancelled: 0 },
+    })
+    expect(taskCards(snap, statuses({ 't-3': 'waiting' }))[1].tone).toBe('waiting')
+    expect(progressText(cards[1].stack!)).toBe('1 of 4 done')
+    expect(progressText({ total: 3, done: 1, running: 0, waiting: 0, failed: 0, cancelled: 1 })).toBe('1 of 2 done')
+  })
+})
+
+describe('highlight', () => {
+  it('marks the tasks a patch touched, and a map when one of its children was', () => {
+    const snap = snapshot([task('a'), task('b'), task('fix', { kind: 'map', over: 'a.result.items' }), child('fix', 1)])
+    expect(taskCards(snap, statuses({})).map((c) => c.highlight)).toEqual([null, null, null])
+    expect(taskCards(snap, statuses({}), { patch: 2, taskIds: new Set(['b', 'fix.1']) }).map((c) => c.highlight)).toEqual([null, 2, 2])
+  })
+})
+
+describe('popupSlots', () => {
+  it('gives an agent task one worker slot', () => {
+    const snap = snapshot([task('a', { state: 'running', attempt: 1 })], {}, { a: 't-a' })
+    expect(popupSlots(snap, 'a', statuses({}))).toMatchObject([{ key: 'a', label: 'Worker', role: 'worker', terminalId: 't-a', placeholderId: null }])
+    expect(popupSlots(snap, 'missing', statuses({}))).toEqual([])
+  })
+
+  it('gives a loop its worker and its latest reviewer', () => {
+    const snap = snapshot(
+      [loop({}, [{ round: 1, review: 'done', reviewer: 1, verdict: 'findings', findings: ['a', 'b'] }, { round: 2, review: 'running', reviewer: 2 }])],
+      {},
+      { impl: 't-w' },
+    )
+    snap.reviewers = { impl: 't-r' }
+    const slots = popupSlots(snap, 'impl', statuses({ 't-r': 'running' }), new Map([['impl~r', 'p-r']]))
+    expect(slots.map((s) => [s.key, s.label, s.role, s.tone, s.status, s.terminalId])).toEqual([
+      ['impl', 'Worker', 'worker', 'queued', '◇ Waiting for the review', 't-w'],
+      ['impl~r', 'Reviewer · round 2', 'reviewer', 'running', '▶ Reviewing', 't-r'],
+    ])
+    expect(slots[1].round?.round).toBe(2)
+    expect(slots[1].placeholderId).toBe('p-r')
+  })
+
+  it('shows a finished reviewer by its verdict, and none before the first review', () => {
+    const done = snapshot([loop({ state: 'waiting' }, [{ round: 3, review: 'done', reviewer: 1, verdict: 'findings', findings: ['a'] }])])
+    expect(popupSlots(done, 'impl', statuses({}))[1]).toMatchObject({ tone: 'done', status: '◇ 1 finding', terminalId: null })
+    expect(popupSlots(snapshot([loop({}, [{ round: 1, review: 'pending' }])]), 'impl', statuses({}))).toHaveLength(1)
+  })
+
+  it('labels each slot with its own agent: the reviewer by its spec, inheriting as the worker does', () => {
+    const rounds: WorkflowLoopRound[] = [{ round: 1, review: 'running', reviewer: 1 }]
+    const codex = snapshot([loop({ provider: 'codex', model: 'gpt-5', reviewer: { brief: 'b', provider: 'claude', model: 'opus' } }, rounds)])
+    expect(popupSlots(codex, 'impl', statuses({})).map((s) => s.agent)).toEqual(['Codex · gpt-5', 'Claude · opus'])
+    const plain = snapshot([loop({ provider: 'codex', model: 'gpt-5' }, rounds)])
+    expect(popupSlots(plain, 'impl', statuses({}))[1].agent).toBe('Claude')
+  })
+
+  it('never lends the worker a status that is the reviewer\'s', () => {
+    const asking = snapshot([loop({ state: 'waiting' }, [{ round: 1, review: 'waiting', reviewer: 1 }])])
+    expect(popupSlots(asking, 'impl', statuses({}))[0]).toMatchObject({ tone: 'queued', status: '◇ Waiting for the review' })
+    const onLead = snapshot([loop({ state: 'waiting' }, [{ round: 1, review: 'waiting', reviewer: 1 }])], { judgments: [{ taskId: 'impl', question: 'q', at: AT, delivered: true }] })
+    expect(popupSlots(onLead, 'impl', statuses({}))[0]).toMatchObject({ tone: 'queued', status: '◇ Waiting for the review' })
+    const failed = snapshot([loop({ state: 'failed', note: 'The reviewer failed' }, [{ round: 1, review: 'failed', reviewer: 1 }])])
+    expect(popupSlots(failed, 'impl', statuses({})).map((s) => [s.role, s.tone, s.status])).toEqual([
+      ['worker', 'queued', '◇ Its reviewer failed'],
+      ['reviewer', 'failed', '✕ Failed'],
+    ])
+    const working = snapshot([loop({}, [{ round: 1, review: 'pending' }])], {}, { impl: 't-w' })
+    expect(popupSlots(working, 'impl', statuses({ 't-w': 'waiting' }))[0]).toMatchObject({ tone: 'waiting', status: '● Waiting on you' })
+  })
+
+  it('opens a card on its reviewer while the reviewer is at work, asking or failed', () => {
+    const at = (t: WorkflowTask) => defaultSlot(snapshot([t]).workflow, 'impl')
+    expect(at(loop({}, [{ round: 1, review: 'running', reviewer: 1 }]))).toBe('impl~r')
+    expect(at(loop({ state: 'waiting' }, [{ round: 1, review: 'waiting', reviewer: 1 }]))).toBe('impl~r')
+    expect(at(loop({ state: 'failed' }, [{ round: 1, review: 'failed', reviewer: 1 }]))).toBe('impl~r')
+    expect(at(loop({}, [{ round: 1, review: 'done', reviewer: 1, verdict: 'findings', findings: ['x'] }, { round: 2, review: 'queued' }]))).toBe('impl')
+    expect(at(loop({}, [{ round: 1, review: 'pending' }]))).toBe('impl')
+    expect(at(loop({ state: 'cancelled' }, [{ round: 1, review: 'running', reviewer: 1 }]))).toBe('impl')
+    expect(defaultSlot(snapshot([task('a')]).workflow, 'a')).toBe('a')
+  })
+
+  it('gives a map one slot per child, in order', () => {
+    const snap = snapshot([task('fix', { kind: 'map', state: 'running' }), child('fix', 2, { state: 'running', attempt: 1 }), child('fix', 1, { state: 'done' })], {}, { 'fix.2': 't-2' })
+    expect(popupSlots(snap, 'fix', statuses({})).map((s) => [s.key, s.label, s.tone, s.terminalId])).toEqual([
+      ['fix.1', '1 · item 1', 'done', null],
+      ['fix.2', '2 · item 2', 'running', 't-2'],
+    ])
+  })
+})
+
+describe('needsYou with loops and maps', () => {
+  it('names a child by its map and opens its slot', () => {
+    const snap = snapshot([task('fix', { kind: 'map', title: 'Fix each', state: 'running' }), child('fix', 1, { state: 'waiting', attempt: 1 })], {}, { 'fix.1': 't-1' })
+    expect(needsYou(snap, statuses({}))).toEqual([
+      { taskId: 'fix.1', title: 'Fix each · item 1', text: 'The worker stopped without a result.', canOpen: true, kind: 'worker', slot: 'fix.1' },
+    ])
+    expect(cardIdOf(snap.workflow, 'fix.1')).toBe('fix')
+  })
+
+  it('sends a waiting reviewer to the reviewer slot', () => {
+    const snap = snapshot([loop({ state: 'waiting' }, [{ round: 1, review: 'waiting', reviewer: 1 }])], {}, { impl: 't-w' })
+    expect(needsYou(snap, statuses({}))).toEqual([
+      { taskId: 'impl', title: 'Implement', text: 'The reviewer stopped without a verdict.', canOpen: false, kind: 'worker', slot: 'impl~r' },
+    ])
+    expect(needsYou(snap, statuses({}), new Set(['impl~r']))[0].canOpen).toBe(true)
+    expect(cardIdOf(snap.workflow, 'impl~r')).toBe('impl')
+  })
+
+  it('sends the lead\'s judgment to the reviewer when the reviewer asked or failed', () => {
+    const judgments = [{ taskId: 'impl', question: 'Is this in scope?', at: AT, delivered: true }]
+    const asked = snapshot([loop({ state: 'waiting' }, [{ round: 1, review: 'waiting', reviewer: 1 }])], { judgments }, { impl: 't-w' })
+    expect(needsYou(asked, statuses({}))).toEqual([
+      { taskId: 'impl', title: 'Implement', text: 'The lead was asked: Is this in scope?', canOpen: false, kind: 'lead', slot: 'impl~r' },
+    ])
+    asked.reviewers = { impl: 't-r' }
+    expect(needsYou(asked, statuses({}))[0].canOpen).toBe(true)
+    const failed = snapshot([loop({ state: 'failed' }, [{ round: 1, review: 'failed', reviewer: 1 }])], { judgments }, { impl: 't-w' })
+    expect(needsYou(failed, statuses({}), new Set(['impl~r']))[0]).toMatchObject({ slot: 'impl~r', canOpen: true })
+    const stuck = snapshot([loop({ state: 'waiting' }, [{ round: 3, review: 'done', reviewer: 3, verdict: 'findings', findings: ['x'] }])], { judgments }, { impl: 't-w' })
+    expect(needsYou(stuck, statuses({}))[0]).toMatchObject({ slot: 'impl', canOpen: true })
+  })
+
+  it('lists a reviewer asking for input while it reviews', () => {
+    const snap = snapshot([loop({}, [{ round: 1, review: 'running', reviewer: 1 }])], {}, { impl: 't-w' })
+    snap.reviewers = { impl: 't-r' }
+    expect(needsYou(snap, statuses({ 't-w': 'waiting', 't-r': 'waiting' }))).toEqual([
+      { taskId: 'impl', title: 'Implement', text: 'The reviewer is asking for permission or input.', canOpen: true, kind: 'worker', slot: 'impl~r' },
+    ])
+  })
+
+  it('never reads a round waiting for its reviewer through the previous reviewer', () => {
+    const between = snapshot(
+      [loop({}, [{ round: 1, review: 'done', reviewer: 1, verdict: 'findings', findings: ['x'] }, { round: 2, review: 'queued' }])],
+      {},
+      { impl: 't-w' },
+    )
+    // A reviewer retry: the round's failed reviewer is still the latest.
+    const retrying = snapshot([loop({}, [{ round: 1, review: 'queued', reviewer: 1, note: 'A reviewer failed: x' }])], {}, { impl: 't-w' })
+    for (const snap of [between, retrying]) {
+      snap.reviewers = { impl: 't-r' }
+      for (const live of ['waiting', 'exited'] as const) {
+        expect(needsYou(snap, statuses({ 't-r': live }))).toEqual([])
+        expect(taskCards(snap, statuses({ 't-r': live }))[0]).toMatchObject({ tone: 'running', detail: 'Waiting for a reviewer slot' })
+      }
+    }
   })
 })
 

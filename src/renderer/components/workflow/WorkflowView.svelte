@@ -3,8 +3,11 @@
   import { sessionsStore } from '../../stores/sessions.svelte'
   import { getAgentStatusForTerminal } from '../../stores/agent-status.svelte'
   import { workflowOwner } from '../../../shared/session-owner'
-  import { canCancel, canDismiss, canStart, needsYou, statusLine, taskCards } from '../../lib/workflow-view'
+  import { ownerIsCurrent } from '../../../shared/workflow'
+  import { canCancel, canDismiss, canStart, cardIdOf, defaultSlot, needsYou, popupSlots, reviewerSlotKey, statusLine, taskCards } from '../../lib/workflow-view'
+  import { patchRows } from '../../lib/workflow-patches'
   import WorkerPopup from './WorkerPopup.svelte'
+  import PatchHistory from './PatchHistory.svelte'
 
   interface Props {
     workflowId: string
@@ -16,29 +19,40 @@
   let { workflowId, active, onclose }: Props = $props()
 
   let snapshot = $derived(workflowsStore.get(workflowId))
-  /** Each task's restored worker not resumed yet, by task id: only its current attempt's. */
+  /** Each current session restored and not resumed yet, by popup slot key. */
   let placeholders = $derived.by(() => {
-    const byTask = new Map<string, string>()
+    const bySlot = new Map<string, string>()
     const tasks = snapshot?.workflow.tasks ?? []
     for (const s of sessionsStore.sessions()) {
       const owner = workflowOwner(s)
       if (!s.pendingResume || owner?.workflowId !== workflowId) continue
-      if (tasks.some((t) => t.id === owner.taskId && t.attempt === owner.attempt)) byTask.set(owner.taskId, s.id)
+      if (tasks.some((t) => ownerIsCurrent(t, owner))) bySlot.set(owner.review !== undefined ? reviewerSlotKey(owner.taskId) : owner.taskId, s.id)
     }
-    return byTask
+    return bySlot
   })
-  let cards = $derived(snapshot ? taskCards(snapshot, getAgentStatusForTerminal) : [])
+  let showPatches = $state(false)
+  let selectedPatch = $state<number | null>(null)
+  let highlighted = $derived.by(() => {
+    if (!snapshot || selectedPatch === null) return undefined
+    const row = patchRows(snapshot.workflow).find((r) => r.version === selectedPatch)
+    return row ? { patch: row.number, taskIds: new Set(row.taskIds) } : undefined
+  })
+  let cards = $derived(snapshot ? taskCards(snapshot, getAgentStatusForTerminal, highlighted) : [])
   let needs = $derived(snapshot ? needsYou(snapshot, getAgentStatusForTerminal, new Set(placeholders.keys())) : [])
   let after = $derived(Object.fromEntries((snapshot?.workflow.tasks ?? []).map((t) => [t.id, t.after])))
-  let openTaskId = $state<string | null>(null)
+  let open = $state<{ taskId: string; slot: string } | null>(null)
   let busy = $state(false)
   let error = $state<string | null>(null)
   /** Cancel and Dismiss take a second click: one detaches workers, the other closes them. */
   let confirming = $state<'cancel' | 'dismiss' | null>(null)
 
-  let openTask = $derived(openTaskId ? snapshot?.workflow.tasks.find((t) => t.id === openTaskId) : undefined)
-  let openCard = $derived(openTaskId ? cards.find((c) => c.id === openTaskId) : undefined)
-  let placeholderId = $derived(openTaskId ? (placeholders.get(openTaskId) ?? null) : null)
+  let openTask = $derived(open ? snapshot?.workflow.tasks.find((t) => t.id === open?.taskId) : undefined)
+  let openCard = $derived(open ? cards.find((c) => c.id === open?.taskId) : undefined)
+  let openSlots = $derived(snapshot && open ? popupSlots(snapshot, open.taskId, getAgentStatusForTerminal, placeholders) : [])
+
+  function openSlot(slot: string): void {
+    if (snapshot) open = { taskId: cardIdOf(snapshot.workflow, slot), slot }
+  }
 
   let GraphView = $state<typeof import('./WorkflowGraph.svelte').default | null>(null)
   let graphError = $state<string | null>(null)
@@ -124,6 +138,16 @@
         </details>
       </div>
       <div class="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          class="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800"
+          aria-expanded={showPatches}
+          onclick={() => {
+            showPatches = !showPatches
+            if (!showPatches) selectedPatch = null
+          }}
+          data-testid="workflow-show-patches">{showPatches ? 'Hide patches' : 'Show patches'} ({workflow.patches.length})</button
+        >
         {#if canStart(workflow)}
           <button
             type="button"
@@ -163,7 +187,7 @@
       <div class="border-b border-amber-900/50 bg-amber-950/20 px-5 py-2" data-testid="workflow-needs-you">
         <h2 class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-300">Needs you · {needs.length}</h2>
         <ul class="flex flex-col gap-1">
-          {#each needs as item (item.kind + item.taskId)}
+          {#each needs as item (item.kind + item.slot)}
             <li class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span class="font-medium text-zinc-100">{item.title}</span>
               <span class="min-w-0 flex-1 text-zinc-400">{item.text}</span>
@@ -171,7 +195,7 @@
                 <button
                   type="button"
                   class="rounded-md border border-amber-700/60 px-2 py-0.5 text-[11px] text-amber-200 hover:bg-amber-900/40"
-                  onclick={() => (openTaskId = item.taskId)}>Open terminal</button
+                  onclick={() => openSlot(item.slot)}>Open terminal</button
                 >
               {/if}
             </li>
@@ -180,9 +204,13 @@
       </div>
     {/if}
 
+    {#if showPatches}
+      <PatchHistory {workflow} selected={selectedPatch} onselect={(version) => (selectedPatch = version)} />
+    {/if}
+
     <div class="min-h-0 flex-1">
       {#if GraphView}
-        <GraphView {cards} {after} onselect={(id) => (openTaskId = id)} />
+        <GraphView {cards} {after} onselect={(id) => openSlot(defaultSlot(workflow, id))} />
       {:else if graphError}
         <p class="p-5 text-xs text-red-300" role="alert">The graph failed to load: {graphError}</p>
       {:else}
@@ -197,18 +225,15 @@
       <span>○ queued</span>
       <span>＋ added by a lead patch (dashed)</span>
       <span>✕ cancelled</span>
+      <span>↻ review loop</span>
+      <span>▤ fan-out</span>
       <span class="ml-auto">Click a card to open its worker</span>
     </footer>
   {/if}
 </section>
 
-{#if openTask && openCard}
-  <WorkerPopup
-    task={openTask}
-    card={openCard}
-    terminalId={snapshot?.workers[openTask.id] ?? null}
-    {placeholderId}
-    {active}
-    onclose={() => (openTaskId = null)}
-  />
+{#if open && openTask && openCard}
+  {#key `${open.taskId}|${open.slot}`}
+    <WorkerPopup task={openTask} card={openCard} slots={openSlots} initialSlot={open.slot} {active} onclose={() => (open = null)} />
+  {/key}
 {/if}

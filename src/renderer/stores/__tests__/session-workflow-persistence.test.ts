@@ -61,6 +61,20 @@ describe('workflow persistence', () => {
     expect(sessionsStore.visibleSessions()).toEqual([])
   })
 
+  it('a reviewer\'s owner keeps its review number through serialize → hydrate', () => {
+    const owner = { kind: 'workflow' as const, workflowId: WF, taskId: 'impl', attempt: 1, review: 3 }
+    const id = sessionsStore.createAgent({ provider: 'claude' }, PRIMARY, MAIN_WT, { owner })
+    sessionsStore.update(id, { providerSessionId: 'uuid-reviewer' })
+
+    const blob = serializeSession(PRIMARY)
+    expect(blob.sessions[0].owner).toEqual(owner)
+
+    sessionsStore.reset()
+    hydrateSession(blob)
+    expect(sessionsStore.sessions()[0].owner).toEqual(owner)
+    expect(sessionsStore.visibleSessions()).toEqual([])
+  })
+
   it('drops a malformed workflow owner on hydrate', () => {
     const blob: SerializedSession = {
       version: 4,
