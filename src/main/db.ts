@@ -182,6 +182,12 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE workflow_tasks ADD COLUMN history TEXT;
   `,
+  `
+  ALTER TABLE workflow_tasks ADD COLUMN rounds TEXT;
+  ALTER TABLE workflow_tasks ADD COLUMN parent TEXT;
+  ALTER TABLE workflow_tasks ADD COLUMN item_index INTEGER;
+  ALTER TABLE workflow_tasks ADD COLUMN item TEXT;
+  `,
 ]
 
 let db: Db | null = null

@@ -30,7 +30,7 @@ vi.mock('../mcp-bridge', () => ({
 import { openDb, useDbForTests } from '../db'
 import { resetBus, syncPeers, type Peer } from '../agent-bus'
 import { registerSession, unregisterTerminal } from '../cwd-tracker'
-import { getWorkflow } from '../workflow-store'
+import { getWorkflow, saveWorkflow } from '../workflow-store'
 import { initWorkflows } from '../workflow-host'
 import type { WorkflowToolName } from '../mcp-bridge'
 
@@ -295,3 +295,55 @@ describe('lead hand-off', () => {
     expect(res.status).toBe(200)
   })
 })
+
+describe('review loops', () => {
+  const loop = (extra: Record<string, unknown> = {}) => task('impl', { kind: 'loop', worktree: { branch: 'feat' }, reviewer: { brief: 'check' }, ...extra })
+
+  it('refuses a reviewer model the catalog does not offer, on create and on update', async () => {
+    const created = await call('create_workflow', { title: 'Flow', goal: 'g', tasks: [loop({ reviewer: { brief: 'check', provider: 'codex', model: 'bogus-r' } })] })
+    expect(created.status).toBe(400)
+    expect(created.body['problems']).toEqual([`tasks[0].reviewer.model: codex doesn't offer the model “bogus-r”.`])
+    const ok = await call('create_workflow', { title: 'Flow', goal: 'g', tasks: [loop()] })
+    const workflowId = ok.body['workflowId'] as string
+    const patched = await call('patch_workflow', { workflowId, baseVersion: 1, ops: [{ op: 'update', id: 'impl', patch: { reviewer: { brief: 'x', model: 'bogus-p' } } }] })
+    expect(patched.status).toBe(400)
+    expect(patched.body['problems']).toEqual([expect.stringMatching(/^ops\[0\]\.patch\.reviewer\.model: .*bogus-p/)])
+  })
+
+  async function running(review: 'pending' | 'running'): Promise<string> {
+    const res = await call('create_workflow', { title: 'Flow', goal: 'g', tasks: [loop()] })
+    const id = res.body['workflowId'] as string
+    const wf = getWorkflow(id)!
+    wf.status = 'running'
+    Object.assign(wf.tasks[0], {
+      state: 'running',
+      attempt: 1,
+      worktreePath: '/wt/feat',
+      ...(review === 'running'
+        ? { reviewers: 1, rounds: [{ round: 1, review: 'running', reviewer: 1, work: { summary: 'built', steered: false, at: 'a' } }] }
+        : { rounds: [{ round: 1, review: 'pending' }] }),
+    })
+    saveWorkflow(wf)
+    const owner = { kind: 'workflow' as const, workflowId: id, taskId: 'impl', attempt: 1 }
+    syncPeers([peer('lead'), peer('bystander'), peer('worker', { owner }), ...(review === 'running' ? [peer('reviewer', { owner: { ...owner, review: 1 } })] : [])], WIN)
+    return id
+  }
+
+  it('tells a loop worker that a fresh reviewer checks its change', async () => {
+    await running('pending')
+    const res = await call('report_result', { status: 'done', summary: 'built', branch: 'feat' }, 'worker')
+    expect(res.status).toBe(200)
+    expect(res.body['next']).toBe(
+      'Recorded. A fresh reviewer will check your change. Its findings, if any, arrive in your inbox: fix them and call report_result again. You can stop here.',
+    )
+  })
+
+  it('get_workflow names the reviewer\'s session, and a reviewer\'s verdict is answered in a line', async () => {
+    const workflowId = await running('running')
+    const res = await call('get_workflow', { workflowId })
+    expect((res.body['tasks'] as Array<Record<string, unknown>>)[0]).toMatchObject({ id: 'impl', session_id: 'worker', reviewer_session_id: 'reviewer', loop: { round: 1, phase: 'reviewing' } })
+    const verdict = await call('report_result', { status: 'done', summary: 'fine', verdict: 'clean' }, 'reviewer')
+    expect(verdict.body).toMatchObject({ ok: true, state: 'done', next: 'Recorded. You can stop here.' })
+  })
+})
+

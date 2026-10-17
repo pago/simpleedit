@@ -615,11 +615,31 @@ const workflowTaskFields = {
   worktree: workflowWorktree.optional(),
   onFailure: z.enum(['retry', 'escalate']).optional().describe('retry: one fresh worker, then escalate. escalate (default): you are woken.'),
   shape: z.enum(['single', 'stack', 'separate']).optional().describe('integrate only: one PR, a stack, or one PR per branch.'),
+  reviewer: z
+    .object({
+      brief: z.string().describe('What the reviewer checks. Templates as in brief.'),
+      provider: z.enum(['claude', 'codex']).optional(),
+      model: z.string().optional(),
+      effort: z.string().optional().describe('Codex only.'),
+    })
+    .optional()
+    .describe('loop only, required there: a fresh reviewer session per round, which reviews the worker\'s branch and reports a verdict.'),
+  maxRounds: z.number().int().optional().describe('loop only: review rounds before you are asked, 1 to 5 (default 3).'),
+  over: z.string().optional().describe('map only, required there: "<taskId>.result.items", the list of a task this map runs after.'),
+  maxItems: z.number().int().optional().describe('map only: more items than this (1 to 20, default 20) is a question for you, never a cut.'),
+  // Accepted only so SimpleEdit can refuse them with the flat form instead of zod dropping them unseen.
+  worker: z.unknown().optional().describe('Not a field: a loop\'s own fields (brief, provider, model, effort, worktree) are its worker.'),
+  template: z.unknown().optional().describe('Not a field: a map\'s own fields (brief, acceptance, provider, model, effort, worktree) are its template.'),
 }
 
 const workflowTask = z.object({
   id: z.string().describe('Lower-case id, unique in the workflow, e.g. "store".'),
-  kind: z.enum(['agent', 'integrate']).optional().describe('agent (default): one worker. integrate: combines the branches of its after tasks.'),
+  kind: z
+    .enum(['agent', 'integrate', 'loop', 'map'])
+    .optional()
+    .describe(
+      'agent (default): one worker. integrate: combines the branches of its after tasks. loop: the task\'s own fields are the worker; a fresh reviewer (reviewer) reviews its branch each round until clean or maxRounds; needs a worktree. map: the task\'s own fields are a template run once per item of over ("<task>.result.items"), with {{item}} and {{index}} in brief, acceptance and worktree.branch; needs a worktree whose branch has {{index}} or {{item}}.',
+    ),
   ...workflowTaskFields,
 })
 
@@ -634,7 +654,7 @@ server.registerTool(
     description: [
       'Turn a plan into a SimpleEdit workflow: a task graph SimpleEdit runs for you. Each task gets its own worker session (hidden from the sidebar, shown in your Workflow tab); a task starts once every task in its `after` is done.',
       'Use it when a plan splits into several agent tasks, so you are not woken for every report. You are woken only at judgment points: a task that failed under onFailure "escalate", a worker that asks for a decision, or a graph that is stuck.',
-      'You pick the split, the dependencies and the agent/model per task. Kinds: "agent" (one worker), "integrate" (a worker that combines the branches of its after tasks into the given PR shape).',
+      'You pick the split, the dependencies and the agent/model per task. Kinds: "agent" (one worker), "integrate" (a worker that combines the branches of its after tasks into the given PR shape), "loop" (a worker whose branch a fresh reviewer checks each round; findings go back to the worker until the review is clean or maxRounds is reached), "map" (a template fanned out into one child task per item another task reported; children are "<map>.<n>").',
       'Give each writing task its own worktree branch so parallel workers do not collide.',
       'The workflow starts as a draft. Starting it is normally the user\'s call (Start in the Workflow tab); the answer says what to do next.',
       'Workers finish with report_result. You may compact your context once the workflow is prepared: get_workflow tells you its state.',
@@ -660,7 +680,10 @@ server.registerTool(
       '- add: { op: "add", task: {...} } adds a task.',
       '- update: { op: "update", id, patch: {...fields} } changes a QUEUED task (null clears an optional field).',
       '- cancel: { op: "cancel", id } drops a task. A running worker is not stopped: it leaves the workflow and appears in the user\'s sidebar.',
-      '- retry: { op: "retry", id, brief? } queues a FAILED task again with a fresh worker.',
+      '- retry: { op: "retry", id, brief? } queues a FAILED task again with a fresh worker. For a loop whose reviewer failed, only a fresh reviewer starts (no brief).',
+      '- extend: { op: "extend", id, rounds } gives a review loop more rounds (1 to 5 at a time, at most 10 in all); a loop that did not converge carries on.',
+      '- accept: { op: "accept", id, summary? } takes a loop that did not converge as done, with its open findings.',
+      'A map\'s children are "<map>.<n>": retry, cancel or update one by id. Cancelling a map cancels its children. A map that failed before it expanded can be updated.',
       'A task that runs after a cancelled or failed task waits until you change its `after` or retry the failed one.',
     ].join('\n'),
     inputSchema: {
@@ -685,6 +708,8 @@ server.registerTool(
             }),
             z.object({ op: z.literal('cancel'), id: z.string() }),
             z.object({ op: z.literal('retry'), id: z.string(), brief: z.string().optional() }),
+            z.object({ op: z.literal('extend'), id: z.string(), rounds: z.number().int().describe('More review rounds, 1 to 5.') }),
+            z.object({ op: z.literal('accept'), id: z.string(), summary: z.string().optional().describe('Replaces the default summary.') }),
           ]),
         )
         .min(1),
@@ -731,15 +756,19 @@ server.registerTool(
     description: [
       'Workflow workers only: report the outcome of your task, once, when you are finished.',
       'status "done": the task is complete (give branch and changedFiles if you changed code). "failed": you can\'t complete it; say why. "needs_lead": you need a decision; put the question in summary and wait for the answer in your inbox.',
+      'Reviewers in a review loop: status "done" with verdict "clean", or verdict "findings" and the findings.',
     ].join('\n'),
     inputSchema: {
       status: z.enum(['done', 'failed', 'needs_lead']),
       summary: z.string().describe('A few lines: what you did, why it failed, or the question.'),
       branch: z.string().optional(),
       changedFiles: z.array(z.string()).optional(),
-      items: z.array(z.string()).optional().describe('A list later tasks may use.'),
-      verdict: z.enum(['clean', 'findings']).optional().describe('Review tasks: the verdict.'),
-      findings: z.array(z.string()).optional(),
+      items: z.array(z.string()).optional().describe('For a task that later tasks fan out over: one short string per unit of work.'),
+      verdict: z.enum(['clean', 'findings']).optional().describe('Reviewers in a review loop: required.'),
+      findings: z
+        .array(z.string())
+        .optional()
+        .describe('Reviewers in a review loop: required with verdict "findings"; at most 20, each one or two lines with file:line.'),
     },
   },
   async (args) => {

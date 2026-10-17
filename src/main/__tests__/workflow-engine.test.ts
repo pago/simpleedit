@@ -5,7 +5,7 @@ vi.mock('electron', () => ({ app: { getPath: () => '/nonexistent' } }))
 import { openDb, useDbForTests } from '../db'
 import { createWorkflowEngine, type EngineHost, type EnginePeer, type SpawnRequest, type WorkflowEngine } from '../workflow-engine'
 import { getWorkflow, saveWorkflow } from '../workflow-store'
-import { WorkflowValidationError, parseNewWorkflow, type WorkflowSettings, type WorkflowSnapshot } from '../../shared/workflow'
+import { WorkflowValidationError, loopPhase, parseNewWorkflow, parseWorkflowOps, workflowProgress, type WorkflowSettings, type WorkflowSnapshot } from '../../shared/workflow'
 
 const P = '/repo/project.git'
 const LEAD = 'lead'
@@ -66,6 +66,7 @@ function fakeHost(opts: { leadPeer?: boolean } = {}): FakeHost {
     },
     ensureWorktree: async (_project, branch) => `/wt/${branch}`,
     mainWorktree: async () => '/wt/main',
+    baseBranch: async () => 'main',
     sendMail(to, text) {
       if (fake.refuseMail) return null
       const id = `m${fake.mail.length + 1}`
@@ -165,7 +166,7 @@ describe('workflow engine', () => {
     engine.start(id, 'user')
     await engine.idle()
     expect(engine.workerOf('w1')).toEqual({ workflowId: id, taskId: 'a' })
-    expect(engine.reportResult('w1', { status: 'done', summary: 'did a', changedFiles: ['x.ts', 'y.ts'] })).toEqual({ workflowId: id, taskId: 'a', state: 'done' })
+    expect(engine.reportResult('w1', { status: 'done', summary: 'did a', changedFiles: ['x.ts', 'y.ts'] })).toEqual({ workflowId: id, taskId: 'a', state: 'done', role: 'worker', outcome: 'done' })
     await engine.idle()
     expect(fake.spawns.map((s) => s.request.owner.taskId)).toEqual(['a', 'b'])
     expect(fake.spawns[1].request.brief).toMatch(/^Use did a on x\.ts, y\.ts/)
@@ -184,6 +185,52 @@ describe('workflow engine', () => {
     expect(() => engine.reportResult('w1', { status: 'done', summary: '  ' })).toThrow(/summary/)
     expect(() => engine.reportResult('w1', { status: 'done', summary: 'x', changedFiles: [1] })).toThrow(/list of strings/)
     expect(stateOf(id, 'a').state).toBe('running')
+  })
+
+  it('refuses items and findings it would otherwise have to cut, and blank or repeated items', async () => {
+    const id = create([t('a')])
+    engine.start(id, 'user')
+    await engine.idle()
+    const refused = (raw: Record<string, unknown>): string[] => {
+      try {
+        engine.reportResult('w1', { status: 'done', summary: 'x', ...raw })
+      } catch (error) {
+        if (error instanceof WorkflowValidationError) return error.problems
+        throw error
+      }
+      throw new Error('expected a refusal')
+    }
+    expect(refused({ items: Array.from({ length: 201 }, (_, i) => `i${i}`) })).toEqual(['items: at most 200 entries; you gave 201'])
+    expect(refused({ items: ['ok', 'y'.repeat(501), ' ', 'ok'] })).toEqual([
+      'items[1]: at most 500 characters; it has 501',
+      'items[2]: blank',
+      'items[3]: the same as items[0]',
+    ])
+    expect(refused({ findings: ['', 'f'] })).toEqual(['findings[0]: blank'])
+    expect(refused({ items: 'a' })).toEqual(['items: expected a list of strings'])
+    expect(stateOf(id, 'a').state).toBe('running')
+    engine.reportResult('w1', { status: 'done', summary: 'x', items: ['a', 'A'], changedFiles: Array.from({ length: 250 }, (_, i) => `f${i}`) })
+    expect(stateOf(id, 'a').result).toMatchObject({ items: ['a', 'A'] })
+    expect(stateOf(id, 'a').result!.changedFiles).toHaveLength(200)
+  })
+
+  it('a worktree that cannot be prepared is a failure, retried once under onFailure retry', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    fake.host.ensureWorktree = async () => {
+      throw new Error('index.lock exists')
+    }
+    const id = create([t('a', { worktree: { branch: 'feat-a' }, onFailure: 'retry' }), t('b', { worktree: { branch: 'feat-b' } })])
+    engine.start(id, 'user')
+    await engine.idle()
+    expect(stateOf(id, 'a')).toMatchObject({ state: 'queued', attempt: 1, note: "Couldn't prepare worktree feat-a: index.lock exists" })
+    expect(stateOf(id, 'b')).toMatchObject({ state: 'failed', attempt: 1, note: "Couldn't prepare worktree feat-b: index.lock exists" })
+    expect(getWorkflow(id)!.judgments.map((j) => j.taskId)).toEqual(['b'])
+    await vi.advanceTimersByTimeAsync(5_000)
+    await engine.idle()
+    expect(stateOf(id, 'a')).toMatchObject({ state: 'failed', attempt: 2 })
+    expect(stateOf(id, 'a').history).toEqual([expect.objectContaining({ attempt: 1, note: "Couldn't prepare worktree feat-a: index.lock exists" })])
+    expect(getWorkflow(id)!.judgments.find((j) => j.taskId === 'a')!.question).toBe("failed after 2 attempts: Couldn't prepare worktree feat-a: index.lock exists")
+    expect(fake.spawns).toEqual([])
   })
 
   it('caps cloud workers at 4 until one reports', async () => {
@@ -877,5 +924,676 @@ describe('workflow engine', () => {
     expect(wf.leadKey).toBe('successor')
     expect(engine.isLead('successor', wf)).toBe(true)
     expect(fake.broadcasts.at(-1)!.workflow.leadKey).toBe('successor')
+  })
+
+  describe('review loops', () => {
+    const loop = (extra: Record<string, unknown> = {}) =>
+      t('impl', { kind: 'loop', worktree: { branch: 'feat-impl' }, reviewer: { brief: 'Check the change', model: 'opus' }, maxRounds: 2, ...extra })
+
+    async function inReview(extra: Record<string, unknown> = {}, more: Array<Record<string, unknown>> = []): Promise<string> {
+      const id = create([loop(extra), ...more])
+      engine.start(id, 'user')
+      await engine.idle()
+      expect(engine.reportResult('w1', { status: 'done', summary: 'built it', branch: 'feat-impl', changedFiles: ['a.ts'] })).toMatchObject({
+        state: 'running',
+        role: 'worker',
+        outcome: 'in-review',
+      })
+      await engine.idle()
+      return id
+    }
+
+    it('a worker report starts a fresh reviewer with its own owner, brief and the worker\'s worktree', async () => {
+      const id = create([loop()])
+      engine.start(id, 'user')
+      await engine.idle()
+      expect(fake.spawns[0].request.brief).toContain('This task is a review loop (at most 2 rounds)')
+      expect(stateOf(id, 'impl')).toMatchObject({ rounds: [{ round: 1, review: 'pending' }] })
+      engine.reportResult('w1', { status: 'done', summary: 'built it', branch: 'feat-impl', changedFiles: ['a.ts'] })
+      await engine.idle()
+      expect(fake.spawns).toHaveLength(2)
+      const reviewer = fake.spawns[1].request
+      expect(reviewer.owner).toEqual({ kind: 'workflow', workflowId: id, taskId: 'impl', attempt: 1, review: 1 })
+      expect(reviewer.worktreePath).toBe('/wt/feat-impl')
+      expect(reviewer.label).toBe('Task impl · review 1')
+      expect(reviewer.model).toBe('opus')
+      expect(reviewer.brief).toMatch(/^Check the change\n\n---\n/)
+      expect(reviewer.brief).toContain('git -C /wt/feat-impl diff main...feat-impl')
+      expect(reviewer.brief).toContain('The worker says: built it\nFiles: a.ts')
+      expect(reviewer.brief).not.toContain('Earlier rounds reported')
+      const impl = stateOf(id, 'impl')
+      expect(impl).toMatchObject({ state: 'running', reviewers: 1, note: 'In review (round 1)' })
+      expect(impl.result).toBeUndefined()
+      expect(impl.rounds![0]).toMatchObject({ review: 'running', reviewer: 1, work: { summary: 'built it', branch: 'feat-impl', changedFiles: ['a.ts'] } })
+      expect(engine.snapshot(id)!).toMatchObject({ workers: { impl: 'w1' }, reviewers: { impl: 'w2' } })
+    })
+
+    it('a loop worker may not give a verdict, and a reviewer must', async () => {
+      const id = create([loop()])
+      engine.start(id, 'user')
+      await engine.idle()
+      expect(() => engine.reportResult('w1', { status: 'done', summary: 'x', verdict: 'clean' })).toThrow(/reviewer gives the verdict/)
+      engine.reportResult('w1', { status: 'done', summary: 'built it' })
+      await engine.idle()
+      expect(() => engine.reportResult('w1', { status: 'done', summary: 'again' })).toThrow(/in review \(round 1\)/)
+      expect(() => engine.reportResult('w2', { status: 'done', summary: 'looks fine' })).toThrow(/verdict/)
+      expect(() => engine.reportResult('w2', { status: 'done', summary: 'bad', verdict: 'findings' })).toThrow(/findings/)
+      expect(stateOf(id, 'impl').rounds![0].review).toBe('running')
+    })
+
+    it('a clean verdict finishes the loop and starts its dependents', async () => {
+      const id = await inReview({}, [t('next', { after: ['impl'], brief: 'After {{task.impl.result.summary}}' })])
+      expect(engine.reportResult('w2', { status: 'done', summary: 'all good', verdict: 'clean' })).toMatchObject({ state: 'done', role: 'reviewer', outcome: 'clean' })
+      await engine.idle()
+      const impl = stateOf(id, 'impl')
+      expect(impl.state).toBe('done')
+      expect(impl.result).toMatchObject({ status: 'done', summary: 'Clean after 1 round: built it', branch: 'feat-impl', changedFiles: ['a.ts'], verdict: 'clean', rounds: 1 })
+      expect(fake.spawns[2].request.owner.taskId).toBe('next')
+      expect(fake.spawns[2].request.brief).toMatch(/^After Clean after 1 round: built it/)
+    })
+
+    it('findings go to the worker by mail and open the next round, whose reviewer sees them and supersedes the first', async () => {
+      const id = await inReview()
+      expect(engine.reportResult('w2', { status: 'done', summary: 'two issues', verdict: 'findings', findings: ['a.ts:3 off by one', 'a.ts:9 no test'] })).toMatchObject({
+        outcome: 'findings-sent',
+        state: 'running',
+      })
+      expect(fake.mail).toHaveLength(1)
+      expect(fake.mail[0].to).toBe('w1')
+      expect(fake.mail[0].text).toBe(
+        `[SimpleEdit workflow "Flow" · task impl · review round 1 of 2]\nThe reviewer found:\n1. a.ts:3 off by one\n2. a.ts:9 no test\nFix them, commit, then call report_result again (status "done").`,
+      )
+      const impl = stateOf(id, 'impl')
+      expect(impl.rounds!.map((r) => [r.round, r.review])).toEqual([
+        [1, 'done'],
+        [2, 'pending'],
+      ])
+      expect(impl.note).toBe('Fixing round 1 findings')
+      // The worker's turn ending now is the normal case: it fixes and reports.
+      engine.onTurnStarted('w1')
+      engine.reportResult('w1', { status: 'done', summary: 'fixed both', branch: 'feat-impl' })
+      await engine.idle()
+      expect(fake.spawns).toHaveLength(3)
+      expect(fake.spawns[2].request.owner.review).toBe(2)
+      expect(fake.spawns[2].request.label).toBe('Task impl · review 2')
+      expect(fake.spawns[2].request.brief).toContain('Earlier rounds reported:\n1. a.ts:3 off by one\n2. a.ts:9 no test\nCheck they are fixed')
+      expect(fake.disposed).toEqual(['w2'])
+      expect(() => engine.reportResult('w2', { status: 'done', summary: 'late', verdict: 'clean' })).toThrow(/not one/)
+      expect(engine.snapshot(id)!.reviewers).toEqual({ impl: 'w3' })
+    })
+
+    it('packs a long findings list under the bus cap', async () => {
+      await inReview()
+      const findings = Array.from({ length: 20 }, (_, i) => `f${i} ${'x'.repeat(490)}`)
+      engine.reportResult('w2', { status: 'done', summary: 's', verdict: 'findings', findings })
+      expect(fake.mail[0].text.length).toBeLessThanOrEqual(8_000)
+      expect(fake.mail[0].text).toMatch(/\(\d+ more not shown; fix these first, the next review will report the rest\)/)
+    })
+
+    it('a worker gone when findings arrive is a worker failure', async () => {
+      const id = await inReview()
+      fake.refuseMail = true
+      expect(engine.reportResult('w2', { status: 'done', summary: 's', verdict: 'findings', findings: ['x'] }).outcome).toBe('failed')
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'failed', note: expect.stringContaining("worker's session is gone") })
+    })
+
+    async function notConverged(): Promise<string> {
+      const id = await inReview()
+      engine.reportResult('w2', { status: 'done', summary: 's', verdict: 'findings', findings: ['r1 issue'] })
+      engine.reportResult('w1', { status: 'done', summary: 'fixed' })
+      await engine.idle()
+      expect(engine.reportResult('w3', { status: 'done', summary: 's', verdict: 'findings', findings: ['still broken', 'and this'] }).outcome).toBe('not-converged')
+      await engine.idle()
+      return id
+    }
+
+    it('reaching maxRounds with findings asks the lead and sends no findings mail', async () => {
+      const id = await notConverged()
+      const impl = stateOf(id, 'impl')
+      expect(impl).toMatchObject({ state: 'waiting', note: "Didn't converge in 2 rounds" })
+      expect(fake.mail.map((m) => m.to)).toEqual(['w1', LEAD])
+      expect(fake.mail[1].text).toContain('task impl: review loop did not converge after 2 rounds. Open findings: 1) still broken 2) and this.')
+      expect(fake.mail[1].text).toContain('extend (more rounds), accept (take it as is), or cancel')
+      expect(fake.mail[1].text).toContain('Answer with patch_workflow (retry, update, cancel or add tasks; extend or accept a review loop)')
+      // Neither of its sessions is waiting on the user.
+      engine.onTurnEnded('w1')
+      engine.onTurnEnded('w3')
+      expect(stateOf(id, 'impl').state).toBe('waiting')
+      expect(getWorkflow(id)!.judgments).toHaveLength(1)
+    })
+
+    it('extend resumes a loop that did not converge', async () => {
+      const id = await notConverged()
+      const result = engine.patch(id, getWorkflow(id)!.version, [{ op: 'extend', id: 'impl', rounds: 1 }])
+      expect(result.ok).toBe(true)
+      const impl = stateOf(id, 'impl')
+      expect(impl).toMatchObject({ state: 'running', maxRounds: 3, note: 'Fixing round 2 findings' })
+      expect(impl.rounds!.at(-1)).toMatchObject({ round: 3, review: 'pending' })
+      expect(fake.mail.at(-1)).toMatchObject({ to: 'w1' })
+      expect(fake.mail.at(-1)!.text).toContain('review round 2 of 3')
+      expect(getWorkflow(id)!.judgments).toEqual([])
+    })
+
+    it('accept finishes a loop that did not converge with its open findings', async () => {
+      const id = await notConverged()
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'accept', id: 'impl' }]).ok).toBe(true)
+      const impl = stateOf(id, 'impl')
+      expect(impl.state).toBe('done')
+      expect(impl.result).toMatchObject({ verdict: 'findings', findings: ['still broken', 'and this'], rounds: 2, summary: 'Accepted by the lead with 2 open findings: fixed' })
+      expect(getWorkflow(id)!.status).toBe('done')
+    })
+
+    it('a worker report after non-convergence opens another round', async () => {
+      const id = await notConverged()
+      expect(engine.reportResult('w1', { status: 'done', summary: 'one more go' }).outcome).toBe('in-review')
+      await engine.idle()
+      const impl = stateOf(id, 'impl')
+      expect(impl.rounds!.at(-1)).toMatchObject({ round: 3, review: 'running', reviewer: 3 })
+      expect(getWorkflow(id)!.judgments).toEqual([])
+    })
+
+    it('a failed reviewer is retried once under onFailure retry, then fails the loop; a retry re-queues only the reviewer', async () => {
+      const id = await inReview({ onFailure: 'retry' })
+      expect(engine.reportResult('w2', { status: 'failed', summary: 'no access' }).outcome).toBe('reviewer-retrying')
+      await engine.idle()
+      expect(fake.spawns.map((x) => x.request.owner.review)).toEqual([undefined, 1, 2])
+      expect(stateOf(id, 'impl').state).toBe('running')
+      expect(engine.reportResult('w3', { status: 'failed', summary: 'still no access' }).outcome).toBe('failed')
+      await engine.idle()
+      const impl = stateOf(id, 'impl')
+      expect(impl).toMatchObject({ state: 'failed', note: 'The reviewer failed: still no access', attempt: 1 })
+      expect(impl.rounds![0].review).toBe('failed')
+      expect(fake.mail.at(-1)!.text).toContain('the reviewer of round 1 failed: still no access')
+      expect(fake.disposed).toEqual(['w2'])
+
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'retry', id: 'impl' }]).ok).toBe(true)
+      await engine.idle()
+      expect(fake.spawns).toHaveLength(4)
+      expect(fake.spawns[3].request.owner).toMatchObject({ attempt: 1, review: 3 })
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'running', attempt: 1 })
+      expect(new Set(fake.disposed)).toEqual(new Set(['w2', 'w3']))
+      expect(engine.workerOf('w1')).toEqual({ workflowId: id, taskId: 'impl' })
+    })
+
+    it('a loop retry whose worker is gone starts over with a fresh worker', async () => {
+      const id = await inReview()
+      engine.reportResult('w2', { status: 'failed', summary: 'broke' })
+      removePeer('w1')
+      engine.patch(id, getWorkflow(id)!.version, [{ op: 'retry', id: 'impl' }])
+      await engine.idle()
+      expect(fake.spawns.at(-1)!.request.owner).toEqual({ kind: 'workflow', workflowId: id, taskId: 'impl', attempt: 2 })
+      expect(stateOf(id, 'impl')).toMatchObject({ attempt: 2, rounds: [{ round: 1, review: 'pending' }] })
+      expect(stateOf(id, 'impl').reviewers).toBeUndefined()
+      expect(stateOf(id, 'impl').history).toEqual([expect.objectContaining({ attempt: 1, rounds: 1 })])
+    })
+
+    it('the worker ending its turn during review is not waiting; the reviewer ending its turn is', async () => {
+      const id = await inReview()
+      engine.onTurnEnded('w1')
+      expect(stateOf(id, 'impl').state).toBe('running')
+      engine.onTurnEnded('w2')
+      const impl = stateOf(id, 'impl')
+      expect(impl).toMatchObject({ state: 'waiting', note: expect.stringContaining('reviewer ended its turn') })
+      expect(impl.rounds![0].review).toBe('waiting')
+      engine.onUserInput('w2')
+      engine.onTurnStarted('w1')
+      expect(stateOf(id, 'impl').state).toBe('waiting')
+      engine.onTurnStarted('w2')
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'running', steered: false })
+      expect(stateOf(id, 'impl').rounds![0]).toMatchObject({ review: 'running', reviewerSteered: true })
+      engine.reportResult('w2', { status: 'done', summary: 'ok', verdict: 'clean' })
+      expect(stateOf(id, 'impl').result!.steered).toBe(true)
+    })
+
+    it('a reviewer that vanishes from a live window is a reviewer failure, not a task failure', async () => {
+      const id = await inReview()
+      engine.onPeersChanged()
+      removePeer('w2')
+      engine.onPeersChanged()
+      const impl = stateOf(id, 'impl')
+      expect(impl).toMatchObject({ state: 'failed', note: 'The reviewer failed: The reviewer session ended without a verdict.' })
+      expect(impl.rounds![0].review).toBe('failed')
+      expect(fake.disposed).toEqual([])
+    })
+
+    it('a worker that vanishes during review fails the loop and ends the round; a retry starts over', async () => {
+      const id = await inReview()
+      engine.onPeersChanged()
+      removePeer('w1')
+      engine.onPeersChanged()
+      const impl = stateOf(id, 'impl')
+      expect(impl).toMatchObject({ state: 'failed', note: 'The worker session ended without reporting a result.' })
+      expect(impl.rounds![0]).toMatchObject({ review: 'failed', workerLost: true, note: 'The worker was lost during the review: The worker session ended without reporting a result.' })
+      expect(loopPhase(impl)).toBeNull()
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'retry', id: 'impl', brief: 'Build it again' }]).ok).toBe(true)
+      await engine.idle()
+      expect(fake.spawns.at(-1)!.request.owner).toEqual({ kind: 'workflow', workflowId: id, taskId: 'impl', attempt: 2 })
+      expect(fake.disposed).toContain('w2')
+    })
+
+    it('a worker lost during review closes its reviewer, and a sweep closes one that lingers', async () => {
+      const id = await inReview()
+      engine.onTurnEnded('w2')
+      engine.onPeersChanged()
+      removePeer('w1')
+      engine.onPeersChanged()
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'failed', rounds: [{ review: 'failed', workerLost: true }] })
+      expect(fake.disposed).toEqual(['w2'])
+      fake.disposed = []
+      engine.onPeersChanged()
+      expect(fake.disposed).toEqual(['w2'])
+    })
+
+    it('a reviewer may not report items', async () => {
+      const id = await inReview()
+      expect(() => engine.reportResult('w2', { status: 'done', summary: 'ok', verdict: 'clean', items: ['a'] })).toThrow(/items are the worker's/)
+      expect(stateOf(id, 'impl').rounds![0].review).toBe('running')
+    })
+
+    it('a retry after a restart reuses the kept worker of a loop whose reviewer failed, and notices losing it', async () => {
+      const id = await inReview()
+      engine.reportResult('w2', { status: 'failed', summary: 'no access' })
+      expect(stateOf(id, 'impl').state).toBe('failed')
+      const workerOwner = fake.spawns[0].request.owner
+      fake = fakeHost()
+      fake.peers.push({ terminalId: 'rw', windowId: WIN, worktreePath: '/wt/feat-impl', status: 'idle', owner: workerOwner })
+      engine = createWorkflowEngine(fake.host)
+      engine.onHosts(WIN, [LEAD])
+      engine.onPeersChanged()
+      await engine.idle()
+      expect(fake.spawns).toEqual([])
+      expect(fake.mail.filter((m) => m.to === 'rw')).toEqual([])
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'retry', id: 'impl' }]).ok).toBe(true)
+      await engine.idle()
+      expect(fake.spawns.map((x) => x.request.owner)).toEqual([{ kind: 'workflow', workflowId: id, taskId: 'impl', attempt: 1, review: 2 }])
+      expect(engine.snapshot(id)!).toMatchObject({ workers: { impl: 'rw' }, reviewers: { impl: 'w1' } })
+      removePeer('rw')
+      engine.onPeersChanged()
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'failed', rounds: [{ review: 'failed', workerLost: true }] })
+      expect(fake.disposed).toContain('w1')
+    })
+
+    it('cancelling a loop whose reviewer failed detaches its kept worker', async () => {
+      const id = await inReview()
+      engine.reportResult('w2', { status: 'failed', summary: 'no access' })
+      expect(getWorkflow(id)!.status).toBe('failed')
+      engine.cancel(id)
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'cancelled', detached: true })
+      expect(fake.detached).toEqual(['w1'])
+      expect(fake.disposed).toEqual(['w2'])
+    })
+
+    it('a patch cancel of a loop whose reviewer failed detaches its kept worker', async () => {
+      const id = await inReview()
+      engine.reportResult('w2', { status: 'failed', summary: 'no access' })
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'cancel', id: 'impl' }]).ok).toBe(true)
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'cancelled', detached: true })
+      expect(fake.detached).toEqual(['w1'])
+    })
+
+    it('a worker lost while its change waits for a reviewer slot ends that round too', async () => {
+      const id = create([loop({ onFailure: 'retry' })])
+      engine.start(id, 'user')
+      await engine.idle()
+      engine.onPeersChanged()
+      // Synchronously: the reviewer's start hasn't run yet.
+      engine.reportResult('w1', { status: 'done', summary: 'built it' })
+      removePeer('w1')
+      engine.onPeersChanged()
+      const impl = stateOf(id, 'impl')
+      // Under onFailure retry the loop queues a fresh worker; the round it left can't be reviewed.
+      expect(impl.state).toBe('queued')
+      expect(impl.rounds![0]).toMatchObject({ review: 'failed', workerLost: true })
+      await engine.idle()
+      expect(fake.spawns.map((x) => x.request.owner)).toEqual([
+        { kind: 'workflow', workflowId: id, taskId: 'impl', attempt: 1 },
+        { kind: 'workflow', workflowId: id, taskId: 'impl', attempt: 2 },
+      ])
+    })
+
+    it('after a restart the reviewer re-attaches and is nudged once with reviewer wording', async () => {
+      const id = await inReview()
+      const workerOwner = fake.spawns[0].request.owner
+      const reviewerOwner = fake.spawns[1].request.owner
+      fake = fakeHost()
+      fake.peers.push({ terminalId: 'rw', windowId: WIN, worktreePath: '/wt/feat-impl', status: 'idle', owner: workerOwner })
+      fake.peers.push({ terminalId: 'rr', windowId: WIN, worktreePath: '/wt/feat-impl', status: 'running', owner: reviewerOwner })
+      engine = createWorkflowEngine(fake.host)
+      engine.onHosts(WIN, [LEAD])
+      engine.onPeersChanged()
+      await engine.idle()
+      expect(fake.spawns).toEqual([])
+      expect(fake.mail.map((m) => m.to)).toEqual(['rr'])
+      expect(fake.mail[0].text).toContain('reviewed round 1 of workflow task "impl"')
+      expect(fake.mail[0].text).toContain('verdict "clean" or "findings"')
+      expect(engine.snapshot(id)!.reviewers).toEqual({ impl: 'rr' })
+      engine.reportResult('rr', { status: 'done', summary: 'ok', verdict: 'clean' })
+      expect(stateOf(id, 'impl').state).toBe('done')
+    })
+
+    it('a reviewer that never comes back after a restart fails after 90s', async () => {
+      const id = await inReview()
+      const workerOwner = fake.spawns[0].request.owner
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      fake = fakeHost()
+      fake.peers.push({ terminalId: 'rw', windowId: WIN, worktreePath: '/wt/feat-impl', status: 'idle', owner: workerOwner })
+      engine = createWorkflowEngine(fake.host)
+      engine.onHosts(WIN, [LEAD])
+      engine.onPeersChanged()
+      await vi.advanceTimersByTimeAsync(90_000)
+      await engine.idle()
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'failed', note: expect.stringContaining('reviewer session never started') })
+    })
+
+    it('a superseded reviewer that shows up is closed', async () => {
+      const id = await inReview()
+      engine.reportResult('w2', { status: 'done', summary: 's', verdict: 'findings', findings: ['x'] })
+      engine.reportResult('w1', { status: 'done', summary: 'fixed' })
+      await engine.idle()
+      fake.peers.push({ terminalId: 'ghost', windowId: WIN, worktreePath: '/wt/feat-impl', status: 'idle', owner: { kind: 'workflow', workflowId: id, taskId: 'impl', attempt: 1, review: 1 } })
+      engine.onPeersChanged()
+      expect(fake.disposed).toContain('ghost')
+    })
+
+    it('cancel detaches both the worker and the reviewer', async () => {
+      const id = await inReview()
+      engine.cancel(id)
+      expect(fake.detached.sort()).toEqual(['w1', 'w2'])
+      fake.detached = []
+      engine.onPeersChanged()
+      expect(fake.detached.sort()).toEqual(['w1', 'w2'])
+      engine.dismiss(id)
+      expect(fake.disposed).toEqual([])
+    })
+
+    it('a patch cancel of a loop detaches both', async () => {
+      const id = await inReview({}, [t('other')])
+      engine.patch(id, getWorkflow(id)!.version, [{ op: 'cancel', id: 'impl' }])
+      expect(fake.detached.sort()).toEqual(['w1', 'w3'])
+    })
+
+    it('cancelling a loop between rounds detaches its worker and closes the finished reviewer', async () => {
+      const id = await inReview()
+      engine.reportResult('w2', { status: 'done', summary: 's', verdict: 'findings', findings: ['x'] })
+      engine.cancel(id)
+      expect(fake.detached).toEqual(['w1'])
+      expect(fake.disposed).toEqual(['w2'])
+      fake.detached = []
+      engine.onPeersChanged()
+      expect(fake.detached).toEqual(['w1'])
+      engine.dismiss(id)
+      expect(fake.detached).toEqual(['w1', 'w1'])
+    })
+
+    it('a patch cancel of a loop between rounds closes the finished reviewer too', async () => {
+      const id = await inReview({}, [t('other')])
+      engine.reportResult('w3', { status: 'done', summary: 's', verdict: 'findings', findings: ['x'] })
+      engine.patch(id, getWorkflow(id)!.version, [{ op: 'cancel', id: 'impl' }])
+      expect(fake.detached).toEqual(['w1'])
+      expect(fake.disposed).toEqual(['w3'])
+    })
+
+    it('a patch that both extends and ends a loop is refused, and nothing resumes', async () => {
+      const id = await notConverged()
+      const mails = fake.mail.length
+      for (const second of [{ op: 'cancel' as const, id: 'impl' }, { op: 'accept' as const, id: 'impl' }, { op: 'extend' as const, id: 'impl', rounds: 1 }]) {
+        expect(() => engine.patch(id, getWorkflow(id)!.version, [{ op: 'extend', id: 'impl', rounds: 1 }, second])).toThrow(/already changes task "impl"/)
+      }
+      expect(fake.mail).toHaveLength(mails)
+      expect(stateOf(id, 'impl')).toMatchObject({ state: 'waiting', maxRounds: 2 })
+      expect(stateOf(id, 'impl').rounds).toHaveLength(2)
+    })
+
+    it('a reviewer without a model counts as cloud, whatever its worker runs on', async () => {
+      fake.host.isLocalModel = async (_provider, model) => model === 'local-model'
+      const id = create([
+        t('impl', { kind: 'loop', model: 'local-model', worktree: { branch: 'feat-impl' }, reviewer: { brief: 'Check' } }),
+        t('other', { model: 'local-model' }),
+      ])
+      engine.start(id, 'user')
+      await engine.idle()
+      expect(fake.spawns.map((x) => x.request.owner.taskId)).toEqual(['impl'])
+      engine.reportResult('w1', { status: 'done', summary: 'built' })
+      await engine.idle()
+      // The reviewer takes a cloud slot, so the local one is free for the other task.
+      expect(fake.spawns.map((x) => [x.request.owner.taskId, x.request.owner.review])).toEqual([
+        ['impl', undefined],
+        ['impl', 1],
+        ['other', undefined],
+      ])
+      expect(fake.spawns[1].request.model).toBeUndefined()
+      expect(fake.spawns[1].request.provider).toBeUndefined()
+    })
+
+    it('the gate counts a loop once, on its reviewer\'s backend while it reviews', async () => {
+      fake.host.isLocalModel = async (_provider, model) => model === 'local-model'
+      const id = create([
+        t('impl', { kind: 'loop', worktree: { branch: 'feat-impl' }, reviewer: { brief: 'Check', model: 'local-model' } }),
+        t('l', { model: 'local-model', after: ['gate'] }),
+        t('gate'),
+      ])
+      engine.start(id, 'user')
+      await engine.idle()
+      expect(fake.spawns.map((x) => x.request.owner.taskId)).toEqual(['impl', 'gate'])
+      engine.reportResult('w1', { status: 'done', summary: 'built' })
+      await engine.idle()
+      // The local reviewer takes the one local slot; the cloud worker is idle.
+      expect(fake.spawns.map((x) => [x.request.owner.taskId, x.request.owner.review])).toEqual([
+        ['impl', undefined],
+        ['gate', undefined],
+        ['impl', 1],
+      ])
+      engine.reportResult('w2', { status: 'done', summary: 'ok' })
+      await engine.idle()
+      expect(fake.spawns).toHaveLength(3)
+      engine.reportResult('w3', { status: 'done', summary: 'ok', verdict: 'clean' })
+      await engine.idle()
+      expect(fake.spawns.at(-1)!.request.owner.taskId).toBe('l')
+    })
+  })
+
+  describe('maps', () => {
+    const triage = () => t('triage')
+    const map = (extra: Record<string, unknown> = {}) =>
+      t('fix', {
+        kind: 'map',
+        after: ['triage'],
+        over: 'triage.result.items',
+        brief: 'Fix {{item}} (#{{index}}) after {{task.triage.result.summary}}',
+        worktree: { branch: 'fix/{{item}}' },
+        acceptance: 'test for {{item}}',
+        ...extra,
+      })
+
+    async function triaged(items: string[] | undefined, extra: Record<string, unknown> = {}, more: Array<Record<string, unknown>> = []): Promise<string> {
+      const id = create([triage(), map(extra), ...more])
+      engine.start(id, 'user')
+      await engine.idle()
+      engine.reportResult('w1', { status: 'done', summary: 'found bugs', ...(items ? { items } : {}) })
+      await engine.idle()
+      return id
+    }
+
+    it('expands into one child per item, with resolved briefs, unique branches and titles', async () => {
+      const id = await triaged(['Login breaks', 'Logout {{task.triage.result.summary}}', 'login breaks'])
+      const wf = getWorkflow(id)!
+      const children = wf.tasks.filter((x) => x.parent === 'fix')
+      expect(children.map((c) => [c.id, c.index, c.title, c.worktree?.branch, c.state])).toEqual([
+        ['fix.1', 1, 'Login breaks', 'fix/login-breaks', 'running'],
+        ['fix.2', 2, 'Logout {{task.triage.result.summary}}', 'fix/logout-task.triage.result.summary', 'running'],
+        ['fix.3', 3, 'login breaks', 'fix/login-breaks-3', 'running'],
+      ])
+      expect(children[0]).toMatchObject({ brief: 'Fix Login breaks (#1) after found bugs', acceptance: 'test for Login breaks', item: 'Login breaks', after: [] })
+      expect(stateOf(id, 'fix')).toMatchObject({ state: 'running' })
+      expect(wf.version).toBe(1)
+      // The child's brief isn't templated again: the item's own `{{…}}` stays as written.
+      const second = fake.spawns.find((x) => x.request.owner.taskId === 'fix.2')!.request
+      expect(second.brief).toMatch(/^Fix Logout \{\{task\.triage\.result\.summary\}\} \(#2\) after found bugs/)
+      expect(second.brief).toContain('You handle item 2 of 3 of map fix ("Task fix"): Logout {{task.triage.result.summary}}')
+      expect(second.label).toBe('Logout {{task.triage.result.summary}}')
+      expect(second.worktreePath).toBe('/wt/fix/logout-task.triage.result.summary')
+      expect(engine.snapshot(id)!.workers).toMatchObject({ 'fix.1': expect.any(String), 'fix.2': expect.any(String) })
+    })
+
+    it('tells the source task that later tasks fan out over its items', async () => {
+      const id = create([triage(), map({ maxItems: 7 })])
+      engine.start(id, 'user')
+      await engine.idle()
+      expect(fake.spawns[0].request.brief).toContain('Later tasks fan out over your items')
+      expect(fake.spawns[0].request.brief).toContain('at most 7')
+      expect(stateOf(id, 'fix').state).toBe('queued')
+    })
+
+    it('an empty list finishes the map at once', async () => {
+      const id = await triaged([], {}, [t('after', { after: ['fix'] })])
+      expect(stateOf(id, 'fix')).toMatchObject({ state: 'done', result: { summary: 'No items: nothing to fan out.', items: [] } })
+      expect(fake.spawns.at(-1)!.request.owner.taskId).toBe('after')
+    })
+
+    /** The lead's way out of a map that couldn't fan out: a new source, and the map moved onto it. */
+    async function newSource(id: string, items: string[]): Promise<void> {
+      const wf = getWorkflow(id)!
+      expect(wf.status).toBe('failed')
+      const result = engine.patch(id, wf.version, [
+        ...parseWorkflowOps([
+          { op: 'add', task: t('triage2', { after: ['triage'] }) },
+          { op: 'update', id: 'fix', patch: { after: ['triage2'], over: 'triage2.result.items' } },
+        ]),
+      ])
+      expect(result.ok).toBe(true)
+      expect(stateOf(id, 'fix').state).toBe('queued')
+      await engine.idle()
+      const spawn = fake.spawns.at(-1)!
+      expect(spawn.request.owner.taskId).toBe('triage2')
+      expect(spawn.request.brief).toContain('Later tasks fan out over your items')
+      engine.reportResult(spawn.terminalId, { status: 'done', summary: 'narrowed', items })
+      await engine.idle()
+    }
+
+    it('a source without items fails the map with a judgment; a new source moves it on', async () => {
+      const id = await triaged(undefined)
+      expect(stateOf(id, 'fix')).toMatchObject({ state: 'failed', note: 'triage reported no items' })
+      expect(getWorkflow(id)!.judgments[0].question).toBe(
+        "can't fan out: triage reported no items. To fan out, add a task that reports the items (it may run after triage) and update this map's after and over to it, or cancel the map.",
+      )
+      await newSource(id, ['one'])
+      expect(getWorkflow(id)!.tasks.filter((x) => x.parent === 'fix').map((x) => [x.id, x.state])).toEqual([['fix.1', 'running']])
+      expect(getWorkflow(id)!.status).toBe('running')
+    })
+
+    it('more items than maxItems is a judgment, never a cut; a narrowing source moves it on', async () => {
+      const id = await triaged(['a', 'b', 'c'], { maxItems: 2 })
+      expect(stateOf(id, 'fix')).toMatchObject({ state: 'failed', note: 'triage produced 3 items; this map takes at most 2' })
+      expect(getWorkflow(id)!.tasks.some((x) => x.parent === 'fix')).toBe(false)
+      expect(fake.mail.at(-1)!.text).toContain(
+        "this map takes at most 2. To go on, update this map's maxItems to 3, or add a task that narrows or splits the list (it may run after triage) and update this map's after and over to it, or cancel the map.",
+      )
+      await newSource(id, ['a', 'b'])
+      expect(getWorkflow(id)!.tasks.filter((x) => x.parent === 'fix').map((x) => x.item)).toEqual(['a', 'b'])
+    })
+
+    it('over the hard cap, raising maxItems is not offered', async () => {
+      await triaged(Array.from({ length: 21 }, (_, i) => `i${i}`))
+      expect(fake.mail.at(-1)!.text).toContain('produced 21 items; this map takes at most 20. To go on, add a task that narrows')
+    })
+
+    it('an item that makes a child brief too long fails the map with a judgment naming it, and nothing is cut', async () => {
+      const id = await triaged(['short', `long ${'x'.repeat(400)}`], { brief: `${'b'.repeat(15_800)} {{item}}` })
+      expect(stateOf(id, 'fix')).toMatchObject({ state: 'failed', note: expect.stringMatching(/^item 2 \("long x+"\) makes a brief of \d+ characters \(at most 16000\)$/) })
+      expect(getWorkflow(id)!.tasks.some((x) => x.parent === 'fix')).toBe(false)
+      expect(fake.mail.at(-1)!.text).toContain("Update this map's brief or acceptance to be shorter")
+    })
+
+    it('a failed child raises its own judgment while the map keeps running', async () => {
+      const id = await triaged(['a', 'b'])
+      const [c1, c2] = fake.spawns.slice(1).map((x) => x.terminalId)
+      engine.reportResult(c1, { status: 'failed', summary: 'cannot' })
+      await engine.idle()
+      expect(stateOf(id, 'fix').state).toBe('running')
+      expect(getWorkflow(id)!.judgments.map((j) => j.taskId)).toEqual(['fix.1'])
+      engine.reportResult(c2, { status: 'done', summary: 'fixed b' })
+      await engine.idle()
+      expect(getWorkflow(id)!.status).toBe('failed')
+      expect(stateOf(id, 'fix').state).toBe('running')
+      // The lead retries the child by id.
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'retry', id: 'fix.1' }]).ok).toBe(true)
+      await engine.idle()
+      const retried = fake.spawns.at(-1)!
+      expect(retried.request.owner).toMatchObject({ taskId: 'fix.1', attempt: 2 })
+      engine.reportResult(retried.terminalId, { status: 'done', summary: 'fixed a\nmore detail', changedFiles: ['a.ts'] })
+      await engine.idle()
+      const fix = stateOf(id, 'fix')
+      expect(fix.state).toBe('done')
+      expect(fix.result).toMatchObject({ summary: '2 of 2 items done\n- a: fixed a\n- b: fixed b', items: ['a', 'b'], changedFiles: ['a.ts'] })
+      expect(getWorkflow(id)!.status).toBe('done')
+    })
+
+    it('an integrate after a map lists its done children\'s branches', async () => {
+      const id = await triaged(['a', 'b'], {}, [t('int', { kind: 'integrate', after: ['fix'], shape: 'single' })])
+      for (const s of fake.spawns.slice(1)) engine.reportResult(s.terminalId, { status: 'done', summary: `did ${s.request.owner.taskId}` })
+      await engine.idle()
+      const brief = fake.spawns.at(-1)!.request.brief
+      expect(fake.spawns.at(-1)!.request.owner.taskId).toBe('int')
+      expect(brief).toContain('- fix.1 (a): branch fix/a — did fix.1')
+      expect(brief).toContain('- fix.2 (b): branch fix/b — did fix.2')
+      expect(stateOf(id, 'fix').result!.branch).toBeUndefined()
+    })
+
+    it('cancelling a map by patch cancels its children and detaches the running ones', async () => {
+      const id = await triaged(['a', 'b'])
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'cancel', id: 'fix' }]).ok).toBe(true)
+      expect(fake.detached.sort()).toEqual(fake.spawns.slice(1).map((x) => x.terminalId).sort())
+      expect(getWorkflow(id)!.tasks.filter((x) => x.parent === 'fix').map((x) => x.state)).toEqual(['cancelled', 'cancelled'])
+    })
+
+    it("a finished map's items are its done children's only", async () => {
+      const id = await triaged(['a', 'b', 'c'])
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'cancel', id: 'fix.2' }]).ok).toBe(true)
+      for (const s of fake.spawns.slice(1)) if (s.request.owner.taskId !== 'fix.2') engine.reportResult(s.terminalId, { status: 'done', summary: 'ok' })
+      await engine.idle()
+      expect(stateOf(id, 'fix')).toMatchObject({ state: 'done', result: { items: ['a', 'c'], summary: expect.stringMatching(/^2 of 3 items done/) } })
+    })
+
+    it('a map whose children were all cancelled is cancelled, and its dependents ask the lead', async () => {
+      const id = await triaged(['a', 'b'], {}, [t('after', { after: ['fix'] })])
+      expect(engine.patch(id, getWorkflow(id)!.version, [{ op: 'cancel', id: 'fix.1' }, { op: 'cancel', id: 'fix.2' }]).ok).toBe(true)
+      await engine.idle()
+      expect(stateOf(id, 'fix').state).toBe('cancelled')
+      expect(getWorkflow(id)!.status).toBe('failed')
+      expect(getWorkflow(id)!.judgments).toEqual([expect.objectContaining({ taskId: 'after', question: "can't start: it runs after fix (cancelled)." })])
+      expect(fake.mail.at(-1)!.text).toContain("task after: can't start: it runs after fix (cancelled).")
+    })
+
+    it('a task stuck behind a map with a failed child is told which child failed', async () => {
+      const id = await triaged(['a', 'b'], {}, [t('after', { after: ['fix'] })])
+      const [c1, c2] = fake.spawns.slice(1).map((x) => x.terminalId)
+      engine.reportResult(c1, { status: 'failed', summary: 'cannot' })
+      engine.reportResult(c2, { status: 'done', summary: 'ok' })
+      await engine.idle()
+      expect(getWorkflow(id)!.judgments.find((j) => j.taskId === 'after')!.question).toBe("can't start: it runs after fix (its fix.1 failed).")
+    })
+
+    it('a loop can be a map\'s source: its items are the latest round that reported any', async () => {
+      const id = create([
+        t('triage', { kind: 'loop', worktree: { branch: 'triage' }, reviewer: { brief: 'Check the list' } }),
+        t('fix', { kind: 'map', after: ['triage'], over: 'triage.result.items', brief: 'Fix {{item}}', worktree: { branch: 'fix/{{index}}' } }),
+      ])
+      engine.start(id, 'user')
+      await engine.idle()
+      engine.reportResult('w1', { status: 'done', summary: 'listed', items: ['a', 'b'] })
+      await engine.idle()
+      engine.reportResult('w2', { status: 'done', summary: 's', verdict: 'findings', findings: ['wording'] })
+      engine.reportResult('w1', { status: 'done', summary: 'reworded the commit only' })
+      await engine.idle()
+      engine.reportResult('w3', { status: 'done', summary: 'ok', verdict: 'clean' })
+      await engine.idle()
+      expect(stateOf(id, 'triage').result!.items).toEqual(['a', 'b'])
+      expect(getWorkflow(id)!.tasks.filter((x) => x.parent === 'fix').map((x) => x.item)).toEqual(['a', 'b'])
+    })
+
+    it('progress counts children once the map expanded', async () => {
+      const id = await triaged(['a', 'b'])
+      expect(workflowProgress(getWorkflow(id)!)).toEqual({ done: 1, total: 3 })
+    })
   })
 })

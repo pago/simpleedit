@@ -14,9 +14,16 @@ import {
   WorkflowValidationError,
   archiveAttempt,
   checkGraph,
+  childrenOf,
+  currentRound,
+  currentSlots,
   isFinished,
+  kindProblems,
+  loopItems,
+  loopPhase,
   newWorkflowId,
   parseAttemptHistory,
+  parseLoopRounds,
   type NewWorkflowInput,
   type Workflow,
   type WorkflowJudgment,
@@ -27,6 +34,7 @@ import {
   type WorkflowTaskResult,
   type WorkflowTaskSpec,
   type WorkflowTaskState,
+  WORKFLOW_MAX_LOOP_ROUNDS,
   WORKFLOW_MAX_TASKS,
 } from '../shared/workflow'
 
@@ -46,6 +54,7 @@ interface WorkflowRow {
 }
 
 interface TaskRow {
+  workflow_id: string
   id: string
   spec: string
   state: string
@@ -60,11 +69,17 @@ interface TaskRow {
   cancelled_by: number | null
   detached: number
   history: string | null
+  rounds: string | null
+  parent: string | null
+  item_index: number | null
+  item: string | null
 }
 
 function toTask(r: TaskRow): WorkflowTask {
   const spec = JSON.parse(r.spec) as WorkflowTaskSpec
   const history = r.history ? parseAttemptHistory(JSON.parse(r.history)) : []
+  const loop = r.rounds ? parseLoopRounds(JSON.parse(r.rounds)) : null
+  if (loop && loop.dropped > 0) console.warn(`[Workflows] ${r.workflow_id}/${r.id}: dropped ${loop.dropped} malformed loop round(s) from the database`)
   return {
     ...spec,
     id: r.id,
@@ -80,6 +95,11 @@ function toTask(r: TaskRow): WorkflowTask {
     ...(r.cancelled_by !== null ? { cancelledBy: r.cancelled_by } : {}),
     ...(r.detached === 1 ? { detached: true } : {}),
     ...(history.length > 0 ? { history } : {}),
+    ...(loop && loop.rounds.length > 0 ? { rounds: loop.rounds } : {}),
+    ...(loop && loop.reviewers > 0 ? { reviewers: loop.reviewers } : {}),
+    ...(r.parent !== null ? { parent: r.parent } : {}),
+    ...(r.item_index !== null ? { index: r.item_index } : {}),
+    ...(r.item !== null ? { item: r.item } : {}),
   }
 }
 
@@ -97,7 +117,16 @@ function specOf(task: WorkflowTask): WorkflowTaskSpec {
     ...(task.worktree ? { worktree: task.worktree } : {}),
     onFailure: task.onFailure,
     ...(task.shape ? { shape: task.shape } : {}),
+    ...(task.reviewer ? { reviewer: task.reviewer } : {}),
+    ...(task.maxRounds !== undefined ? { maxRounds: task.maxRounds } : {}),
+    ...(task.over ? { over: task.over } : {}),
+    ...(task.maxItems !== undefined ? { maxItems: task.maxItems } : {}),
   }
+}
+
+function loopColumn(task: WorkflowTask): string | null {
+  if (!task.rounds?.length && !task.reviewers) return null
+  return JSON.stringify({ reviewers: task.reviewers ?? 0, rounds: task.rounds ?? [] })
 }
 
 function load(row: WorkflowRow): Workflow {
@@ -175,12 +204,13 @@ export function saveWorkflow(workflow: Workflow): void {
     )
     const upsert = d.prepare(
       `INSERT INTO workflow_tasks (workflow_id, id, position, spec, state, attempt, result, note, worktree_path, steered,
-         started_at, finished_at, added_by, cancelled_by, detached, history)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         started_at, finished_at, added_by, cancelled_by, detached, history, rounds, parent, item_index, item)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(workflow_id, id) DO UPDATE SET position = excluded.position, spec = excluded.spec, state = excluded.state,
          attempt = excluded.attempt, result = excluded.result, note = excluded.note, worktree_path = excluded.worktree_path,
          steered = excluded.steered, started_at = excluded.started_at, finished_at = excluded.finished_at,
-         added_by = excluded.added_by, cancelled_by = excluded.cancelled_by, detached = excluded.detached, history = excluded.history`,
+         added_by = excluded.added_by, cancelled_by = excluded.cancelled_by, detached = excluded.detached, history = excluded.history,
+         rounds = excluded.rounds, parent = excluded.parent, item_index = excluded.item_index, item = excluded.item`,
     )
     workflow.tasks.forEach((task, i) =>
       upsert.run(
@@ -200,6 +230,10 @@ export function saveWorkflow(workflow: Workflow): void {
         task.cancelledBy ?? null,
         task.detached ? 1 : 0,
         task.history && task.history.length > 0 ? JSON.stringify(task.history) : null,
+        loopColumn(task),
+        task.parent ?? null,
+        task.index ?? null,
+        task.item ?? null,
       ),
     )
   })
@@ -278,10 +312,20 @@ export function applyOpsTo(workflow: Workflow, ops: readonly WorkflowOp[], now =
     throw new WorkflowValidationError([`workflow ${workflow.id} is ${workflow.status}; it can't be patched`])
   }
   const version = workflow.version + 1
-  const tasks = workflow.tasks.map((t) => ({ ...t }))
+  const tasks = workflow.tasks.map((t) => ({ ...t, ...(t.rounds ? { rounds: t.rounds.map((r) => ({ ...r })) } : {}) }))
   const byId = new Map(tasks.map((t) => [t.id, t]))
   const touched = new Set<string>()
+  /** Task ids that a lifecycle op (extend, accept, cancel, retry) already changed in this patch. */
+  const lifecycle = new Map<string, number>()
   const problems: string[] = []
+  const cancel = (task: WorkflowTask): void => {
+    // What holds a session is detached, a failed loop's kept worker too. A map holds none: its children's are detached.
+    if (task.kind !== 'map' && (task.state === 'running' || task.state === 'waiting' || currentSlots(task).length > 0)) task.detached = true
+    task.state = 'cancelled'
+    task.cancelledBy = version
+    task.finishedAt = now.toISOString()
+    touched.add(task.id)
+  }
   ops.forEach((op, i) => {
     const at = `ops[${i}]`
     if (op.op === 'add') {
@@ -300,43 +344,109 @@ export function applyOpsTo(workflow: Workflow, ops: readonly WorkflowOp[], now =
       return
     }
     touched.add(task.id)
+    if (op.op !== 'update') {
+      const earlier = lifecycle.get(task.id)
+      if (earlier !== undefined) {
+        problems.push(`${at}: ops[${earlier}] (${ops[earlier].op}) already changes task "${task.id}"; a patch takes one of extend, accept, cancel or retry per task`)
+        return
+      }
+      lifecycle.set(task.id, i)
+    }
     if (op.op === 'update') {
-      if (task.state !== 'queued') {
+      // A map that failed before expanding lost nothing: it may be changed and run again.
+      const unexpandedFailedMap = task.kind === 'map' && task.state === 'failed' && !tasks.some((t) => t.parent === task.id)
+      if (task.state !== 'queued' && !unexpandedFailedMap) {
         problems.push(`${at}: task "${task.id}" is ${task.state}; only a queued task can be updated`)
         return
       }
       const { patch } = op
+      if (task.parent !== undefined && patch.after !== undefined) {
+        problems.push(`${at}: "${task.id}" is a child of map "${task.parent}" and runs once it expands; change the map's after instead`)
+        return
+      }
       for (const key of Object.keys(patch) as Array<keyof typeof patch>) {
         const value = patch[key]
         if (value === null) delete (task as unknown as Record<string, unknown>)[key]
         else if (value !== undefined) (task as unknown as Record<string, unknown>)[key] = value
       }
-      if (task.kind === 'integrate' && task.after.length === 0) problems.push(`${at}: an integrate task needs at least one task in after`)
-      if (task.kind !== 'integrate' && task.shape) problems.push(`${at}: shape is only for integrate tasks`)
-      if (task.effort && (task.provider ?? 'claude') === 'claude') problems.push(`${at}: effort is only for provider "codex"`)
+      kindProblems(task, at, problems)
+      if (unexpandedFailedMap) {
+        task.state = 'queued'
+        archiveAttempt(task)
+        delete task.finishedAt
+      }
     } else if (op.op === 'cancel') {
       if (task.state === 'done' || task.state === 'cancelled') {
         problems.push(`${at}: task "${task.id}" is already ${task.state}`)
         return
       }
-      if (task.state === 'running' || task.state === 'waiting') task.detached = true
-      task.state = 'cancelled'
-      task.cancelledBy = version
-      task.finishedAt = now.toISOString()
+      if (task.kind === 'map') for (const child of childrenOf({ tasks }, task.id)) if (child.state !== 'done' && child.state !== 'cancelled') cancel(child)
+      cancel(task)
     } else if (op.op === 'retry') {
       if (task.state !== 'failed') {
         problems.push(`${at}: task "${task.id}" is ${task.state}; only a failed task can be retried`)
+        return
+      }
+      const round = currentRound(task)
+      if (task.kind === 'loop' && task.attempt > 0 && round?.review === 'failed' && !round.workerLost) {
+        // Only the reviewer failed: the worker and its change are kept, a fresh reviewer takes the round.
+        if (op.brief) {
+          problems.push(`${at}: retry a reviewer with no brief; update the loop's reviewer only while it is queued`)
+          return
+        }
+        round.review = 'queued'
+        delete round.finishedAt
+        task.state = 'running'
+        task.note = `Retrying the reviewer of round ${round.round}`
+        delete task.finishedAt
         return
       }
       task.state = 'queued'
       if (op.brief) task.brief = op.brief
       archiveAttempt(task)
       delete task.finishedAt
-    } else {
-      problems.push(`${at}: ${op.op} isn't supported yet`)
+    } else if (op.op === 'extend') {
+      if (task.kind !== 'loop') {
+        problems.push(`${at}: task "${task.id}" is not a review loop; only a loop can be extended`)
+        return
+      }
+      if (task.state !== 'running' && task.state !== 'waiting') {
+        problems.push(`${at}: loop "${task.id}" is ${task.state}; only a running or waiting loop can be extended`)
+        return
+      }
+      const maxRounds = (task.maxRounds ?? 0) + op.rounds
+      if (maxRounds > WORKFLOW_MAX_LOOP_ROUNDS) {
+        problems.push(`${at}: loop "${task.id}" would have ${maxRounds} rounds; at most ${WORKFLOW_MAX_LOOP_ROUNDS}`)
+        return
+      }
+      task.maxRounds = maxRounds
+    } else if (op.op === 'accept') {
+      const round = currentRound(task)
+      if (task.kind !== 'loop' || task.state !== 'waiting' || loopPhase(task) !== 'not-converged' || !round) {
+        problems.push(`${at}: only a review loop waiting because it didn't converge can be accepted`)
+        return
+      }
+      const findings = round.findings ?? []
+      const work = round.work
+      task.state = 'done'
+      task.finishedAt = now.toISOString()
+      delete task.note
+      task.result = {
+        status: 'done',
+        summary: op.summary ?? `Accepted by the lead with ${findings.length} open finding${findings.length === 1 ? '' : 's'}: ${work?.summary ?? ''}`,
+        ...(work?.branch ? { branch: work.branch } : {}),
+        ...(work?.changedFiles ? { changedFiles: work.changedFiles } : {}),
+        ...(loopItems(task) ? { items: loopItems(task) } : {}),
+        verdict: 'findings',
+        findings,
+        steered: task.steered,
+        at: now.toISOString(),
+        rounds: round.round,
+      }
     }
   })
-  if (tasks.length > WORKFLOW_MAX_TASKS) problems.push(`a workflow has at most ${WORKFLOW_MAX_TASKS} tasks`)
+  const topLevel = tasks.filter((t) => t.parent === undefined).length
+  if (topLevel > WORKFLOW_MAX_TASKS) problems.push(`a workflow has at most ${WORKFLOW_MAX_TASKS} tasks`)
   if (problems.length === 0) checkGraph(tasks, problems)
   if (problems.length > 0) throw new WorkflowValidationError(problems)
   return {
