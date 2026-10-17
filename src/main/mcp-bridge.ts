@@ -663,7 +663,14 @@ async function handleToolCall(payload: ToolCallPayload, webContents: RemoteClien
           worktree: p.worktreePath,
           status: p.status,
           ...(p.owner?.kind === 'review' ? { owner: p.owner.kind, review_id: p.owner.reviewId } : {}),
-          ...(p.owner?.kind === 'workflow' ? { owner: p.owner.kind, workflow_id: p.owner.workflowId, task_id: p.owner.taskId } : {}),
+          ...(p.owner?.kind === 'workflow'
+            ? {
+                owner: p.owner.kind,
+                workflow_id: p.owner.workflowId,
+                task_id: p.owner.taskId,
+                ...(p.owner.review !== undefined ? { review: p.owner.review } : {}),
+              }
+            : {}),
           unread: p.unread,
           ...(p.unread > 0 ? { mail: outlookNote(p.terminalId) } : {}),
         })),

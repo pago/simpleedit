@@ -15,7 +15,7 @@ import { onSessionRegistered, sessionForTerminal, terminalForSession } from './c
 import { sendSystemMail, setWorkflowTools, type WorkflowToolName } from './mcp-bridge'
 import { createWorktree, listWorktrees } from './worktree'
 import { handleInvoke } from './ipc-registry'
-import { createWorkflowEngine, type EnginePeer, type WorkflowEngine } from './workflow-engine'
+import { createWorkflowEngine, type EnginePeer, type ReportOutcome, type WorkflowEngine } from './workflow-engine'
 import { getWorkflow, listLeadWorkflowIds } from './workflow-store'
 import { parseSessionOwner } from '../shared/session-owner'
 import {
@@ -27,6 +27,7 @@ import {
   type WorkflowList,
   type WorkflowOp,
   type WorkflowProvider,
+  type WorkflowReviewerSpec,
   type WorkflowSettings,
   type WorkflowSnapshot,
 } from '../shared/workflow'
@@ -84,6 +85,20 @@ function leadTerminal(leadKey: string): string | null {
   return terminalForSession(leadKey) ?? (getPeer(leadKey) ? leadKey : null)
 }
 
+/** What `report_result` tells the session that called it. */
+const NEXT: Record<ReportOutcome, string> = {
+  done: 'Recorded. Your task is done; you can stop here.',
+  retrying: 'Recorded. A fresh worker will retry this task; you can stop here.',
+  failed: 'Recorded. The lead has been told; you can stop here.',
+  'asked-lead': 'Recorded. The lead has been asked; wait for its answer in your inbox.',
+  'in-review':
+    'Recorded. A fresh reviewer will check your change. Its findings, if any, arrive in your inbox: fix them and call report_result again. You can stop here.',
+  'findings-sent': 'Recorded. You can stop here.',
+  clean: 'Recorded. You can stop here.',
+  'not-converged': 'Recorded. You can stop here.',
+  'reviewer-retrying': 'Recorded. A fresh reviewer will take this round; you can stop here.',
+}
+
 function problemsBody(error: unknown): { status: number; body: Record<string, unknown> } {
   if (error instanceof WorkflowValidationError) return { status: 400, body: { error: 'The workflow was refused.', problems: error.problems } }
   return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } }
@@ -124,6 +139,9 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
     },
     async mainWorktree(project) {
       return (await listWorktrees(project)).find((w) => w.isMain)?.path ?? null
+    },
+    async baseBranch(project) {
+      return (await listWorktrees(project)).find((w) => w.isMain)?.branch ?? null
     },
     sendMail: (to, text) => sendSystemMail('workflow', to, text),
     mailState(messageId) {
@@ -226,8 +244,18 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
     },
   })
 
+  type ModelUse = { at: string; provider?: WorkflowProvider; model?: string }
+
+  /** A task's own model and its reviewer's. */
+  function taskModels(at: string, task: { provider?: WorkflowProvider; model?: string; reviewer?: WorkflowReviewerSpec }): ModelUse[] {
+    return [
+      { at, provider: task.provider, model: task.model },
+      ...(task.reviewer ? [{ at: `${at}.reviewer`, provider: task.reviewer.provider, model: task.reviewer.model }] : []),
+    ]
+  }
+
   /** Every task model the catalog doesn't offer, as problems for the lead. */
-  async function modelProblems(tasks: Array<{ at: string; provider?: WorkflowProvider; model?: string }>): Promise<string[]> {
+  async function modelProblems(tasks: ModelUse[]): Promise<string[]> {
     const reasons = new Map<string, Promise<string | null>>()
     const problems: string[] = []
     for (const { at, provider = 'claude', model } of tasks) {
@@ -240,14 +268,19 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
     return problems
   }
 
-  function opModels(id: string, ops: WorkflowOp[]): Array<{ at: string; provider?: WorkflowProvider; model?: string }> {
+  function opModels(id: string, ops: WorkflowOp[]): ModelUse[] {
     const current = new Map((getWorkflow(id)?.tasks ?? []).map((t) => [t.id, t]))
-    return ops.flatMap((op, i) => {
-      if (op.op === 'add') return [{ at: `ops[${i}].task`, provider: op.task.provider, model: op.task.model }]
-      if (op.op !== 'update' || (op.patch.model === undefined && op.patch.provider === undefined)) return []
+    return ops.flatMap((op, i): ModelUse[] => {
+      if (op.op === 'add') return taskModels(`ops[${i}].task`, op.task)
+      if (op.op !== 'update') return []
       const task = current.get(op.id)
-      const model = op.patch.model === null ? undefined : (op.patch.model ?? task?.model)
-      return [{ at: `ops[${i}].patch`, provider: op.patch.provider ?? task?.provider, model }]
+      const uses: ModelUse[] = []
+      if (op.patch.model !== undefined || op.patch.provider !== undefined) {
+        const model = op.patch.model === null ? undefined : (op.patch.model ?? task?.model)
+        uses.push({ at: `ops[${i}].patch`, provider: op.patch.provider ?? task?.provider, model })
+      }
+      if (op.patch.reviewer) uses.push({ at: `ops[${i}].patch.reviewer`, provider: op.patch.reviewer.provider, model: op.patch.reviewer.model })
+      return uses
     })
   }
 
@@ -271,7 +304,7 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
         const owner = parseSessionOwner(getPeer(terminalId)?.owner)
         if (owner?.kind === 'workflow') throw new WorkflowValidationError(['a workflow worker can\'t create workflows; report back with report_result instead'])
         const input = parseNewWorkflow(args)
-        const unknown = await modelProblems(input.tasks.map((t, i) => ({ at: `tasks[${i}]`, provider: t.provider, model: t.model })))
+        const unknown = await modelProblems(input.tasks.flatMap((t, i) => taskModels(`tasks[${i}]`, t)))
         if (unknown.length > 0) throw new WorkflowValidationError(unknown)
         const project = projectFor(webContentsId)
         const key = sessionForTerminal(terminalId) ?? terminalId
@@ -312,24 +345,11 @@ export function initWorkflows(deps: WorkflowHostDeps): WorkflowEngine {
           }
         }
         const id = leadWorkflow(args, terminalId, webContentsId)
-        const snapshot = engine.snapshot(id)!
-        const body = describeWorkflow(snapshot)
-        const tasks = (body['tasks'] as Array<Record<string, unknown>>).map((t) =>
-          snapshot.workers[t['id'] as string] ? { ...t, session_id: snapshot.workers[t['id'] as string] } : t,
-        )
-        return { status: 200, body: { ok: true, ...body, tasks } }
+        return { status: 200, body: { ok: true, ...describeWorkflow(engine.snapshot(id)!) } }
       }
       case 'report_result': {
-        const outcome = engine.reportResult(terminalId, args)
-        const said =
-          outcome.state === 'done'
-            ? 'Recorded. Your task is done; you can stop here.'
-            : outcome.state === 'queued'
-              ? 'Recorded. A fresh worker will retry this task; you can stop here.'
-              : outcome.state === 'failed'
-                ? 'Recorded. The lead has been told; you can stop here.'
-                : 'Recorded. The lead has been asked; wait for its answer in your inbox.'
-        return { status: 200, body: { ok: true, task: outcome.taskId, state: outcome.state, next: said } }
+        const answer = engine.reportResult(terminalId, args)
+        return { status: 200, body: { ok: true, task: answer.taskId, state: answer.state, next: NEXT[answer.outcome] } }
       }
     }
   }
