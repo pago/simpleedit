@@ -36,6 +36,7 @@ import {
   depthOf,
   initialNav,
   openFromNotification,
+  openWorkflow,
   push,
   removeWhere,
   screenOf,
@@ -90,6 +91,11 @@ class Nav {
 
   openFromNotification(terminalId: string, hold?: (entry: NavEntry) => boolean, threadId?: string): void {
     this.#state = openFromNotification(this.#state, terminalId, hold, threadId)
+    this.#sync()
+  }
+
+  openWorkflow(workflowId: string, focusTask?: string): void {
+    this.#state = openWorkflow(this.#state, workflowId, focusTask)
     this.#sync()
   }
 

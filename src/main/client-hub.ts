@@ -33,6 +33,8 @@ export interface RemoteClient {
    * is all a lone window renderer ever received.
    */
   sendSplit?(channel: string, local: unknown, remote: unknown): void
+  /** Socket transports only; a window's renderer gets nothing. Present only on a `ClientHub`, like `sendSplit`. */
+  sendRemote?(channel: string, data: unknown): void
   isDestroyed(): boolean
 }
 
@@ -86,6 +88,11 @@ export class ClientHub implements RemoteClient {
     for (const t of this.live()) t.send(channel, t.clientKey === undefined ? local : remote)
   }
 
+  /** For an update only a remote client's copy carries; the window's own renderer has it already. */
+  sendRemote(channel: string, data: unknown): void {
+    for (const t of this.live()) if (t.clientKey !== undefined) t.send(channel, data)
+  }
+
   /** True once no live transport remains — including before any is attached. */
   isDestroyed(): boolean {
     return this.live().length === 0
@@ -128,6 +135,7 @@ export function everyClient(hubs: () => Iterable<ClientHub>, windows: () => Remo
     send: (channel, data) => each((client) => client.send(channel, data)),
     sendSplit: (channel, local, remote) =>
       each((client) => (client.sendSplit ? client.sendSplit(channel, local, remote) : client.send(channel, local))),
+    sendRemote: (channel, data) => each((client) => client.sendRemote?.(channel, data)),
     isDestroyed: () => false,
   }
 }

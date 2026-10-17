@@ -8,6 +8,7 @@ import { agentThreadsStore, initAgentThreadsListeners } from '../renderer/stores
 import { backlogStore, initBacklogListeners } from '../renderer/stores/backlog.svelte'
 import { initReviewRoomListeners, reviewRoom } from '../renderer/stores/reviewRoom.svelte'
 import { initCompanionStatusListener } from './lib/review-phone.svelte'
+import { initWorkflowListeners, phoneWorkflows } from './lib/workflows.svelte'
 import PocketApp from './PocketApp.svelte'
 import { trackVisualViewport } from './lib/visual-viewport.svelte'
 
@@ -31,17 +32,19 @@ initAgentThreadsListeners()
 initBacklogListeners()
 initReviewRoomListeners()
 initCompanionStatusListener()
-// Review drafts, the filter, Screen PRs runs, agent threads, reviews and the backlog are shared with the desktop, and
+initWorkflowListeners()
+// Review drafts, the filter, Screen PRs runs, agent threads, reviews, the backlog and workflows are shared with the desktop, and
 // a broadcast sent while the socket was down (or switching project) never
 // arrives — so every (re)connect reloads them.
-connection.onIdentity(() => {
+connection.onIdentity(({ windowId }) => {
   void screenPrsStore.loadDrafts()
   void screenPrsStore.loadFilter()
   void screenPrsStore.loadState()
   void agentThreadsStore.load()
   void reviewRoom.load()
-  // The project's backlog: a reconnect may also be a switch to another project.
+  // The project's backlog and workflows: a reconnect may also be a switch to another project.
   void backlogStore.load()
+  void phoneWorkflows.load(windowId)
 })
 
 trackVisualViewport()

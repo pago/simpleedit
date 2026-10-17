@@ -19,9 +19,13 @@
     /** Whether the socket is open. The list is a read, and a read needs one. */
     connected: boolean
     onopen: (session: WindowSession) => void
+    /** A lead's workflow progress ("4/9", needs-you count), or null for a session that leads none. */
+    leadBadge?: (terminalId: string) => { text: string; needsYou: number } | null
+    /** Open the workflow a lead's badge stands for. */
+    onworkflow?: (terminalId: string) => void
   }
 
-  let { connected, onopen }: Props = $props()
+  let { connected, onopen, leadBadge, onworkflow }: Props = $props()
 
   let sessions = $state<WindowSession[]>([])
   let loaded = $state(false)
@@ -140,13 +144,14 @@
         </h2>
         <ul class="space-y-1.5">
           {#each group.members as session (session.terminalId)}
-            <li>
+            {@const progress = leadBadge?.(session.terminalId) ?? null}
+            <li class="flex items-stretch gap-1.5">
               <button
                 type="button"
                 onclick={() => onopen(session)}
                 data-testid="session-row"
                 data-session-id={session.terminalId}
-                class="flex w-full items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-3
+                class="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-3
                        text-left active:bg-zinc-800"
               >
                 <span class="h-2 w-2 flex-none rounded-full {dotClass(session.status)}"></span>
@@ -161,6 +166,20 @@
                   >{elapsed(session.statusSince)} idle</span>
                 {/if}
               </button>
+              {#if progress}
+                <!-- The lead's workflow, one tap away: what its workers need is the lead's row's news. -->
+                <button
+                  type="button"
+                  onclick={() => onworkflow?.(session.terminalId)}
+                  data-testid="lead-workflow"
+                  aria-label="Workflow: {progress.text}{progress.needsYou > 0 ? `, ${progress.needsYou} need${progress.needsYou === 1 ? 's' : ''} you` : ''}"
+                  class="flex flex-none flex-col items-center justify-center rounded-lg border px-2.5 text-[11px] active:bg-zinc-800
+                    {progress.needsYou > 0 ? 'border-amber-900/60 bg-amber-950/30 text-amber-300' : 'border-zinc-800 bg-zinc-900 text-zinc-300'}"
+                >
+                  <span>⇶ {progress.text}</span>
+                  {#if progress.needsYou > 0}<span class="font-semibold">{progress.needsYou} need{progress.needsYou === 1 ? 's' : ''} you</span>{/if}
+                </button>
+              {/if}
             </li>
           {/each}
         </ul>

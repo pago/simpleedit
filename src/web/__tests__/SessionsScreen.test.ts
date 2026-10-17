@@ -62,4 +62,17 @@ describe('SessionsScreen', () => {
     await rerender({ connected: true, onopen: vi.fn() })
     await waitFor(() => expect(screen.getByTestId('session-row')).toHaveTextContent('rebase the stack'))
   })
+
+  it("puts a lead's workflow progress beside its row, and opens the workflow from it", async () => {
+    const onworkflow = vi.fn()
+    const onopen = vi.fn()
+    const leadBadge = (id: string) => (id === 't1' ? { text: '4/9', needsYou: 1 } : null)
+    render(SessionsScreen, { connected: true, onopen, leadBadge, onworkflow })
+    const badge = await screen.findByTestId('lead-workflow')
+    expect(badge).toHaveTextContent('⇶ 4/9')
+    expect(badge).toHaveTextContent('1 needs you')
+    badge.click()
+    expect(onworkflow).toHaveBeenCalledWith('t1')
+    expect(onopen).not.toHaveBeenCalled()
+  })
 })

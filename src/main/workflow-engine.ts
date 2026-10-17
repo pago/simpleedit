@@ -96,6 +96,8 @@ export interface EngineHost {
   isLocalModel(provider: string | undefined, model: string | undefined): Promise<boolean>
   settings(): WorkflowSettings
   broadcast(snapshot: WorkflowSnapshot): void
+  /** Judgments were handed to the lead's mailbox (again, when earlier mail was lost). */
+  leadWoken?(workflow: Workflow, judgments: WorkflowJudgment[]): void
   log(message: string): void
 }
 
@@ -105,6 +107,10 @@ const LOCAL_LIMIT = 1
 
 const NOTE_STOPPED = 'Turn ended without report_result: the worker may be asking you something.'
 const NOTE_REVIEWER_STOPPED = 'The reviewer ended its turn without a verdict: it may be asking you something.'
+/** A `waiting` task waits on the user only when its session ended a turn without a result; any other wait is the lead's to answer. */
+export function waitsOnUser(task: WorkflowTask): boolean {
+  return task.state === 'waiting' && (task.note === NOTE_STOPPED || task.note === NOTE_REVIEWER_STOPPED)
+}
 const NOTE_CLOSED = 'The worker session ended without reporting a result.'
 const NOTE_REVIEWER_CLOSED = 'The reviewer session ended without a verdict.'
 /** A judgment's question is cut here in mail; `get_workflow` has it whole. */
@@ -153,6 +159,8 @@ export interface WorkflowEngine {
   /** The workflow and task a terminal works on, if it is a current worker or reviewer. */
   workerOf(terminalId: string): { workflowId: string; taskId: string } | null
   isLead(terminalId: string, workflow: Workflow): boolean
+  /** The window hosting the workflow's lead, live or waiting to be resumed. */
+  leadWindowOf(workflow: Workflow): number | null
   onPeersChanged(): void
   onHosts(windowId: number, leadKeys: string[]): void
   onWindowClosed(windowId: number): void
@@ -325,6 +333,7 @@ export function createWorkflowEngine(host: EngineHost): WorkflowEngine {
       const messageId = host.sendMail(lead, [head, ...batch.map((b) => b.line), foot].join('\n'))
       if (!messageId) return false
       for (const b of batch) mailed.set(judgmentKey(workflow.id, b.judgment), messageId)
+      host.leadWoken?.(workflow, batch.map((b) => b.judgment))
       host.log(`[Workflows] Woke lead of ${workflow.id} about ${batch.map((b) => b.judgment.taskId).join(', ')}`)
       batch = []
       size = 0
@@ -1419,6 +1428,8 @@ export function createWorkflowEngine(host: EngineHost): WorkflowEngine {
     isLead(terminalId, workflow) {
       return host.leadTerminal(workflow.leadKey) === terminalId
     },
+
+    leadWindowOf: leadWindow,
 
     onPeersChanged() {
       sweepStrays()

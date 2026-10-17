@@ -6,6 +6,7 @@
  * code: everything an agent sends is validated here before it reaches the
  * store, so a workflow can be drawn before it runs and is safe to execute.
  */
+import type { AgentStatus } from './ipc-types'
 
 export type WorkflowStatus = 'draft' | 'running' | 'done' | 'failed' | 'cancelled'
 export type WorkflowTaskState = 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'cancelled'
@@ -242,6 +243,14 @@ export interface WorkflowSnapshot {
   reviewers: Record<string, string>
   /** Dismissed: clients drop it. */
   dismissed?: boolean
+  /** A phone's copy: long fields cut or dropped (`slimWorkflowSnapshot`). */
+  slim?: true
+  /** Phone only: each live worker's, reviewer's and the lead's status, which a phone doesn't track for owned sessions. */
+  statuses?: Record<string, AgentStatus>
+  /** Phone only: the lead's live terminal. */
+  leadTerminalId?: string | null
+  /** Phone only: the window hosting the lead. */
+  leadWindowId?: number | null
 }
 
 export interface WorkflowList {
@@ -1120,5 +1129,74 @@ export function describeWorkflow(snapshot: WorkflowSnapshot): Record<string, unk
         ...describeHistory(t),
       })),
     ...(workflow.judgments.length > 0 ? { openQuestions: workflow.judgments.map((j) => ({ task: j.taskId, question: j.question })) } : {}),
+  }
+}
+
+// -- Phone copy ---------------------------------------------------
+
+/** One-line fields: views show the first line's first 90 characters. */
+const SLIM_LINE = 120
+/** A waiting task's note is shown whole ("Needs you"). */
+const SLIM_NOTE = 300
+const SLIM_FINDINGS = 3
+
+/** Cut to about `max`, never into the first non-blank line's first 100 characters. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text
+  const lead = text.length - text.trimStart().length
+  return `${text.slice(0, Math.max(max, lead + 100))}…`
+}
+
+/** The first few findings, cut; the rest blank, so counts still read right. */
+function slimFindings(findings: string[] | undefined): string[] | undefined {
+  return findings?.map((f, i) => (i < SLIM_FINDINGS ? clip(f, SLIM_LINE) : ''))
+}
+
+function slimResult(result: WorkflowTaskResult): WorkflowTaskResult {
+  const { changedFiles: _files, items: _items, ...rest } = result
+  return { ...rest, summary: clip(result.summary, SLIM_LINE), ...(result.findings ? { findings: slimFindings(result.findings) } : {}) }
+}
+
+function slimRound(round: WorkflowLoopRound): WorkflowLoopRound {
+  const slim: WorkflowLoopRound = { ...round }
+  if (round.work) slim.work = { summary: clip(round.work.summary, SLIM_LINE), steered: round.work.steered, at: round.work.at, ...(round.work.branch ? { branch: round.work.branch } : {}) }
+  if (round.findings) slim.findings = slimFindings(round.findings)
+  if (round.reviewerSummary !== undefined) slim.reviewerSummary = clip(round.reviewerSummary, SLIM_LINE)
+  if (round.note !== undefined) slim.note = clip(round.note, SLIM_LINE)
+  return slim
+}
+
+function slimTask(task: WorkflowTask): WorkflowTask {
+  const { acceptance: _acceptance, history: _history, ...rest } = task
+  const slim: WorkflowTask = { ...rest, brief: '' }
+  if (task.reviewer) slim.reviewer = { ...task.reviewer, brief: '' }
+  if (task.note !== undefined) slim.note = clip(task.note, SLIM_NOTE)
+  if (task.item !== undefined) slim.item = clip(task.item, SLIM_LINE)
+  if (task.result) slim.result = slimResult(task.result)
+  if (task.rounds) {
+    // Views read the current round and the one the latest reviewer served.
+    const current = currentRound(task)
+    slim.rounds = task.rounds.filter((r) => r === current || (r.reviewer !== undefined && r.reviewer === task.reviewers)).map(slimRound)
+  }
+  return slim
+}
+
+/**
+ * The snapshot a phone gets: the same shape, with what only the desktop shows
+ * (briefs, acceptance, history, patch ops, changed files, earlier rounds) gone
+ * and long text cut. Patches stay as stubs because their count is shown.
+ */
+export function slimWorkflowSnapshot(snapshot: WorkflowSnapshot): WorkflowSnapshot {
+  const { workflow } = snapshot
+  return {
+    ...snapshot,
+    slim: true,
+    workflow: {
+      ...workflow,
+      goal: clip(workflow.goal, SLIM_NOTE),
+      tasks: workflow.tasks.map(slimTask),
+      patches: workflow.patches.map((p) => ({ version: p.version, at: p.at, ops: [] })),
+      judgments: workflow.judgments.map((j) => ({ ...j, question: clip(j.question, SLIM_LINE) })),
+    },
   }
 }

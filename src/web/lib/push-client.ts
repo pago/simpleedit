@@ -19,8 +19,8 @@
  * the user changing their mind, and nothing survives a restart.
  */
 import type { PushStatus } from '../../shared/ipc-types'
-import type { OpenSessionMessage } from './push-payload'
-import { isOpenSessionMessage } from './push-payload'
+import type { OpenSessionMessage, OpenWorkflowMessage } from './push-payload'
+import { isOpenSessionMessage, isOpenWorkflowMessage } from './push-payload'
 
 export type PushBlocker =
   | 'unsupported'
@@ -272,6 +272,16 @@ export function onOpenSession(handler: (message: OpenSessionMessage) => void): (
   if (!('serviceWorker' in navigator)) return () => undefined
   const listener = (event: MessageEvent): void => {
     if (isOpenSessionMessage(event.data)) handler(event.data)
+  }
+  navigator.serviceWorker.addEventListener('message', listener)
+  return () => navigator.serviceWorker.removeEventListener('message', listener)
+}
+
+/** The same, for a workflow's push: it opens the Workflow screen, never a terminal. */
+export function onOpenWorkflow(handler: (message: OpenWorkflowMessage) => void): () => void {
+  if (!('serviceWorker' in navigator)) return () => undefined
+  const listener = (event: MessageEvent): void => {
+    if (isOpenWorkflowMessage(event.data)) handler(event.data)
   }
   navigator.serviceWorker.addEventListener('message', listener)
   return () => navigator.serviceWorker.removeEventListener('message', listener)

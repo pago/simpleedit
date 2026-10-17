@@ -42,6 +42,12 @@ export type NavLayer =
   | { kind: 'projects' }
   /** The backlog's add/edit sheet: an item's id, or null for a new one. */
   | { kind: 'backlog-item'; itemId: string | null }
+  /**
+   * A workflow, always on the Sessions stack: the phone's form of the lead's
+   * Workflow tab. `focusTask` is a fresh object per ask (a push tap), like
+   * `openThread`, so a second tap on the same task is still a change.
+   */
+  | { kind: 'workflow'; workflowId: string; focusTask?: { taskId: string } }
 
 export type NavEntry = NavLayer & {
   id: number
@@ -89,7 +95,7 @@ export function screenOf(state: NavState, tab: TabId = state.tab): NavEntry | nu
   const stack = state.stacks[tab]
   for (let i = stack.length - 1; i >= 0; i--) {
     const entry = stack[i]
-    if (entry.kind === 'session' || entry.kind === 'pr') return entry
+    if (entry.kind === 'session' || entry.kind === 'pr' || entry.kind === 'workflow') return entry
   }
   return null
 }
@@ -124,8 +130,11 @@ export function push(
 ): { state: NavState; entry: NavEntry } {
   // A session's screen lives on one stack at a time. One opened from a PR sits
   // on the PR's stack so Back returns to the PR; asked for again from the
-  // other tab, that tab is where it is shown.
+  // other tab, that tab is where it is shown. A workflow's worker can be asked
+  // for again on the same stack (its Workflow screen brought back above it).
   if (layer.kind === 'session') {
+    const here = sessionOn(state, state.tab, layer.terminalId)
+    if (here) return { state: bringToFront(state, state.tab, here), entry: here }
     const elsewhere = sessionOn(state, otherTab(state.tab), layer.terminalId)
     if (elsewhere) return { state: bringToFront(state, otherTab(state.tab), elsewhere), entry: elsewhere }
   }
@@ -202,6 +211,23 @@ export function openFromNotification(
   const id = onSessions.nextId
   const layer: NavLayer = { kind: 'session', terminalId, ...patch }
   return push(onSessions, layer, hold && (() => hold({ ...layer, id }))).state
+}
+
+/**
+ * Show a workflow: on the Sessions tab, whatever tab was showing, since its
+ * workers are that window's sessions. One already on the stack is brought to
+ * the front as the SAME entry, so its scroll survives; `focusTask` replaces
+ * the one it had.
+ */
+export function openWorkflow(state: NavState, workflowId: string, focusTask?: string): NavState {
+  const onSessions = selectTab(state, 'sessions')
+  const patch = { focusTask: focusTask ? { taskId: focusTask } : undefined }
+  const existing = onSessions.stacks.sessions.find((e) => e.kind === 'workflow' && e.workflowId === workflowId)
+  if (existing) {
+    const front = { ...existing, ...patch } as NavEntry
+    return withStack(onSessions, 'sessions', [...onSessions.stacks.sessions.filter((e) => e !== existing), front])
+  }
+  return push(onSessions, { kind: 'workflow', workflowId, ...patch }).state
 }
 
 /**

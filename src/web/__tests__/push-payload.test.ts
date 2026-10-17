@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import {
   isOpenSessionMessage,
+  isOpenWorkflowMessage,
   parsePushPayload,
   planClick,
   planNotification,
   sameOriginUrl,
   sessionFromUrl,
   threadFromUrl,
+  workflowFromUrl,
 } from '../lib/push-payload'
 
 /**
@@ -22,7 +24,18 @@ describe('parsePushPayload', () => {
   it('reads what main sends', () => {
     expect(
       parsePushPayload(JSON.stringify({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1` })),
-    ).toEqual({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null, threadId: null })
+    ).toEqual({ title: 'Fix it', body: 'Blocked', terminalId: 't1', url: `${SCOPE}#session=t1`, windowId: null, threadId: null, workflowId: null, taskId: null })
+  })
+
+  it('reads a workflow push, whose terminal is empty so an older worker still parses it', () => {
+    const raw = { title: 'Lead · Plan', body: 'Tests needs you: which db?', terminalId: '', url: `${SCOPE}#workflow=wf_1&task=tests`, windowId: 2, workflowId: 'wf_1', taskId: 'tests' }
+    expect(parsePushPayload(JSON.stringify(raw))).toEqual({ ...raw, threadId: null })
+  })
+
+  it('reads a payload from before workflows as a session push', () => {
+    const payload = parsePushPayload(JSON.stringify({ terminalId: 't1', url: SCOPE, taskId: 'stray' }))
+    expect(payload?.workflowId).toBeNull()
+    expect(payload?.taskId).toBeNull()
   })
 
   it('returns null rather than throwing on anything unusable', () => {
@@ -69,6 +82,14 @@ describe('planNotification', () => {
     expect(plan.tag).toBe('simpleedit-thread-t7')
     expect(plan.threadId).toBe('t_abcdef')
     expect(planNotification(JSON.stringify({ terminalId: 't7', url: SCOPE }), SCOPE).threadId).toBeNull()
+  })
+
+  it('gives a workflow one row for all its tasks, apart from any session', () => {
+    const raw = { terminalId: '', url: `${SCOPE}#workflow=wf_1&task=a`, windowId: 2, workflowId: 'wf_1', taskId: 'a' }
+    const plan = planNotification(JSON.stringify(raw), SCOPE)
+    expect(plan.tag).toBe('simpleedit-workflow-wf_1')
+    expect(planNotification(JSON.stringify({ ...raw, taskId: 'b' }), SCOPE).tag).toBe(plan.tag)
+    expect(plan).toMatchObject({ workflowId: 'wf_1', taskId: 'a', windowId: 2, url: `${SCOPE}#workflow=wf_1&task=a` })
   })
 
   it('still shows something when the body cannot be read', () => {
@@ -126,7 +147,18 @@ describe('planClick', () => {
 
   it('tells the tab which thread a reply was in', () => {
     const action = planClick(`${SCOPE}#session=t1&thread=t_abcdef`, 't1', [{ url: SCOPE }], 7, 't_abcdef')
-    expect(action.kind === 'focus' && action.message.threadId).toBe('t_abcdef')
+    expect(action.kind === 'focus' && action.message.type === 'open-session' && action.message.threadId).toBe('t_abcdef')
+  })
+
+  it('tells the tab to open a workflow on its task, not a terminal', () => {
+    const url = `${SCOPE}#workflow=wf_1&task=a`
+    const action = planClick(url, '', [{ url: SCOPE }], 2, null, { workflowId: 'wf_1', taskId: 'a' })
+    expect(action).toEqual({
+      kind: 'focus',
+      clientIndex: 0,
+      message: { type: 'open-workflow', workflowId: 'wf_1', taskId: 'a', url, windowId: 2 },
+    })
+    expect(planClick(url, '', [], 2, null, { workflowId: 'wf_1', taskId: 'a' })).toEqual({ kind: 'open', url })
   })
 
   it('prefers the tab the user was last looking at', () => {
@@ -168,5 +200,26 @@ describe('isOpenSessionMessage', () => {
     expect(isOpenSessionMessage({ type: 'something-else', terminalId: 't1' })).toBe(false)
     expect(isOpenSessionMessage(null)).toBe(false)
     expect(isOpenSessionMessage('open-session')).toBe(false)
+  })
+})
+
+describe('workflowFromUrl', () => {
+  it('reads the workflow and task a deep link names', () => {
+    expect(workflowFromUrl(`${SCOPE}#workflow=wf_1&task=impl.2`)).toEqual({ workflowId: 'wf_1', taskId: 'impl.2' })
+    expect(workflowFromUrl(`${SCOPE}#workflow=wf_1`)).toEqual({ workflowId: 'wf_1', taskId: null })
+  })
+
+  it('is null for a session link or an ordinary load', () => {
+    expect(workflowFromUrl(`${SCOPE}#session=t1`)).toBeNull()
+    expect(workflowFromUrl(SCOPE)).toBeNull()
+  })
+})
+
+describe('isOpenWorkflowMessage', () => {
+  it('accepts only the message the worker sends for a workflow', () => {
+    expect(isOpenWorkflowMessage({ type: 'open-workflow', workflowId: 'wf_1', taskId: null, url: SCOPE, windowId: 2 })).toBe(true)
+    expect(isOpenWorkflowMessage({ type: 'open-workflow', workflowId: '' })).toBe(false)
+    expect(isOpenWorkflowMessage({ type: 'open-session', terminalId: 't1' })).toBe(false)
+    expect(isOpenSessionMessage({ type: 'open-workflow', workflowId: 'wf_1' })).toBe(false)
   })
 })
