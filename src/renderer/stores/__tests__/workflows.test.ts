@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { flushSync } from 'svelte'
 import type { AgentStatus, EventMap } from '../../../shared/ipc-types'
-import type { Workflow, WorkflowSnapshot, WorkflowTask } from '../../../shared/workflow'
+import type { Workflow, WorkflowLoopRound, WorkflowSnapshot, WorkflowTask } from '../../../shared/workflow'
 import { sessionsStore } from '../sessions.svelte'
 import { tabsStore, tabIdFor } from '../tabsStore.svelte'
 import { clearAgentStatusForTerminal, initAgentStatusListeners } from '../agent-status.svelte'
@@ -61,6 +61,18 @@ function createLead(key = LEAD_KEY): string {
 
 function createWorker(taskId = 'a', attempt = 1, workflowId = WF): string {
   return sessionsStore.createAgent({ provider: 'claude' }, LAUNCH, WT, { owner: { kind: 'workflow', workflowId, taskId, attempt } })
+}
+
+function createReviewer(review: number, taskId = 'impl', attempt = 1): string {
+  return sessionsStore.createAgent({ provider: 'claude' }, LAUNCH, WT, { owner: { kind: 'workflow', workflowId: WF, taskId, attempt, review } })
+}
+
+/** A loop in round `round`, whose latest reviewer is number `round`. */
+function loopTask(round: number, review: WorkflowLoopRound['review'], extra: Partial<WorkflowTask> = {}): WorkflowTask {
+  const rounds: WorkflowLoopRound[] = Array.from({ length: round }, (_, i) =>
+    i + 1 < round ? { round: i + 1, review: 'done', reviewer: i + 1, verdict: 'findings', findings: ['x'] } : { round: i + 1, review, reviewer: i + 1 },
+  )
+  return task('impl', { kind: 'loop', worktree: { branch: 'feat/impl' }, reviewer: { brief: 'Check' }, rounds, reviewers: round, ...extra })
 }
 
 beforeEach(() => {
@@ -229,6 +241,53 @@ describe('workflowsStore: leads and workers', () => {
   })
 })
 
+describe('workflowsStore: review loop reviewers', () => {
+  const owner = (review?: number) => ({ kind: 'workflow' as const, workflowId: WF, taskId: 'impl', attempt: 1, ...(review !== undefined ? { review } : {}) })
+
+  it('taskOf answers for the worker and the latest reviewer, not a superseded one', () => {
+    _receiveForTests(snapshot({ tasks: [loopTask(2, 'running')] }))
+    expect(workflowsStore.taskOf({ owner: owner() })?.id).toBe('impl')
+    expect(workflowsStore.taskOf({ owner: owner(2) })?.id).toBe('impl')
+    expect(workflowsStore.taskOf({ owner: owner(1) })).toBeUndefined()
+    expect(workflowsStore.taskOf({ owner: { ...owner(2), attempt: 2 } })).toBeUndefined()
+  })
+
+  it('waitsOnUser: only the session the loop waits on', () => {
+    _receiveForTests(snapshot({ tasks: [loopTask(1, 'waiting', { state: 'waiting' })] }))
+    expect(workflowsStore.waitsOnUser({ owner: owner(1) })).toBe(true)
+    expect(workflowsStore.waitsOnUser({ owner: owner() })).toBe(false)
+
+    _receiveForTests(snapshot({ tasks: [task('impl', { kind: 'loop', state: 'waiting', rounds: [{ round: 1, review: 'pending' }], reviewers: 0 })] }))
+    expect(workflowsStore.waitsOnUser({ owner: owner() })).toBe(true)
+
+    const stuck = loopTask(3, 'done', { state: 'waiting' })
+    _receiveForTests(snapshot({ tasks: [stuck] }))
+    expect(workflowsStore.waitsOnUser({ owner: owner() })).toBe(false)
+    expect(workflowsStore.waitsOnUser({ owner: owner(3) })).toBe(false)
+  })
+
+  it('workersOf rolls a reviewing reviewer up onto the lead, but not one whose round is done', () => {
+    const lead = createLead()
+    const worker = createWorker('impl')
+    const old = createReviewer(1)
+    const current = createReviewer(2)
+    _receiveForTests(snapshot({ tasks: [loopTask(2, 'running')] }))
+    expect(workflowsStore.workersOf(sessionsStore.get(lead)!).map((s) => s.id).sort()).toEqual([worker, current].sort())
+    expect(old).toBeDefined()
+
+    _receiveForTests(snapshot({ tasks: [loopTask(2, 'done', { rounds: [...loopTask(2, 'done').rounds!, { round: 3, review: 'pending' }] })] }))
+    expect(workflowsStore.workersOf(sessionsStore.get(lead)!).map((s) => s.id)).toEqual([worker])
+  })
+
+  it('a waiting reviewer makes its lead waiting', () => {
+    const lead = createLead()
+    const reviewer = createReviewer(1)
+    status(reviewer, 'idle')
+    _receiveForTests(snapshot({ tasks: [loopTask(1, 'waiting', { state: 'waiting' })] }))
+    expect(sessionAttentionLevelFor(sessionsStore.get(lead)!)).toBe('waiting')
+  })
+})
+
 describe('session attention with workflow workers', () => {
   it('a lead with no workers keeps its own level', () => {
     const lead = createLead()
@@ -339,6 +398,59 @@ describe('initWorkflowListeners', () => {
       .mocked(window.api.invoke)
       .mock.calls.filter(([channel, req]) => channel === 'agent:spawn' && (req as { resumeSessionId?: string }).resumeSessionId)
     expect(resumes.map(([, req]) => (req as { id: string }).id).sort()).toEqual([running, waiting].sort())
+  })
+
+  it('resumes a restored reviewer under review, never a superseded one or one whose round is done', () => {
+    const current = createReviewer(2)
+    const superseded = createReviewer(1)
+    for (const id of [current, superseded]) sessionsStore.update(id, { pendingResume: { sessionId: `old-${id}` } })
+    _receiveForTests(snapshot({ tasks: [loopTask(2, 'running')] }))
+    start()
+    expect(sessionsStore.get(current)?.pendingResume).toBeUndefined()
+    expect(sessionsStore.get(superseded)?.pendingResume).toBeDefined()
+  })
+
+  it('resumes the kept worker of a loop whose reviewer failed, in a failed workflow too, but not its failed reviewer', () => {
+    const worker = restoredWorker('impl')
+    const reviewer = createReviewer(1)
+    sessionsStore.update(reviewer, { pendingResume: { sessionId: 'old-r' } })
+    _receiveForTests(snapshot({ status: 'failed', tasks: [loopTask(1, 'failed', { state: 'failed' })] }))
+    start()
+    expect(sessionsStore.get(worker)?.pendingResume).toBeUndefined()
+    expect(sessionsStore.get(reviewer)?.pendingResume).toBeDefined()
+  })
+
+  it('leaves the worker of a loop whose worker was lost alone', () => {
+    const worker = restoredWorker('impl')
+    _receiveForTests(snapshot({ status: 'failed', tasks: [loopTask(1, 'failed', { state: 'failed', rounds: [{ round: 1, review: 'failed', reviewer: 1, workerLost: true }] })] }))
+    start()
+    expect(sessionsStore.get(worker)?.pendingResume).toBeDefined()
+  })
+
+  it('leaves a restored reviewer alone once its review is done', () => {
+    const reviewer = createReviewer(1)
+    sessionsStore.update(reviewer, { pendingResume: { sessionId: 'old-r' } })
+    _receiveForTests(snapshot({ tasks: [loopTask(1, 'done', { rounds: [...loopTask(1, 'done').rounds!, { round: 2, review: 'pending' }] })] }))
+    start()
+    expect(sessionsStore.get(reviewer)?.pendingResume).toBeDefined()
+  })
+
+  it('detaches a cancelled loop\'s restored reviewer like its worker', () => {
+    const reviewer = createReviewer(1)
+    sessionsStore.update(reviewer, { pendingResume: { sessionId: 'old-r' } })
+    _receiveForTests(snapshot({ status: 'cancelled', tasks: [loopTask(1, 'running', { state: 'cancelled', detached: true })] }))
+    start()
+    expect(sessionsStore.get(reviewer)?.owner).toBeUndefined()
+  })
+
+  it('closes a cancelled loop\'s restored reviewer that had already finished', () => {
+    const reviewer = createReviewer(1)
+    sessionsStore.update(reviewer, { pendingResume: { sessionId: 'old-r' } })
+    const between = loopTask(1, 'done', { state: 'cancelled', detached: true })
+    between.rounds = [{ round: 1, review: 'done', reviewer: 1, verdict: 'findings', findings: ['x'] }, { round: 2, review: 'pending' }]
+    _receiveForTests(snapshot({ status: 'cancelled', tasks: [between] }))
+    start()
+    expect(sessionsStore.get(reviewer)).toBeUndefined()
   })
 
   it('detaches a cancelled task\'s restored worker into the sidebar', () => {

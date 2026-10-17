@@ -4,7 +4,7 @@
  * resume restored workers, open a new workflow's tab, and detach or close a
  * worker when main asks.
  */
-import { isFinished, type WorkflowSnapshot, type WorkflowTask, type Workflow } from '../../shared/workflow'
+import { currentSlots, detachedSlot, isFinished, ownerIsCurrent, waitingSlot, type WorkflowSnapshot, type WorkflowTask, type Workflow } from '../../shared/workflow'
 import type { AgentStatus } from '../../shared/ipc-types'
 import { isOwned, workflowOwner } from '../../shared/session-owner'
 import { sessionsStore, type Session } from './sessions.svelte'
@@ -101,21 +101,22 @@ export const workflowsStore = {
     const pick = live.find((w) => needsYou(w, statusOf).some((i) => i.kind === 'worker')) ?? live.at(-1)
     if (pick) openWorkflowTab(session.id, pick.workflow)
   },
-  /** The task a worker session works on, if it is that task's current worker. */
+  /** The task a session works on, if it is that task's current worker or its loop's latest reviewer. */
   taskOf(session: Pick<Session, 'owner'>): WorkflowTask | undefined {
     const owner = workflowOwner(session)
     if (!owner) return undefined
     const task = this.get(owner.workflowId)?.workflow.tasks.find((t) => t.id === owner.taskId)
-    return task && task.attempt === owner.attempt ? task : undefined
+    return task && ownerIsCurrent(task, owner) ? task : undefined
   },
   /**
-   * The worker's task is `waiting` on the user: its turn ended without a
-   * result. A task waiting on the lead's answer is the lead's to handle.
+   * The session's task is `waiting` on it: its turn ended without a result
+   * (a loop waits on one of its two sessions). A task waiting on the lead's
+   * answer is the lead's to handle.
    */
   waitsOnUser(session: Pick<Session, 'owner'>): boolean {
     const owner = workflowOwner(session)
     const task = this.taskOf(session)
-    if (!owner || task?.state !== 'waiting') return false
+    if (!owner || !task || waitingSlot(task) !== (owner.review !== undefined ? 'reviewer' : 'worker')) return false
     return !this.get(owner.workflowId)?.workflow.judgments.some((j) => j.taskId === task.id)
   },
   /**
@@ -129,8 +130,8 @@ export const workflowsStore = {
     return sessionsStore.sessions().filter((s) => {
       const owner = workflowOwner(s)
       if (!owner || !ids.has(owner.workflowId)) return false
-      const state = this.taskOf(s)?.state
-      return state === 'running' || state === 'waiting'
+      const task = this.taskOf(s)
+      return task !== undefined && isLive(task, owner.review)
     })
   },
   async load(): Promise<void> {
@@ -155,9 +156,21 @@ export const workflowsStore = {
   },
 }
 
+/** A task's session still has work: a reviewer only while its round is under review. */
+function isLive(task: WorkflowTask, review: number | undefined): boolean {
+  return (task.state === 'running' || task.state === 'waiting') && holdsSlot(task, review)
+}
+
+/** The session holds one of its task's slots, as a failed loop's worker kept for a reviewer retry does. */
+function holdsSlot(task: WorkflowTask, review: number | undefined): boolean {
+  return currentSlots(task).some((slot) => slot.review === review)
+}
+
 /**
- * Restored workers: a running task's comes back on its own; a cancelled
- * task's leaves the workflow, as it would have live; one whose workflow was
+ * Restored workers: a running task's comes back on its own, and so does a
+ * failed loop's kept worker, which a retry reuses; a cancelled
+ * task's leaves the workflow, as it would have live (a reviewer that had
+ * finished is closed instead); one whose workflow was
  * dismissed meanwhile is closed. The rest wait for a click.
  */
 function settleRestoredWorkers(): void {
@@ -172,10 +185,12 @@ function settleRestoredWorkers(): void {
     }
     const task = workflowsStore.taskOf(session)
     if (task?.state === 'cancelled' && task.detached) {
-      sessionsStore.update(session.id, { owner: undefined })
+      if (detachedSlot(task, owner)) sessionsStore.update(session.id, { owner: undefined })
+      else sessionsStore.close(session.id)
       continue
     }
-    if (snapshot?.workflow.status !== 'running' || !task || (task.state !== 'running' && task.state !== 'waiting')) continue
+    const status = snapshot.workflow.status
+    if ((status !== 'running' && status !== 'failed') || !task || !holdsSlot(task, owner.review)) continue
     resumed.add(session.id)
     sessionsStore.resumePlaceholder(session.id)
   }
